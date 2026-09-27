@@ -507,8 +507,11 @@ pub enum Request {
     /// Build the walk-through of the attached session and ask the review
     /// model about it.
     OpenReview,
-    /// Set up the review model in place, through the hub's own action.
+    /// Offer to set up the review model in place, as the hub offers it.
     SetUpReviewModel,
+    /// Set up the offered choice the person confirmed, through the hub's
+    /// own action.
+    ConfirmReviewModel { action: String },
     /// Deliver the remark.
     Send,
 }

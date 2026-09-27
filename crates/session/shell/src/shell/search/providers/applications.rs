@@ -411,12 +411,12 @@ impl ApplicationsProvider {
         }
     }
 
+    /// The last complete index. A source that moved since is being rebuilt
+    /// off the UI thread, and until that lands the previous index answers:
+    /// an application that was there a moment ago is still there, rather
+    /// than every application vanishing whenever the catalogue refreshes.
     fn snapshot(&self) -> Option<Ref<'_, ApplicationsSnapshot>> {
-        let generation = self.source_generation();
-        let snapshot = self.snapshot.borrow();
-        Ref::filter_map(snapshot, Option::as_ref)
-            .ok()
-            .filter(|snapshot| snapshot.source_generation == generation)
+        Ref::filter_map(self.snapshot.borrow(), Option::as_ref).ok()
     }
 
     /// Score `apps` against `needle`. `open_target` only words the row —
@@ -1130,15 +1130,14 @@ impl SearchProvider for ApplicationsProvider {
 }
 
 impl ApplicationsProvider {
+    /// Names the index that answers, so a cursor from one index is never
+    /// resumed in another; before the first index there is none.
     fn revision(&self) -> String {
-        let (installed, catalogue, host, dynamic) = self.source_generation();
-        let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
-            snapshot.source_generation == (installed, catalogue, host, dynamic)
-        });
-        format!(
-            "{}:{installed}:{catalogue}:{host}:{dynamic}",
-            if ready { "ready" } else { "indexing" }
-        )
+        let (state, (installed, catalogue, host, dynamic)) = match self.snapshot.borrow().as_ref() {
+            Some(snapshot) => ("ready", snapshot.source_generation),
+            None => ("indexing", self.source_generation()),
+        };
+        format!("{state}:{installed}:{catalogue}:{host}:{dynamic}")
     }
 }
 
@@ -2031,11 +2030,24 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+        refresh_until_ready(&provider, &ctx);
+        let first_index = provider.search_revision(&ctx);
         source.replace_catalogue(vec![offered("so.tilo.changed", "Changed", None)]);
         provider.refresh_search_index(&ctx);
-        assert!(provider.search_revision(&ctx).starts_with("indexing:"));
-        refresh_until_ready(&provider, &ctx);
+        assert_eq!(
+            provider.search_revision(&ctx),
+            first_index,
+            "the previous index keeps answering while the new one builds"
+        );
+        for _ in 0..2_000 {
+            provider.refresh_search_index(&ctx);
+            if provider.search_revision(&ctx) != first_index {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
+        assert_ne!(provider.search_revision(&ctx), first_index);
         assert_ne!(provider.search_revision(&ctx), initial_revision);
     }
 

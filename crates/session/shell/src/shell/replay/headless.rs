@@ -10,6 +10,7 @@
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -239,14 +240,38 @@ impl HeadlessReplay {
 
 /// The shell run as this headless session: its private homes, socket and
 /// log, and the app store it launches from.
+/// Unlock the session's keyring on its own bus, then run the shell. The
+/// keyring is created on first use in the session's `XDG_DATA_HOME`,
+/// under a password kept beside it that only this session reads (a login
+/// unlocks it with the person's password the same way), and serves the
+/// Secret Service the shell keeps its MLS keys in. Run as root (a test
+/// container), the daemon is started without capabilities, as a person's
+/// is: it aborts when it holds capabilities it may not drop.
+const SESSION_KEYRING: &str = r#"keyring="gnome-keyring-daemon --unlock --components=secrets"
+if [ "$(id -u)" = 0 ]; then keyring="setpriv --bounding-set=-all --inh-caps=-all $keyring"; fi
+password="$XDG_DATA_HOME/keyring-password"
+[ -s "$password" ] || (umask 077; head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$password")
+$keyring < "$password" >/dev/null || { echo "the session keyring did not start (gnome-keyring-daemon and secret-tool are needed)" >&2; exit 71; }
+exec "$@""#;
+
 fn session_command(
     options: &HeadlessOptions,
     socket: &Path,
     log: &std::fs::File,
 ) -> Result<Command, HeadlessError> {
     let root = &options.root;
-    let mut command = Command::new(&options.shell);
+    // A person's session runs in a D-Bus session with their keyring
+    // unlocked; the session's MLS keys live there, and without them no
+    // app's channel opens. This one has its own bus and a keyring kept in
+    // the session's private homes, unlocked the way a login unlocks it.
+    let mut command = Command::new("dbus-run-session");
     command
+        .args(["--", "sh", "-c", SESSION_KEYRING, "tilo-headless-session"])
+        .arg(&options.shell)
+        // Its own process group, so the whole session goes when it does.
+        .process_group(0)
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .env_remove("GNOME_KEYRING_CONTROL")
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
         .env("TILO_TEST_CONTROL", socket)
@@ -328,6 +353,15 @@ impl FrameProvider for HeadlessReplay {
 
 impl Drop for HeadlessReplay {
     fn drop(&mut self) {
+        // The session is a process group: its bus, its keyring and the
+        // shell and every app it launched.
+        if let Ok(group) = libc::pid_t::try_from(self.child.id()) {
+            // SAFETY: `killpg` only signals; the group is this session's
+            // own, made by `process_group(0)` at spawn.
+            unsafe {
+                libc::killpg(group, libc::SIGKILL);
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

@@ -4,6 +4,7 @@
   "description": "Local Apache-2.0 image captioning, labels, pet labels, and OCR through vLLM. This release does not provide face recognition or identity inference.",
   "repository": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
   "revision": "a3992d502a8714ce2f6207fde3507ccf9503f224",
+  "format": "hf_snapshot",
   "license_id": "Apache-2.0",
   "license_file": "README.md",
   "requires_acceptance": false,

@@ -5,7 +5,7 @@
 //! destructive, confirm, at-most-once contract.  Headless development tools
 //! can address it exactly without synthesising pointer input.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
@@ -15,20 +15,60 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 pub const PROVIDER_ID: &str = "session";
 pub const LOGOUT_ID: &str = "logout";
 
+/// How a system action appears in the action catalogue on a shell that
+/// does or does not own the machine: available, or unavailable because the
+/// host system manages it.
+pub(crate) fn system_action_availability(
+    surfaces: os_actions::SystemSurfaces,
+) -> tilo_actions::Availability {
+    if surfaces.is_owned() {
+        tilo_actions::Availability::Available
+    } else {
+        tilo_actions::Availability::Unavailable {
+            code: os_actions::HOST_MANAGED_CODE.into(),
+            reason: os_actions::HOST_MANAGED_REASON.into(),
+        }
+    }
+}
+
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
 /// The visual power menu and typed action provider must not disagree about a
-/// portal inhibitor: both hold a clone backed by the compositor's registry.
-#[derive(Clone, Debug, Default)]
+/// portal inhibitor, or about whether this shell owns the machine at all:
+/// both hold a clone backed by the compositor's registry and its answer.
+#[derive(Clone, Debug)]
 pub struct SessionActionPolicy {
     inhibitors: Rc<RefCell<tilo_power_mgmt::InhibitRegistry>>,
+    surfaces: Rc<Cell<os_actions::SystemSurfaces>>,
+}
+
+impl Default for SessionActionPolicy {
+    fn default() -> Self {
+        Self::new(tilo_power_mgmt::InhibitRegistry::default())
+    }
 }
 
 impl SessionActionPolicy {
+    /// A policy for this process, owning the machine's session actions only
+    /// when the compositor established that it owns the machine.
     pub fn new(inhibitors: tilo_power_mgmt::InhibitRegistry) -> Self {
         Self {
             inhibitors: Rc::new(RefCell::new(inhibitors)),
+            surfaces: Rc::new(Cell::new(os_actions::owner::current())),
         }
+    }
+
+    /// The same policy, and every clone of it, for a shell that does or
+    /// does not own the machine.
+    #[must_use]
+    pub fn with_surfaces(self, surfaces: os_actions::SystemSurfaces) -> Self {
+        self.surfaces.set(surfaces);
+        self
+    }
+
+    /// Whether this shell owns the machine's session actions.
+    pub fn surfaces(&self) -> os_actions::SystemSurfaces {
+        self.surfaces.get()
     }
 
     /// Point every holder of this policy at the registry exported by the
@@ -47,12 +87,16 @@ impl SessionActionPolicy {
         }
     }
 
-    /// Refuse inhibited actions before publishing an edge or touching the OS.
+    /// Refuse inhibited actions, and every action on a shell that does not
+    /// own the machine, before publishing an edge or touching the OS.
     ///
     /// # Errors
     ///
-    /// The user-facing reason when a portal inhibitor blocks `action`.
+    /// [`os_actions::HOST_MANAGED_REASON`] on a shell that does not own the
+    /// machine, else the user-facing reason when a portal inhibitor blocks
+    /// `action`.
     pub fn admit(&self, action: os_actions::SessionAction) -> Result<(), String> {
+        self.surfaces().require()?;
         let Some(scope) = Self::inhibit_scope(action) else {
             return Ok(());
         };
@@ -87,8 +131,9 @@ impl SessionActionPolicy {
     }
 }
 
-fn logout_contract() -> tilo_actions::ActionContract {
+fn logout_contract(surfaces: os_actions::SystemSurfaces) -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
+        availability: system_action_availability(surfaces),
         permission: tilo_actions::PermissionRequirement::Admin,
         risk: tilo_actions::RiskLevel::Destructive,
         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
@@ -150,7 +195,7 @@ impl SearchProvider for SessionActionsProvider {
             badge: Some(t("search-badge-session")),
             score: if needle.is_empty() { 0 } else { 100 },
             params: Vec::new(),
-            contract: Some(logout_contract()),
+            contract: Some(logout_contract(policy.surfaces())),
             on_open: Rc::new(move |_doc, _root, _chrome: &Chrome, _args| {
                 policy
                     .begin(os_actions::SessionAction::Logout)
@@ -177,7 +222,8 @@ mod tests {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let mut registry = SearchRegistry::new();
             registry.register(Rc::new(SessionActionsProvider::new(
-                SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new()),
+                SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new())
+                    .with_surfaces(os_actions::SystemSurfaces::Owned),
             )));
             let state = chrome.borrow();
             let catalog = ActionCatalog::build_exact(
@@ -212,7 +258,8 @@ mod tests {
                 "Document has unsaved work",
                 tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
             );
-            let policy = SessionActionPolicy::new(inhibitors);
+            let policy = SessionActionPolicy::new(inhibitors)
+                .with_surfaces(os_actions::SystemSurfaces::Owned);
 
             let error = policy
                 .begin(os_actions::SessionAction::Logout)
@@ -232,10 +279,59 @@ mod tests {
                 "Document has unsaved work",
                 tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
             );
-            let policy = SessionActionPolicy::new(inhibitors);
+            let policy = SessionActionPolicy::new(inhibitors)
+                .with_surfaces(os_actions::SystemSurfaces::Owned);
 
             assert!(policy.admit(os_actions::SessionAction::SwitchUser).is_ok());
             assert!(policy.admit(os_actions::SessionAction::Suspend).is_ok());
         }
+    }
+
+    #[test]
+    fn a_shell_that_does_not_own_the_machine_offers_logout_only_as_host_managed() {
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new())
+            .with_surfaces(os_actions::SystemSurfaces::Hosted);
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(SessionActionsProvider::new(policy.clone())));
+        let state = chrome.borrow();
+        let catalog = ActionCatalog::build_exact(
+            &registry,
+            PROVIDER_ID,
+            LOGOUT_ID,
+            SearchScope::All,
+            None,
+            &state,
+            &AutoCommit::new(),
+            &ROOT,
+            &AllVisible,
+        );
+        let action = catalog
+            .enumerate()
+            .into_iter()
+            .next()
+            .expect("logout stays discoverable");
+        assert_eq!(
+            action.contract.expect("logout contract").availability,
+            tilo_actions::Availability::Unavailable {
+                code: os_actions::HOST_MANAGED_CODE.into(),
+                reason: os_actions::HOST_MANAGED_REASON.into(),
+            }
+        );
+        for action in [
+            os_actions::SessionAction::Lock,
+            os_actions::SessionAction::Logout,
+            os_actions::SessionAction::SwitchUser,
+            os_actions::SessionAction::Suspend,
+            os_actions::SessionAction::Restart,
+            os_actions::SessionAction::ShutDown,
+        ] {
+            assert_eq!(
+                policy.begin(action),
+                Err(os_actions::HOST_MANAGED_REASON.to_owned()),
+                "{action:?}"
+            );
+        }
+        assert!(!os_actions::take_logout_request());
     }
 }

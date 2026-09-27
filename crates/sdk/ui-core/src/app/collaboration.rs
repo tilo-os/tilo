@@ -194,7 +194,16 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     fn broadcast_doc_delta(&mut self) {
-        if self.collaboration.manager.is_connected() {
+        // With records in play the live document travels only on a
+        // record's route. Until one is checked out the primary route is the
+        // room's, which carries the room index: what an app wrote before its
+        // checkout goes out with the record, once checked out.
+        let awaiting_checkout = self
+            .persistence
+            .records
+            .as_ref()
+            .is_some_and(|records| records.active().is_none());
+        if self.collaboration.manager.is_connected() && !awaiting_checkout {
             match self.pending_primary_document_delta() {
                 Ok((delta, heads)) if !delta.is_empty() => {
                     tracing::debug!(
@@ -777,6 +786,35 @@ impl App {
                 .send(CollabRequest::RequestDocumentSnapshot)
         {
             self.collaboration.snapshot_on_ready = false;
+        }
+        self.publish_checked_out_record();
+    }
+
+    /// A writer that checked a record out leaves the record's whole state
+    /// in the room once the record's route can carry it. The checkout took
+    /// the document as its baseline, so nothing it held before — content an
+    /// app wrote before the checkout, or kept from an earlier session — would
+    /// otherwise ever reach that route: a member on another device, or one
+    /// who arrives while this writer is away, learns the record only from
+    /// what the room's host retains.
+    fn publish_checked_out_record(&mut self) {
+        if !self.collaboration.publish_on_ready || !self.collaboration.manager.is_connected() {
+            return;
+        }
+        match self.primary_document_snapshot() {
+            Ok(data) => {
+                let result = self
+                    .collaboration
+                    .manager
+                    .try_send(CollabRequest::document_snapshot(data));
+                if self.note_document_send(&result) {
+                    self.collaboration.publish_on_ready = false;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: checked-out record not published");
+                self.collaboration.publish_on_ready = false;
+            }
         }
     }
 

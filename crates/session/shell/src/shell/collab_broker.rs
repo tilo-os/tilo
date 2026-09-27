@@ -568,6 +568,29 @@ impl FanoutState {
             capnp.fanout_to_route(event, except, route);
         }
     }
+
+    /// Deliver a presence `event` published on the sender's `origin` route.
+    /// Presence is room-wide, so typed subscribers get it by the room's
+    /// cluster scope as before; in-process subscribers, which hold whole
+    /// rooms, are handed `origin` itself, so the session recorder can tell
+    /// which app spoke (and keep nothing of a capture-protected one).
+    pub(crate) fn fanout_presence(&self, event: &CollabEvent, except: u64, origin: &CrdtRoute) {
+        if origin.cluster_id.is_empty() {
+            tracing::debug!(
+                "collab_broker: dropping presence with an unaddressed route \
+                 (sender never announced a cluster)"
+            );
+            return;
+        }
+        for sub in self.local_subs() {
+            if sub.wants(origin) {
+                (sub.sink)(event, origin);
+            }
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(event, except, &origin.to_cluster_scope());
+        }
+    }
 }
 
 /// Owns the typed broker and optional peer-network drain.
@@ -1099,6 +1122,26 @@ pub fn spawn_native_harness(
     spawn_inner(
         capnp_socket_path,
         None,
+        &publisher,
+        Some(membership),
+        Some(Arc::new(trusted_devices)),
+    )
+}
+
+/// [`spawn_native_harness`] on a device's peer network, so several devices
+/// in one test process each publish and receive through their own network,
+/// as [`spawn_native`] does, without one process-wide identity registry.
+#[cfg(test)]
+pub(crate) fn spawn_networked_harness(
+    capnp_socket_path: PathBuf,
+    peer_sync: &Arc<ShellNetwork>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::from_network(Some(Arc::clone(peer_sync)));
+    spawn_inner(
+        capnp_socket_path,
+        Some(peer_sync),
         &publisher,
         Some(membership),
         Some(Arc::new(trusted_devices)),

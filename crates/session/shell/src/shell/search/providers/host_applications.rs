@@ -211,12 +211,10 @@ impl HostApplicationsProvider {
         }
     }
 
+    /// The last complete index; one being rebuilt for a moved source takes
+    /// over when it lands (see the applications provider's).
     fn snapshot(&self) -> Option<std::cell::Ref<'_, HostAppsSnapshot>> {
-        let generation = self.source_generation();
-        let snapshot = self.snapshot.borrow();
-        std::cell::Ref::filter_map(snapshot, Option::as_ref)
-            .ok()
-            .filter(|snapshot| snapshot.source_generation == generation)
+        std::cell::Ref::filter_map(self.snapshot.borrow(), Option::as_ref).ok()
     }
 
     /// [`Self::results_for`] with the installed-package list supplied, so a
@@ -407,16 +405,11 @@ impl SearchProvider for HostApplicationsProvider {
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
-        let (host, installed) = self.source_generation();
-        let ready = self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.source_generation == (host, installed));
-        format!(
-            "{}:{host}:{installed}",
-            if ready { "ready" } else { "indexing" }
-        )
+        let (state, (host, installed)) = match self.snapshot.borrow().as_ref() {
+            Some(snapshot) => ("ready", snapshot.source_generation),
+            None => ("indexing", self.source_generation()),
+        };
+        format!("{state}:{host}:{installed}")
     }
 
     fn query_page(

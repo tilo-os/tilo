@@ -61,3 +61,4 @@ pub mod run;
 pub mod sandbox;
 pub mod seccomp;
 pub mod services;
+pub mod system_surfaces;

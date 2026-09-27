@@ -168,8 +168,9 @@ impl SecretReference {
 pub enum Credential {
     /// An API key the person entered, sealed in the vault.
     ApiKey { reference: SecretReference },
-    /// An online account (`accounts::AccountStore`) signed in through OAuth;
-    /// its tokens are sealed in the vault under the account id.
+    /// An online account (`accounts::AccountStore`) signed in through
+    /// OAuth; account custody holds its grant and hands the gateway a
+    /// current access token for it.
     Account { account_id: String },
 }
 
@@ -183,11 +184,6 @@ impl Credential {
         }
     }
 }
-
-/// The online-account type an Azure provider signs in with.
-pub const ENTRA_ACCOUNT_TYPE: &str = "microsoft-entra";
-/// The scope Azure `OpenAI` access tokens are requested for.
-pub const AZURE_OPENAI_SCOPE: &str = "https://cognitiveservices.azure.com/.default offline_access";
 
 /// A fixed gateway protocol a model declares it serves. For locally managed
 /// models the set is copied from the signed catalogue; for hosted profiles it

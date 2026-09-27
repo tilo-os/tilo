@@ -590,18 +590,33 @@ pub enum UserOperation {
     },
 }
 
-/// A bounded model-manager request.  Package identifiers are revalidated
-/// against a freshly-read manager snapshot immediately before the pane starts
-/// the command; no URL, path, credentials, or arbitrary manager arguments
-/// cross the resource boundary.
+/// A bounded model-manager request.  Package identifiers and placements are
+/// revalidated against a freshly-read manager snapshot immediately before the
+/// pane starts the command, and the manager re-derives the placement from its
+/// own probe; no URL, path, credentials, or arbitrary manager arguments cross
+/// the resource boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentModelOperation {
     StageAccelerator,
-    Install { id: String, revision: String },
-    Start { id: String },
-    Stop { id: String },
-    Retry { id: String, revision: String },
-    Remove { id: String },
+    Install {
+        id: String,
+        revision: String,
+        placement: agent_provider_config::local::Placement,
+    },
+    Start {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Retry {
+        id: String,
+        revision: String,
+        placement: agent_provider_config::local::Placement,
+    },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5100,30 +5115,44 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
                 ));
             }
         }
-        if !per_agent
-            && let Some(available) = state.installable_for(task)
-            && let Some(action) = local_operation_spec(
-                "set-up-on-device",
-                t_args(
-                    "ai-action-set-up-for-task",
-                    &[
-                        ("model", arg(available.package.name.as_str())),
-                        ("task", arg(t(task.label_key))),
-                    ],
-                ),
-                OperationKind::Effect,
-                AGENT_MODEL_OPERATION_TYPE,
-                &AgentModelOperation::Install {
-                    id: available.package.id.clone(),
-                    revision: available.package.revision.clone(),
-                },
-                &["device-local", "ai", "downloads-model"],
-            )
-        {
-            resource = resource.with_action(
-                confirmed(action, tilo_actions::RiskLevel::Privileged)
-                    .with_description(pane::download_terms(available)),
-            );
+        // Every way to set the task up here, in rank order: the recommended
+        // configuration is `set-up-on-device`, each alternative
+        // `set-up-on-device-<rank>`. Each action names the model, engine and
+        // device; its description holds the size, license, memory and speed
+        // it is confirmed against, and its tags the fit and speed class, so
+        // any surface can offer the same choice. None downloads unconfirmed.
+        if !per_agent {
+            for (rank, available) in state
+                .installable(task)
+                .into_iter()
+                .take(MAX_DYNAMIC_RESOURCES)
+                .enumerate()
+            {
+                let tags = pane::setup_tags(available);
+                if let Some(action) = local_operation_spec(
+                    pane::setup_action_id(rank),
+                    t_args(
+                        "ai-action-set-up-for-task",
+                        &[
+                            ("configuration", arg(pane::configuration_label(available))),
+                            ("task", arg(t(task.label_key))),
+                        ],
+                    ),
+                    OperationKind::Effect,
+                    AGENT_MODEL_OPERATION_TYPE,
+                    &AgentModelOperation::Install {
+                        id: available.package.id.clone(),
+                        revision: available.package.revision.clone(),
+                        placement: available.placement.clone(),
+                    },
+                    &tags,
+                ) {
+                    resource = resource.with_action(
+                        confirmed(action, tilo_actions::RiskLevel::Privileged)
+                            .with_description(pane::download_terms(available)),
+                    );
+                }
+            }
         }
         section = section.with_child(resource);
     }
@@ -5154,6 +5183,8 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
         .accelerator_setup
         .as_ref()
         .is_none_or(|setup| !setup.status.blocks_model_setup());
+    // Every configuration this device runs, ranked: a release on one engine
+    // and processor. Each one is set up through its own confirmed action.
     for available in snapshot.available.iter().take(MAX_DYNAMIC_RESOURCES) {
         if snapshot
             .models
@@ -5163,22 +5194,23 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
             continue;
         }
         let mut resource = Resource::new(
-            format!("{}{}", pane::RELEASE_RESOURCE_PREFIX, available.package.id),
+            pane::release_resource_id(available),
             "settings.ai-local-release",
-            available.package.name.clone(),
+            pane::configuration_label(available),
         );
         if can_install
             && let Some(action) = local_operation_spec(
                 "install",
                 t_args(
                     "ai-action-download",
-                    &[("model", arg(available.package.name.as_str()))],
+                    &[("configuration", arg(pane::configuration_label(available)))],
                 ),
                 OperationKind::Effect,
                 AGENT_MODEL_OPERATION_TYPE,
                 &AgentModelOperation::Install {
                     id: available.package.id.clone(),
                     revision: available.package.revision.clone(),
+                    placement: available.placement.clone(),
                 },
                 &["device-local", "ai", "downloads-model"],
             )
@@ -5218,6 +5250,7 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
                 AgentModelOperation::Retry {
                     id: model.package.id.clone(),
                     revision: model.package.revision.clone(),
+                    placement: model.placement.clone(),
                 },
             )),
             LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => None,
@@ -6885,6 +6918,27 @@ mod tests {
                 context_window: 32_768,
                 accelerator_memory_mib: 4096,
             };
+            let available = AvailableModel {
+                package,
+                placement: agent_provider_config::local::Placement {
+                    runtime: "llama-cpp".into(),
+                    kind: agent_provider_config::local::RuntimeKind::Cpu,
+                    device: None,
+                },
+                engine: agent_provider_config::local::RuntimeEngine::LlamaCpp,
+                device: None,
+                required_mib: 4096,
+                budget_mib: 16_384,
+                shared_memory: true,
+                fit: agent_provider_config::local::Fit::Excellent,
+                speed: agent_provider_config::local::ExpectedSpeed {
+                    tokens_per_second: 8,
+                    prompt_tokens_per_second: 60,
+                    answer_seconds: 33,
+                    class: agent_provider_config::local::SpeedClass::Slow,
+                },
+            };
+            let release = crate::panes::ai::release_resource_id(&available);
             let state = AiState {
                 config: ProviderConfig {
                     profiles: vec![profile.clone()],
@@ -6895,26 +6949,17 @@ mod tests {
                     hardware: HardwareRecommendation {
                         fit: HardwareFit::Good,
                         memory_gib: 32,
-                        accelerator: "CPU".into(),
-                        accelerator_memory_gib: None,
                         free_storage_gib: Some(100),
                         reason: String::new(),
                     },
                     facts: agent_provider_config::local::HardwareSnapshot::default(),
-                    recommendation: Some(package.clone()),
-                    available: vec![AvailableModel {
-                        package,
-                        runtime: agent_provider_config::local::RuntimeKind::Cpu,
-                        speed: agent_provider_config::local::ExpectedSpeed {
-                            tokens_per_second: 8,
-                            class: agent_provider_config::local::SpeedClass::Slow,
-                        },
-                    }],
+                    available: vec![available],
                     models: Vec::new(),
                     accelerator_setup: None,
                 }),
                 health: std::collections::BTreeMap::new(),
                 agents: vec!["Claude".into()],
+                accounts: std::collections::BTreeSet::new(),
             };
             let hub = ai_section_for(&state);
             let confirm = |resource: &str, action: &str| {
@@ -6940,7 +6985,7 @@ mod tests {
                 tilo_actions::ConfirmationPolicy::Confirm
             );
             assert_eq!(
-                confirm("settings.ai-local-release:qwen3-4b", "install"),
+                confirm(&release, "install"),
                 tilo_actions::ConfirmationPolicy::Confirm
             );
             assert_eq!(
@@ -6966,6 +7011,11 @@ mod tests {
                 .unwrap();
             let terms = setup.description.unwrap_or_default();
             assert!(terms.contains("Apache-2.0"), "{terms}");
+            assert!(
+                setup.label.contains("llama.cpp") && setup.label.contains("Qwen3 4B"),
+                "the offer names the engine and the model: {}",
+                setup.label
+            );
             assert!(ai_resource(&hub, Some("settings.ai-agent:Claude/agent.planning")).is_some());
         }
     }

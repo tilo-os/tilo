@@ -29,12 +29,14 @@ use crate::shell::state::{RoomId, WorkspaceId};
 
 /// How long a check may run before it is given up.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long a replayed app gets to draw after a seek before its surface is
-/// captured as it is.
-const SETTLE: Duration = Duration::from_millis(600);
+/// How long a replayed app gets to reach a seek's recorded frame before
+/// its surface is captured as it is.
+const SETTLE: Duration = Duration::from_millis(1500);
 /// A seek always waits at least this long, so an app's commit for it can
 /// arrive.
 const MIN_SETTLE: Duration = Duration::from_millis(120);
+/// The least time between two captures of one seek.
+const RECAPTURE_GAP: Duration = Duration::from_millis(50);
 
 /// A check's room, its app windows (surface, app) and the shots its first
 /// target is to be captured at.
@@ -54,10 +56,64 @@ struct Target {
     shots: Vec<Shot>,
 }
 
+/// A seek waiting for the replayed apps to show it.
+///
+/// What a seek publishes reaches an app along separate paths: presence at
+/// once, a document change once the app has opened it with the channel's
+/// keys and merged it. A frame drawn after the seek may show the first and
+/// not yet the second. So each frame drawn after the seek is captured and
+/// compared with the recorded one, and the seek settles on the first that
+/// matches, or on what the app shows once [`SETTLE`] has passed: a replay
+/// diverges only when it never reaches what was recorded.
 struct Settling {
     since: Instant,
-    /// The frame sequence of each replayed surface when the seek was made.
+    /// Each replayed surface's frame sequence when the seek was made, or
+    /// when it was last captured.
     seqs: Vec<(u64, u64)>,
+    captured: Option<Instant>,
+}
+
+impl Settling {
+    fn new(now: Instant, surfaces: impl Iterator<Item = u64>) -> Self {
+        Self {
+            since: now,
+            seqs: surfaces
+                .map(|surface| (surface, crate::shell::foreign::store().frame_seq(surface)))
+                .collect(),
+            captured: None,
+        }
+    }
+
+    /// Whether to capture at `now`: every surface drew since the seek or
+    /// the last capture, or [`SETTLE`] passed.
+    fn due(&self, now: Instant) -> bool {
+        let waited = now.saturating_duration_since(self.since);
+        if waited >= SETTLE {
+            return true;
+        }
+        let gap = self
+            .captured
+            .is_none_or(|at| now.saturating_duration_since(at) >= RECAPTURE_GAP);
+        waited >= MIN_SETTLE
+            && gap
+            && self
+                .seqs
+                .iter()
+                .all(|(surface, seq)| crate::shell::foreign::store().frame_seq(*surface) > *seq)
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.since) >= SETTLE
+    }
+
+    /// A capture at `now` did not show the recorded frame: wait for the
+    /// next one.
+    fn missed(&mut self, now: Instant) {
+        self.captured = Some(now);
+        for (surface, seq) in &mut self.seqs {
+            *seq = crate::shell::foreign::store().frame_seq(*surface);
+        }
+    }
 }
 
 pub(super) struct Check {
@@ -66,6 +122,10 @@ pub(super) struct Check {
     room: RoomId,
     peer: Arc<ReplayPeer>,
     targets: Vec<Target>,
+    /// The recorded frames each capture is compared with, and the layout
+    /// they are compared in.
+    strip: FrameStrip,
+    layout: session_trace::frames::SemanticLayout,
     next: usize,
     settling: Option<Settling>,
     frames: Vec<SurfaceFrame>,
@@ -195,11 +255,13 @@ impl ReplayController {
         lock(&self.checks).insert(
             id,
             Check {
+                layout: session_trace::frames::SemanticLayout::from_trace(&trace),
                 trace: Arc::new(trace),
                 workspace,
                 room,
                 peer,
                 targets,
+                strip: strip.clone(),
                 next: 0,
                 settling: None,
                 frames: Vec::new(),
@@ -309,6 +371,9 @@ impl ReplayController {
     pub fn offscreen_captures(&self, now: Instant) -> Vec<CaptureRequest> {
         let mut requests = Vec::new();
         let mut finished: Vec<(RoomId, Vec<u64>)> = Vec::new();
+        // Published once the tree is released: sealing asks it who is
+        // admitted.
+        let mut due: Vec<(Arc<ReplayPeer>, std::ops::Range<usize>)> = Vec::new();
         let tree = self.tree.read();
         let mut checks = lock(&self.checks);
         for (id, check) in checks.iter_mut() {
@@ -343,7 +408,7 @@ impl ReplayController {
             let Some(target) = check.targets.get(check.next) else {
                 continue;
             };
-            let Some(settling) = check.settling.as_ref() else {
+            let Some(settling) = check.settling.as_mut() else {
                 // Seek: every entry recorded at or before the offset has
                 // happened, published to the apps.
                 let end = check
@@ -352,24 +417,14 @@ impl ReplayController {
                     .iter()
                     .take_while(|entry| entry.at <= target.at)
                     .count();
-                check.peer.publish(0..end);
-                check.settling = Some(Settling {
-                    since: now,
-                    seqs: windows
-                        .iter()
-                        .map(|(_, _, surface)| {
-                            (*surface, crate::shell::foreign::store().frame_seq(*surface))
-                        })
-                        .collect(),
-                });
+                due.push((Arc::clone(&check.peer), 0..end));
+                check.settling = Some(Settling::new(
+                    now,
+                    windows.iter().map(|(_, _, surface)| *surface),
+                ));
                 continue;
             };
-            let waited = now.saturating_duration_since(settling.since);
-            let all_drew = settling
-                .seqs
-                .iter()
-                .all(|(surface, seq)| crate::shell::foreign::store().frame_seq(*surface) > *seq);
-            if waited < MIN_SETTLE || (!all_drew && waited < SETTLE) {
+            if !settling.due(now) {
                 continue;
             }
             let surfaces = target
@@ -391,6 +446,9 @@ impl ReplayController {
         }
         drop(checks);
         drop(tree);
+        for (peer, range) in due {
+            peer.publish(range);
+        }
         for (room, surfaces) in finished {
             self.close_check_room(room, surfaces);
         }
@@ -409,6 +467,18 @@ impl ReplayController {
             let Some(check) = checks.get_mut(&request.check) else {
                 return;
             };
+            let now = Instant::now();
+            if !check
+                .settling
+                .as_ref()
+                .is_none_or(|settling| settling.expired(now))
+                && !shows_recorded(check, request.at, &frames)
+            {
+                if let Some(settling) = check.settling.as_mut() {
+                    settling.missed(now);
+                }
+                return;
+            }
             for frame in frames {
                 match frame {
                     Ok(frame) => check.frames.push(frame),
@@ -439,13 +509,34 @@ impl ReplayController {
     }
 
     fn close_check_room(&self, room: RoomId, surfaces: Vec<u64>) {
-        self.tree.write().close_ephemeral_room(room);
+        self.forget_room(room);
         lock(&self.check_launches).push(Launches {
             close_surfaces: surfaces,
             closed: vec![room],
             ..Launches::default()
         });
     }
+}
+
+/// Whether `frames`, captured for offset `at`, show what the recording's
+/// frames there showed, compared as review compares them.
+fn shows_recorded(check: &Check, at: Offset, frames: &[Result<SurfaceFrame, String>]) -> bool {
+    let tolerance = session_trace::divergence::Tolerance::default();
+    frames.iter().all(|frame| {
+        let Ok(frame) = frame else {
+            return false;
+        };
+        check
+            .strip
+            .frames
+            .iter()
+            .filter(|stored| stored.at == at && frame.same_surface(&stored.route))
+            .all(|stored| {
+                let regions = check.layout.at(&stored.route, at).unwrap_or_default();
+                session_trace::divergence::compare_frame(stored, Some(frame), regions, &tolerance)
+                    .is_ok_and(|step| step.regions.is_empty())
+            })
+    })
 }
 
 impl crate::shell::remark::OffscreenReplay for ReplayController {

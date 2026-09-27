@@ -1523,9 +1523,26 @@ remark-review-model-hosted = { $model }, { $location }
 remark-review-model-hosted-detail = Sees placeholders instead of personal details
 remark-review-model-floor = No review model
 remark-review-model-floor-detail = Titles come from action names; personal details were found on this device
-remark-review-model-setup = Set up { $model }
+# { $model } is the hub's set-up action label: it names the model, engine and device.
+remark-review-model-setup = { $model }
 remark-review-model-progress = { $progress }
 remark-review-model-setup-action = Set up on this device
+remark-review-offer-heading = Recommended for this device
+# { $offer } is the AI hub's set-up action: it names the model, its engine and the device.
+remark-review-offer-question = { $offer }?
+remark-review-offer-description = It reviews recordings on this device before they are sent, and sees everything; nothing it is shown leaves the device.
+remark-review-offer-set-up = Set it up
+remark-review-offer-more = Show more ({ $count })
+remark-review-offer-more-label = Show more
+remark-review-offer-fewer = Show fewer
+remark-review-offer-dismiss = Not now
+remark-review-offer-alternatives = Other ways to run it on this device
+remark-review-offer-instead = Set this up instead
+remark-review-offer-fit-excellent = Excellent fit
+remark-review-offer-fit-good = Good fit
+remark-review-offer-fit-tight = Runs, with limits
+remark-review-offer-speed-fast = Fast here
+remark-review-offer-speed-slow = Slow here
 remark-review-model-failed = The review model didn't answer
 remark-review-step = Step { $n }
 remark-review-cut = Cut step
@@ -1556,6 +1573,8 @@ remark-review-shown = On screen
 remark-review-included = What is included
 remark-review-nothing-included = Nothing typed or shown in this step
 remark-review-empty = Nothing was tried in this recording.
+remark-review-protected = Protected — nothing of it was recorded
+replay-protected = { $apps }: protected, nothing of it was recorded
 
 ## After sending
 
@@ -1885,8 +1904,14 @@ search-action-remark-review-unredact = Show text again
 search-action-remark-review-unredact-subtitle = Show a run you hid; what review hid on its own stays hidden
 search-action-remark-review-cut = Cut or keep a step
 search-action-remark-review-cut-subtitle = Leave a step out of what is sent, or keep it again
-search-action-remark-review-model-set-up = Set up the review model
-search-action-remark-review-model-set-up-subtitle = Download the recommended on-device model for review, after its license
+search-action-remark-review-model-set-up = Offer to set up the review model
+search-action-remark-review-model-set-up-subtitle = Show the on-device configuration recommended for review here, and the others
+search-action-remark-review-model-more = Show or hide other ways to set it up
+search-action-remark-review-model-more-subtitle = List every other configuration this device runs the review model in
+search-action-remark-review-model-confirm = Set up the offered review model
+search-action-remark-review-model-confirm-subtitle = Download and start the chosen configuration, after its size and license
+search-action-remark-review-model-dismiss = Not now
+search-action-remark-review-model-dismiss-subtitle = Close the offer without setting anything up
 search-action-remark-conversation-open = Open the conversation
 search-action-remark-conversation-open-subtitle = Go to the workspace a remark was sent to, where its replies arrive
 search-action-remark-send = Send the remark

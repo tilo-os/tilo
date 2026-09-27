@@ -410,6 +410,12 @@ pub fn run() -> std::process::ExitCode {
         .skip(1)
         .map(std::string::String::as_str)
         .collect();
+    // Decide, where the backend is chosen, whether this compositor owns the
+    // machine's system surfaces, before any thread or child could act on
+    // them: only the native DRM compositor does. The answer also reaches
+    // every unsandboxed child, so a shell nested in a Tilo session does not
+    // pass its host's `owned` on to its own apps.
+    os_actions::owner::establish(compositor::parse_system_surfaces(&arg_refs));
     if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop {
         match identity_provisioning::configure_host_identity_root() {
             Ok(root) => eprintln!(

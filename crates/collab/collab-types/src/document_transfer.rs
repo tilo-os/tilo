@@ -200,6 +200,21 @@ pub enum DocumentFrame {
 }
 
 impl DocumentFrame {
+    /// Storage class of one cleartext frame, as its ciphertext declares it:
+    /// a snapshot (or its first segment) starts a new retained baseline,
+    /// everything else follows it.
+    pub fn retention(cleartext: &[u8]) -> crate::ContentRetention {
+        match Self::decode(cleartext) {
+            Ok(Self::Whole(DocumentMutation::Snapshot(_))) => crate::ContentRetention::Checkpoint,
+            Ok(Self::Segment(segment))
+                if segment.kind == DocumentMutationKind::Snapshot && segment.index == 0 =>
+            {
+                crate::ContentRetention::Checkpoint
+            }
+            _ => crate::ContentRetention::Delta,
+        }
+    }
+
     /// Decode one signed payload as it appears on the wire. A complete frame
     /// is limited to [`MAX_DOCUMENT_MUTATION_BYTES`]; larger mutations must
     /// arrive as segments.

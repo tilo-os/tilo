@@ -9,7 +9,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::local::{ExpectedSpeed, HardwareSnapshot, LocalEndpoint, RuntimeKind};
+use crate::local::{
+    Configuration, ExpectedSpeed, Fit, HardwareSnapshot, LocalEndpoint, LocalModelRelease,
+    ModelArtifact, Placement, RuntimeEngine,
+};
 use crate::{LocalRuntime, ModelCapability, ModelDescriptor, ProviderProfile};
 
 /// How well this device runs its recommended local model.
@@ -24,13 +27,23 @@ pub enum HardwareFit {
     Unsupported,
 }
 
+impl From<Fit> for HardwareFit {
+    fn from(fit: Fit) -> Self {
+        match fit {
+            Fit::Excellent => Self::Excellent,
+            Fit::Good => Self::Good,
+            Fit::Tight => Self::Tight,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HardwareRecommendation {
+    /// The fit of the recommended configuration.
     pub fit: HardwareFit,
     pub memory_gib: u16,
-    pub accelerator: String,
-    pub accelerator_memory_gib: Option<u16>,
     pub free_storage_gib: Option<u16>,
+    /// Why this is the recommendation, or why there is none.
     pub reason: String,
 }
 
@@ -60,6 +73,25 @@ pub struct LocalModelPackage {
 }
 
 impl LocalModelPackage {
+    /// The package a signed release is presented as.
+    #[must_use]
+    pub fn of(model: &LocalModelRelease) -> Self {
+        Self {
+            id: model.id.clone(),
+            name: model.label.clone(),
+            description: model.description.clone(),
+            source: package_source(&model.artifact),
+            revision: model.version.clone(),
+            license: model.license_id.clone(),
+            license_url: model.license_url.clone(),
+            download_bytes: model.artifact.download_bytes(),
+            installed_bytes: model.installed_size_bytes,
+            capabilities: model.capabilities.clone(),
+            context_window: model.context_window,
+            accelerator_memory_mib: model.required_accelerator_mib,
+        }
+    }
+
     /// The provider-model view of this package.
     #[must_use]
     pub fn descriptor(&self) -> ModelDescriptor {
@@ -75,13 +107,61 @@ impl LocalModelPackage {
     }
 }
 
-/// A catalogue release that honestly fits this device, with how it would
-/// run here.
+/// Where a release's bytes come from, as shown before download: the file for
+/// a single object, the pinned revision's directory for a snapshot.
+fn package_source(artifact: &ModelArtifact) -> String {
+    match artifact {
+        ModelArtifact::Gguf(object) => object.url.clone(),
+        ModelArtifact::HfSnapshot { files } => files
+            .iter()
+            .find(|file| file.path == "config.json")
+            .and_then(|file| file.artifact.url.strip_suffix("/config.json"))
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+/// One configuration that honestly runs on this device: a catalogue release,
+/// the engine and processor it would run on here, and how it would run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub package: LocalModelPackage,
-    pub runtime: RuntimeKind,
+    pub placement: Placement,
+    pub engine: RuntimeEngine,
+    /// The GPU as the person knows it; `None` on the CPU.
+    pub device: Option<String>,
+    /// Memory the model needs where it runs, in MiB.
+    pub required_mib: u64,
+    /// Memory it may take there without starving the desktop, in MiB.
+    pub budget_mib: u64,
+    /// Whether that memory is the RAM the desktop runs in.
+    pub shared_memory: bool,
+    pub fit: Fit,
     pub speed: ExpectedSpeed,
+}
+
+impl AvailableModel {
+    /// A stable key for this configuration, for resource ids.
+    #[must_use]
+    pub fn key(&self) -> String {
+        self.placement.key(&self.package.id)
+    }
+}
+
+impl From<&Configuration<'_>> for AvailableModel {
+    fn from(configuration: &Configuration<'_>) -> Self {
+        Self {
+            package: LocalModelPackage::of(configuration.model),
+            placement: configuration.placement(),
+            engine: configuration.runtime.engine,
+            device: configuration.device.map(crate::local::Accelerator::label),
+            required_mib: configuration.required_mib,
+            budget_mib: configuration.budget_mib,
+            shared_memory: configuration.shared_memory,
+            fit: configuration.fit,
+            speed: configuration.speed,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +197,11 @@ impl LocalModelPhase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledLocalModel {
     pub package: LocalModelPackage,
+    /// Where it was set up to run.
+    pub placement: Placement,
+    pub engine: RuntimeEngine,
+    /// The GPU as the person knows it; `None` on the CPU.
+    pub device: Option<String>,
     pub phase: LocalModelPhase,
 }
 
@@ -155,8 +240,9 @@ pub struct LocalModelSnapshot {
     /// The raw facts presets and per-task fit are derived from.
     #[serde(default)]
     pub facts: HardwareSnapshot,
-    pub recommendation: Option<LocalModelPackage>,
-    /// Every signed release that fits this device, best first.
+    /// Every configuration that runs on this device, best first: the first
+    /// one declaring what a task needs is its recommendation, the rest its
+    /// alternatives.
     #[serde(default)]
     pub available: Vec<AvailableModel>,
     #[serde(default)]
@@ -192,7 +278,7 @@ impl LocalModelSnapshot {
             // supervised; nothing typed into a form can claim it.
             let mut profile =
                 ProviderProfile::local_runtime(running.map(|endpoint| endpoint.socket.clone()));
-            // One vLLM process serves one model: only the running one is
+            // One runtime process serves one model: only the running one is
             // offered while it runs, every installed one is listed otherwise.
             profile.models = ready
                 .iter()
@@ -210,21 +296,68 @@ impl LocalModelSnapshot {
         }
     }
 
-    /// The best available release declaring every capability in `needs`.
-    #[must_use]
-    pub fn best_for(&self, needs: &[ModelCapability]) -> Option<&AvailableModel> {
-        self.available.iter().find(|available| {
+    /// Every configuration declaring every capability in `needs`, best
+    /// first.
+    pub fn matching<'a>(
+        &'a self,
+        needs: &[ModelCapability],
+    ) -> impl Iterator<Item = &'a AvailableModel> + use<'a> {
+        let needs = needs.to_vec();
+        self.available.iter().filter(move |available| {
             needs
                 .iter()
                 .all(|capability| available.package.capabilities.contains(capability))
         })
+    }
+
+    /// The best configuration declaring every capability in `needs`.
+    #[must_use]
+    pub fn best_for(&self, needs: &[ModelCapability]) -> Option<&AvailableModel> {
+        self.matching(needs).next()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::SpeedClass;
+    use crate::local::{RuntimeKind, SpeedClass};
+
+    fn cpu() -> Placement {
+        Placement {
+            runtime: "llama-cpp".into(),
+            kind: RuntimeKind::Cpu,
+            device: None,
+        }
+    }
+
+    fn available(package: LocalModelPackage, tokens_per_second: u16) -> AvailableModel {
+        AvailableModel {
+            package,
+            placement: cpu(),
+            engine: RuntimeEngine::LlamaCpp,
+            device: None,
+            required_mib: 4096,
+            budget_mib: 16_384,
+            shared_memory: true,
+            fit: Fit::Excellent,
+            speed: ExpectedSpeed {
+                tokens_per_second,
+                prompt_tokens_per_second: 50,
+                answer_seconds: 60,
+                class: SpeedClass::Slow,
+            },
+        }
+    }
+
+    fn installed(package: LocalModelPackage, phase: LocalModelPhase) -> InstalledLocalModel {
+        InstalledLocalModel {
+            package,
+            placement: cpu(),
+            engine: RuntimeEngine::LlamaCpp,
+            device: None,
+            phase,
+        }
+    }
 
     fn package(id: &str, capabilities: &[ModelCapability]) -> LocalModelPackage {
         LocalModelPackage {
@@ -248,30 +381,17 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 32,
-                accelerator: "CPU".into(),
-                accelerator_memory_gib: None,
                 free_storage_gib: None,
                 reason: String::new(),
             },
             facts: HardwareSnapshot::default(),
-            recommendation: None,
             available: vec![
-                AvailableModel {
-                    package: package("vision", &[ModelCapability::Vision]),
-                    runtime: RuntimeKind::Cpu,
-                    speed: ExpectedSpeed {
-                        tokens_per_second: 9,
-                        class: SpeedClass::Slow,
-                    },
-                },
-                AvailableModel {
-                    package: package("reviewer", &[ModelCapability::TraceReview]),
-                    runtime: RuntimeKind::Cpu,
-                    speed: ExpectedSpeed {
-                        tokens_per_second: 12,
-                        class: SpeedClass::Slow,
-                    },
-                },
+                available(package("vision", &[ModelCapability::Vision]), 9),
+                available(package("reviewer", &[ModelCapability::TraceReview]), 12),
+                available(
+                    package("reviewer-large", &[ModelCapability::TraceReview]),
+                    6,
+                ),
             ],
             models,
             accelerator_setup: None,
@@ -280,23 +400,23 @@ mod tests {
 
     #[test]
     fn the_runtime_profile_uses_the_ready_manager_endpoint_only() {
-        let running = InstalledLocalModel {
-            package: package("reviewer", &[ModelCapability::TraceReview]),
-            phase: LocalModelPhase::Ready {
+        let running = installed(
+            package("reviewer", &[ModelCapability::TraceReview]),
+            LocalModelPhase::Ready {
                 running: true,
                 endpoint: Some(LocalEndpoint {
                     socket: "/run/user/1000/tilo/models/reviewer/api.sock".into(),
                     model_id: "reviewer".into(),
                 }),
             },
-        };
-        let installed = InstalledLocalModel {
-            package: package("vision", &[ModelCapability::Vision]),
-            phase: LocalModelPhase::Ready {
+        );
+        let installed = installed(
+            package("vision", &[ModelCapability::Vision]),
+            LocalModelPhase::Ready {
                 running: false,
                 endpoint: None,
             },
-        };
+        );
         let runtime = snapshot(vec![running, installed.clone()]).runtime();
         let profile = runtime.profile.expect("installed models publish a profile");
         assert!(profile.is_supervised());
@@ -318,6 +438,14 @@ mod tests {
                 .best_for(&[ModelCapability::TraceReview])
                 .map(|available| available.package.id.as_str()),
             Some("reviewer")
+        );
+        assert_eq!(
+            snapshot
+                .matching(&[ModelCapability::TraceReview])
+                .map(|available| available.package.id.as_str())
+                .collect::<Vec<_>>(),
+            ["reviewer", "reviewer-large"],
+            "the rest are the alternatives, in rank order"
         );
         assert!(
             snapshot

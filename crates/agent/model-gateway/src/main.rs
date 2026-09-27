@@ -12,13 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use accounts::oauth::ClientSlot;
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::assign::{self, Inputs, ModelAssignments, Resolution};
 use agent_provider_config::tasks::{self, Consumer, TaskRequest};
 use agent_provider_config::{
-    AZURE_OPENAI_SCOPE, Credential, EndpointCustody, LocalRuntime, ModelCapability, ProviderConfig,
-    ProviderProfile, ProviderProtocol,
+    Credential, EndpointCustody, LocalRuntime, ModelCapability, ProviderConfig, ProviderProfile,
+    ProviderProtocol,
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
@@ -492,27 +491,30 @@ impl Bearer {
 
 /// Read (and, for an account, refresh) `profile`'s credential. Blocking.
 fn credential_for(profile: &ProviderProfile) -> Result<Bearer, String> {
+    credential_in(&account_custody::Custodian::live(), profile)
+}
+
+/// [`credential_for`] over `custodian`'s stores: an API key from the vault,
+/// or the access token custody hands out for the signed-in account, which
+/// it refreshes and reseals through Tilo's one client registration.
+fn credential_in(
+    custodian: &account_custody::Custodian,
+    profile: &ProviderProfile,
+) -> Result<Bearer, String> {
     match &profile.credential {
         None => Ok(Bearer::None),
-        Some(Credential::ApiKey { .. }) => SecretVault::open()
+        Some(Credential::ApiKey { .. }) => custodian
+            .config_root()
+            .map_or_else(SecretVault::open, SecretVault::open_in)
             .get(&vault_id(&profile.id)?)
             .map(|secret| Zeroizing::new(secret.password))
             .filter(|secret| !secret.is_empty())
             .map(Bearer::ApiKey)
             .ok_or_else(|| "API key is not configured".to_string()),
-        Some(Credential::Account { account_id }) => {
-            let client = ClientSlot::Entra
-                .registration()
-                .ok_or("Microsoft sign-in is not configured on this device")?
-                .client(AZURE_OPENAI_SCOPE);
-            let mut vault = SecretVault::open();
-            accounts::oauth::fresh_access_token(
-                &mut vault,
-                &AccountId::new(account_id.clone()),
-                &client,
-            )
+        Some(Credential::Account { account_id }) => custodian
+            .account_access_token(&AccountId::new(account_id.clone()), false)
             .map(Bearer::Token)
-        }
+            .map_err(|error| error.to_string()),
     }
 }
 
@@ -1457,6 +1459,57 @@ mod tests {
             "k"
         );
         assert!(built(&anthropic, &token()).is_err());
+    }
+
+    #[test]
+    fn a_hub_provider_signed_in_through_custody_carries_the_custody_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tilo");
+        let id = AccountId::new("azure-openai-work");
+        let tokens = account_custody::TokenSet {
+            access_token: "custody-access".into(),
+            refresh_token: "custody-refresh".into(),
+            expires_in: 3600,
+            obtained_at: 0,
+        }
+        .stamp_now();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&id, &account_custody::oauth_secret(&tokens));
+        vault.try_save().unwrap();
+        let mut store = accounts::AccountStore::load_in(&root);
+        store.upsert(accounts::Account::new(
+            id.clone(),
+            account_custody::providers::AZURE_OPENAI_TYPE,
+        ));
+        store.save_in(&root).unwrap();
+        let custodian = account_custody::Custodian::for_root(Some(root));
+
+        let mut azure = hosted_at(
+            ProviderProtocol::AzureOpenAi,
+            "https://tilo.openai.azure.com/openai/v1/",
+        );
+        azure.credential = Some(Credential::Account {
+            account_id: id.as_str().into(),
+        });
+        let bearer = credential_in(&custodian, &azure).unwrap();
+        assert!(matches!(&bearer, Bearer::Token(token) if token.as_str() == "custody-access"));
+        let request = authorize(
+            provider_client().unwrap().get(provider_url(&azure)),
+            &azure,
+            &bearer,
+            &[],
+        )
+        .ok()
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(request.headers()["authorization"], "Bearer custody-access");
+
+        // An account the store no longer holds is not signed in.
+        azure.credential = Some(Credential::Account {
+            account_id: "gone".into(),
+        });
+        assert!(credential_in(&custodian, &azure).is_err());
     }
 
     #[test]

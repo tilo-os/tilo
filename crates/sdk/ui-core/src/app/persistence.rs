@@ -133,6 +133,11 @@ impl App {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 self.collaboration.snapshot_on_ready = true;
+                self.collaboration.publish_on_ready = !self
+                    .persistence
+                    .records
+                    .as_ref()
+                    .is_some_and(crate::record::RecordSet::active_is_read_only);
                 self.request_checkout_snapshot();
                 true
             }

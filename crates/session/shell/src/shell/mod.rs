@@ -92,6 +92,7 @@ pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
+pub mod participant_keys;
 pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;

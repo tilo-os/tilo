@@ -91,6 +91,23 @@ version 2 adds conflict alternatives and sealed Wi-Fi profile provenance.
   remains with its owning app rather than being reimplemented in Settings.
 - removal is confirmed and explains local versus provider data. Account
   metadata, sealed credentials and runtime health are removed together.
+- every OAuth grant is held by account custody (`account_custody::Custodian`)
+  and signed in through Tilo's one client registration per provider
+  (`oauth-clients.toml`), with the scopes of its use: `files` for cloud
+  storage, `mail` for Mail, `ai` for the AI hub's Azure OpenAI. The AI hub's
+  "Sign in with Microsoft" creates an `azure-openai` account through the same
+  journaled account save as the Accounts pane, and its sign-out is the same
+  removal, which also hands the grant back through custody. Settings ›
+  Accounts lists these accounts under Azure OpenAI with the row every
+  custodied account has (status, Sign in again, Verify sign-in, Remove); they
+  are added from the hub, not there. A hub provider's sign-in state is
+  derived from the account store: a provider naming an account the store no
+  longer holds shows "Signed out" with Sign in again, wherever the account
+  was removed. Custody reports each Azure account's health as the gateway's
+  token requests find it. The model gateway
+  reads the account's access token only through
+  `Custodian::account_access_token`. No other OAuth code-flow implementation
+  exists; a test in account custody fails if one appears.
 
 Runtime consumers report health through `accounts::AccountSyncReporter`. It is
 the lifecycle writer for `started`, `succeeded`, `offline`, authentication

@@ -9,9 +9,14 @@ kernel-coupled drivers.
 
 | Class | Examples | Activation | Rollback |
 | --- | --- | --- | --- |
-| Runtime pack | vLLM, CUDA/ROCm userspace, model gateway | A supervised service without network egress after artifact verification | Stop service and select the previous content-addressed runtime |
+| Runtime pack | An inference engine (vLLM, llama.cpp), CUDA/ROCm userspace | A supervised service without network egress after artifact verification | Stop service and select the previous content-addressed runtime |
 | System extension | Additive `/usr` or `/opt` payload with no early-boot dependency | Read-only systemd-sysext image matched to the Tilo release | Unmerge/mask the image |
 | Boot pack | NVIDIA kernel modules, firmware, initramfs inputs | A new signed bootc deployment; reboot required | Normal Tilo deployment rollback |
+
+Inference engines are runtime packs only: the base image ships neither vLLM
+nor llama.cpp. The catalogue stays deliberately small, one pack per engine:
+vLLM for CUDA cards, llama.cpp with Vulkan (and its CPU backend) for every
+other GPU, integrated AMD and Intel graphics included.
 
 Kernel modules are never hot-installed into the immutable root. A boot pack is
 pinned to the exact base-image digest, architecture, and kernel ABI. It is
@@ -52,15 +57,24 @@ opaque mutation:
 
 1. The trusted hardware probe reports memory, storage, accelerator, driver, and
    supported runtime versions.
-2. The signed catalogue selects the best fitting runtime/model pair and shows
-   why, including download size, installed size, source, revision, and license.
+2. There is no default engine or model. Every (engine, device, model)
+   configuration the signed catalogue and the hardware support is ranked by
+   expected speed, then by how much room it leaves. Settings asks “Set this
+   up?” for the best one, naming model, engine, device, download size,
+   license, memory and speed, and lists the others behind “Show more”, each
+   with its own fit and speed, e.g. vLLM on an RTX 4070 Mobile recommended,
+   llama.cpp on the same card, on the Radeon 780M beside it through Vulkan,
+   and on the processor as alternatives. Only after a yes are the runtime
+   pack and then the model downloaded.
 3. The user accepts any required license. Tilo starts a resumable background
    transaction and Settings follows its durable status.
 4. Runtime and model artifacts are hash-verified. A boot pack is staged when a
    compatible kernel driver is missing; otherwise the userspace runtime is
    activated immediately.
-5. The model manager starts vLLM under a supervisor in a container with no
-   network, serving only a Unix socket in a private directory, waits until its
+5. The model manager starts the chosen engine under a supervisor in a
+   container with no network and only the configuration's own device (one
+   render node for Vulkan, NVIDIA's CDI device for a card), serving only a
+   Unix socket in a private directory, waits until its
    API answers, and publishes that socket into the device-local model profile
    as supervised custody. Only such a profile counts as unable to send what it
    is given off the device. Agents still need their normal workspace
@@ -80,6 +94,12 @@ whose content identity belongs exclusively to that model.
 - AMD uses the kernel's `amdgpu` driver when compatible and installs ROCm as a
   pinned runtime pack. Tilo selects only hardware/version pairs present in the
   signed support matrix.
+- Any GPU with a Vulkan driver runs llama.cpp: AMD and Intel through the Mesa
+  drivers the runtime pack carries, driven through the in-kernel driver's
+  render node, so they need no boot pack. The probe reads each GPU's
+  dedicated memory and the system memory it can map. An integrated GPU's
+  model memory is RAM: it gets its carve-out plus no more of that than the
+  desktop can spare (available memory less 4 GiB).
 - CPU is the compatibility fallback when memory and instruction-set checks
   pass. It is labelled honestly and never presented as GPU acceleration.
 - An accelerator has three states, not two: usable, absent, and present but
@@ -89,12 +109,14 @@ whose content identity belongs exclusively to that model.
   and presets do not move tasks to a hosted provider as if there were no
   card. Settings says “Restart to finish setting up your graphics driver”.
 
-The recommendation engine prefers a model that leaves headroom for the desktop
-and attached apps. A CPU model is offered only when the memory the kernel
+The ranking prefers the faster configuration and, between equals, the one
+that leaves more headroom for the desktop and attached apps. A CPU model is offered only when the memory the kernel
 reports available, less 4 GiB for the desktop, holds it, the machine has at
 least four threads, and its expected speed is better than impractical. The
-expected speed (memory bandwidth over the bytes of weights read per token) is
-shown beside the download, so a slow model says it is slow. Users may choose
+expected speed is the wait for a typical answer, reading the request and
+writing the answer, from rates measured per engine and processor (writing is
+memory bandwidth over the weights read per token; reading is compute bound).
+It is shown beside the download, so a slow model says it is slow. Users may choose
 another compatible installed model, but an unsupported combination cannot be
 forced through the UI.
 

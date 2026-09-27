@@ -2,13 +2,16 @@
   "schema": 1,
   "production": false,
   "key_id": "example-release-key",
-  "recommendation": "example/tiny-model",
   "runtimes": [
     {
-      "id": "example-vllm-cpu",
-      "kind": "cpu",
+      "id": "example-llama-cpp",
+      "kinds": [
+        "vulkan",
+        "cpu"
+      ],
       "version": "0.0.0-example",
-      "oci_image": "registry.example.invalid/tilo/vllm@sha256:2440391d6cecede54d6bd4f5829b78062e4d4a1659e47ddd5293631fd0045642",
+      "engine": "llama_cpp",
+      "oci_image": "registry.example.invalid/tilo/llama.cpp@sha256:2440391d6cecede54d6bd4f5829b78062e4d4a1659e47ddd5293631fd0045642",
       "artifact": {
         "file": "example-runtime.bin",
         "url": "https://artifacts.example.invalid/tilo/runtime/8f4a7e9dfd2b174f2dc92326a7ca2a3f96bf6741/runtime.bin",
@@ -39,6 +42,9 @@
       "license_url": "https://huggingface.example.invalid/example/tiny-model/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
       "requires_acceptance": true,
       "installed_size_bytes": 64,
+      "engines": [
+        "llama_cpp"
+      ],
       "allowed_runtimes": [
         "cpu"
       ],

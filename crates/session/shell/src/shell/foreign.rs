@@ -1379,8 +1379,22 @@ impl ForeignFrameStore {
             .capture_protection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.surfaces.contains(&id)
-            || guard.apps.values().any(|app| app == app_id)
+        guard.surfaces.contains(&id) || Self::app_protected(&guard, app_id)
+    }
+
+    /// Whether every window of `app_id` is protected: an app known to hold
+    /// secrets, or one that asked. The session recorder keeps nothing of
+    /// such an app but that it was there.
+    pub fn is_app_capture_protected(&self, app_id: &str) -> bool {
+        let guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::app_protected(&guard, app_id)
+    }
+
+    fn app_protected(protection: &CaptureProtection, app_id: &str) -> bool {
+        protection.apps.values().any(|app| app == app_id)
             || crate::shell::capture_protection::holds_secrets(app_id)
     }
 

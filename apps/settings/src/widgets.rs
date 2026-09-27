@@ -329,6 +329,18 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
     Box::new(ui::widget::Card::new(Box::new(row)))
 }
 
+/// The body of a pane whose settings belong to the system that owns this
+/// machine, shown instead of controls that could not act: this Tilo session
+/// is nested, headless or hosted, so `category` is changed there.
+pub fn host_managed(category: &str) -> El {
+    let explanation = format!(
+        "This Tilo session runs on a computer that another system owns, so its {} \
+         settings are changed there, not here.",
+        category.to_lowercase()
+    );
+    hero(Icon::Monitor, os_actions::HOST_MANAGED_REASON, &explanation)
+}
+
 /// Horizontal spacing inside a control row.
 pub fn hgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_size(px, 1.0))

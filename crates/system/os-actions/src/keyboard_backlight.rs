@@ -82,6 +82,7 @@ pub fn get_keyboard_backlight() -> Result<KeyboardBacklight, String> {
 /// Returns an error message when this machine has no keyboard backlight or the write is
 /// refused.
 pub fn set_keyboard_backlight(level: u32) -> Result<(), String> {
+    crate::owner::admit("keyboard backlight")?;
     set_in(Path::new(LEDS), level)
 }
 

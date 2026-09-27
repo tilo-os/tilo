@@ -21,6 +21,9 @@ pub(crate) struct QsActionAvailability {
     pub(crate) wifi: bool,
     pub(crate) power_profile: bool,
     pub(crate) vpn: bool,
+    /// This shell does not own the machine: every mechanism above is the
+    /// host system's, so none is offered, and the reason says so.
+    pub(crate) host_managed: bool,
 }
 
 impl QsActionAvailability {
@@ -31,10 +34,32 @@ impl QsActionAvailability {
             wifi: true,
             power_profile: true,
             vpn: true,
+            host_managed: false,
         }
     }
 
-    pub(crate) fn detect() -> Self {
+    /// No mechanism, because the host system manages all of them.
+    pub(crate) const fn host_managed() -> Self {
+        Self {
+            brightness: false,
+            volume: false,
+            wifi: false,
+            power_profile: false,
+            vpn: false,
+            host_managed: true,
+        }
+    }
+
+    /// What this machine offers to a shell that does or does not own it.
+    pub(crate) fn detect_for(surfaces: os_actions::SystemSurfaces) -> Self {
+        if surfaces.is_owned() {
+            Self::detect()
+        } else {
+            Self::host_managed()
+        }
+    }
+
+    fn detect() -> Self {
         #[cfg(target_os = "linux")]
         {
             let mut availability = Self::from_probe(command_on_path);
@@ -57,6 +82,7 @@ impl QsActionAvailability {
             wifi: network_manager,
             power_profile: present("powerprofilesctl"),
             vpn: network_manager,
+            host_managed: false,
         }
     }
 }
@@ -163,7 +189,15 @@ mod availability_tests {
             );
         }
 
+        fn a_shell_that_does_not_own_the_machine_probes_nothing() {
+            assert_eq!(
+                QsActionAvailability::detect_for(os_actions::SystemSurfaces::Hosted),
+                QsActionAvailability::host_managed()
+            );
+        }
+
         mechanisms_are_probed_independently_before_discovery();
+        a_shell_that_does_not_own_the_machine_probes_nothing();
         #[cfg(not(target_os = "linux"))]
         unsupported_host_advertises_no_quick_settings_mechanism();
     }

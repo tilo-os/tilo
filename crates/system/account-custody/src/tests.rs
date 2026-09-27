@@ -586,3 +586,120 @@ fn mail_and_drive_share_the_google_registration_with_their_own_scopes() {
         })
     ));
 }
+
+#[test]
+fn an_azure_openai_account_hands_out_its_token_through_the_microsoft_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let table = crate::ClientTable::parse(
+        r#"
+        [microsoft]
+        client_id = "shared-microsoft-client"
+        [microsoft.scopes]
+        mail = ["mail"]
+        ai = ["offline_access", "ai"]
+        "#,
+    )
+    .unwrap();
+    let server = FakeAuthorizationServer::start();
+    let custodian = Custodian::for_root(Some(root.clone()))
+        .with_client_table(table)
+        .with_issuer_endpoints(crate::OAuthIssuer::Microsoft, server.provider());
+    let azure = crate::OAuthUse::ai(crate::OAuthIssuer::Microsoft);
+    assert_eq!(
+        crate::OAuthUse::of_account_type(crate::providers::AZURE_OPENAI_TYPE),
+        Some(azure)
+    );
+    let (descriptor, _) = custodian.use_config(azure).unwrap();
+    assert_eq!(descriptor.scopes, ["offline_access", "ai"]);
+
+    server.set_token_lifetime(1);
+    let authorization = custodian.begin_sign_in_for(azure, None).unwrap();
+    let url = authorization.url().to_string();
+    let browser = std::thread::spawn(move || browse(&url));
+    let tokens = Custodian::finish_sign_in(authorization).unwrap();
+    browser.join().unwrap().unwrap();
+    let id = AccountId::from("azure-openai-1");
+    save(
+        &root,
+        &id,
+        crate::providers::AZURE_OPENAI_TYPE,
+        &oauth_secret(&tokens),
+        serde_json::json!({}),
+    );
+
+    // Due at once, so custody refreshes through the same client first.
+    let token = custodian.account_access_token(&id, false).unwrap();
+    assert_ne!(*token, tokens.access_token);
+    assert_eq!(server.refreshes(), 1);
+    assert_eq!(vault_refresh_token(&root, &id), tokens.refresh_token);
+
+    let webdav = AccountId::from("webdav-1");
+    save(
+        &root,
+        &webdav,
+        WEBDAV_TYPE,
+        &Secret::password("pw"),
+        serde_json::json!({}),
+    );
+    assert!(matches!(
+        custodian.account_access_token(&webdav, false),
+        Err(CustodyError::Account(_))
+    ));
+}
+
+/// Every `OAuth` code flow and refresh in Tilo runs through `tilo-oauth`,
+/// driven by this crate's client table: no other crate speaks the token
+/// endpoint's protocol itself. Test suites that exercise a provider's live
+/// API are exempt.
+#[test]
+fn no_second_oauth_implementation_exists() {
+    fn sources(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if !matches!(name.as_ref(), "target" | "tests" | "node_modules") {
+                    sources(&path, found);
+                }
+            } else if name.ends_with(".rs") && !name.ends_with("tests.rs") {
+                found.push(path);
+            }
+        }
+    }
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let flow = workspace.join("crates/system/tilo-oauth");
+    let mut files = Vec::new();
+    for top in ["apps", "crates"] {
+        sources(&workspace.join(top), &mut files);
+    }
+    assert!(files.len() > 100, "the workspace sources were not found");
+    let offenders: Vec<_> = files
+        .iter()
+        .filter(|path| !path.starts_with(&flow))
+        .filter(|path| {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            [
+                "\"grant_type\"",
+                "\"code_verifier\"",
+                "\"code_challenge_method\"",
+            ]
+            .iter()
+            .any(|marker| text.contains(marker))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "OAuth wire protocol outside tilo-oauth: {offenders:?}"
+    );
+    assert!(
+        !workspace
+            .join("crates/system/accounts/src/oauth.rs")
+            .exists(),
+        "accounts carries no OAuth flow of its own"
+    );
+}

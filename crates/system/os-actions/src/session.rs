@@ -33,9 +33,13 @@ pub enum SessionAction {
 /// session. Only GDM exposes that on the system bus; greetd (the Tilo image's
 /// login manager) runs one session per seat and has no such call. Probed once
 /// per process: the display manager does not change under a running session.
+/// Never supported on a shell that does not own the machine.
 pub fn user_switching_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| run("busctl", &["--system", "status", GDM_BUS_NAME]).is_ok())
+    // A shell that does not own the machine has no display manager to ask,
+    // and must not cache that refusal as the machine's answer.
+    crate::owner::current().is_owned()
+        && *SUPPORTED.get_or_init(|| run("busctl", &["--system", "status", GDM_BUS_NAME]).is_ok())
 }
 
 /// Run the shell-out backing `action`.
@@ -108,6 +112,7 @@ fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
 /// Returns a description when the request path cannot be resolved or the
 /// request file cannot be written.
 pub fn request_logout() -> Result<(), String> {
+    crate::owner::admit("logout request")?;
     request_wrapper_logout_at(&logout_request_path()?)?;
     // The wrapper owns teardown, but it cannot observe the request until this
     // compositor exits. Publish an in-process edge for the native frame loop;

@@ -164,6 +164,11 @@ impl BrokerChannels {
         self.gates.insert(channel, gate);
     }
 
+    /// Forget `channel`'s gate: the channel is gone with its room.
+    pub fn forget_channel_gate(&mut self, channel: ChannelId) {
+        self.gates.remove(&channel);
+    }
+
     /// A route with neither a registered journal nor a gate has not been
     /// opened encrypted on this device yet. Once either closes its plaintext
     /// gate, no plaintext envelope (and no content sealed before the latest

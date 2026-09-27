@@ -71,7 +71,6 @@ pub use secrets::{
     CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
     SecretItemKind, SecretStore,
 };
-pub mod oauth;
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,

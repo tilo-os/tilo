@@ -9,13 +9,15 @@
 //! here because the pane owns the model-manager client; Settings never
 //! downloads model bytes or starts a server itself.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::assign::{Layer, Preset, ResolveError, preset_plan};
-use agent_provider_config::local::{AcceleratorState, RestartReason, SpeedClass};
+use agent_provider_config::local::{
+    Accelerator, AcceleratorState, Fit, Placement, RestartReason, SpeedClass,
+};
 use agent_provider_config::manager::{
     AcceleratorSetupState, AvailableModel, HardwareFit, InstalledLocalModel, LocalModelPackage,
     LocalModelPhase, LocalModelSnapshot,
@@ -29,13 +31,16 @@ use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionBinding, Resource, ResourcePresentation};
 use tilo_model_gateway::{CredentialState, ProviderHealth, Reachability};
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, ProgressBar, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{
+    Button, Dropdown, OfferBindings, OfferPill, ProgressBar, Row, SetupChoice, SetupOffer, Spacer,
+    Text, TextInput, Toggle, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 use zeroize::Zeroize;
 
-use crate::ai_settings::{AiState, target_value};
+use crate::ai_settings::{AccountSignIn, AiState, target_value};
 use crate::i18n::{arg, t, t_args};
 use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, choice_row, hgap, rows, semantic_status_pill,
@@ -108,14 +113,152 @@ fn words_per_second(tokens: u16) -> u16 {
 fn speed_label(available: &AvailableModel) -> String {
     let words = f64::from(words_per_second(available.speed.tokens_per_second));
     match available.speed.class {
-        SpeedClass::Interactive => t("ai-speed-interactive"),
-        SpeedClass::Slow => t_args("ai-speed-slow", &[("words", words.into())]),
+        SpeedClass::Interactive => t_args("ai-speed-interactive", &[("words", words.into())]),
+        SpeedClass::Slow => t_args(
+            "ai-speed-slow",
+            &[("seconds", f64::from(available.speed.answer_seconds).into())],
+        ),
         SpeedClass::Impractical => t("ai-speed-impractical"),
     }
 }
 
-/// The terms a download is confirmed against: size, license and where it
-/// runs. Shown on the release row and as the install action's description.
+fn fit_pill(fit: Fit) -> OfferPill {
+    let (key, tone) = match fit {
+        Fit::Excellent => ("ai-fit-excellent", StatusTone::Success),
+        Fit::Good => ("ai-fit-good", StatusTone::Success),
+        Fit::Tight => ("ai-fit-tight", StatusTone::Warning),
+    };
+    OfferPill::new(t(key), tone)
+}
+
+/// The id of the `rank`th way to set a task up: the recommendation first.
+#[must_use]
+pub fn setup_action_id(rank: usize) -> String {
+    if rank == 0 {
+        "set-up-on-device".into()
+    } else {
+        format!("set-up-on-device-{rank}")
+    }
+}
+
+/// The tags a set-up action carries: what it is, and its fit and speed
+/// class, for a surface that offers it without the hub's own copy.
+#[must_use]
+pub fn setup_tags(available: &AvailableModel) -> [&'static str; 5] {
+    [
+        "device-local",
+        "ai",
+        "downloads-model",
+        match available.fit {
+            Fit::Excellent => "fit-excellent",
+            Fit::Good => "fit-good",
+            Fit::Tight => "fit-tight",
+        },
+        match available.speed.class {
+            SpeedClass::Interactive => "speed-interactive",
+            SpeedClass::Slow => "speed-slow",
+            SpeedClass::Impractical => "speed-impractical",
+        },
+    ]
+}
+
+/// One configuration as an offer shows it.
+fn setup_choice(available: &AvailableModel) -> SetupChoice {
+    SetupChoice {
+        title: configuration_label(available),
+        terms: download_terms(available),
+        pills: vec![
+            fit_pill(available.fit),
+            OfferPill::new(
+                speed_label(available),
+                if available.speed.class == SpeedClass::Interactive {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Warning
+                },
+            ),
+        ],
+    }
+}
+
+/// The hub's "Set this up?" offer for `recommended`, with `alternatives`
+/// behind "Show more".
+fn setup_offer(recommended: &AvailableModel, alternatives: &[&AvailableModel]) -> SetupOffer {
+    SetupOffer {
+        heading: t("ai-recommended-title"),
+        question: t_args(
+            "ai-set-up-question",
+            &[("configuration", arg(configuration_label(recommended)))],
+        ),
+        description: recommended.package.description.clone(),
+        recommended: setup_choice(recommended),
+        set_up: t("ai-set-up-yes"),
+        show_more: t_args(
+            "ai-show-more",
+            &[(
+                "count",
+                f64::from(u32::try_from(alternatives.len()).unwrap_or(u32::MAX)).into(),
+            )],
+        ),
+        show_fewer: t("ai-show-fewer"),
+        dismiss: None,
+        alternatives_title: t("ai-alternatives-title"),
+        instead: t("ai-set-up-instead"),
+        alternatives: alternatives
+            .iter()
+            .map(|alternative| setup_choice(alternative))
+            .collect(),
+    }
+}
+
+fn mib_gib(mib: u64) -> String {
+    format!("{:.1}", mib as f64 / 1024.0)
+}
+
+/// Where a configuration runs, in words: the device, or the processor.
+fn device_words(device: Option<&str>) -> String {
+    device.map_or_else(|| t("ai-device-cpu"), str::to_owned)
+}
+
+/// How a configuration reads: which model, with which engine, on which
+/// device.
+#[must_use]
+pub fn configuration_label(available: &AvailableModel) -> String {
+    t_args(
+        "ai-configuration",
+        &[
+            ("model", arg(available.package.name.as_str())),
+            ("engine", arg(available.engine.label())),
+            ("device", arg(device_words(available.device.as_deref()))),
+        ],
+    )
+}
+
+/// The hub resource that sets up exactly this configuration.
+#[must_use]
+pub fn release_resource_id(available: &AvailableModel) -> String {
+    format!("{RELEASE_RESOURCE_PREFIX}{}", available.key())
+}
+
+/// How much memory the configuration takes where it runs. Memory an
+/// integrated GPU or the CPU uses is the desktop's RAM, and says so.
+fn memory_terms(available: &AvailableModel) -> String {
+    t_args(
+        if available.shared_memory {
+            "ai-memory-shared"
+        } else {
+            "ai-memory-dedicated"
+        },
+        &[
+            ("need", arg(mib_gib(available.required_mib))),
+            ("budget", arg(mib_gib(available.budget_mib))),
+        ],
+    )
+}
+
+/// The terms a download is confirmed against: size, license, memory and how
+/// fast it runs here. Shown beside every configuration and as its setup
+/// action's description.
 #[must_use]
 pub fn download_terms(available: &AvailableModel) -> String {
     let package = &available.package;
@@ -126,9 +269,36 @@ pub fn download_terms(available: &AvailableModel) -> String {
             ("disk", arg(gib(package.installed_bytes))),
             ("license", arg(package.license.as_str())),
             ("url", arg(package.license_url.as_str())),
+            ("memory", arg(memory_terms(available))),
             ("speed", arg(speed_label(available))),
         ],
     )
+}
+
+/// One GPU as the device card lists it: its memory and its driver.
+fn accelerator_line(accelerator: &Accelerator) -> String {
+    let driver = match (&accelerator.compute, accelerator.kernel_driver.as_str()) {
+        (Some(version), driver) if !driver.is_empty() => format!("{driver} {version}"),
+        (_, "") => t("ai-gpu-no-driver"),
+        (_, driver) => driver.to_owned(),
+    };
+    if accelerator.integrated {
+        t_args(
+            "ai-gpu-integrated",
+            &[
+                ("memory", arg(mib_gib(accelerator.shared_mib))),
+                ("driver", arg(driver)),
+            ],
+        )
+    } else {
+        t_args(
+            "ai-gpu-dedicated",
+            &[
+                ("memory", arg(mib_gib(accelerator.dedicated_mib))),
+                ("driver", arg(driver)),
+            ],
+        )
+    }
 }
 
 /// The resource-tree presentation of an installed model's phase.
@@ -215,7 +385,7 @@ fn manager_diagnostic(bytes: &[u8]) -> String {
 )]
 pub trait LocalModelControl: Send + Sync {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String>;
-    fn install(&self, model: &LocalModelPackage) -> Result<(), String>;
+    fn install(&self, model: &LocalModelPackage, placement: &Placement) -> Result<(), String>;
     fn start(&self, id: &str) -> Result<(), String>;
     fn stop(&self, id: &str) -> Result<(), String>;
     fn remove(&self, id: &str) -> Result<(), String>;
@@ -245,18 +415,27 @@ impl LocalModelControl for ModelManagerCli {
             .map_err(|error| format!("model service returned invalid status: {error}"))
     }
 
-    fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
-        let output = manager_run(
-            &[
-                "install",
-                "--model",
-                &model.id,
-                "--revision",
-                &model.revision,
-                "--accept-license",
-            ],
-            Duration::from_secs(30 * 60),
-        )?;
+    fn install(&self, model: &LocalModelPackage, placement: &Placement) -> Result<(), String> {
+        let on = serde_json::to_value(placement.kind)
+            .ok()
+            .and_then(|kind| kind.as_str().map(str::to_owned))
+            .ok_or_else(|| "unknown processor".to_string())?;
+        let mut args = vec![
+            "install",
+            "--model",
+            &model.id,
+            "--revision",
+            &model.revision,
+            "--runtime",
+            &placement.runtime,
+            "--on",
+            &on,
+        ];
+        if let Some(device) = &placement.device {
+            args.extend(["--device", device]);
+        }
+        args.push("--accept-license");
+        let output = manager_run(&args, Duration::from_secs(30 * 60))?;
         output
             .status
             .success()
@@ -301,7 +480,7 @@ impl LocalModelControl for FixedControl {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
         self.0.clone()
     }
-    fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+    fn install(&self, _: &LocalModelPackage, _: &Placement) -> Result<(), String> {
         Err("fixed snapshot".into())
     }
     fn start(&self, _: &str) -> Result<(), String> {
@@ -347,6 +526,9 @@ pub struct AiPane {
     structure_dirty: bool,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    /// Recommendation blocks whose alternatives are shown: pane-local view
+    /// state, not configuration.
+    shown: Arc<Mutex<BTreeSet<String>>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -382,9 +564,24 @@ impl AiPane {
             structure_dirty: false,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             command_state: ui::LocalState::new(None),
+            shown: Arc::new(Mutex::new(BTreeSet::new())),
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Show the alternatives of the recommendation block `block` (`device`,
+    /// or a task id), as "Show more" does.
+    #[must_use]
+    pub fn with_alternatives_shown(self, block: &str) -> Self {
+        if let Ok(mut shown) = self.shown.lock() {
+            shown.insert(block.to_owned());
+        }
+        self
+    }
+
+    fn alternatives_shown(&self, block: &str) -> bool {
+        self.shown.lock().is_ok_and(|shown| shown.contains(block))
     }
 
     #[must_use]
@@ -491,25 +688,39 @@ impl AiPane {
     fn run_model_operation(&mut self, operation: &crate::actions::AgentModelOperation) {
         use crate::actions::AgentModelOperation as Op;
         let snapshot = self.control.snapshot();
-        let package = |id: &str, revision: Option<&str>| {
+        // Only a configuration the manager offers now, or the one an
+        // installed model was set up for, is set up.
+        let offered = |id: &str, revision: &str, placement: &Placement| {
             let snapshot = snapshot.as_ref().ok()?;
             snapshot
                 .available
                 .iter()
-                .map(|available| &available.package)
-                .chain(snapshot.models.iter().map(|model| &model.package))
-                .find(|package| {
-                    package.id == id && revision.is_none_or(|revision| package.revision == revision)
+                .map(|available| (&available.package, &available.placement))
+                .chain(
+                    snapshot
+                        .models
+                        .iter()
+                        .map(|model| (&model.package, &model.placement)),
+                )
+                .find(|(package, placed)| {
+                    package.id == id && package.revision == revision && *placed == placement
                 })
-                .cloned()
+                .map(|(package, _)| package.clone())
         };
         let result = match operation {
             Op::StageAccelerator => self.control.stage_accelerator(),
-            Op::Install { id, revision } | Op::Retry { id, revision } => {
-                package(id, Some(revision))
-                    .ok_or_else(|| t("ai-notice-release-gone"))
-                    .and_then(|package| self.control.install(&package))
+            Op::Install {
+                id,
+                revision,
+                placement,
             }
+            | Op::Retry {
+                id,
+                revision,
+                placement,
+            } => offered(id, revision, placement)
+                .ok_or_else(|| t("ai-notice-release-gone"))
+                .and_then(|package| self.control.install(&package, placement)),
             Op::Start { id } => self.control.start(id),
             Op::Stop { id } => self.control.stop(id),
             Op::Remove { id } => self.control.remove(id),
@@ -818,29 +1029,59 @@ impl AiPane {
                     .push(Box::new(Spacer::new())),
             ));
         }
-        if agent.is_none()
-            && let Some(available) = self.state.installable_for(task)
-            && self.state.resolve(task, None).is_err()
-        {
-            body.push(caption(&download_terms(available)));
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        bound_button(
-                            tree,
-                            Some(resource_id),
-                            "set-up-on-device",
-                            &format!("{id}-set-up"),
-                            &t_args(
-                                "ai-set-up-button",
-                                &[("model", arg(available.package.name.as_str()))],
-                            ),
-                        )
-                        .primary(),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+        if agent.is_none() && self.state.resolve(task, None).is_err() {
+            let installable = self.state.installable(task);
+            if let Some((recommended, alternatives)) = installable.split_first() {
+                body.push(self.recommendation_block(
+                    tree,
+                    task.id,
+                    recommended,
+                    (Some(resource_id), "set-up-on-device"),
+                    alternatives,
+                    |index, _| (resource_id.to_owned(), setup_action_id(index + 1)),
+                ));
+            }
         }
+    }
+
+    /// "Set this up?" for the configuration Tilo recommends here, naming the
+    /// model, engine, device, size and license, with every other supported
+    /// configuration behind "Show more": the toolkit's shared offer. The
+    /// recommendation is set up through `set_up` (a resource and its
+    /// action), each alternative through `alternative(index)`. Every one is
+    /// confirmed before anything downloads.
+    fn recommendation_block(
+        &self,
+        tree: &Resource,
+        block: &str,
+        recommended: &AvailableModel,
+        set_up: (Option<&str>, &str),
+        alternatives: &[&AvailableModel],
+        alternative: impl Fn(usize, &AvailableModel) -> (String, String),
+    ) -> El {
+        let id = format!("ai.{}", block.replace(['/', '.', ':', '@'], "-"));
+        let toggled = Arc::clone(&self.shown);
+        let key = block.to_owned();
+        let bindings = OfferBindings {
+            set_up: crate::actions::ai_binding(tree, set_up.0, set_up.1),
+            alternatives: alternatives
+                .iter()
+                .enumerate()
+                .map(|(index, available)| {
+                    let (resource, action) = alternative(index, available);
+                    crate::actions::ai_binding(tree, Some(&resource), &action)
+                })
+                .collect(),
+            toggle: Box::new(move || {
+                if let Ok(mut shown) = toggled.lock()
+                    && !shown.remove(&key)
+                {
+                    shown.insert(key.clone());
+                }
+                changed();
+            }),
+        };
+        setup_offer(recommended, alternatives).widget(&id, self.alternatives_shown(block), bindings)
     }
 
     fn tasks_card(&self, tree: &Resource) -> El {
@@ -916,6 +1157,10 @@ impl AiPane {
         }
         if !profile.enabled {
             return semantic_status_pill(&t("ai-health-disabled"), StatusTone::Neutral);
+        }
+        // The account store decides, whatever the gateway last said.
+        if self.state.account_sign_in(profile) == AccountSignIn::SignedOut {
+            return semantic_status_pill(&t("ai-health-signed-out"), StatusTone::Warning);
         }
         let Some(health) = self.state.health.get(&profile.id) else {
             return semantic_status_pill(
@@ -1060,8 +1305,14 @@ impl AiPane {
         body.push(Box::new(actions));
 
         // Credential.
-        let signed_in = matches!(profile.credential, Some(Credential::Account { .. }));
-        if signed_in {
+        let sign_in = self.state.account_sign_in(profile);
+        if sign_in == AccountSignIn::SignedOut {
+            body.push(value_row(
+                &t("ai-provider-credential"),
+                &t("ai-provider-signed-out"),
+            ));
+        }
+        if matches!(sign_in, AccountSignIn::SignedIn { .. }) {
             body.push(value_row(
                 &t("ai-provider-credential"),
                 &t("ai-provider-signed-in"),
@@ -1113,14 +1364,18 @@ impl AiPane {
                     &t("ai-action-remove-key"),
                 )));
             if profile.protocol.supports_account_sign_in() {
-                let registered = accounts::oauth::ClientSlot::Entra.registration().is_some();
+                let registered = crate::ai_settings::account_sign_in_configured();
                 credential_row = credential_row.push(hgap(8.0)).push(Box::new(
                     bound_button(
                         tree,
                         Some(&resource_id),
                         "sign-in",
                         &format!("{id}-sign-in"),
-                        &t("ai-action-sign-in-microsoft"),
+                        &t(if sign_in == AccountSignIn::SignedOut {
+                            "ai-action-sign-in-again"
+                        } else {
+                            "ai-action-sign-in-microsoft"
+                        }),
                     )
                     .with_enabled(registered && signing_in().is_none()),
                 ));
@@ -1348,21 +1603,22 @@ impl AiPane {
             HardwareFit::RestartRequired => ("ai-fit-restart", StatusTone::Warning),
             HardwareFit::Unsupported => ("ai-fit-unsupported", StatusTone::Neutral),
         };
-        let mut body = vec![
-            value_row(
-                &t("ai-device-memory"),
-                &t_args(
-                    "ai-gib",
-                    &[("value", f64::from(hardware.memory_gib).into())],
-                ),
+        let mut body = vec![value_row(
+            &t("ai-device-memory"),
+            &t_args(
+                "ai-gib",
+                &[("value", f64::from(hardware.memory_gib).into())],
             ),
-            value_row(&t("ai-device-accelerator"), &hardware.accelerator),
-        ];
-        if let Some(vram) = hardware.accelerator_memory_gib {
+        )];
+        // Every GPU the probe found, with its memory and driver.
+        for accelerator in &snapshot.facts.accelerators {
             body.push(value_row(
-                &t("ai-device-accelerator-memory"),
-                &t_args("ai-gib", &[("value", f64::from(vram).into())]),
+                &accelerator.label(),
+                &accelerator_line(accelerator),
             ));
+        }
+        if snapshot.facts.accelerators.is_empty() {
+            body.push(value_row(&t("ai-device-accelerator"), &t("ai-gpu-none")));
         }
         if let Some(storage) = hardware.free_storage_gib {
             body.push(value_row(
@@ -1441,6 +1697,8 @@ impl AiPane {
             }
         }
 
+        // Every configuration that runs here, ranked: the best one first,
+        // the others behind "Show more".
         let available: Vec<&AvailableModel> = snapshot
             .available
             .iter()
@@ -1454,53 +1712,24 @@ impl AiPane {
         body.push(Box::new(
             Text::new(&t("ai-releases-title")).with_scaled_size(14.0),
         ));
-        if available.is_empty() {
-            body.push(caption(&t(if snapshot.available.is_empty() {
+        match available.split_first() {
+            Some((recommended, alternatives)) => {
+                body.push(caption(&capabilities_text(&recommended.package)));
+                let resource = release_resource_id(recommended);
+                body.push(self.recommendation_block(
+                    tree,
+                    "device",
+                    recommended,
+                    (Some(&resource), "install"),
+                    alternatives,
+                    |_, available| (release_resource_id(available), "install".into()),
+                ));
+            }
+            None => body.push(caption(&t(if snapshot.available.is_empty() {
                 "ai-releases-none-fit"
             } else {
                 "ai-releases-all-installed"
-            })));
-        }
-        for release in available {
-            let resource_id = format!("{RELEASE_RESOURCE_PREFIX}{}", release.package.id);
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&release.package.name).with_scaled_size(13.0),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(semantic_status_pill(
-                        &speed_label(release),
-                        if release.speed.class == SpeedClass::Interactive {
-                            StatusTone::Success
-                        } else {
-                            StatusTone::Warning
-                        },
-                    )),
-            ));
-            body.push(caption(&release.package.description));
-            body.push(caption(&capabilities_text(&release.package)));
-            body.push(caption(&download_terms(release)));
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        bound_button(
-                            tree,
-                            Some(&resource_id),
-                            "install",
-                            &format!(
-                                "ai.install-{}",
-                                release.package.id.replace(['/', '.', ':'], "-")
-                            ),
-                            &t_args(
-                                "ai-action-download",
-                                &[("model", arg(release.package.name.as_str()))],
-                            ),
-                        )
-                        .primary(),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+            }))),
         }
 
         body.push(Box::new(
@@ -1552,6 +1781,13 @@ impl AiPane {
             }));
         }
         body.push(caption(&phase_detail(&model.phase)));
+        body.push(caption(&t_args(
+            "ai-installed-runs",
+            &[
+                ("engine", arg(model.engine.label())),
+                ("device", arg(device_words(model.device.as_deref()))),
+            ],
+        )));
         body.push(caption(&capabilities_text(&model.package)));
         if running && model.package.accelerator_memory_mib > 0 {
             body.push(value_row(
@@ -1796,6 +2032,8 @@ impl Widget for AiPane {
                     && self.probing;
             }
             self.refresh(false);
+            // A "Show more" toggle changes only the view.
+            self.structure_dirty = true;
             return true;
         }
         let busy = self.is_busy();
@@ -1929,130 +2167,222 @@ impl Widget for AiPane {
     }
 }
 
-/// A deterministic hub for `--shots`: a device with an 8 GiB card, an Azure
-/// deployment assigned to one agent in fast mode, and signed releases to
-/// download. Sample data lives only here.
-#[must_use]
+/// The machines the `--shots` hub is rendered on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DemoMachine {
+    /// An RTX 4070 Mobile (8 GiB) beside a Radeon 780M, as on a current
+    /// gaming laptop.
+    CardAndIgpu,
+    /// The Radeon 780M alone.
+    Igpu,
+    /// No GPU at all.
+    Cpu,
+    /// The card, waiting for a restart to finish its driver.
+    RestartPending,
+}
+
+fn demo_card() -> Accelerator {
+    Accelerator {
+        vendor: agent_provider_config::local::AcceleratorVendor::Nvidia,
+        name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+        pci_slot: "0000:01:00.0".into(),
+        render_node: Some("renderD129".into()),
+        kernel_driver: "nvidia".into(),
+        integrated: false,
+        dedicated_mib: 8188,
+        shared_mib: 0,
+        compute: Some("615.71.09".into()),
+        restart: None,
+    }
+}
+
+fn demo_igpu() -> Accelerator {
+    Accelerator {
+        vendor: agent_provider_config::local::AcceleratorVendor::Amd,
+        name: "AMD Radeon 780M Graphics".into(),
+        pci_slot: "0000:66:00.0".into(),
+        render_node: Some("renderD128".into()),
+        kernel_driver: "amdgpu".into(),
+        integrated: true,
+        dedicated_mib: 512,
+        shared_mib: 15_643,
+        compute: None,
+        restart: None,
+    }
+}
+
+/// The signed catalogue the shots rank against: the review model as vLLM's
+/// AWQ snapshot and llama.cpp's GGUF and an image model, with
+/// one runtime pack per engine. Sample data lives only here.
 #[allow(
     clippy::too_many_lines,
-    reason = "the whole deterministic fixture reads top to bottom in one place"
+    reason = "the whole deterministic catalogue reads top to bottom in one place"
 )]
-pub fn demo_state(restart_pending: bool) -> AiState {
-    use agent_provider_config::assign::{Assignment, ModelAssignments, ModelTarget};
+fn demo_catalog() -> agent_provider_config::local::LocalModelCatalog {
     use agent_provider_config::local::{
-        Accelerator, AcceleratorVendor, ExpectedSpeed, HardwareSnapshot, LocalEndpoint, RuntimeKind,
+        LocalModelCatalog, LocalModelRelease, ModelArtifact, PinnedArtifact, RuntimeEngine,
+        RuntimeKind, RuntimeRelease, SnapshotFile,
     };
-    use agent_provider_config::manager::HardwareRecommendation;
-    use agent_provider_config::{
-        ModelDescriptor, ModelOptionSupport, ModelOptions, ProviderConfig,
+    let revision = "5f1b0d6c2a9e4b7f8c3d1e0a9b8c7d6e5f4a3b2c";
+    let pin = |repository: &str, file: &str, size_bytes: u64| PinnedArtifact {
+        url: format!("https://huggingface.co/{repository}/resolve/{revision}/{file}"),
+        sha256: "a".repeat(64),
+        size_bytes,
     };
-
-    let package =
-        |id: &str, name: &str, description: &str, capabilities: &[ModelCapability], gib: u64| {
-            LocalModelPackage {
-                id: id.into(),
-                name: name.into(),
-                description: description.into(),
-                source: format!("https://huggingface.co/{id}"),
-                revision: "5f1b0d6c2a9e4b7f8c3d1e0a9b8c7d6e5f4a3b2c".into(),
-                license: "Apache-2.0".into(),
-                license_url: format!("https://huggingface.co/{id}/blob/main/LICENSE"),
-                download_bytes: gib * 1_073_741_824,
-                installed_bytes: gib * 1_073_741_824 + 300_000_000,
-                capabilities: capabilities.iter().copied().collect(),
-                context_window: 32_768,
-                accelerator_memory_mib: gib * 1024 + 1024,
-            }
-        };
-    let reviewer = package(
-        "qwen/qwen3-4b-awq",
-        "Qwen3 4B",
-        "A compact general model for private review and short tasks.",
-        &[ModelCapability::TraceReview],
-        3,
+    let snapshot = |repository: &str, size_bytes| ModelArtifact::HfSnapshot {
+        files: vec![
+            SnapshotFile {
+                path: "config.json".into(),
+                artifact: pin(repository, "config.json", 1_000),
+            },
+            SnapshotFile {
+                path: "model.safetensors".into(),
+                artifact: pin(repository, "model.safetensors", size_bytes),
+            },
+        ],
+    };
+    let release = |id: &str,
+                   label: &str,
+                   description: &str,
+                   artifact: ModelArtifact,
+                   engine: RuntimeEngine,
+                   capability: ModelCapability| LocalModelRelease {
+        id: id.into(),
+        label: label.into(),
+        description: description.into(),
+        version: revision.into(),
+        installed_size_bytes: artifact.download_bytes(),
+        artifact,
+        license_id: "Apache-2.0".into(),
+        license_url: format!("https://huggingface.co/{id}/blob/{revision}/LICENSE"),
+        requires_acceptance: false,
+        engines: [engine].into(),
+        allowed_runtimes: match engine {
+            RuntimeEngine::Vllm => [RuntimeKind::NvidiaCuda].into(),
+            RuntimeEngine::LlamaCpp => [RuntimeKind::Vulkan, RuntimeKind::Cpu].into(),
+        },
+        required_memory_mib: 12_288,
+        required_accelerator_mib: 6_144,
+        context_window: 8_192,
+        capabilities: [capability].into(),
+        accelerator_memory_percent: None,
+    };
+    let mut gguf = release(
+        "qwen/qwen3-4b-gguf",
+        "Qwen3 4B (GGUF)",
+        "The same review model as one file, for any Vulkan graphics or the processor.",
+        ModelArtifact::Gguf(pin(
+            "Qwen/Qwen3-4B-GGUF",
+            "Qwen3-4B-Q4_K_M.gguf",
+            2_497_280_256,
+        )),
+        RuntimeEngine::LlamaCpp,
+        ModelCapability::TraceReview,
     );
-    let vision = package(
-        "smolvlm2-500m",
+    gguf.required_memory_mib = 3_840;
+    gguf.required_accelerator_mib = 4_480;
+    let mut vision = release(
+        "huggingface/smolvlm2-500m",
         "SmolVLM2 500M",
         "Describes photos and reads the text in them for local search.",
-        &[ModelCapability::Vision],
-        1,
+        snapshot("HuggingFaceTB/SmolVLM2-500M", 1_073_741_824),
+        RuntimeEngine::Vllm,
+        ModelCapability::Vision,
     );
-    let faces = package(
-        "tilo/face-cluster",
-        "Face clusters",
-        "Groups photos by the faces in them, on this device only.",
-        &[ModelCapability::FaceRecognition],
-        1,
-    );
-    let accelerators = if restart_pending {
-        vec![Accelerator::RestartRequired {
-            vendor: AcceleratorVendor::Nvidia,
-            reason: RestartReason::DriverStaged,
-        }]
-    } else {
-        vec![Accelerator::Nvidia {
-            vram_mib: 8188,
-            driver: "580.82".into(),
-        }]
+    vision.required_accelerator_mib = 4_096;
+    let pack = |id: &str, engine, kinds: &[RuntimeKind], image: &str| RuntimeRelease {
+        id: id.into(),
+        kinds: kinds.iter().copied().collect(),
+        version: "1".into(),
+        engine,
+        artifact: PinnedArtifact {
+            url: format!("https://registry.example/{id}"),
+            sha256: "b".repeat(64),
+            size_bytes: 1_000,
+        },
+        oci_image: format!("{image}@sha256:{}", "b".repeat(64)),
     };
-    let hardware = HardwareSnapshot {
+    LocalModelCatalog {
+        runtimes: vec![
+            pack(
+                "vllm-cuda-0.10.1",
+                RuntimeEngine::Vllm,
+                &[RuntimeKind::NvidiaCuda],
+                "docker.io/vllm/vllm-openai",
+            ),
+            pack(
+                "llama-cpp-vulkan-b11176",
+                RuntimeEngine::LlamaCpp,
+                &[RuntimeKind::Vulkan, RuntimeKind::Cpu],
+                "ghcr.io/ggml-org/llama.cpp",
+            ),
+        ],
+        models: vec![
+            release(
+                "qwen/qwen3-4b-awq",
+                "Qwen3 4B (AWQ)",
+                "A compact general model for private review and short tasks.",
+                snapshot("Qwen/Qwen3-4B-AWQ", 2_669_000_000),
+                RuntimeEngine::Vllm,
+                ModelCapability::TraceReview,
+            ),
+            gguf,
+            vision,
+        ],
+    }
+}
+
+/// What the model manager would answer on `machine`, ranked by the real
+/// ranking over [`demo_catalog`]. With `installed`, the review model runs on
+/// the card and the image model is downloading.
+fn demo_snapshot(machine: DemoMachine, installed: bool) -> LocalModelSnapshot {
+    use agent_provider_config::local::{
+        HardwareSnapshot, LocalEndpoint, RuntimeEngine, RuntimeKind,
+    };
+    use agent_provider_config::manager::HardwareRecommendation;
+
+    let accelerators = match machine {
+        DemoMachine::CardAndIgpu => vec![demo_card(), demo_igpu()],
+        DemoMachine::Igpu => vec![demo_igpu()],
+        DemoMachine::Cpu => Vec::new(),
+        DemoMachine::RestartPending => vec![Accelerator {
+            dedicated_mib: 0,
+            compute: None,
+            restart: Some(RestartReason::DriverStaged),
+            ..demo_card()
+        }],
+    };
+    let facts = HardwareSnapshot {
         cpu_threads: 16,
-        memory_mib: 32 * 1024,
-        available_memory_mib: 22 * 1024,
+        memory_mib: 31_287,
+        available_memory_mib: 22_528,
         free_storage_mib: 180 * 1024,
         accelerators,
     };
-    let running = !restart_pending;
-    let snapshot = LocalModelSnapshot {
-        hardware: HardwareRecommendation {
-            fit: if restart_pending {
-                HardwareFit::RestartRequired
-            } else {
-                HardwareFit::Good
-            },
-            memory_gib: 32,
-            accelerator: if restart_pending {
-                "NVIDIA".into()
-            } else {
-                "NVIDIA CUDA".into()
-            },
-            accelerator_memory_gib: (!restart_pending).then_some(8),
-            free_storage_gib: Some(180),
-            reason: "A signed CUDA runtime was selected from locally probed driver and VRAM facts."
-                .into(),
-        },
-        facts: hardware,
-        recommendation: Some(reviewer.clone()),
-        available: vec![
-            AvailableModel {
-                package: vision.clone(),
-                runtime: RuntimeKind::NvidiaCuda,
-                speed: ExpectedSpeed {
-                    tokens_per_second: 180,
-                    class: SpeedClass::Interactive,
-                },
-            },
-            AvailableModel {
-                package: faces,
-                runtime: RuntimeKind::NvidiaCuda,
-                speed: ExpectedSpeed {
-                    tokens_per_second: 140,
-                    class: SpeedClass::Interactive,
-                },
-            },
-            AvailableModel {
-                package: reviewer.clone(),
-                runtime: RuntimeKind::NvidiaCuda,
-                speed: ExpectedSpeed {
-                    tokens_per_second: 96,
-                    class: SpeedClass::Interactive,
-                },
-            },
-        ],
-        models: vec![
-            InstalledLocalModel {
-                package: reviewer,
+    let catalog = demo_catalog();
+    let configurations = catalog.configurations(&facts);
+    let package = |id: &str| {
+        catalog
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .map(LocalModelPackage::of)
+    };
+    let on_card = Placement {
+        runtime: "vllm-cuda-0.10.1".into(),
+        kind: RuntimeKind::NvidiaCuda,
+        device: Some("0000:01:00.0".into()),
+    };
+    let running = machine != DemoMachine::RestartPending;
+    let card = Some(demo_card().name);
+    let mut models = Vec::new();
+    if installed {
+        models.extend(
+            package("qwen/qwen3-4b-awq").map(|package| InstalledLocalModel {
+                package,
+                placement: on_card.clone(),
+                engine: RuntimeEngine::Vllm,
+                device: card.clone(),
                 phase: LocalModelPhase::Ready {
                     running,
                     endpoint: running.then(|| LocalEndpoint {
@@ -2060,17 +2390,77 @@ pub fn demo_state(restart_pending: bool) -> AiState {
                         model_id: "qwen/qwen3-4b-awq".into(),
                     }),
                 },
-            },
-            InstalledLocalModel {
-                package: vision,
+            }),
+        );
+        models.extend(
+            package("huggingface/smolvlm2-500m").map(|package| InstalledLocalModel {
+                package,
+                placement: on_card.clone(),
+                engine: RuntimeEngine::Vllm,
+                device: card.clone(),
                 phase: LocalModelPhase::Downloading {
                     downloaded_bytes: 700_000_000,
                     total_bytes: 1_073_741_824,
                 },
-            },
-        ],
-        accelerator_setup: None,
+            }),
+        );
+    }
+    let fit = if machine == DemoMachine::RestartPending {
+        HardwareFit::RestartRequired
+    } else {
+        configurations
+            .first()
+            .map_or(HardwareFit::Unsupported, |best| best.fit.into())
     };
+    LocalModelSnapshot {
+        hardware: HardwareRecommendation {
+            fit,
+            memory_gib: 30,
+            free_storage_gib: Some(180),
+            reason: "Ranked from this device's probed processors, memory and storage.".into(),
+        },
+        available: configurations.iter().map(AvailableModel::from).collect(),
+        facts,
+        models,
+        accelerator_setup: None,
+    }
+}
+
+/// A deterministic hub for `--shots`: the laptop with an 8 GiB card beside
+/// its integrated GPU, an Azure deployment assigned to one agent in fast
+/// mode, the review model running on the card and signed configurations to
+/// set up. `restart_pending` is the same laptop waiting for a restart to
+/// finish its graphics driver.
+#[must_use]
+pub fn demo_state(restart_pending: bool) -> AiState {
+    hub_state(demo_snapshot(
+        if restart_pending {
+            DemoMachine::RestartPending
+        } else {
+            DemoMachine::CardAndIgpu
+        },
+        true,
+    ))
+}
+
+/// The hub on `machine` with nothing set up yet: every task that needs a
+/// local model shows the configuration Tilo recommends there, and the
+/// alternatives behind "Show more".
+#[must_use]
+pub fn local_setup_state(machine: DemoMachine) -> AiState {
+    hub_state(demo_snapshot(machine, false))
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the whole deterministic fixture reads top to bottom in one place"
+)]
+fn hub_state(snapshot: LocalModelSnapshot) -> AiState {
+    use agent_provider_config::assign::{Assignment, ModelAssignments, ModelTarget};
+    use agent_provider_config::{
+        ModelDescriptor, ModelOptionSupport, ModelOptions, ProviderConfig,
+    };
+
     let mut azure = ProviderProfile::hosted(ProviderProtocol::AzureOpenAi);
     azure.id = "8e7f6d5c-work-azure".into();
     azure.label = "Work Azure".into();
@@ -2156,6 +2546,7 @@ pub fn demo_state(restart_pending: bool) -> AiState {
         snapshot: Ok(snapshot),
         health,
         agents: vec!["Claude".into(), "Scribe".into()],
+        accounts: std::collections::BTreeSet::from(["entra-work".to_string()]),
     }
 }
 
@@ -2172,12 +2563,75 @@ mod tests {
         }
     }
 
-    fn names(state: AiState) -> Vec<String> {
-        let pane = AiPane::for_state(state);
+    fn pane_names(pane: &AiPane) -> Vec<String> {
         let composition = pane.build_composition();
         let mut nodes = Vec::new();
         collect_accessibility(composition.as_ref(), &mut nodes);
         nodes.into_iter().filter_map(|node| node.name).collect()
+    }
+
+    fn names(state: AiState) -> Vec<String> {
+        pane_names(&AiPane::for_state(state))
+    }
+
+    fn contains(names: &[String], expected: &str) -> bool {
+        names.iter().any(|name| name.contains(expected))
+    }
+
+    /// On a laptop with an RTX 4070 Mobile beside a Radeon 780M, feedback review asks to set up
+    /// vLLM on the card, naming model, size and license; "Show more" lists llama.cpp on the card,
+    /// on the integrated GPU and on the processor, each with its fit and speed. The iGPU alone is
+    /// recommended llama.cpp through Vulkan, and a machine without a GPU the processor, labelled
+    /// slow.
+    #[test]
+    fn local_setup_recommends_per_hardware_and_shows_the_alternatives() {
+        let collapsed = names(local_setup_state(DemoMachine::CardAndIgpu));
+        assert!(
+            contains(
+                &collapsed,
+                "Set this up? Qwen3 4B (AWQ) with vLLM on NVIDIA GeForce RTX 4070 Laptop GPU"
+            ),
+            "{collapsed:?}"
+        );
+        assert!(contains(&collapsed, "Apache-2.0"), "{collapsed:?}");
+        assert!(contains(&collapsed, "2.5 GiB download"), "{collapsed:?}");
+        assert!(contains(&collapsed, "Show more (3)"), "{collapsed:?}");
+        assert!(!contains(&collapsed, "AMD Radeon 780M Graphics ·"));
+
+        let pane = AiPane::for_state(local_setup_state(DemoMachine::CardAndIgpu))
+            .with_alternatives_shown(tasks::FEEDBACK_REVIEW.id);
+        let expanded = pane_names(&pane);
+        for alternative in [
+            "Qwen3 4B (GGUF) with llama.cpp on NVIDIA GeForce RTX 4070 Laptop GPU",
+            "Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics",
+            "Qwen3 4B (GGUF) with llama.cpp on the processor",
+            "Show fewer",
+            "memory the desktop also uses",
+        ] {
+            assert!(
+                contains(&expanded, alternative),
+                "{alternative}: {expanded:?}"
+            );
+        }
+
+        let igpu = names(local_setup_state(DemoMachine::Igpu));
+        assert!(
+            contains(
+                &igpu,
+                "Set this up? Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics"
+            ),
+            "{igpu:?}"
+        );
+        let cpu = names(local_setup_state(DemoMachine::Cpu));
+        assert!(
+            contains(
+                &cpu,
+                "Set this up? Qwen3 4B (GGUF) with llama.cpp on the processor"
+            ),
+            "{cpu:?}"
+        );
+        assert!(contains(&cpu, "Slow here"), "{cpu:?}");
+        assert!(contains(&cpu, "No graphics"), "{cpu:?}");
     }
 
     /// The hub shows providers, tasks, agents, presets and this device; a card waiting for a restart
@@ -2193,6 +2647,8 @@ mod tests {
                 "Work Azure",
                 "Qwen3 4B",
                 "Claude · Agent planning",
+                "AMD Radeon 780M Graphics",
+                "vLLM on NVIDIA GeForce RTX 4070 Laptop GPU",
             ] {
                 assert!(
                     names.iter().any(|name| name.contains(expected)),
@@ -2217,7 +2673,7 @@ mod tests {
             let mut state = demo_state(false);
             state.snapshot = Err("model service is unavailable".into());
             let names = names(state);
-            assert!(names.iter().all(|name| !name.contains("Download SmolVLM2")));
+            assert!(names.iter().all(|name| !name.contains("SmolVLM2")));
         }
     }
 
@@ -2246,7 +2702,7 @@ mod tests {
                 .clone()
                 .ok_or_else(|| "no snapshot".into())
         }
-        fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
+        fn install(&self, model: &LocalModelPackage, _: &Placement) -> Result<(), String> {
             self.record(format!("install:{}", model.id));
             Ok(())
         }
@@ -2278,34 +2734,40 @@ mod tests {
             id: id.into(),
             ..package.clone()
         };
+        let installed = snapshot.models[0].clone();
+        let at = |id: &str, phase: LocalModelPhase| InstalledLocalModel {
+            package: with_id(id),
+            phase,
+            ..installed.clone()
+        };
         snapshot.models = vec![
-            InstalledLocalModel {
-                package: with_id("m/stopped"),
-                phase: LocalModelPhase::Ready {
+            at(
+                "m/stopped",
+                LocalModelPhase::Ready {
                     running: false,
                     endpoint: None,
                 },
-            },
-            InstalledLocalModel {
-                package: with_id("m/running"),
-                phase: LocalModelPhase::Ready {
+            ),
+            at(
+                "m/running",
+                LocalModelPhase::Ready {
                     running: true,
                     endpoint: None,
                 },
-            },
-            InstalledLocalModel {
-                package: with_id("m/downloading"),
-                phase: LocalModelPhase::Downloading {
+            ),
+            at(
+                "m/downloading",
+                LocalModelPhase::Downloading {
                     downloaded_bytes: 1,
                     total_bytes: 2,
                 },
-            },
-            InstalledLocalModel {
-                package: with_id("m/failed"),
-                phase: LocalModelPhase::Error {
+            ),
+            at(
+                "m/failed",
+                LocalModelPhase::Error {
                     message: "bad digest".into(),
                 },
-            },
+            ),
         ];
         state
     }

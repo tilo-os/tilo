@@ -65,7 +65,14 @@ impl WorkspaceChannelDirectory {
 impl ChannelDirectory for WorkspaceChannelDirectory {
     fn governs(&self, room: RoomId) -> bool {
         let tree = self.tree.read();
-        tree.rooms().contains(&room) && tree.governs_room(room)
+        // An ephemeral room (a replay) is this device's alone: it governs
+        // the room's channels, which are forgotten when it closes.
+        let ephemeral = tree
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.ephemeral && workspace.room == room);
+        (ephemeral || tree.rooms().contains(&room)) && tree.governs_room(room)
     }
 
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
@@ -274,5 +281,14 @@ mod tests {
             BTreeSet::from([device_key(10)])
         );
         assert!(allowed_devices(&tree, RoomId::new(), 1_000, &own).is_empty());
+    }
+
+    #[test]
+    fn this_device_governs_its_ephemeral_rooms() {
+        let mut tree = WorkspaceTree::default();
+        let (_, replay) = tree.open_ephemeral_room("Replay", &"ada".to_string());
+        let directory = WorkspaceChannelDirectory::new(tree.shared(), Box::new(|_| Vec::new()));
+        assert!(directory.governs(replay));
+        assert!(!directory.governs(RoomId::new()), "a room it does not hold");
     }
 }

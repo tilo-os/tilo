@@ -43,6 +43,20 @@ const INITIAL_HEIGHT: u32 = 900;
 /// `TILO_HEADLESS_SIZE`, which the headless backend reads for the same reason.
 const SIZE_ENV: &str = "TILO_WINIT_SIZE";
 
+/// Override for the host window's title, so several nested shells on one
+/// desktop can be told apart (whose each is, in a multi-person test).
+const TITLE_ENV: &str = "TILO_WINIT_TITLE";
+
+/// The host window's title: the override when it names something, else
+/// "tilo".
+fn window_title() -> String {
+    std::env::var(TITLE_ENV)
+        .ok()
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "tilo".to_owned())
+}
+
 /// Size the host window is created at; falls back to the defaults on
 /// anything unparseable, zero, or absent — a typo should give the ordinary
 /// window, never a zero-sized surface.
@@ -427,7 +441,7 @@ impl ApplicationHandler for Inner {
             return;
         }
         let attrs = WindowAttributes::default()
-            .with_title("tilo")
+            .with_title(window_title())
             .with_inner_size({
                 let (w, h) = initial_size();
                 winit::dpi::PhysicalSize::new(w, h)

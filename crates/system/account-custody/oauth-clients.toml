@@ -14,7 +14,8 @@
 # configured" state Settings and Mail show for that provider.
 #
 # Scopes are per use of the client, not per provider: `files` is what cloud
-# storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for. A use with
+# storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for, `ai` what a
+# hosted model provider the AI hub signs in to asks for. A use with
 # no scopes is not offered for that provider.
 #
 # Every sign-in redirects to `http://127.0.0.1:<port>/oauth`.
@@ -50,6 +51,10 @@ mail = [
     "https://outlook.office.com/IMAP.AccessAsUser.All",
     "https://outlook.office.com/SMTP.Send",
 ]
+# Azure OpenAI (Azure AI services) on the person's own resource; the
+# delegated `user_impersonation` permission is granted to the registration.
+# Only work or school accounts hold Azure resources.
+ai = ["offline_access", "https://cognitiveservices.azure.com/user_impersonation"]
 
 [dropbox]
 # Dropbox App Console app key, PKCE without an app secret. Dropbox matches

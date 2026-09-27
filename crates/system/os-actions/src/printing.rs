@@ -174,6 +174,7 @@ pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String
         ScanSource::Feeder => "ADF",
         ScanSource::FeederDuplex => "ADF Duplex",
     };
+    crate::owner::admit("scanimage")?;
     let mut command = Command::new("scanimage");
     command
         .arg("--device-name")

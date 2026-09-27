@@ -444,6 +444,10 @@ pub struct QuickSettingsState {
     pub do_not_disturb: bool,
     /// Private clipboard history entries, read when the popover opens.
     pub clipboard_items: usize,
+    /// This shell does not own the machine (nested, headless or hosted):
+    /// its brightness, audio, network and power controls belong to the host
+    /// system, so the panel shows them as managed there rather than acting.
+    pub host_managed: bool,
 }
 
 /// One compositor-authoritative screen exposure projected into trusted
@@ -526,6 +530,7 @@ impl Default for QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            host_managed: false,
         }
     }
 }
@@ -573,6 +578,7 @@ impl QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            host_managed: false,
         }
     }
 
@@ -2740,6 +2746,10 @@ impl ChromeState {
     }
 
     /// Called once per frame; no-op when no bridge is installed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one drain of the notification bridge, each event kind handled in place"
+    )]
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {

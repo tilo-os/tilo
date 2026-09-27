@@ -2121,10 +2121,12 @@ COPY os/usr/lib/sysctl.d/70-tilo-performance.conf /usr/lib/sysctl.d/70-tilo-perf
 # Read by tilo-launcher when it compiles the syscall filter. Same reasoning as
 # the file above and the same format: a package that could name its own
 # profile would be lifting a protection off itself, so the image decides and
-# the manifest only asks.
+# the manifest only asks. manages-machine.conf names the system apps told
+# whether this session owns the machine, by the same rule.
 COPY \
     os/usr/lib/tilo/untrusted-parsers.conf \
     os/usr/lib/tilo/jit-entitled.conf \
+    os/usr/lib/tilo/manages-machine.conf \
     /usr/lib/tilo/
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.

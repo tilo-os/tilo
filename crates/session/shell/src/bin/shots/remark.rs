@@ -22,6 +22,9 @@ pub enum RemarkStep {
     SeedDirectory,
     /// Attach the sample recording and open review on it.
     SeedReview,
+    /// Open the AI hub's offer to set the review model up, as it reads on a
+    /// laptop with an RTX 4070 beside a Radeon 780M.
+    SeedOffer,
     /// Start a recording as the composer does, without a broker: the pill.
     SeedRecording,
     /// Post the notification an app that quit unexpectedly leaves.
@@ -64,6 +67,15 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
             driver.with_chrome(|st: &mut ChromeState| st.remark.destination = destination);
         }
         RemarkStep::SeedReview => seed_review(driver),
+        RemarkStep::SeedOffer => driver.with_chrome(|st: &mut ChromeState| {
+            if let Some(review) = st.remark.review.as_mut() {
+                review.model = shell::shell::remark::review::ModelUse::Offer {
+                    choices: shell::shell::remark::fixture::sample_offer(),
+                    expanded: false,
+                };
+            }
+            st.bump();
+        }),
         RemarkStep::SeedRecording => driver.with_chrome(|st: &mut ChromeState| {
             st.remark.flow = shell::shell::remark::Flow::Recording {
                 rooms: vec!["room".into()],

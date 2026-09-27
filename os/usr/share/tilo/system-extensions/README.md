@@ -18,8 +18,9 @@ There are two deliberately different activation classes:
 * `local_model_runtime` is userspace-only. The constrained
   `tilo-system-extension-userspace.service` creates a runtime eligibility
   marker. The per-user `tilo-model-manager` independently validates the typed,
-  signed local-model catalog and binds vLLM only to an allocated loopback
-  endpoint. Its private systemd socket is present at login while the manager
+  signed local-model catalog and serves the chosen engine (vLLM or llama.cpp)
+  only on a Unix socket in a private directory, from a container without
+  network. Its private systemd socket is present at login while the manager
   process remains demand-activated. Settings reaches it through the launcher-owned `models@1` service
   descriptor; it receives no shell command, URL, or ambient app authority.
 * `kernel_module` and `gpu_driver_stack` are boot-bound. The constrained

@@ -5,42 +5,23 @@
 //! [`LocalModelBackend`]. The backend may use a downloader, OCI manager, and
 //! service manager, but this layer never constructs a command line from model
 //! metadata or user input.
+//!
+//! No engine is a default. [`LocalModelCatalog::configurations`] ranks every
+//! (engine, device, model) combination the signed catalogue and the probed
+//! hardware support, each with an honest fit and speed; the best one is the
+//! recommendation and the rest are its alternatives.
 
-use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// One accelerator the trusted hardware probe observed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Accelerator {
-    /// An NVIDIA card. An empty `driver` means the device is present on the
-    /// bus but no driver answers for it.
-    Nvidia {
-        vram_mib: u64,
-        driver: String,
-    },
-    Amd {
-        vram_mib: u64,
-        rocm: Option<String>,
-    },
-    /// A card that is present and set up, but whose driver becomes usable
-    /// only after the next restart: the loaded kernel module and the
-    /// userspace library disagree, or a driver deployment is staged for the
-    /// next boot. Distinct from an absent card, so nothing degrades to CPU or
-    /// a hosted model as if there were no GPU.
-    RestartRequired {
-        vendor: AcceleratorVendor,
-        reason: RestartReason,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcceleratorVendor {
     Nvidia,
     Amd,
+    Intel,
 }
 
 impl AcceleratorVendor {
@@ -48,7 +29,116 @@ impl AcceleratorVendor {
         match self {
             Self::Nvidia => "NVIDIA",
             Self::Amd => "AMD",
+            Self::Intel => "Intel",
         }
+    }
+}
+
+/// One GPU the trusted hardware probe observed on the PCI bus. A UI or agent
+/// never infers this from a user supplied PCI string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Accelerator {
+    pub vendor: AcceleratorVendor,
+    /// The product name from the vendor's own tables; empty when unknown.
+    pub name: String,
+    /// PCI address (`0000:66:00.0`): the stable identity a configuration
+    /// names.
+    pub pci_slot: String,
+    /// DRM render node (`renderD128`) the device is reached through.
+    pub render_node: Option<String>,
+    /// Kernel driver bound to the device (`amdgpu`, `nvidia`, `i915`, `xe`);
+    /// empty when none is.
+    pub kernel_driver: String,
+    /// Part of the processor: its model memory is system RAM.
+    pub integrated: bool,
+    /// Memory that belongs to the device alone: a card's VRAM, or an
+    /// integrated GPU's firmware carve-out.
+    pub dedicated_mib: u64,
+    /// System memory the device may map on top (GTT). It is the RAM the
+    /// desktop runs in, so it is counted against what is free.
+    pub shared_mib: u64,
+    /// The vendor compute stack answering for the device: the NVIDIA driver
+    /// version, or the `ROCm` version. `None` when none answers.
+    pub compute: Option<String>,
+    /// Present and set up, but usable only after the next restart: the
+    /// loaded kernel module and the userspace library disagree, or a driver
+    /// deployment is staged for the next boot. Distinct from an absent card,
+    /// so nothing degrades to CPU or a hosted model as if there were no GPU.
+    pub restart: Option<RestartReason>,
+}
+
+impl Accelerator {
+    /// The name a person knows the device by.
+    #[must_use]
+    pub fn label(&self) -> String {
+        if self.name.trim().is_empty() {
+            format!("{} graphics", self.vendor.label())
+        } else {
+            self.name.clone()
+        }
+    }
+
+    fn compute_answers(&self) -> bool {
+        self.restart.is_none()
+            && self
+                .compute
+                .as_deref()
+                .is_some_and(|version| !version.trim().is_empty())
+    }
+
+    /// Whether the runtime `kind` can run a model on this device. Vulkan
+    /// needs no vendor stack on the host for AMD and Intel: the runtime pack
+    /// carries Mesa, which drives their in-kernel drivers through the render
+    /// node. NVIDIA's own Vulkan driver comes with the card's container
+    /// device, so it needs a driver that answers.
+    #[must_use]
+    pub fn drives(&self, kind: RuntimeKind) -> bool {
+        match kind {
+            RuntimeKind::Cpu => false,
+            RuntimeKind::NvidiaCuda => {
+                self.vendor == AcceleratorVendor::Nvidia && self.compute_answers()
+            }
+            RuntimeKind::AmdRocm => {
+                self.vendor == AcceleratorVendor::Amd && !self.integrated && self.compute_answers()
+            }
+            RuntimeKind::Vulkan => {
+                self.restart.is_none()
+                    && match self.vendor {
+                        AcceleratorVendor::Nvidia => {
+                            self.kernel_driver == "nvidia" && self.compute_answers()
+                        }
+                        AcceleratorVendor::Amd => {
+                            self.kernel_driver == "amdgpu" && self.render_node.is_some()
+                        }
+                        AcceleratorVendor::Intel => {
+                            matches!(self.kernel_driver.as_str(), "i915" | "xe")
+                                && self.render_node.is_some()
+                        }
+                    }
+            }
+        }
+    }
+
+    /// Memory a model may take on this device. A card's own VRAM is its
+    /// budget. An integrated GPU has only a small carve-out of its own; the
+    /// rest is system RAM it maps, so it gets no more of that than the
+    /// desktop can spare right now.
+    #[must_use]
+    pub fn model_budget_mib(&self, hardware: &HardwareSnapshot) -> u64 {
+        if self.integrated {
+            self.dedicated_mib
+                .saturating_add(self.shared_mib.min(hardware.cpu_model_budget_mib()))
+        } else {
+            self.dedicated_mib
+        }
+    }
+
+    /// A driverless device: present on the bus, with nothing to run it.
+    #[must_use]
+    pub fn needs_driver(&self) -> bool {
+        self.restart.is_none()
+            && (self.kernel_driver.trim().is_empty()
+                || (self.vendor == AcceleratorVendor::Nvidia && !self.compute_answers()))
     }
 }
 
@@ -94,57 +184,49 @@ pub struct HardwareSnapshot {
 }
 
 impl HardwareSnapshot {
-    /// The accelerator this device offers, strongest state first: a usable
+    /// The discrete card this device offers, strongest state first: a usable
     /// card wins over one waiting for a restart, which wins over one with no
-    /// driver.
+    /// driver. An integrated GPU shares the desktop's RAM and never counts as
+    /// a card here, though a configuration may still run on it.
     #[must_use]
     pub fn accelerator_state(&self) -> AcceleratorState {
         let usable = self
             .accelerators
             .iter()
-            .filter_map(|accelerator| match accelerator {
-                Accelerator::Nvidia { vram_mib, driver }
-                    if !driver.trim().is_empty()
-                        && accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB =>
-                {
-                    Some((RuntimeKind::NvidiaCuda, *vram_mib))
-                }
-                Accelerator::Amd {
-                    vram_mib,
-                    rocm: Some(version),
-                } if !version.trim().is_empty()
-                    && accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB =>
-                {
-                    Some((RuntimeKind::AmdRocm, *vram_mib))
-                }
-                _ => None,
+            .filter(|accelerator| {
+                !accelerator.integrated
+                    && accelerator_class_gib(accelerator.dedicated_mib) >= MIN_ACCELERATOR_GIB
+            })
+            .filter_map(|accelerator| {
+                [
+                    RuntimeKind::NvidiaCuda,
+                    RuntimeKind::AmdRocm,
+                    RuntimeKind::Vulkan,
+                ]
+                .into_iter()
+                .find(|kind| accelerator.drives(*kind))
+                .map(|kind| (kind, accelerator.dedicated_mib))
             })
             .max_by_key(|(kind, vram)| (*kind == RuntimeKind::NvidiaCuda, *vram));
         if let Some((kind, vram_mib)) = usable {
             return AcceleratorState::Usable { kind, vram_mib };
         }
-        let restart = self
-            .accelerators
-            .iter()
-            .find_map(|accelerator| match accelerator {
-                Accelerator::RestartRequired { vendor, reason } => Some((*vendor, *reason)),
-                _ => None,
-            });
+        let restart = self.accelerators.iter().find_map(|accelerator| {
+            accelerator
+                .restart
+                .map(|reason| (accelerator.vendor, reason))
+        });
         if let Some((vendor, reason)) = restart {
             return AcceleratorState::RestartRequired { vendor, reason };
         }
-        let driverless = self
+        match self
             .accelerators
             .iter()
-            .find_map(|accelerator| match accelerator {
-                Accelerator::Nvidia { driver, .. } if driver.trim().is_empty() => {
-                    Some(AcceleratorVendor::Nvidia)
-                }
-                Accelerator::Amd { rocm: None, .. } => Some(AcceleratorVendor::Amd),
-                _ => None,
-            });
-        match driverless {
-            Some(vendor) => AcceleratorState::NeedsDriver { vendor },
+            .find(|accelerator| accelerator.needs_driver())
+        {
+            Some(accelerator) => AcceleratorState::NeedsDriver {
+                vendor: accelerator.vendor,
+            },
             None => AcceleratorState::Absent,
         }
     }
@@ -159,9 +241,17 @@ impl HardwareSnapshot {
         };
         available.saturating_sub(DESKTOP_HEADROOM_MIB)
     }
+
+    /// The probed device at `pci_slot`.
+    #[must_use]
+    pub fn accelerator(&self, pci_slot: &str) -> Option<&Accelerator> {
+        self.accelerators
+            .iter()
+            .find(|accelerator| accelerator.pci_slot == pci_slot)
+    }
 }
 
-/// Memory kept free for the desktop and open apps when a CPU model runs.
+/// Memory kept free for the desktop and open apps when a model runs in RAM.
 pub const DESKTOP_HEADROOM_MIB: u64 = 4096;
 
 /// Fewest CPU threads a CPU model is offered on.
@@ -183,52 +273,124 @@ pub enum SpeedClass {
 /// An honest throughput estimate for one model on one runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedSpeed {
+    /// Tokens written a second.
     pub tokens_per_second: u16,
+    /// Tokens of the request read a second.
+    pub prompt_tokens_per_second: u16,
+    /// Seconds for a typical answer: [`TYPICAL_PROMPT_TOKENS`] read, then
+    /// [`TYPICAL_ANSWER_TOKENS`] written. What the person waits for.
+    pub answer_seconds: u16,
     pub class: SpeedClass,
 }
 
-/// Token generation is bound by how fast the weights stream from memory:
-/// roughly the memory bandwidth divided by the bytes read per token (the
-/// quantized weights). Desktop DDR sustains about 25 GiB/s with eight or more
-/// threads; accelerator memory is an order of magnitude faster.
+/// The request a typical local task sends: a feedback review reads about
+/// 500 tokens and writes about 200.
+pub const TYPICAL_PROMPT_TOKENS: u16 = 512;
+/// The answer a typical local task writes.
+pub const TYPICAL_ANSWER_TOKENS: u16 = 192;
+
+/// How fast one engine on one processor reads and writes, per GiB of
+/// quantized weights: writing streams every weight once per token, so it is
+/// bounded by memory bandwidth (GiB/s); reading a request is compute bound
+/// (tokens a second times GiB).
+struct Throughput {
+    decode_gib_per_second: f64,
+    prompt_tokens_gib_per_second: f64,
+}
+
+/// Measured with the Qwen3-4B `Q4_K_M` GGUF (2.33 GiB) in the pinned
+/// llama.cpp pack on a Ryzen 7 8845HS laptop with 32 GiB of DDR5 under
+/// ordinary desktop load, reviewing a 506-token recording:
+///
+/// | Placement | Reads | Writes | Review |
+/// | --- | --- | --- | --- |
+/// | Radeon 780M, Vulkan | 161 tok/s | 7.5 tok/s | 30 s |
+/// | RTX 4070 Laptop, Vulkan | 6.9 tok/s | 54 tok/s | 78 s |
+/// | 16 CPU threads | 54 tok/s | 3.4 tok/s | 44 s |
+///
+/// NVIDIA's Vulkan driver writes fast but reads a request slowly, so on a
+/// card vLLM's CUDA build is the one that answers quickly. The CUDA and
+/// `ROCm` builds, and Vulkan on a discrete AMD or Intel card, are not yet
+/// measured; their figures are conservative estimates from published
+/// results for the same class of card.
+fn throughput(
+    hardware: &HardwareSnapshot,
+    kind: RuntimeKind,
+    device: Option<&Accelerator>,
+) -> Throughput {
+    let throughput = |decode_gib_per_second, prompt_tokens_gib_per_second| Throughput {
+        decode_gib_per_second,
+        prompt_tokens_gib_per_second,
+    };
+    match (kind, device) {
+        (RuntimeKind::Cpu, _) | (_, None) => {
+            let threads = f64::from(hardware.cpu_threads.min(8)) / 8.0;
+            throughput(8.0 * threads, 125.0 * threads)
+        }
+        (_, Some(device)) if device.integrated => throughput(17.5, 375.0),
+        (RuntimeKind::Vulkan, Some(device)) if device.vendor == AcceleratorVendor::Nvidia => {
+            throughput(125.0, 16.0)
+        }
+        (RuntimeKind::Vulkan, Some(_)) => throughput(125.0, 1_500.0),
+        (RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm, Some(_)) => throughput(300.0, 4_000.0),
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to the non-negative u16 range first"
+)]
+fn to_u16(value: f64) -> u16 {
+    value.clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// How fast `model` answers on `kind` here, from how fast that placement
+/// reads a request and writes an answer (see [`throughput`]). The class is
+/// the wait for a typical answer: at most 20 seconds is interactive, at most
+/// two and a half minutes slow, longer impractical.
 #[must_use]
 pub fn expected_speed(
     hardware: &HardwareSnapshot,
-    runtime: RuntimeKind,
+    kind: RuntimeKind,
+    device: Option<&Accelerator>,
     model: &LocalModelRelease,
 ) -> ExpectedSpeed {
     let size_mib =
         u32::try_from(model.artifact.download_bytes() / (1024 * 1024)).unwrap_or(u32::MAX);
     let weights_gib = (f64::from(size_mib) / 1024.0).max(0.25);
-    let bandwidth_gib_s = match runtime {
-        RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm => 300.0,
-        RuntimeKind::Cpu => 25.0 * (f64::from(hardware.cpu_threads.min(8)) / 8.0),
+    let rates = throughput(hardware, kind, device);
+    let decode = rates.decode_gib_per_second / weights_gib;
+    let prompt = rates.prompt_tokens_gib_per_second / weights_gib;
+    let seconds = if decode > 0.0 && prompt > 0.0 {
+        f64::from(TYPICAL_PROMPT_TOKENS) / prompt + f64::from(TYPICAL_ANSWER_TOKENS) / decode
+    } else {
+        f64::INFINITY
     };
-    let tokens = (bandwidth_gib_s / weights_gib).clamp(0.0, f64::from(u16::MAX));
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to the non-negative u16 range above"
-    )]
-    let tokens_per_second = tokens as u16;
-    let class = match tokens_per_second {
-        0..=2 => SpeedClass::Impractical,
-        3..=14 => SpeedClass::Slow,
-        _ => SpeedClass::Interactive,
+    let answer_seconds = to_u16(seconds.ceil());
+    let class = match answer_seconds {
+        0..=20 => SpeedClass::Interactive,
+        21..=150 => SpeedClass::Slow,
+        _ => SpeedClass::Impractical,
     };
     ExpectedSpeed {
-        tokens_per_second,
+        tokens_per_second: to_u16(decode),
+        prompt_tokens_per_second: to_u16(prompt),
+        answer_seconds,
         class,
     }
 }
 
-/// A runtime build selected by trusted hardware facts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// The processor a runtime runs a model on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
     Cpu,
     NvidiaCuda,
     AmdRocm,
+    /// Any GPU with a Vulkan driver: AMD and Intel through the Mesa drivers
+    /// the runtime pack carries, NVIDIA through its own.
+    Vulkan,
 }
 
 impl RuntimeKind {
@@ -237,6 +399,7 @@ impl RuntimeKind {
             Self::Cpu => "CPU",
             Self::NvidiaCuda => "NVIDIA CUDA",
             Self::AmdRocm => "AMD ROCm",
+            Self::Vulkan => "Vulkan",
         }
     }
 }
@@ -244,15 +407,48 @@ impl RuntimeKind {
 /// The inference engine a runtime image carries. The model manager builds
 /// the engine's fixed argv from signed catalogue fields; the catalogue never
 /// carries a command line.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEngine {
-    /// vLLM's OpenAI-compatible server.
-    #[default]
+    /// vLLM's OpenAI-compatible server, on a Hugging Face snapshot.
     Vllm,
+    /// llama.cpp's `llama-server`, on a single GGUF file.
+    LlamaCpp,
 }
 
-/// A pinned runtime: an OCI image in its vendor's registry, pulled by digest.
+impl RuntimeEngine {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Vllm => "vLLM",
+            Self::LlamaCpp => "llama.cpp",
+        }
+    }
+
+    /// Whether a build of this engine can run on `kind`.
+    #[must_use]
+    pub const fn serves(self, kind: RuntimeKind) -> bool {
+        match self {
+            Self::Vllm => matches!(
+                kind,
+                RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm | RuntimeKind::Cpu
+            ),
+            Self::LlamaCpp => matches!(kind, RuntimeKind::Vulkan | RuntimeKind::Cpu),
+        }
+    }
+
+    /// Whether this engine loads a release laid out as `artifact`.
+    #[must_use]
+    pub const fn loads(self, artifact: &ModelArtifact) -> bool {
+        matches!(
+            (self, artifact),
+            (Self::Vllm, ModelArtifact::HfSnapshot { .. })
+                | (Self::LlamaCpp, ModelArtifact::Gguf(_))
+        )
+    }
+}
+
+/// A pinned runtime pack: an OCI image in its vendor's registry, pulled by
+/// digest.
 ///
 /// `artifact` pins the image manifest itself (its registry URL, SHA-256 and
 /// length), so `oci_image` names exactly that digest and the signed extension
@@ -261,9 +457,9 @@ pub enum RuntimeEngine {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRelease {
     pub id: String,
-    pub kind: RuntimeKind,
+    /// The processors this build runs models on.
+    pub kinds: BTreeSet<RuntimeKind>,
     pub version: String,
-    #[serde(default)]
     pub engine: RuntimeEngine,
     pub artifact: PinnedArtifact,
     /// `registry/repository@sha256:<manifest digest>`.
@@ -453,8 +649,13 @@ pub struct LocalModelRelease {
     pub requires_acceptance: bool,
     /// Expected on-disk footprint after unpacking/conversion.
     pub installed_size_bytes: u64,
+    /// The engines that load this release.
+    pub engines: BTreeSet<RuntimeEngine>,
     pub allowed_runtimes: BTreeSet<RuntimeKind>,
+    /// RAM the model needs: its whole footprint on the CPU, the engine's
+    /// host process beside a card.
     pub required_memory_mib: u64,
+    /// Device memory the weights, cache and buffers need on a GPU.
     pub required_accelerator_mib: u64,
     pub context_window: u32,
     /// Signed statement of the fixed gateway protocols this exact revision
@@ -479,13 +680,103 @@ pub struct LocalModelCatalog {
     pub models: Vec<LocalModelRelease>,
 }
 
+/// Where one configuration runs: the runtime pack, the processor and, on a
+/// GPU, which one. It names catalogue and probe identities only; the model
+/// manager re-derives the configuration from both before acting on it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Placement {
+    /// The signed runtime pack's id.
+    pub runtime: String,
+    pub kind: RuntimeKind,
+    /// The GPU's PCI slot; `None` on the CPU.
+    pub device: Option<String>,
+}
+
+impl Placement {
+    /// A stable text key for this placement of `model`, for resource ids.
+    #[must_use]
+    pub fn key(&self, model: &str) -> String {
+        let kind = match self.kind {
+            RuntimeKind::Cpu => "cpu",
+            RuntimeKind::NvidiaCuda => "nvidia_cuda",
+            RuntimeKind::AmdRocm => "amd_rocm",
+            RuntimeKind::Vulkan => "vulkan",
+        };
+        format!(
+            "{model}@{}/{kind}/{}",
+            self.runtime,
+            self.device.as_deref().unwrap_or("cpu")
+        )
+    }
+}
+
+/// How much room a configuration leaves where it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fit {
+    /// It fits, with little to spare.
+    Tight,
+    /// It uses at most four fifths of what it may take.
+    Good,
+    /// It uses at most half.
+    Excellent,
+}
+
+impl Fit {
+    /// The fit of `required` MiB in a `budget` of MiB, or `None` when it does
+    /// not fit at all.
+    #[must_use]
+    pub fn of(required: u64, budget: u64) -> Option<Self> {
+        let (required, budget) = (u128::from(required), u128::from(budget));
+        if required.saturating_mul(2) <= budget {
+            Some(Self::Excellent)
+        } else if required.saturating_mul(5) <= budget.saturating_mul(4) {
+            Some(Self::Good)
+        } else if required <= budget {
+            Some(Self::Tight)
+        } else {
+            None
+        }
+    }
+}
+
+/// One way this device can run a model: an engine's runtime pack, the
+/// processor it runs on, and how honestly it fits there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Configuration<'a> {
+    pub runtime: &'a RuntimeRelease,
+    pub model: &'a LocalModelRelease,
+    pub kind: RuntimeKind,
+    /// The GPU; `None` on the CPU.
+    pub device: Option<&'a Accelerator>,
+    /// Memory the model needs where it runs, in MiB.
+    pub required_mib: u64,
+    /// Memory it may take there without starving the desktop, in MiB.
+    pub budget_mib: u64,
+    /// Whether that memory is the RAM the desktop runs in.
+    pub shared_memory: bool,
+    pub fit: Fit,
+    pub speed: ExpectedSpeed,
+}
+
+impl Configuration<'_> {
+    #[must_use]
+    pub fn placement(&self) -> Placement {
+        Placement {
+            runtime: self.runtime.id.clone(),
+            kind: self.kind,
+            device: self.device.map(|device| device.pci_slot.clone()),
+        }
+    }
+}
+
 impl LocalModelCatalog {
     /// Validate the runtime and model entries supplied by the signed catalog.
     ///
     /// # Errors
     ///
-    /// Returns an error when an entry is incomplete, not pinned, or conflicts
-    /// with another catalog entry.
+    /// Returns an error when an entry is incomplete, not pinned, conflicts
+    /// with another catalog entry, or cannot run on any runtime here.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         let mut runtime_ids = BTreeSet::new();
         for runtime in &self.runtimes {
@@ -498,6 +789,16 @@ impl LocalModelCatalog {
                     "runtime OCI image must be pinned to its signed manifest digest",
                 ));
             }
+            if runtime.kinds.is_empty()
+                || !runtime
+                    .kinds
+                    .iter()
+                    .all(|kind| runtime.engine.serves(*kind))
+            {
+                return Err(ProvisionError::InvalidCatalog(
+                    "a runtime must name processors its engine runs on",
+                ));
+            }
         }
         let mut model_ids = BTreeSet::new();
         for model in &self.models {
@@ -506,6 +807,24 @@ impl LocalModelCatalog {
             }
             if model.allowed_runtimes.is_empty() {
                 return Err(ProvisionError::InvalidCatalog("model supports no runtime"));
+            }
+            if model.engines.is_empty()
+                || !model
+                    .engines
+                    .iter()
+                    .all(|engine| engine.loads(&model.artifact))
+            {
+                return Err(ProvisionError::InvalidCatalog(
+                    "a model must name the engines that load its format",
+                ));
+            }
+            if !self.runtimes.iter().any(|runtime| {
+                model.engines.contains(&runtime.engine)
+                    && !runtime.kinds.is_disjoint(&model.allowed_runtimes)
+            }) {
+                return Err(ProvisionError::InvalidCatalog(
+                    "a model needs a runtime in the catalogue that runs it",
+                ));
             }
             model.artifact.validate()?;
             if model.description.trim().is_empty()
@@ -538,75 +857,121 @@ impl LocalModelCatalog {
         Ok(())
     }
 
-    pub fn runtime(&self, kind: RuntimeKind) -> Option<&RuntimeRelease> {
-        self.runtimes
-            .iter()
-            .filter(|runtime| runtime.kind == kind)
-            .max_by_key(|runtime| &runtime.version)
+    /// Every configuration that honestly runs here, best first.
+    ///
+    /// A configuration is a model, a runtime pack whose engine loads it, and
+    /// a processor both support. It is offered only when the model fits the
+    /// memory it may take there (on the CPU and an integrated GPU, the RAM
+    /// the desktop can spare), storage holds it, and it answers faster than
+    /// [`SpeedClass::Impractical`]. The shorter wait for a typical answer
+    /// comes first, then more room.
+    ///
+    /// A card waiting for a restart holds the decision: nothing is offered
+    /// until it boots, so nothing settles for a slower processor meanwhile.
+    #[must_use]
+    pub fn configurations<'a>(&'a self, hardware: &'a HardwareSnapshot) -> Vec<Configuration<'a>> {
+        if matches!(
+            hardware.accelerator_state(),
+            AcceleratorState::RestartRequired { .. }
+        ) {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        for runtime in &self.runtimes {
+            for model in self.models.iter().filter(|model| {
+                model.engines.contains(&runtime.engine)
+                    && runtime.engine.loads(&model.artifact)
+                    && model.installed_size_bytes / (1024 * 1024) <= hardware.free_storage_mib
+            }) {
+                for &kind in runtime.kinds.intersection(&model.allowed_runtimes) {
+                    let places: Vec<Option<&Accelerator>> = if kind == RuntimeKind::Cpu {
+                        if hardware.cpu_threads < MIN_CPU_THREADS {
+                            continue;
+                        }
+                        vec![None]
+                    } else {
+                        if model.required_memory_mib > hardware.memory_mib {
+                            continue;
+                        }
+                        hardware
+                            .accelerators
+                            .iter()
+                            .filter(|device| device.drives(kind))
+                            .map(Some)
+                            .collect()
+                    };
+                    for device in places {
+                        let (required_mib, budget_mib, shared_memory) = match device {
+                            None => (
+                                model.required_memory_mib,
+                                hardware.cpu_model_budget_mib(),
+                                true,
+                            ),
+                            Some(device) => (
+                                model.required_accelerator_mib,
+                                device.model_budget_mib(hardware),
+                                device.integrated,
+                            ),
+                        };
+                        let Some(fit) = Fit::of(required_mib, budget_mib) else {
+                            continue;
+                        };
+                        let speed = expected_speed(hardware, kind, device, model);
+                        if speed.class == SpeedClass::Impractical {
+                            continue;
+                        }
+                        found.push(Configuration {
+                            runtime,
+                            model,
+                            kind,
+                            device,
+                            required_mib,
+                            budget_mib,
+                            shared_memory,
+                            fit,
+                            speed,
+                        });
+                    }
+                }
+            }
+        }
+        found.sort_by(|left, right| {
+            right
+                .speed
+                .class
+                .cmp(&left.speed.class)
+                .then(left.speed.answer_seconds.cmp(&right.speed.answer_seconds))
+                .then(right.fit.cmp(&left.fit))
+                .then(right.model.context_window.cmp(&left.model.context_window))
+                .then(
+                    left.model
+                        .artifact
+                        .download_bytes()
+                        .cmp(&right.model.artifact.download_bytes()),
+                )
+                .then(left.model.id.cmp(&right.model.id))
+                .then(left.placement().cmp(&right.placement()))
+        });
+        found
     }
 
-    /// Pick the largest known-fitting model for the preferred runtime. The
-    /// caller still presents this as a recommendation, never a silent install.
-    pub fn recommend<'a>(
+    /// The configuration `placement` names for `model_id`, when it still
+    /// runs here.
+    #[must_use]
+    pub fn configuration<'a>(
         &'a self,
         hardware: &'a HardwareSnapshot,
-        runtime: RuntimeKind,
-    ) -> Option<&'a LocalModelRelease> {
-        self.fitting(hardware, runtime).max_by_key(|model| {
-            (
-                model.context_window,
-                Reverse(model.artifact.download_bytes()),
-            )
-        })
-    }
-
-    /// Every model that honestly runs on `runtime` here: it fits memory,
-    /// accelerator memory and storage, and on the CPU it leaves the desktop
-    /// its headroom and answers faster than [`SpeedClass::Impractical`].
-    pub fn fitting<'a>(
-        &'a self,
-        hardware: &'a HardwareSnapshot,
-        runtime: RuntimeKind,
-    ) -> impl Iterator<Item = &'a LocalModelRelease> + 'a {
-        let accelerator = accelerator_memory(hardware, runtime);
-        self.models.iter().filter(move |model| {
-            let memory_fits = if runtime == RuntimeKind::Cpu {
-                model.required_memory_mib <= hardware.cpu_model_budget_mib()
-                    && hardware.cpu_threads >= MIN_CPU_THREADS
-                    && expected_speed(hardware, runtime, model).class > SpeedClass::Impractical
-            } else {
-                model.required_memory_mib <= hardware.memory_mib
-            };
-            model.allowed_runtimes.contains(&runtime)
-                && memory_fits
-                && model.required_accelerator_mib <= accelerator
-                && model.installed_size_bytes / (1024 * 1024) <= hardware.free_storage_mib
-        })
+        model_id: &str,
+        placement: &Placement,
+    ) -> Option<Configuration<'a>> {
+        self.configurations(hardware)
+            .into_iter()
+            .find(|found| found.model.id == model_id && &found.placement() == placement)
     }
 }
 
-fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 {
-    hardware
-        .accelerators
-        .iter()
-        .filter_map(|accelerator| match (runtime, accelerator) {
-            (RuntimeKind::NvidiaCuda, Accelerator::Nvidia { vram_mib, .. })
-            | (
-                RuntimeKind::AmdRocm,
-                Accelerator::Amd {
-                    vram_mib,
-                    rocm: Some(_),
-                    ..
-                },
-            ) => Some(*vram_mib),
-            (RuntimeKind::Cpu, _) => Some(hardware.memory_mib),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-/// Smallest accelerator class, in GiB, a GPU runtime is selected for.
+/// Smallest accelerator class, in GiB, a card counts as this device's
+/// accelerator for presets.
 const MIN_ACCELERATOR_GIB: u64 = 8;
 
 /// The memory class a card is sold as. Drivers report total VRAM minus what
@@ -614,60 +979,6 @@ const MIN_ACCELERATOR_GIB: u64 = 8;
 /// `>= 8192` comparison would turn every such card away.
 fn accelerator_class_gib(vram_mib: u64) -> u64 {
     vram_mib.saturating_add(512) / 1024
-}
-
-/// Determine the best runtime without probing hardware from an unprivileged
-/// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
-/// and sufficient VRAM are confirmed; a card waiting for a restart holds the
-/// decision; CPU is used otherwise.
-pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
-    match hardware.accelerator_state() {
-        AcceleratorState::Usable { kind, .. } => return RuntimeDecision::Ready(kind),
-        // A card waiting for a restart is not "no card": running on the CPU
-        // now would pick a far smaller model than this device is set up for.
-        AcceleratorState::RestartRequired { vendor, reason } => {
-            return RuntimeDecision::RestartRequired { vendor, reason };
-        }
-        AcceleratorState::NeedsDriver { .. } | AcceleratorState::Absent => {}
-    }
-    if hardware.memory_mib >= 8192 && hardware.cpu_threads >= MIN_CPU_THREADS {
-        RuntimeDecision::Ready(RuntimeKind::Cpu)
-    } else {
-        RuntimeDecision::Unavailable(
-            "Local inference needs at least 8 GiB RAM and four CPU threads, or a supported accelerator.",
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RuntimeDecision {
-    Ready(RuntimeKind),
-    RestartRequired {
-        vendor: AcceleratorVendor,
-        reason: RestartReason,
-    },
-    Unavailable(&'static str),
-}
-
-impl RuntimeDecision {
-    /// The ready runtime, or the refusal a provisioning step reports.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProvisionError::UnsupportedHardware`] when no runtime is
-    /// ready now.
-    pub fn ready(self) -> Result<RuntimeKind, ProvisionError> {
-        match self {
-            Self::Ready(kind) => Ok(kind),
-            Self::RestartRequired { vendor, .. } => {
-                Err(ProvisionError::UnsupportedHardware(format!(
-                    "Restart to finish setting up the {} graphics driver.",
-                    vendor.label()
-                )))
-            }
-            Self::Unavailable(reason) => Err(ProvisionError::UnsupportedHardware(reason.into())),
-        }
-    }
 }
 
 /// Typed lifecycle state shown to the task manager. It separates
@@ -755,56 +1066,391 @@ impl std::error::Error for ProvisionError {}
 mod tests {
     use super::*;
 
-    fn artifact(name: &str) -> PinnedArtifact {
+    const GIB: u64 = 1_073_741_824;
+
+    fn artifact(name: &str, size_bytes: u64) -> PinnedArtifact {
         PinnedArtifact {
             url: format!("https://models.example.invalid/{name}"),
             sha256: "a".repeat(64),
-            size_bytes: 100,
+            size_bytes,
         }
     }
+
+    fn runtime(id: &str, engine: RuntimeEngine, kinds: &[RuntimeKind]) -> RuntimeRelease {
+        RuntimeRelease {
+            id: id.into(),
+            kinds: kinds.iter().copied().collect(),
+            version: "1".into(),
+            engine,
+            artifact: artifact(id, 1_000),
+            oci_image: format!("registry.example.invalid/{id}@sha256:{}", "a".repeat(64)),
+        }
+    }
+
+    /// The review model twice, as the catalogue ships it: a 4-bit AWQ
+    /// snapshot vLLM serves on a CUDA card, and a `Q4_K_M` GGUF llama.cpp
+    /// serves through Vulkan or on the CPU.
     fn catalog() -> LocalModelCatalog {
-        LocalModelCatalog {
-            runtimes: vec![RuntimeRelease {
-                id: "vllm-cpu-0.9.0".into(),
-                kind: RuntimeKind::Cpu,
-                version: "0.9.0".into(),
-                engine: RuntimeEngine::Vllm,
-                artifact: artifact("runtime"),
-                oci_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            }],
-            models: vec![LocalModelRelease {
-                id: "tiny-q4".into(),
-                label: "Tiny Q4".into(),
-                description: "A tiny test model".into(),
-                version: "1".into(),
-                artifact: ModelArtifact::HfSnapshot {
-                    files: vec![
-                        SnapshotFile {
-                            path: "config.json".into(),
-                            artifact: artifact("config.json"),
-                        },
-                        SnapshotFile {
-                            path: "model.safetensors".into(),
-                            artifact: artifact("model.safetensors"),
-                        },
-                    ],
-                },
+        let release =
+            |id: &str, artifact: ModelArtifact, engine, kinds: &[RuntimeKind]| LocalModelRelease {
+                id: id.into(),
+                label: id.into(),
+                description: "The review model".into(),
+                version: "b".repeat(40),
+                installed_size_bytes: artifact.download_bytes(),
+                artifact,
                 license_id: "Apache-2.0".into(),
                 license_url: "https://models.example.invalid/LICENSE".into(),
-                requires_acceptance: true,
-                installed_size_bytes: 200,
-                allowed_runtimes: [RuntimeKind::Cpu].into(),
-                required_memory_mib: 8192,
-                required_accelerator_mib: 0,
-                context_window: 8192,
-                capabilities: BTreeSet::new(),
-                accelerator_memory_percent: None,
-            }],
+                requires_acceptance: false,
+                engines: [engine].into(),
+                allowed_runtimes: kinds.iter().copied().collect(),
+                required_memory_mib: 12_288,
+                required_accelerator_mib: 6_144,
+                context_window: 8_192,
+                capabilities: [crate::ModelCapability::TraceReview].into(),
+                accelerator_memory_percent: Some(70),
+            };
+        let awq = release(
+            "qwen/qwen3-4b-awq",
+            ModelArtifact::HfSnapshot {
+                files: vec![
+                    SnapshotFile {
+                        path: "config.json".into(),
+                        artifact: artifact("config.json", 1_000),
+                    },
+                    SnapshotFile {
+                        path: "model.safetensors".into(),
+                        artifact: artifact("model.safetensors", 2_669_000_000),
+                    },
+                ],
+            },
+            RuntimeEngine::Vllm,
+            &[RuntimeKind::NvidiaCuda],
+        );
+        let mut gguf = release(
+            "qwen/qwen3-4b-gguf",
+            ModelArtifact::Gguf(artifact("Qwen3-4B-Q4_K_M.gguf", 2_497_280_256)),
+            RuntimeEngine::LlamaCpp,
+            &[RuntimeKind::Vulkan, RuntimeKind::Cpu],
+        );
+        gguf.required_memory_mib = 5_120;
+        gguf.required_accelerator_mib = 4_096;
+        gguf.accelerator_memory_percent = None;
+        LocalModelCatalog {
+            runtimes: vec![
+                runtime("vllm-cuda", RuntimeEngine::Vllm, &[RuntimeKind::NvidiaCuda]),
+                runtime(
+                    "llama-cpp-vulkan",
+                    RuntimeEngine::LlamaCpp,
+                    &[RuntimeKind::Vulkan, RuntimeKind::Cpu],
+                ),
+            ],
+            models: vec![awq, gguf],
         }
     }
+
+    fn rtx_4070_mobile() -> Accelerator {
+        Accelerator {
+            vendor: AcceleratorVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+            pci_slot: "0000:01:00.0".into(),
+            render_node: Some("renderD129".into()),
+            kernel_driver: "nvidia".into(),
+            integrated: false,
+            dedicated_mib: 8_188,
+            shared_mib: 0,
+            compute: Some("615.71.09".into()),
+            restart: None,
+        }
+    }
+
+    fn radeon_780m() -> Accelerator {
+        Accelerator {
+            vendor: AcceleratorVendor::Amd,
+            name: "AMD Radeon 780M Graphics".into(),
+            pci_slot: "0000:66:00.0".into(),
+            render_node: Some("renderD128".into()),
+            kernel_driver: "amdgpu".into(),
+            integrated: true,
+            dedicated_mib: 512,
+            shared_mib: 15_644,
+            compute: None,
+            restart: None,
+        }
+    }
+
+    fn machine(accelerators: Vec<Accelerator>) -> HardwareSnapshot {
+        HardwareSnapshot {
+            cpu_threads: 16,
+            memory_mib: 31_287,
+            available_memory_mib: 22_528,
+            free_storage_mib: 100 * 1024,
+            accelerators,
+        }
+    }
+
+    fn ranked(catalog: &LocalModelCatalog, hardware: &HardwareSnapshot) -> Vec<String> {
+        catalog
+            .configurations(hardware)
+            .iter()
+            .map(|found| {
+                format!(
+                    "{} {} {}",
+                    found.runtime.engine.label(),
+                    found
+                        .device
+                        .map_or_else(|| "CPU".into(), Accelerator::label),
+                    found.model.id
+                )
+            })
+            .collect()
+    }
+
+    /// The ranking follows the wait for an answer, as measured on this
+    /// laptop: vLLM on the card, then llama.cpp on the integrated GPU (a
+    /// review in 30 s), on the processor (44 s), and on the card through
+    /// NVIDIA's Vulkan driver, which writes fast but reads a request slowly
+    /// (78 s).
     #[test]
-    fn a_catalogue_pins_runtimes_by_manifest_digest_and_snapshots_by_file() {
-        let mut catalog = catalog();
+    fn an_nvidia_card_beside_an_amd_igpu_ranks_vllm_first_and_offers_every_other_way() {
+        let catalog = catalog();
+        let hardware = machine(vec![radeon_780m(), rtx_4070_mobile()]);
+        assert_eq!(
+            ranked(&catalog, &hardware),
+            [
+                "vLLM NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-awq",
+                "llama.cpp AMD Radeon 780M Graphics qwen/qwen3-4b-gguf",
+                "llama.cpp CPU qwen/qwen3-4b-gguf",
+                "llama.cpp NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-gguf",
+            ]
+        );
+        let found = catalog.configurations(&hardware);
+        let [vllm, igpu, cpu, card] = found.as_slice() else {
+            panic!("four configurations");
+        };
+        assert_eq!(vllm.kind, RuntimeKind::NvidiaCuda);
+        assert_eq!(
+            (vllm.fit, vllm.speed.class),
+            (Fit::Good, SpeedClass::Interactive)
+        );
+        // The measured rates, for the 2.33 GiB GGUF.
+        assert_eq!(
+            (
+                igpu.speed.prompt_tokens_per_second,
+                igpu.speed.tokens_per_second
+            ),
+            (161, 7)
+        );
+        assert_eq!(igpu.speed.answer_seconds, 29);
+        assert_eq!(
+            (
+                card.speed.prompt_tokens_per_second,
+                card.speed.tokens_per_second
+            ),
+            (6, 53)
+        );
+        assert!(card.speed.tokens_per_second > igpu.speed.tokens_per_second);
+        assert!(card.speed.answer_seconds > cpu.speed.answer_seconds);
+        assert_eq!(card.kind, RuntimeKind::Vulkan);
+        assert!(!card.shared_memory);
+        // The iGPU's model memory is RAM: its own 512 MiB carve-out plus the
+        // shared memory it can map, never more than the desktop can spare.
+        assert!(igpu.shared_memory);
+        assert_eq!(igpu.budget_mib, 512 + 15_644);
+        assert_eq!(igpu.speed.class, SpeedClass::Slow);
+        assert_eq!(cpu.kind, RuntimeKind::Cpu);
+        assert_eq!(cpu.speed.class, SpeedClass::Slow);
+        // A placement names the device it was ranked for, and resolves back.
+        let placement = igpu.placement();
+        assert_eq!(placement.device.as_deref(), Some("0000:66:00.0"));
+        assert_eq!(
+            catalog
+                .configuration(&hardware, "qwen/qwen3-4b-gguf", &placement)
+                .map(|found| found.device.map(|device| device.pci_slot.clone())),
+            Some(Some("0000:66:00.0".into()))
+        );
+        assert!(
+            catalog
+                .configuration(&hardware, "qwen/qwen3-4b-awq", &placement)
+                .is_none(),
+            "vLLM does not run the GGUF placement"
+        );
+        // With the desktop holding most of the RAM, the iGPU and the CPU fit
+        // no longer: shared memory is counted against what is free, so the
+        // iGPU could now take its carve-out and 7000 - 4096 MiB of RAM.
+        let busy = HardwareSnapshot {
+            available_memory_mib: 7_000,
+            ..hardware
+        };
+        assert_eq!(
+            ranked(&catalog, &busy),
+            [
+                "vLLM NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-awq",
+                "llama.cpp NVIDIA GeForce RTX 4070 Laptop GPU qwen/qwen3-4b-gguf",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_igpu_alone_runs_the_gguf_through_vulkan_before_the_cpu() {
+        let catalog = catalog();
+        let hardware = machine(vec![radeon_780m()]);
+        assert_eq!(
+            ranked(&catalog, &hardware),
+            [
+                "llama.cpp AMD Radeon 780M Graphics qwen/qwen3-4b-gguf",
+                "llama.cpp CPU qwen/qwen3-4b-gguf",
+            ]
+        );
+        // An integrated GPU is not a card: presets still see no accelerator.
+        assert_eq!(hardware.accelerator_state(), AcceleratorState::Absent);
+        let intel = Accelerator {
+            vendor: AcceleratorVendor::Intel,
+            name: String::new(),
+            pci_slot: "0000:00:02.0".into(),
+            render_node: Some("renderD128".into()),
+            kernel_driver: "xe".into(),
+            integrated: true,
+            dedicated_mib: 0,
+            shared_mib: 31_287,
+            compute: None,
+            restart: None,
+        };
+        assert_eq!(intel.label(), "Intel graphics");
+        assert_eq!(
+            ranked(&catalog, &machine(vec![intel])),
+            [
+                "llama.cpp Intel graphics qwen/qwen3-4b-gguf",
+                "llama.cpp CPU qwen/qwen3-4b-gguf",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cpu_alone_is_offered_only_when_free_memory_and_threads_can_run_it() {
+        let catalog = catalog();
+        let roomy = HardwareSnapshot {
+            cpu_threads: 8,
+            memory_mib: 16_384,
+            available_memory_mib: 12_000,
+            free_storage_mib: 100 * 1024,
+            accelerators: Vec::new(),
+        };
+        let found = catalog.configurations(&roomy);
+        assert_eq!(
+            ranked(&catalog, &roomy),
+            ["llama.cpp CPU qwen/qwen3-4b-gguf"]
+        );
+        assert_eq!(
+            found[0].speed.class,
+            SpeedClass::Slow,
+            "honest about being slow"
+        );
+        assert_eq!(found[0].speed.tokens_per_second, 3);
+        assert_eq!(found[0].speed.answer_seconds, 66);
+        // Enough RAM in total, but the desktop already holds most of it.
+        let busy = HardwareSnapshot {
+            available_memory_mib: 8_000,
+            ..roomy.clone()
+        };
+        assert!(catalog.configurations(&busy).is_empty());
+        let few_threads = HardwareSnapshot {
+            cpu_threads: 2,
+            ..roomy.clone()
+        };
+        assert!(catalog.configurations(&few_threads).is_empty());
+        let full_disk = HardwareSnapshot {
+            free_storage_mib: 1_024,
+            ..roomy
+        };
+        assert!(catalog.configurations(&full_disk).is_empty());
+    }
+
+    #[test]
+    fn a_card_waiting_for_a_restart_holds_the_decision_instead_of_falling_to_cpu() {
+        let catalog = catalog();
+        let pending = machine(vec![
+            radeon_780m(),
+            Accelerator {
+                compute: None,
+                dedicated_mib: 0,
+                restart: Some(RestartReason::DriverLibraryMismatch),
+                ..rtx_4070_mobile()
+            },
+        ]);
+        assert_eq!(
+            pending.accelerator_state(),
+            AcceleratorState::RestartRequired {
+                vendor: AcceleratorVendor::Nvidia,
+                reason: RestartReason::DriverLibraryMismatch,
+            }
+        );
+        assert!(catalog.configurations(&pending).is_empty());
+        let driverless = machine(vec![Accelerator {
+            kernel_driver: String::new(),
+            compute: None,
+            dedicated_mib: 0,
+            ..rtx_4070_mobile()
+        }]);
+        assert_eq!(
+            driverless.accelerator_state(),
+            AcceleratorState::NeedsDriver {
+                vendor: AcceleratorVendor::Nvidia
+            }
+        );
+        assert_eq!(
+            machine(Vec::new()).accelerator_state(),
+            AcceleratorState::Absent
+        );
+    }
+
+    #[test]
+    fn an_eight_gib_card_reporting_firmware_reserved_memory_is_the_device_accelerator() {
+        let card = |dedicated_mib| {
+            machine(vec![Accelerator {
+                dedicated_mib,
+                ..rtx_4070_mobile()
+            }])
+            .accelerator_state()
+        };
+        assert_eq!(
+            card(8_188),
+            AcceleratorState::Usable {
+                kind: RuntimeKind::NvidiaCuda,
+                vram_mib: 8_188
+            }
+        );
+        assert_eq!(card(6_144), AcceleratorState::Absent);
+        let rocm = machine(vec![Accelerator {
+            vendor: AcceleratorVendor::Amd,
+            kernel_driver: "amdgpu".into(),
+            dedicated_mib: 16_368,
+            compute: Some("6.2".into()),
+            ..rtx_4070_mobile()
+        }]);
+        assert_eq!(
+            rocm.accelerator_state(),
+            AcceleratorState::Usable {
+                kind: RuntimeKind::AmdRocm,
+                vram_mib: 16_368
+            }
+        );
+        let vulkan_only = machine(vec![Accelerator {
+            compute: None,
+            ..rocm.accelerators[0].clone()
+        }]);
+        assert!(matches!(
+            vulkan_only.accelerator_state(),
+            AcceleratorState::Usable {
+                kind: RuntimeKind::Vulkan,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_catalogue_pins_runtimes_by_digest_and_marks_models_by_the_engines_that_load_them() {
+        let catalog = catalog();
         assert_eq!(catalog.validate(), Ok(()));
 
         let mut retagged = catalog.clone();
@@ -816,8 +1462,24 @@ mod tests {
             other_digest.validate().is_err(),
             "the image must name the signed manifest"
         );
+        // llama.cpp does not run CUDA builds here, and vLLM loads no GGUF.
+        let mut foreign_kind = catalog.clone();
+        foreign_kind.runtimes[1]
+            .kinds
+            .insert(RuntimeKind::NvidiaCuda);
+        assert!(foreign_kind.validate().is_err());
+        let mut wrong_engine = catalog.clone();
+        wrong_engine.models[1].engines = [RuntimeEngine::Vllm].into();
+        assert!(wrong_engine.validate().is_err());
+        let mut unmarked = catalog.clone();
+        unmarked.models[1].engines.clear();
+        assert!(unmarked.validate().is_err());
+        // A model no runtime of the catalogue can run is refused.
+        let mut orphan = catalog.clone();
+        orphan.runtimes.truncate(1);
+        assert!(orphan.validate().is_err());
 
-        let ModelArtifact::HfSnapshot { files } = &mut catalog.models[0].artifact else {
+        let ModelArtifact::HfSnapshot { files } = &catalog.models[0].artifact else {
             panic!("snapshot fixture");
         };
         for unsafe_path in ["../escape", "/etc/passwd", "a//b", "a/./b", ""] {
@@ -856,137 +1518,7 @@ mod tests {
             ModelArtifact::HfSnapshot { files: changed }.identity(),
             identity
         );
-        assert_eq!(catalog.models[0].artifact.download_bytes(), 200);
-    }
-
-    fn cpu() -> HardwareSnapshot {
-        HardwareSnapshot {
-            cpu_threads: 8,
-            memory_mib: 16384,
-            available_memory_mib: 0,
-            free_storage_mib: 100,
-            accelerators: vec![],
-        }
-    }
-
-    #[test]
-    fn a_card_waiting_for_a_restart_holds_the_decision_instead_of_falling_to_cpu() {
-        let pending = HardwareSnapshot {
-            accelerators: vec![Accelerator::RestartRequired {
-                vendor: AcceleratorVendor::Nvidia,
-                reason: RestartReason::DriverLibraryMismatch,
-            }],
-            ..cpu()
-        };
-        assert_eq!(
-            pending.accelerator_state(),
-            AcceleratorState::RestartRequired {
-                vendor: AcceleratorVendor::Nvidia,
-                reason: RestartReason::DriverLibraryMismatch,
-            }
-        );
-        assert!(matches!(
-            select_runtime(&pending),
-            RuntimeDecision::RestartRequired { .. }
-        ));
-        let error = select_runtime(&pending).ready().unwrap_err();
-        assert!(error.to_string().contains("Restart"), "{error}");
-        let absent = cpu();
-        assert_eq!(absent.accelerator_state(), AcceleratorState::Absent);
-        let driverless = HardwareSnapshot {
-            accelerators: vec![Accelerator::Nvidia {
-                vram_mib: 0,
-                driver: String::new(),
-            }],
-            ..cpu()
-        };
-        assert_eq!(
-            driverless.accelerator_state(),
-            AcceleratorState::NeedsDriver {
-                vendor: AcceleratorVendor::Nvidia
-            }
-        );
-    }
-
-    #[test]
-    fn a_cpu_model_is_offered_only_when_free_memory_and_threads_can_run_it() {
-        let catalog = catalog();
-        let roomy = HardwareSnapshot {
-            available_memory_mib: 14_000,
-            ..cpu()
-        };
-        assert!(catalog.recommend(&roomy, RuntimeKind::Cpu).is_some());
-        // Enough RAM in total, but the desktop already holds most of it.
-        let busy = HardwareSnapshot {
-            available_memory_mib: 9_000,
-            ..cpu()
-        };
-        assert!(catalog.recommend(&busy, RuntimeKind::Cpu).is_none());
-        let few_threads = HardwareSnapshot {
-            cpu_threads: 2,
-            ..roomy.clone()
-        };
-        assert!(catalog.recommend(&few_threads, RuntimeKind::Cpu).is_none());
-        // A 4 GiB model on eight threads is honest about being slow.
-        let mut model = catalog.models[0].clone();
-        model.artifact = ModelArtifact::Gguf(PinnedArtifact {
-            url: "https://models.example.invalid/model.gguf".into(),
-            sha256: "c".repeat(64),
-            size_bytes: 4 * 1_073_741_824,
-        });
-        let speed = expected_speed(&roomy, RuntimeKind::Cpu, &model);
-        assert_eq!(speed.class, SpeedClass::Slow);
-        assert_eq!(speed.tokens_per_second, 6);
-        assert_eq!(
-            expected_speed(&roomy, RuntimeKind::NvidiaCuda, &model).class,
-            SpeedClass::Interactive
-        );
-    }
-
-    #[test]
-    fn picks_cuda_then_rocm_then_cpu_only_when_facts_support_it() {
-        assert_eq!(
-            select_runtime(&HardwareSnapshot {
-                accelerators: vec![Accelerator::Nvidia {
-                    vram_mib: 12288,
-                    driver: "560".into()
-                }],
-                ..cpu()
-            }),
-            RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
-        );
-        assert_eq!(
-            select_runtime(&HardwareSnapshot {
-                accelerators: vec![Accelerator::Amd {
-                    vram_mib: 16384,
-                    rocm: Some("6.2".into())
-                }],
-                ..cpu()
-            }),
-            RuntimeDecision::Ready(RuntimeKind::AmdRocm)
-        );
-        assert_eq!(
-            select_runtime(&cpu()),
-            RuntimeDecision::Ready(RuntimeKind::Cpu)
-        );
-    }
-
-    #[test]
-    fn an_eight_gib_card_reporting_firmware_reserved_memory_still_selects_cuda() {
-        let card = |vram_mib| HardwareSnapshot {
-            accelerators: vec![Accelerator::Nvidia {
-                vram_mib,
-                driver: "580".into(),
-            }],
-            ..cpu()
-        };
-        assert_eq!(
-            select_runtime(&card(8188)),
-            RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
-        );
-        assert_eq!(
-            select_runtime(&card(6144)),
-            RuntimeDecision::Ready(RuntimeKind::Cpu)
-        );
+        assert_eq!(catalog.models[1].artifact.download_bytes(), 2_497_280_256);
+        assert!(catalog.models[1].artifact.download_bytes() < 3 * GIB);
     }
 }

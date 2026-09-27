@@ -40,7 +40,12 @@ struct Harness {
 impl Harness {
     fn new(category: Category, w: f32, h: f32) -> Self {
         let config = crate::support::ScratchConfig::new();
-        let mut app = config.app().with_category(category).with_width_hint(w);
+        // The pane's own content, not the host-managed notice.
+        let mut app = config
+            .app()
+            .with_category(category)
+            .with_width_hint(w)
+            .with_system_surfaces(os_actions::SystemSurfaces::Owned);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

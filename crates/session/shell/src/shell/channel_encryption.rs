@@ -25,6 +25,14 @@
 //! Every change registers the channel's plaintext gate and head epoch with
 //! the broker, which refuses plaintext and stale-epoch content for the
 //! channel on every ingress path. The broker itself never holds a key.
+//!
+//! The shell's own participants (the session recorder, a replay peer,
+//! record custody) reach content keys through this service too, within the
+//! bounds [`super::participant_keys`] enforces: only while admitted to the
+//! room, only for its channels, never off the device, and read-only for an
+//! Observer. This device governs its ephemeral rooms (a replay and its
+//! checks), and [`ChannelEncryption::forget_room`] drops their channels
+//! when they close.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -615,6 +623,39 @@ impl ChannelEncryption {
         }
     }
 
+    /// Drop every channel of `room` and its state on disk: the room is gone
+    /// and nothing of it is kept (an ephemeral room, such as a replay).
+    pub fn forget_room(&mut self, room: RoomId) {
+        let channels: Vec<ChannelId> = self
+            .stewards
+            .iter()
+            .filter(|(_, entry)| entry.room == room)
+            .map(|(channel, _)| *channel)
+            .chain(
+                self.members
+                    .iter()
+                    .filter(|(_, entry)| entry.room == room)
+                    .map(|(channel, _)| *channel),
+            )
+            .collect();
+        for channel in &channels {
+            self.stewards.remove(channel);
+            self.members.remove(channel);
+        }
+        if let Ok(mut broker) = self.broker.lock() {
+            for channel in &channels {
+                broker.forget_channel_gate(*channel);
+            }
+        }
+        let dir = self.config.root.join(room.to_string());
+        if let Err(error) = std::fs::remove_dir_all(&dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, %room, "a room's channel state was not removed");
+        }
+        self.bump();
+    }
+
     fn bump(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
@@ -654,6 +695,13 @@ impl ChannelKeyAccess {
     /// See [`ChannelEncryption::generation`].
     pub fn generation(&self) -> u64 {
         self.inner.lock().map_or(0, |service| service.generation())
+    }
+
+    /// See [`ChannelEncryption::forget_room`].
+    pub fn forget_room(&self, room: RoomId) {
+        if let Ok(mut service) = self.inner.lock() {
+            service.forget_room(room);
+        }
     }
 }
 

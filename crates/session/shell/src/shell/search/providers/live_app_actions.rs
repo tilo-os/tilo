@@ -258,6 +258,9 @@ pub struct LiveAppActionsProvider {
     resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
     directory_epoch: AtomicU64,
+    /// The published-surface generation the cached directory pages were
+    /// read at.
+    directory_surfaces_generation: Cell<u64>,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
     auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
@@ -436,6 +439,7 @@ impl LiveAppActionsProvider {
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
+            directory_surfaces_generation: Cell::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
@@ -737,6 +741,16 @@ impl LiveAppActionsProvider {
     }
 
     fn apply_directory_invalidations(&self) {
+        // An app republishes its surface when its actions change, so a page
+        // read before that describes actions the app no longer offers, or
+        // lacks ones it now does, however often the same query asks again.
+        let generation = self.broker.surfaces_generation();
+        if self.directory_surfaces_generation.replace(generation) != generation {
+            self.directory_pages.borrow_mut().clear();
+            self.directory_pending.borrow_mut().clear();
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         let invalidated = std::mem::take(&mut *self.directory_invalidations.borrow_mut());
         if invalidated.is_empty() {
             return;
@@ -2714,6 +2728,35 @@ mod tests {
             provider.set_directory_query("other");
             assert!(provider.directory_pages.borrow().is_empty());
         }
+    }
+
+    #[test]
+    fn an_app_republishing_its_surface_refreshes_the_same_query() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        provider.set_directory_query("feedback");
+        provider.apply_directory_invalidations();
+        let key: DirectoryCacheKey = (7, "actor-a".into(), "feedback".into(), Vec::new());
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(key.clone(), page(Vec::new(), Vec::new()));
+        provider.set_directory_query("feedback");
+        provider.apply_directory_invalidations();
+        assert!(
+            provider.directory_pages.borrow().contains_key(&key),
+            "the same query keeps its page while no app changed its actions"
+        );
+
+        provider
+            .broker
+            .replace_published_surfaces_for_test(Vec::new());
+        provider.apply_directory_invalidations();
+        assert!(
+            provider.directory_pages.borrow().is_empty(),
+            "an app that published new actions is asked again, for the same query too"
+        );
     }
 
     #[test]

@@ -314,6 +314,7 @@ pub fn available() -> bool {
 /// Returns the unit's failure reason when systemd, polkit or the helper refuse
 /// or fail.
 pub fn run(action: CodecAction) -> Result<(), String> {
+    crate::owner::admit("systemctl")?;
     let unit = action.unit();
     let output = bounded_command::run(
         "systemctl",

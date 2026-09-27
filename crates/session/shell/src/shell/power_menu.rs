@@ -42,13 +42,18 @@ pub(crate) struct PowerMenu {
     /// Whether the display manager can open a greeter beside this session.
     /// Without it, Switch user is not offered at all rather than failing.
     user_switching: bool,
+    /// Whether this shell owns the machine. A nested or headless shell still
+    /// shows the machine's session actions, disabled and marked as managed
+    /// by the host system, so the menu says why nothing happens.
+    surfaces: os_actions::SystemSurfaces,
 }
 
 impl Default for PowerMenu {
-    /// Every action. The live session builds its menu with
-    /// [`PowerMenu::for_session`] from what the display manager supports.
+    /// Every action, on a shell that owns the machine. The live session
+    /// builds its menu with [`PowerMenu::for_session`] from what the display
+    /// manager supports and whether it owns the machine.
     fn default() -> Self {
-        Self::for_session(true)
+        Self::for_session(true, os_actions::SystemSurfaces::Owned)
     }
 }
 
@@ -96,13 +101,29 @@ impl PowerMenuMetrics {
 }
 
 impl PowerMenu {
-    pub(crate) fn for_session(user_switching: bool) -> Self {
+    pub(crate) fn for_session(user_switching: bool, surfaces: os_actions::SystemSurfaces) -> Self {
         Self {
             open: false,
             transition: ui::Transition::closed(),
             selected: 0,
             text_scale: 1.0,
             user_switching,
+            surfaces,
+        }
+    }
+
+    /// Whether `action` can run here. Locking is the compositor's own lock
+    /// scene; every other row acts on the machine and needs to own it.
+    fn enabled(&self, action: PowerMenuAction) -> bool {
+        matches!(action, PowerMenuAction::Lock) || self.surfaces.is_owned()
+    }
+
+    /// The row's second line: what it does, or why it cannot.
+    fn detail(&self, action: PowerMenuAction) -> String {
+        if self.enabled(action) {
+            action.detail()
+        } else {
+            os_actions::HOST_MANAGED_REASON.to_owned()
         }
     }
 
@@ -157,11 +178,12 @@ impl PowerMenu {
                         .map(|(index, (action, _))| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
-                                .with_description(action.detail())
+                                .with_description(self.detail(*action))
                                 .with_state(
                                     AccessState::new()
                                         .focusable(true)
-                                        .focused(index == self.selected),
+                                        .focused(index == self.selected)
+                                        .disabled(!self.enabled(*action)),
                                 )
                         })
                         .collect(),
@@ -333,11 +355,15 @@ impl PowerMenu {
     }
 
     fn activate(&mut self, index: usize) -> PowerMenuClick {
-        let Some(action) = self.rows().nth(index) else {
+        let Some(&(action, _)) = self.rows().nth(index) else {
             return PowerMenuClick::Consumed;
         };
+        if !self.enabled(action) {
+            // The row says why; the menu stays open rather than pretending.
+            return PowerMenuClick::Consumed;
+        }
         self.close();
-        match action.0 {
+        match action {
             PowerMenuAction::Lock => PowerMenuClick::Lock,
             PowerMenuAction::External(action) => PowerMenuClick::Execute(action),
         }
@@ -464,7 +490,12 @@ impl PowerMenu {
         let inset = f64::from(theme.tokens.spacing.s3);
         let icon_px = f64::from(theme.tokens.metrics.icon_md);
         for (index, (action, icon)) in self.rows().enumerate() {
-            let (label, detail) = (action.label(), action.detail());
+            let (label, detail) = (action.label(), self.detail(*action));
+            let label_color = if self.enabled(*action) {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             let row = self.action_rect(viewport, index);
             let selected = self.selected == index;
             // Control role: the chosen row is a lift (HIG §9.3), never an
@@ -537,7 +568,7 @@ impl PowerMenu {
                 scene,
                 &label,
                 label_size,
-                colors.text_primary,
+                label_color,
                 at(transform, (text_x, label_y)),
                 None,
                 TextWeight::Semibold,
@@ -883,7 +914,7 @@ mod tests {
         fn switch_user_is_offered_only_when_the_display_manager_supports_it() {
             use winit::keyboard::{Key, NamedKey};
 
-            let mut menu = PowerMenu::for_session(false);
+            let mut menu = PowerMenu::for_session(false, os_actions::SystemSurfaces::Owned);
             menu.open();
             menu.force_settled_for_visual_test();
             let targets = menu.action_rects(VIEWPORT);
@@ -943,6 +974,49 @@ mod tests {
         opening_animation_hit_test_tracks_the_painted_logout_row();
         keyboard_navigation_reaches_actions_and_activates_once();
         switch_user_is_offered_only_when_the_display_manager_supports_it();
+    }
+
+    #[test]
+    fn a_shell_that_does_not_own_the_machine_shows_its_session_actions_as_host_managed() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut menu = PowerMenu::for_session(false, os_actions::SystemSurfaces::Hosted);
+        menu.open();
+        menu.force_settled_for_visual_test();
+        let targets = menu.action_rects(VIEWPORT);
+        assert_eq!(targets.len(), 5, "the machine's actions stay visible");
+        let tree = menu.accessibility_snapshot().expect("open session menu");
+        let lock = &tree.children[0];
+        assert!(
+            !lock.state.disabled,
+            "the compositor's own lock still works"
+        );
+        for row in &tree.children[1..] {
+            assert!(row.state.disabled, "{:?} must be disabled", row.name);
+            assert_eq!(
+                row.description.as_deref(),
+                Some(os_actions::HOST_MANAGED_REASON)
+            );
+        }
+        for (_, rect) in &targets[1..] {
+            assert_eq!(
+                menu.click(VIEWPORT, rect.center()),
+                PowerMenuClick::Consumed
+            );
+            assert!(
+                menu.is_open(),
+                "a refused row keeps the menu and its reason up"
+            );
+        }
+        menu.selected = 4;
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Consumed
+        );
+        assert_eq!(
+            menu.click(VIEWPORT, targets[0].1.center()),
+            PowerMenuClick::Lock
+        );
     }
     #[test]
     fn power_menu_dismisses_without_acting_and_animates_immediately() {

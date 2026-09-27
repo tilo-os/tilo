@@ -1478,6 +1478,12 @@ impl RecordSet {
         self.active.as_ref()
     }
 
+    /// Whether the checked-out record was declared read-only: followed from
+    /// the room, never written into it.
+    pub fn active_is_read_only(&self) -> bool {
+        self.active_read_only
+    }
+
     /// Every record this process has open, checked-out one included.
     pub fn open_records(&self) -> Vec<RecordCheckout> {
         let mut out: Vec<RecordCheckout> = self

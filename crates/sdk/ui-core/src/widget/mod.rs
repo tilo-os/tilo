@@ -2805,6 +2805,10 @@ pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
 pub use choice_card::ChoiceCardFace;
+pub mod setup_offer;
+pub use setup_offer::{
+    OfferBindings, OfferPill, OfferTarget, SetupChoice, SetupOffer, SetupOfferLayout,
+};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;

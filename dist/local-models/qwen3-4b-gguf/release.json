@@ -1,0 +1,17 @@
+{
+  "id": "qwen/qwen3-4b-gguf",
+  "label": "Qwen3 4B (GGUF, Q4_K_M)",
+  "description": "The Apache-2.0 review model as one GGUF file, for llama.cpp on any Vulkan GPU, integrated AMD and Intel graphics included, or on the CPU. It proposes redactions and writes step titles for feedback recordings before they are sent, without network access.",
+  "repository": "Qwen/Qwen3-4B-GGUF",
+  "revision": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+  "format": "gguf",
+  "license_id": "Apache-2.0",
+  "license_file": "LICENSE",
+  "requires_acceptance": false,
+  "runtime": "llama-cpp-vulkan-b11176",
+  "required_memory_mib": 3840,
+  "required_accelerator_mib": 4480,
+  "context_window": 8192,
+  "capabilities": ["trace_review"],
+  "accelerator_memory_percent": null
+}

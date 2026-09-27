@@ -95,6 +95,7 @@ pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
 pub fn start_firmware_install(
     updates: &[FirmwareUpdate],
 ) -> Result<Receiver<FirmwareEvent>, String> {
+    crate::owner::admit("fwupdmgr")?;
     if updates.is_empty() {
         return Err("there are no firmware updates to install".into());
     }
@@ -167,6 +168,7 @@ fn run_fwupd_transaction(
     device_id: &str,
     mut emit: impl FnMut(FirmwareEvent),
 ) -> Result<bool, String> {
+    crate::owner::admit("fwupdmgr")?;
     let mut child = Command::new("fwupdmgr")
         .args(["update", device_id, "-y", "--no-reboot-check"])
         .stdin(Stdio::null())

@@ -21,14 +21,69 @@ use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, Chip, ChipLead, ChipStyle, ChoiceCardFace, Toggle, ToggleFace,
+    BadgeTone, Button, ButtonFace, Chip, ChipLead, ChipStyle, ChoiceCardFace, OfferPill,
+    OfferTarget, SetupChoice, SetupOffer, Toggle, ToggleFace,
 };
 
 use crate::shell::i18n::{number, t, t_args, text};
 
 use super::pick::PickState;
-use super::review::{ModelUse, Review, Verdict};
+use super::review::{ModelUse, Review, SetUpChoice, Verdict};
 use super::{Composer, DestinationKind, DestinationOption, Flow, Opening, Sending, Stage};
+
+/// The pill a set-up choice's tag stands for.
+fn offer_pill(tag: Option<&str>) -> Option<OfferPill> {
+    let (key, tone) = match tag? {
+        "fit-excellent" => ("remark-review-offer-fit-excellent", BadgeTone::Success),
+        "fit-good" => ("remark-review-offer-fit-good", BadgeTone::Success),
+        "fit-tight" => ("remark-review-offer-fit-tight", BadgeTone::Warning),
+        "speed-interactive" => ("remark-review-offer-speed-fast", BadgeTone::Success),
+        "speed-slow" => ("remark-review-offer-speed-slow", BadgeTone::Warning),
+        _ => return None,
+    };
+    Some(OfferPill::new(t(key), tone))
+}
+
+fn offer_choice(choice: &SetUpChoice) -> SetupChoice {
+    SetupChoice {
+        title: choice.label.clone(),
+        terms: choice.terms.clone(),
+        pills: [choice.fit.as_deref(), choice.speed.as_deref()]
+            .into_iter()
+            .filter_map(offer_pill)
+            .collect(),
+    }
+}
+
+/// The hub's choices as the toolkit's shared offer: the recommendation,
+/// then the alternatives behind "Show more".
+pub(crate) fn review_offer(choices: &[SetUpChoice]) -> Option<SetupOffer> {
+    let (recommended, alternatives) = choices.split_first()?;
+    Some(SetupOffer {
+        heading: t("remark-review-offer-heading"),
+        question: t_args(
+            "remark-review-offer-question",
+            &[("offer", text(recommended.label.clone()))],
+        ),
+        description: t("remark-review-offer-description"),
+        recommended: offer_choice(recommended),
+        set_up: t("remark-review-offer-set-up"),
+        show_more: t_args(
+            "remark-review-offer-more",
+            &[(
+                "count",
+                number(f64::from(
+                    u32::try_from(alternatives.len()).unwrap_or(u32::MAX),
+                )),
+            )],
+        ),
+        show_fewer: t("remark-review-offer-fewer"),
+        dismiss: Some(t("remark-review-offer-dismiss")),
+        alternatives_title: t("remark-review-offer-alternatives"),
+        instead: t("remark-review-offer-instead"),
+        alternatives: alternatives.iter().map(offer_choice).collect(),
+    })
+}
 
 fn f32_of(value: f64) -> f32 {
     ui::num::f32_of_f64(value)
@@ -74,6 +129,8 @@ pub enum Target {
         node: String,
     },
     ReviewSetUp,
+    /// A press on the offer to set the review model up.
+    ReviewOffer(OfferTarget),
     ReviewSend,
     PillStop,
     /// Inside a surface, on nothing: absorbs the press.
@@ -109,6 +166,15 @@ impl Target {
                 json!({ "step": step, "node": node, "at": at }),
             ),
             Self::ReviewSetUp => ("remark.review.model.set-up", json!({})),
+            Self::ReviewOffer(OfferTarget::SetUp) => {
+                ("remark.review.model.confirm", json!({ "choice": 0 }))
+            }
+            Self::ReviewOffer(OfferTarget::Alternative(index)) => (
+                "remark.review.model.confirm",
+                json!({ "choice": index.saturating_add(1) }),
+            ),
+            Self::ReviewOffer(OfferTarget::ToggleMore) => ("remark.review.model.more", json!({})),
+            Self::ReviewOffer(OfferTarget::Dismiss) => ("remark.review.model.dismiss", json!({})),
             Self::ReviewHideText { step, node } => {
                 ("remark.review.hide", json!({ "step": step, "node": node }))
             }
@@ -143,6 +209,12 @@ impl Target {
                 format!("remark_review_word[{step}:{node}:{at}]")
             }
             Self::ReviewSetUp => "remark_review_set_up".into(),
+            Self::ReviewOffer(OfferTarget::SetUp) => "remark_review_offer_set_up".into(),
+            Self::ReviewOffer(OfferTarget::ToggleMore) => "remark_review_offer_more".into(),
+            Self::ReviewOffer(OfferTarget::Dismiss) => "remark_review_offer_dismiss".into(),
+            Self::ReviewOffer(OfferTarget::Alternative(index)) => {
+                format!("remark_review_offer_instead[{index}]")
+            }
             Self::ReviewHideText { step, node } => format!("remark_review_hide[{step}:{node}]"),
             Self::ReviewSend => "remark_review_send".into(),
             Self::PillStop => "remark_pill_stop".into(),
@@ -194,6 +266,10 @@ impl Target {
             }
             Self::ReviewWord { .. } | Self::ReviewHideText { .. } => t("remark-review-subtitle"),
             Self::ReviewSetUp => t("remark-review-model-floor"),
+            Self::ReviewOffer(OfferTarget::SetUp) => t("remark-review-offer-set-up"),
+            Self::ReviewOffer(OfferTarget::ToggleMore) => t("remark-review-offer-more-label"),
+            Self::ReviewOffer(OfferTarget::Dismiss) => t("remark-review-offer-dismiss"),
+            Self::ReviewOffer(OfferTarget::Alternative(_)) => t("remark-review-offer-instead"),
             Self::Absorb => String::new(),
         }
     }
@@ -1802,6 +1878,13 @@ impl RemarkView {
             return;
         };
         if review.steps.is_empty() {
+            let list = Rect::new(
+                body.x0,
+                body.y0,
+                body.x0 + (body.width() * 0.34).clamp(200.0, 300.0),
+                body.y1,
+            );
+            Self::draw_protected_rows(scene, transform, tr, theme, list, 0, &review.protected);
             let message = t("remark-review-empty");
             let (w, h) = tr.measure(&message, scale.sm, None);
             line(
@@ -1819,6 +1902,7 @@ impl RemarkView {
                 TextWeight::Regular,
             );
             self.draw_review_footer(scene, transform, tr, theme, sheet, Some(review));
+            self.draw_review_offer(scene, transform, tr, theme, sheet, body, review);
             return;
         }
 
@@ -1967,6 +2051,15 @@ impl RemarkView {
             );
             self.push(row, target);
         }
+        Self::draw_protected_rows(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(body.x0, body.y0, body.x0 + list_w, body.y1 - verdict_h),
+            review.steps.len(),
+            &review.protected,
+        );
 
         // The chosen step.
         let detail = Rect::new(body.x0 + list_w + gap * 1.5, body.y0, body.x1, body.y1);
@@ -2147,6 +2240,143 @@ impl RemarkView {
         }
 
         self.draw_review_footer(scene, transform, tr, theme, sheet, Some(review));
+        self.draw_review_offer(scene, transform, tr, theme, sheet, body, review);
+    }
+
+    /// The hub's offer to set the review model up, over the sheet below its
+    /// header: the toolkit's shared set-up offer, as Settings shows it, in
+    /// the hub's own words. It stands in for the steps and the footer until
+    /// the person answers it; its buttons are this sheet's targets.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the offer is painted against its review, the sheet and the body it covers"
+    )]
+    fn draw_review_offer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        sheet: Rect,
+        body: Rect,
+        review: &Review,
+    ) {
+        let ModelUse::Offer { choices, expanded } = &review.model else {
+            return;
+        };
+        let Some(offer) = review_offer(choices) else {
+            return;
+        };
+        // As tall as the offer, at most the sheet below its header.
+        let inset = f64_of(theme.tokens.spacing.s4);
+        let bottom = sheet.y1 - f64_of(theme.tokens.spacing.s4);
+        let layout = offer.layout_fitting(
+            Point::new(body.x0 + inset, body.y0 + inset),
+            (body.width() - inset * 2.0).max(120.0),
+            bottom - body.y0 - inset * 2.0,
+            *expanded,
+            theme,
+            tr,
+        );
+        let card = Rect::new(
+            body.x0,
+            body.y0,
+            body.x1,
+            (layout.rect.y1 + inset).min(bottom),
+        );
+        let radius = f64_of(theme.tokens.radii.lg);
+        ui::surface::shadow(scene, transform, card, radius, &theme.tokens.elevation.e3);
+        ui::surface::panel(scene, transform, card, radius, theme);
+        self.push(card, Target::Absorb);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &RoundedRect::from_rect(card, radius),
+        );
+        let targets = layout.targets();
+        let hovered = targets
+            .iter()
+            .find(|(rect, _)| self.hovered(*rect))
+            .map(|(_, target)| *target);
+        let focused = targets
+            .iter()
+            .find(|(_, target)| self.focused(&Target::ReviewOffer(*target)))
+            .map(|(_, target)| *target);
+        layout.paint(scene, transform, tr, theme, hovered, focused);
+        scene.pop_layer();
+        for (rect, target) in targets {
+            // What the card clips away cannot be pressed either.
+            if card.contains(Point::new(rect.x0, rect.y1)) {
+                self.push(rect, Target::ReviewOffer(target));
+            }
+        }
+    }
+
+    /// One row per capture-protected app, below the `after` step rows of
+    /// `list`: the capture placeholder where its steps would be, and that
+    /// nothing of it was recorded.
+    fn draw_protected_rows(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+        after: usize,
+        protected: &[(String, String)],
+    ) {
+        let step_h = 52.0;
+        let gap = gap(theme);
+        let scale = &theme.tokens.typography.scale;
+        let colors = &theme.tokens.colors;
+        for (index, (_, name)) in protected.iter().enumerate() {
+            let row = Rect::from_origin_size(
+                (
+                    list.x0,
+                    list.y0 + ui::num::f64_of_usize(after.saturating_add(index)) * (step_h + 2.0),
+                ),
+                (list.width(), step_h),
+            );
+            if row.y1 > list.y1 {
+                break;
+            }
+            let mark = Rect::from_origin_size(
+                (row.x0 + gap, row.y0 + 6.0),
+                (step_h - 12.0, step_h - 12.0),
+            );
+            crate::shell::capture_protection::paint_placeholder(
+                scene,
+                transform,
+                mark,
+                f64_of(theme.tokens.radii.sm),
+                theme,
+            );
+            let x = mark.x1 + gap;
+            let (_, name_h) = tr.measure_weighted(name, scale.sm, None, TextWeight::Medium);
+            line(
+                scene,
+                transform,
+                tr,
+                name,
+                scale.sm,
+                colors.text_primary,
+                Point::new(x, row.y0 + 8.0),
+                row.x1 - x - gap,
+                TextWeight::Medium,
+            );
+            line(
+                scene,
+                transform,
+                tr,
+                &t("remark-review-protected"),
+                scale.xs,
+                colors.text_dim,
+                Point::new(x, row.y0 + 12.0 + f64::from(name_h)),
+                row.x1 - x - gap,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// One text, word by word: a hidden word is its mask, a shown one is
@@ -2284,7 +2514,7 @@ impl RemarkView {
                 t("remark-review-model-failed"),
                 reason.clone(),
             ),
-            ModelUse::Floor | ModelUse::Pending => (
+            ModelUse::Floor | ModelUse::Pending | ModelUse::Offer { .. } => (
                 Icon::Shield,
                 colors.text_dim,
                 t("remark-review-model-floor"),
@@ -2995,6 +3225,73 @@ mod tests {
             assert_eq!(target.action().map(|(action, _)| action), Some(id));
         }
         assert_eq!(Target::DestinationList.action(), None);
+        // The offer: confirming the recommendation is choice 0, an
+        // alternative its rank; neither downloads anything by itself.
+        assert_eq!(
+            Target::ReviewOffer(OfferTarget::SetUp).action(),
+            Some(("remark.review.model.confirm", json!({ "choice": 0 })))
+        );
+        assert_eq!(
+            Target::ReviewOffer(OfferTarget::Alternative(1)).action(),
+            Some(("remark.review.model.confirm", json!({ "choice": 2 })))
+        );
+        assert_eq!(
+            Target::ReviewOffer(OfferTarget::ToggleMore)
+                .action()
+                .map(|(action, _)| action),
+            Some("remark.review.model.more")
+        );
+    }
+
+    #[test]
+    fn the_review_offer_is_the_hubs_choice_in_the_shared_face() {
+        let choice = |action: &str, label: &str, fit: &str| SetUpChoice {
+            action: action.into(),
+            label: label.into(),
+            terms: "2.5 GiB download · License Apache-2.0 · Fast here, about 90 words a second"
+                .into(),
+            fit: Some(fit.into()),
+            speed: Some("speed-interactive".into()),
+        };
+        let offer = review_offer(&[
+            choice(
+                "set-up-on-device",
+                "Set up Qwen3 4B (AWQ) with vLLM on NVIDIA GeForce RTX 4070 Laptop GPU for Feedback review",
+                "fit-good",
+            ),
+            choice(
+                "set-up-on-device-1",
+                "Set up Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics for Feedback review",
+                "fit-excellent",
+            ),
+        ])
+        .expect("an offer");
+        assert!(offer.question.contains("vLLM on NVIDIA GeForce RTX 4070"));
+        assert!(offer.recommended.terms.contains("Apache-2.0"));
+        assert_eq!(offer.recommended.pills.len(), 2, "fit and speed");
+        assert_eq!(offer.alternatives.len(), 1);
+        assert!(offer.show_more.contains('1'));
+        let mut renderer = TextRenderer::new();
+        let expanded = offer.layout(
+            Point::new(0.0, 0.0),
+            700.0,
+            true,
+            &Theme::dark(),
+            &mut renderer,
+        );
+        assert!(
+            expanded
+                .texts()
+                .iter()
+                .any(|line| line.contains("llama.cpp on AMD Radeon 780M"))
+        );
+        assert!(
+            expanded
+                .targets()
+                .iter()
+                .any(|(_, target)| *target == OfferTarget::Alternative(0))
+        );
+        assert!(review_offer(&[]).is_none());
     }
 
     #[test]

@@ -97,7 +97,7 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
-use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
+use crate::compositor::screen_dim::{Backlight, ScreenDimmer, SysBacklight};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
@@ -5666,10 +5666,15 @@ pub fn run() {
         }
     };
 
-    spawn_auto_brightness_worker();
-
     // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
+    // Only a compositor driving the machine's own outputs owns their
+    // brightness. A nested window or a headless session runs on a machine
+    // whose display belongs to someone else's desktop.
+    let owns_displays = backend_kind == BackendKind::Drm;
+    if owns_displays {
+        spawn_auto_brightness_worker();
+    }
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
     // DRM owns a nested calloop for libinput/libseat/udev. Register its poll
     // fd in the compositor loop so hardware input wakes us immediately rather
@@ -6257,11 +6262,11 @@ pub fn run() {
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
     let mut power_policy = tilo_power_mgmt::config::load_policy();
-    let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
+    let idle_from_env = crate::compositor::dev_env::DEV_ENV_OVERRIDES
         && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
             || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
-            || std::env::var_os(crate::compositor::idle::SUSPEND_SECS_ENV).is_some())
-    {
+            || std::env::var_os(crate::compositor::idle::SUSPEND_SECS_ENV).is_some());
+    let idle_config = if idle_from_env {
         // Explicit developer/test timeouts must remain authoritative. The
         // production release cannot enter this branch, and otherwise the
         // persisted minute-granularity Settings policy silently overwrites
@@ -6285,7 +6290,7 @@ pub fn run() {
     // Other devices' focus changes arrive over the network at human pace;
     // copying the feed into chrome a few times a second is plenty.
     let mut continuity_feed_polled: Option<Instant> = None;
-    let mut screen_dimmer = ScreenDimmer::default();
+    let mut screen_dimmer = ScreenDimmer::new(SysBacklight::owned(owns_displays));
     let mut prev_dim_overlay = None;
     // Set by PrepareForSleep and cleared only after the compositor's lock
     // frame has retired from the presenter (or DPMS is already off).
@@ -6396,13 +6401,18 @@ pub fn run() {
         )
     });
 
+    // The machine's own agents and power service belong to the compositor
+    // that owns it. A nested or headless shell registering them would take
+    // over its host's password prompts, Wi-Fi secrets, lid and suspend.
+    let system_runtime = notif_runtime.filter(|_| os_actions::owner::current().is_owned());
+
     // polkit authentication agent: administrator prompts from pkexec,
     // GNOME Disks, virt-manager and system Flatpak installs become a sheet
     // only the compositor draws. Registered on the system bus for this login
     // session; without polkit or logind the requests fail as before.
     let polkit_agent: Option<
         crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
-    > = notif_runtime.map(|rt| {
+    > = system_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "polkit agent",
@@ -6418,7 +6428,7 @@ pub fn run() {
     // draws, instead of a connection that silently fails.
     let network_secret_agent: Option<
         crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
-    > = notif_runtime.map(|rt| {
+    > = system_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "network secret agent",
@@ -6434,7 +6444,7 @@ pub fn run() {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if let Some(rt) = system_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -7445,9 +7455,13 @@ pub fn run() {
             frame_builder.host_mut().poll_display_identify();
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
-            session.set_blank_timeout(policy.idle_blank);
-            session.set_lock_timeout(policy.idle_lock);
-            session.set_suspend_timeout(policy.idle_suspend);
+            // Explicit developer/test timeouts stay authoritative on a
+            // settings reload as at startup.
+            if !idle_from_env {
+                session.set_blank_timeout(policy.idle_blank);
+                session.set_lock_timeout(policy.idle_lock);
+                session.set_suspend_timeout(policy.idle_suspend);
+            }
             power_bridge.update_policy(policy);
             outputs_dirty = true;
             input_methods.reload(&mut state);

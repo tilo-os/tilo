@@ -99,8 +99,14 @@ impl TraceBuilder {
         }
     }
 
+    /// Replace the environment, keeping the protection markers already
+    /// noted.
     pub fn set_environment(&mut self, environment: Environment) {
+        let protected = std::mem::take(&mut self.environment.protected);
         self.environment = environment;
+        for marker in protected {
+            self.note_protected(&marker.app_id, &marker.room);
+        }
     }
 
     /// Record the geometry of an app surface, replacing what was noted for
@@ -114,6 +120,21 @@ impl TraceBuilder {
             *existing = surface;
         } else if surfaces.len() < self.limits.max_routes {
             surfaces.push(surface);
+        }
+    }
+
+    /// Mark `app_id` as present in `room` and capture-protected: the one
+    /// thing a session keeps of it. Bounded like the routes.
+    pub fn note_protected(&mut self, app_id: &str, room: &str) {
+        let marker = crate::ProtectedApp {
+            app_id: app_id.to_string(),
+            room: room.to_string(),
+        };
+        let protected = &mut self.environment.protected;
+        if let Err(at) = protected.binary_search(&marker)
+            && protected.len() < self.limits.max_routes
+        {
+            protected.insert(at, marker);
         }
     }
 

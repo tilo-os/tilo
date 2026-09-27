@@ -52,7 +52,7 @@ Agent profile / Task Center
 Tilo model gateway (per-user, secrets stay here)
            |
            +-- LiteLLM Proxy -> OpenAI, Anthropic, compatible cloud APIs
-           +-- vLLM OpenAI-compatible server -> local model
+           +-- vLLM or llama.cpp OpenAI-compatible server -> local model
            +-- compatible endpoint -> remote vLLM, LM Studio, Ollama, etc.
            |
            v
@@ -124,14 +124,27 @@ so it resolves on whichever device runs it.
 Settings' AI pane is the one hub for all of this, and every control in it is
 an action of its resource tree, so agents and `tilo-control` configure it the
 same way; keys, removals and downloads need confirmation. Azure OpenAI signs
-in with Microsoft Entra ID through `accounts::oauth`, the one OAuth
-implementation Mail also uses.
+in with a Microsoft work or school account through account custody
+(`crates/system/account-custody`), the one OAuth implementation in Tilo: the
+`ai` use of Tilo's shared Microsoft client in `oauth-clients.toml` (scopes
+`offline_access` and `https://cognitiveservices.azure.com/user_impersonation`),
+the same registration Mail and cloud storage sign in through. The sign-in
+creates an ordinary custody account (type `azure-openai`), saved and removed
+through Settings' shared account save and removal and listed in Settings ›
+Accounts, and the provider profile names it (`Credential::Account`). Whether
+the provider is signed in is read from the account store, so removing the
+account anywhere signs the provider out. The gateway asks
+`Custodian::account_access_token` for a current access token before each
+call; custody refreshes and reseals the grant, and the refresh token never
+leaves it.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
-to an immutable revision, and starts [vLLM's OpenAI-compatible
+to an immutable revision, and starts the configuration's engine against it:
+[vLLM's OpenAI-compatible
 server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. Tilo presents license, size, revision,
+on a snapshot, or llama.cpp's `llama-server` on a GGUF file. Which one, on
+which device, is ranked per device from the hardware; neither is a default. Tilo presents license, size, revision,
 download/load progress and VRAM state, then supervises the process in a
 container without network, reachable only through a private Unix socket. Downloading is an explicit management
 operation, never a side effect of an agent request.

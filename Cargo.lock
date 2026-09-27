@@ -152,19 +152,15 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
- "base64",
  "bounded-command",
  "cloud-source",
  "getrandom 0.4.1",
  "hex",
  "private-fs",
- "reqwest",
  "secret-vault",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tilo-clock",
- "tilo-net",
  "tracing",
  "url",
  "uuid",
@@ -12751,6 +12747,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "bounded-command",
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",
@@ -14698,6 +14695,7 @@ dependencies = [
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "base64",

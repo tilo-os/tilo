@@ -61,7 +61,7 @@ def main():
         stream.connect(args.socket)
         # The desktop session names itself; this socket is outside every sandbox.
         write_frame(stream, {"protocol": 2, "principal": "session"})
-        write_frame(stream, {"version": 4, "verb": "review_trace", "trace": TRACE})
+        write_frame(stream, {"version": 5, "verb": "review_trace", "trace": TRACE})
         response = read_frame(stream)
     if not response.get("ok"):
         raise RuntimeError(response.get("error", "gateway rejected the review"))

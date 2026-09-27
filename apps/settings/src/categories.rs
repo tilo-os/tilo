@@ -420,6 +420,24 @@ impl Category {
             .filter(move |c| c.section() == section)
     }
 
+    /// Whether this pane changes the machine itself (its network, radios,
+    /// audio, displays, clock, accounts, printers, power or software), and so
+    /// belongs to whichever system owns the machine.
+    pub fn acts_on_machine(self) -> bool {
+        matches!(
+            self,
+            Category::Network
+                | Category::Bluetooth
+                | Category::Sound
+                | Category::Displays
+                | Category::TimeDate
+                | Category::Users
+                | Category::Printers
+                | Category::Power
+                | Category::Updates
+        )
+    }
+
     /// User-facing label, rendered in the sidebar and reused as the pane
     /// header.
     pub fn label(self) -> &'static str {

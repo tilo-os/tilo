@@ -13,6 +13,7 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 
 use super::pick::{NodeKey, Walk};
+use super::review::{ModelUse, SetUpChoice};
 use super::{Flow, Opening, Pick, Request, Stage, app_reference};
 
 fn refused(message: impl Into<String>) -> ActionError {
@@ -680,8 +681,9 @@ pub fn review_cut(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionE
     Ok(())
 }
 
-/// Set up the review model in place, through the hub's own action and its
-/// own confirmation.
+/// Offer to set up the review model in place: the configuration the AI hub
+/// recommends for this device, with its alternatives. Nothing downloads
+/// until one is confirmed with `remark.review.model.confirm`.
 ///
 /// # Errors
 ///
@@ -689,6 +691,61 @@ pub fn review_cut(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionE
 pub fn review_set_up_model(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     require_review(st)?;
     st.push_remark_request(Request::SetUpReviewModel);
+    st.bump();
+    Ok(())
+}
+
+fn offer_mut(st: &mut ChromeState) -> Result<(&mut Vec<SetUpChoice>, &mut bool), ActionError> {
+    match &mut review_mut(st)?.model {
+        ModelUse::Offer { choices, expanded } => Ok((choices, expanded)),
+        _ => Err(refused(
+            "no set-up offer is open; ask for one with remark.review.model.set-up",
+        )),
+    }
+}
+
+/// Show or hide the offer's alternatives.
+///
+/// # Errors
+///
+/// When no offer is open.
+pub fn review_model_more(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
+    require_review(st)?;
+    let (_, expanded) = offer_mut(st)?;
+    *expanded = !*expanded;
+    st.bump();
+    Ok(())
+}
+
+/// Set up the offered choice `choice` (0 is the recommendation): the
+/// person's confirmation of what the offer shows.
+///
+/// # Errors
+///
+/// When no offer is open or it has no such choice.
+pub fn review_model_confirm(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    require_review(st)?;
+    let choice = index(args, "choice")?;
+    let (choices, _) = offer_mut(st)?;
+    let action = usize::try_from(choice)
+        .ok()
+        .and_then(|choice| choices.get(choice))
+        .map(|choice| choice.action.clone())
+        .ok_or_else(|| refused(format!("the offer has no choice {choice}")))?;
+    st.push_remark_request(Request::ConfirmReviewModel { action });
+    st.bump();
+    Ok(())
+}
+
+/// Leave the offer without setting anything up.
+///
+/// # Errors
+///
+/// When no offer is open.
+pub fn review_model_dismiss(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
+    require_review(st)?;
+    offer_mut(st)?;
+    review_mut(st)?.model = ModelUse::Floor;
     st.bump();
     Ok(())
 }
@@ -825,6 +882,12 @@ pub const REDACT_WORD_PARAMS: &[ActionParam] = &[
     ActionParam::required("node", ParamType::Text, "The text's node id in that step."),
     ActionParam::required("at", ParamType::Integer, "A byte offset inside the word."),
 ];
+pub const CHOICE_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "choice",
+    ParamType::Integer,
+    "The offered choice, from 0: the recommendation, then each alternative.",
+)];
+
 pub const CUT_PARAMS: &[ActionParam] = &[
     ActionParam::required("step", ParamType::Integer, "The walk-through step, from 0."),
     ActionParam::optional(

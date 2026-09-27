@@ -12,7 +12,10 @@
 //! forwarded. Each recorded change is re-framed onto the replay room's route
 //! in an envelope signed by this peer's own session key: the Automerge change
 //! bytes, and the authorship they carry, are exactly what was recorded, and
-//! the transport says who is actually speaking. Presence goes out, only ever
+//! the transport says who is actually speaking. The replay room's routes are
+//! encrypted channels like any room's, so each re-framed change is sealed for
+//! the channel it goes out on, with a [`ChannelSealer`] that writes in the
+//! replay room and nowhere else. Presence goes out, only ever
 //! in the replay room, as [`replay_participant`] of the recorded participant:
 //! the recorded identity, named as a replay of it. It is never the id of a
 //! live person, so the person replaying their own session can follow it.
@@ -37,6 +40,7 @@ use ui::presence::PresenceKey;
 use ui::view::FollowMode;
 
 use crate::shell::collab_broker::{CrdtRoute, FanoutState, LocalParticipant, RoomSubscription};
+use crate::shell::participant_keys::ChannelSealer;
 
 /// The replay peer's agent principal id: the capability subject it is
 /// admitted to a replay room as, and its roster id.
@@ -115,6 +119,8 @@ struct PeerState {
     /// an app that joins late sees what the recorded participant showed.
     presence: BTreeMap<(String, Vec<u8>), (usize, PresenceUpdate)>,
     key: SigningKey,
+    /// Seals what the peer says, in its replay room only.
+    sealer: ChannelSealer,
     /// Checkpoints by the number of entries they reflect.
     checkpoints: BTreeMap<usize, Checkpoint>,
 }
@@ -207,9 +213,9 @@ impl std::fmt::Debug for ReplayPeer {
 }
 
 impl ReplayPeer {
-    /// Join `room` as the replay peer of `trace`. The documents start as the
-    /// recording did; nothing is published until an app asks or the playhead
-    /// moves.
+    /// Join `room` as the replay peer of `trace`, speaking there through
+    /// `sealer`. The documents start as the recording did; nothing is
+    /// published until an app asks or the playhead moves.
     ///
     /// # Errors
     ///
@@ -219,6 +225,7 @@ impl ReplayPeer {
         fanout: &Arc<FanoutState>,
         room: String,
         trace: &SessionTrace,
+        sealer: ChannelSealer,
     ) -> Result<Arc<Self>, ReplayError> {
         let (routes, timeline) = decode(trace)?;
         let recorded = followed_participant(trace).unwrap_or_else(|| REPLAY_AGENT.to_string());
@@ -229,6 +236,7 @@ impl ReplayPeer {
             applied: 0,
             presence: BTreeMap::new(),
             key: session_key(),
+            sealer,
             checkpoints: BTreeMap::new(),
         }));
         let holder_state = Arc::clone(&state);
@@ -404,6 +412,7 @@ fn advance(
         timeline,
         presence,
         key,
+        sealer,
         ..
     } = state;
     match timeline.get(index) {
@@ -421,7 +430,7 @@ fn advance(
             {
                 let from = replay_participant(from);
                 outbound.extend(
-                    frame(key, &live, &mut target.seq, mutation)
+                    frame(key, sealer, &live, &mut target.seq, mutation)
                         .into_iter()
                         .map(|envelope| (document_event(envelope, &from), live.clone())),
                 );
@@ -464,6 +473,7 @@ fn document_event(envelope: SignedOp, from: &str) -> CollabEvent {
 /// The signed frames carrying `mutation` on `live`.
 fn frame(
     key: &SigningKey,
+    sealer: &ChannelSealer,
     live: &CrdtRoute,
     seq: &mut u64,
     mutation: &DocumentMutation,
@@ -483,16 +493,35 @@ fn frame(
     payloads
         .into_iter()
         .filter_map(|payload| {
+            let (payload, encryption) = sealer
+                .seal(live, artifact, &payload)
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "replay: a recorded change could not be sealed");
+                })
+                .ok()?;
             *seq = seq.saturating_add(1);
-            let mut op = SignedOp::new_unsigned(
-                payload,
-                artifact,
-                author,
-                attestation,
-                OpClass::Splice,
-                SystemTime::now(),
-                *seq,
-            );
+            let (now, seq) = (SystemTime::now(), *seq);
+            let mut op = match encryption {
+                Some(encryption) => SignedOp::new_unsigned_with_encryption(
+                    payload,
+                    artifact,
+                    author,
+                    attestation,
+                    OpClass::Splice,
+                    now,
+                    seq,
+                    encryption,
+                ),
+                None => SignedOp::new_unsigned(
+                    payload,
+                    artifact,
+                    author,
+                    attestation,
+                    OpClass::Splice,
+                    now,
+                    seq,
+                ),
+            };
             collab_types::sign_op(&mut op, key).ok()?;
             Some(op)
         })
@@ -521,6 +550,7 @@ fn answer_snapshot(
             routes,
             presence,
             key,
+            sealer,
             ..
         } = &mut *state;
         let Some(target) = routes.get_mut(index) else {
@@ -530,7 +560,7 @@ fn answer_snapshot(
         let snapshot = DocumentMutation::Snapshot(target.doc.save());
         let from = REPLAY_AGENT;
         let mut outbound: Vec<(CollabEvent, CrdtRoute)> =
-            frame(key, route, &mut target.seq, &snapshot)
+            frame(key, sealer, route, &mut target.seq, &snapshot)
                 .into_iter()
                 .map(|envelope| (document_event(envelope, from), route.clone()))
                 .collect();
@@ -804,4 +834,51 @@ fn change_hashes(bytes: &[u8]) -> Vec<automerge::ChangeHash> {
         rest = rest.get(end..).unwrap_or_default();
     }
     hashes
+}
+
+#[cfg(test)]
+mod tests {
+    use collab_types::ChannelClass;
+
+    use super::*;
+    use crate::shell::participant_keys::Participant;
+    use crate::shell::participant_keys::tests::{Fixture, replay};
+
+    /// What the peer says in an encrypted replay room is sealed for the
+    /// route's channel, and a member of the room opens it to exactly the
+    /// recorded change.
+    #[test]
+    fn a_replayed_change_travels_sealed_and_opens_as_recorded() {
+        let fixture = Fixture::new(ChannelClass::Encrypted);
+        let route = fixture.route();
+        let mut doc = AutoCommit::new();
+        let snapshot = DocumentMutation::Snapshot(doc.save());
+        let mut seq = 0;
+        let frames = frame(
+            &session_key(),
+            &fixture.keys.sealer(replay(), &fixture.room),
+            &route,
+            &mut seq,
+            &snapshot,
+        );
+        assert!(!frames.is_empty());
+        let reader = fixture
+            .keys
+            .opener(Participant::Person(fixture.owner.clone()));
+        for op in &frames {
+            assert!(
+                op.encryption.is_some(),
+                "an encrypted room carries no plaintext"
+            );
+            assert!(
+                DocumentFrame::decode(&op.payload).is_err(),
+                "the sealed payload is not the frame"
+            );
+            let opened = reader.opened(&route, op).expect("a member opens it");
+            assert_eq!(
+                DocumentFrame::decode(&opened.payload).ok(),
+                Some(DocumentFrame::Whole(snapshot.clone()))
+            );
+        }
+    }
 }

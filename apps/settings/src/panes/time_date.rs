@@ -12,10 +12,10 @@
 //!
 //! ## Live vs. sample
 //!
-//! - **Current time / date** are read from the real wall clock via
-//!   `os_actions::time::{now_clock, now_date}` at build time, so the panel
-//!   shows the actual time (formatted per the 24-hour toggle), not a frozen
-//!   string.
+//! - **Current time / date** are read from the toolkit's wall clock
+//!   (`ui::time::wall`) in the local zone at build time, so the panel shows
+//!   the actual time (formatted per the 24-hour toggle), not a frozen string,
+//!   on any machine and without starting a process.
 //! - **Time zone** is read from timedated, falling back to `/etc/timezone`
 //!   (or the `/etc/localtime` symlink target) only when the service does not
 //!   report it. Choices come from `timedatectl list-timezones`; map coordinates
@@ -807,8 +807,8 @@ impl TimeDatePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
-        let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
+        let now = local_clock(self.h24);
+        let today = local_date();
 
         let clock = card(
             "Clock",
@@ -1056,8 +1056,47 @@ impl Widget for TimeDatePane {
     }
 }
 
+/// The local wall-clock time, 24-hour (`14:05`) or 12-hour (`02:05 PM`).
+pub(crate) fn local_clock(h24: bool) -> String {
+    format_clock(
+        &chrono::DateTime::<chrono::Local>::from(ui::time::wall()),
+        h24,
+    )
+}
+
+/// The local date, e.g. `Monday, 4 July 2026`.
+pub(crate) fn local_date() -> String {
+    format_date(&chrono::DateTime::<chrono::Local>::from(ui::time::wall()))
+}
+
+fn format_clock<Tz: chrono::TimeZone>(moment: &chrono::DateTime<Tz>, h24: bool) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    moment
+        .format(if h24 { "%H:%M" } else { "%I:%M %p" })
+        .to_string()
+}
+
+fn format_date<Tz: chrono::TimeZone>(moment: &chrono::DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    moment.format("%A, %-d %B %Y").to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_clock_and_date_format_from_the_in_process_clock() {
+        use chrono::TimeZone as _;
+        let moment = chrono::Utc.with_ymd_and_hms(2026, 7, 6, 14, 5, 0).unwrap();
+        assert_eq!(super::format_clock(&moment, true), "14:05");
+        assert_eq!(super::format_clock(&moment, false), "02:05 PM");
+        assert_eq!(super::format_date(&moment), "Monday, 6 July 2026");
+        assert!(!super::local_clock(true).is_empty());
+    }
+
     use super::*;
     use automerge::ObjType;
     use std::collections::HashMap;

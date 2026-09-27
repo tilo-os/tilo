@@ -123,6 +123,10 @@ pub mod wire {
         Removed,
         /// The channel cannot be provisioned on this device right now.
         Unavailable,
+        /// The route's room is public: its content is signed and never
+        /// sealed, so there are no keys to hold and none to wait for. A
+        /// room's class is fixed when it is created.
+        Public,
     }
 
     #[derive(Debug, Serialize, Deserialize)]

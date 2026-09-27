@@ -23,6 +23,12 @@
 //!   device's pairing code) — regardless of any request;
 //! - the whole desktop while the session is locked.
 //!
+//! The session recorder applies the same rule to what is not pixels: a
+//! protected app contributes nothing to a session trace — no semantic tree,
+//! document op, snapshot, presence or interaction — beyond a marker that it
+//! was present and protected (`session_trace::ProtectedApp`), which review
+//! and replay show as this placeholder.
+//!
 //! The placeholder carries no text: a themed surface with the shield mark the
 //! shell already uses for "protected", so a viewer sees that something is
 //! withheld without learning what.

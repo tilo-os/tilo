@@ -109,12 +109,20 @@ fn ddc_bus(connector: &Path) -> Option<String> {
 }
 
 impl BrightnessTarget {
+    const fn executor(&self) -> &'static str {
+        match self {
+            Self::Backlight(_) => "backlight",
+            Self::Ddc(_) => "ddc",
+        }
+    }
+
     /// Current brightness as a `0.0..=1.0` fraction.
     ///
     /// # Errors
     ///
     /// Returns why the monitor could not be read.
     pub fn get(&self) -> Result<f32, String> {
+        crate::owner::admit(self.executor())?;
         match self {
             Self::Backlight(device) => crate::display::get_backlight(device),
             Self::Ddc(node) => {
@@ -132,6 +140,7 @@ impl BrightnessTarget {
     ///
     /// Returns why the monitor could not be written.
     pub fn set(&self, pct: f32) -> Result<(), String> {
+        crate::owner::admit(self.executor())?;
         let pct = pct.clamp(0.0, 100.0);
         match self {
             Self::Backlight(device) => crate::display::set_backlight(device, pct),
@@ -270,6 +279,9 @@ impl BrightnessService {
     /// are fresh. Reading a DDC/CI monitor takes tens of milliseconds, so
     /// only a worker thread may call this.
     pub fn rescan_blocking(&self) -> Vec<MonitorLevel> {
+        if crate::owner::admit("brightness").is_err() {
+            return Vec::new();
+        }
         let monitors = probe(&*self.discover, &*self.read);
         self.lock().monitors = monitors;
         self.levels()
@@ -298,6 +310,9 @@ impl BrightnessService {
     /// Set `connector` to `pct` percent. Never blocks; `false` when no such
     /// monitor is controllable.
     pub fn set(&self, connector: &str, pct: f32) -> bool {
+        if crate::owner::admit("brightness").is_err() {
+            return false;
+        }
         let pct = pct.clamp(0.0, 100.0);
         let Some(monitor) = self
             .lock()
@@ -509,15 +524,17 @@ mod tests {
 
     #[test]
     fn the_backlight_target_reads_and_writes_its_own_device() {
-        let tree = Tree::new();
-        tree.backlight("amdgpu_bl0");
-        let target = BrightnessTarget::Backlight(tree.path("backlight/amdgpu_bl0"));
-        assert!((target.get().unwrap() - 0.1).abs() < 1e-6);
-        target.set(64.0).unwrap();
-        assert_eq!(
-            fs::read_to_string(tree.path("backlight/amdgpu_bl0/brightness")).unwrap(),
-            "64"
-        );
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            let tree = Tree::new();
+            tree.backlight("amdgpu_bl0");
+            let target = BrightnessTarget::Backlight(tree.path("backlight/amdgpu_bl0"));
+            assert!((target.get().unwrap() - 0.1).abs() < 1e-6);
+            target.set(64.0).unwrap();
+            assert_eq!(
+                fs::read_to_string(tree.path("backlight/amdgpu_bl0/brightness")).unwrap(),
+                "64"
+            );
+        });
     }
 
     #[test]
@@ -623,43 +640,67 @@ mod tests {
 
     #[test]
     fn monitors_without_ddc_ci_are_left_out() {
-        let mut broken = ddc_monitor("DP-9");
-        broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
-        let (service, _) = fake_service(vec![ddc_monitor("DP-1"), broken]);
-        assert_eq!(
-            service.rescan_blocking(),
-            vec![MonitorLevel {
-                connector: "DP-1".into(),
-                level: 0.5
-            }]
-        );
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            let mut broken = ddc_monitor("DP-9");
+            broken.target = BrightnessTarget::Ddc(PathBuf::from("/dev/broken"));
+            let (service, _) = fake_service(vec![ddc_monitor("DP-1"), broken]);
+            assert_eq!(
+                service.rescan_blocking(),
+                vec![MonitorLevel {
+                    connector: "DP-1".into(),
+                    level: 0.5
+                }]
+            );
+        });
     }
 
     #[test]
     fn a_set_is_cached_at_once_and_written_in_the_background() {
-        let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
-        eventually(|| service.levels().len() == 2);
-        assert!(service.set("DP-2", 80.0));
-        assert!(!service.set("HDMI-A-9", 80.0), "an unknown monitor");
-        assert_eq!(
-            service.levels()[1].level,
-            0.8,
-            "read back before the write lands"
-        );
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            let (service, applied) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
+            eventually(|| service.levels().len() == 2);
+            assert!(service.set("DP-2", 80.0));
+            assert!(!service.set("HDMI-A-9", 80.0), "an unknown monitor");
+            assert_eq!(
+                service.levels()[1].level,
+                0.8,
+                "read back before the write lands"
+            );
+            eventually(|| !applied.lock().unwrap().is_empty());
+            assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
+        });
+    }
+
+    #[test]
+    fn a_shell_that_does_not_own_the_machine_never_queues_a_write() {
+        let (service, applied) = fake_service(vec![ddc_monitor("DP-1")]);
+        eventually(|| service.levels().len() == 1);
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Hosted, || {
+            assert!(!service.set("DP-1", 80.0));
+            assert!(service.step(Some("DP-1"), 0.1).is_none());
+            assert!(service.rescan_blocking().is_empty());
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(applied.lock().unwrap().is_empty());
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            assert!(service.set("DP-1", 80.0));
+        });
         eventually(|| !applied.lock().unwrap().is_empty());
-        assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
+        assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-1".into(), 80.0)]);
     }
 
     #[test]
     fn a_step_moves_the_monitor_under_the_pointer_or_else_the_first() {
-        let (service, _) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
-        eventually(|| service.levels().len() == 2);
-        let stepped = service.step(Some("DP-2"), 0.1).unwrap();
-        assert_eq!(stepped.connector, "DP-2");
-        assert!((stepped.level - 0.6).abs() < 1e-6);
-        let fallback = service.step(Some("eDP-1"), -0.1).unwrap();
-        assert_eq!(fallback.connector, "DP-1");
-        assert!((fallback.level - 0.4).abs() < 1e-6);
-        assert_eq!(service.step(None, 1.0).unwrap().level, 1.0, "clamped");
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            let (service, _) = fake_service(vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]);
+            eventually(|| service.levels().len() == 2);
+            let stepped = service.step(Some("DP-2"), 0.1).unwrap();
+            assert_eq!(stepped.connector, "DP-2");
+            assert!((stepped.level - 0.6).abs() < 1e-6);
+            let fallback = service.step(Some("eDP-1"), -0.1).unwrap();
+            assert_eq!(fallback.connector, "DP-1");
+            assert!((fallback.level - 0.4).abs() < 1e-6);
+            assert_eq!(service.step(None, 1.0).unwrap().level, 1.0, "clamped");
+        });
     }
 }

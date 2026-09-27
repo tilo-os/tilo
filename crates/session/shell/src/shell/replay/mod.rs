@@ -15,6 +15,9 @@
 //! it reopens the room around the same windows: the apps are started again
 //! in a fresh room, ask the peer for the document, and receive it as it was
 //! at the target.
+//!
+//! A capture-protected app contributed only a marker to the session: it is
+//! not launched, and the replay room shows the capture placeholder for it.
 
 pub mod headless;
 pub mod offscreen;
@@ -101,6 +104,21 @@ fn recorded_rooms(trace: &SessionTrace) -> Vec<(String, RoomId)> {
     out
 }
 
+/// The capture-protected apps `trace` marks as present, each once. Nothing
+/// of them was recorded, so none is launched; the replay room shows the
+/// capture placeholder for each instead.
+fn protected_apps(trace: &SessionTrace) -> Vec<String> {
+    let mut apps: Vec<String> = trace
+        .environment
+        .protected
+        .iter()
+        .map(|marker| marker.app_id.clone())
+        .collect();
+    apps.sort();
+    apps.dedup();
+    apps
+}
+
 /// The app windows open in `workspace`: `(tab, app id, surface)`.
 fn app_windows(
     tree: &crate::shell::state::WorkspaceTree,
@@ -143,6 +161,9 @@ struct Replay {
 pub struct ReplayController {
     tree: WorkspaceTreeHandle,
     fanout: Arc<FanoutState>,
+    /// The content keys the replay peer speaks with, and the channel
+    /// service a closed replay room's channels are forgotten from.
+    keys: crate::shell::participant_keys::ParticipantKeys,
     replay: Mutex<Option<Replay>>,
     /// Where session records are found: waiting for review in the
     /// recorder, else in this device's record stores.
@@ -173,6 +194,10 @@ impl std::fmt::Debug for ReplayController {
 impl ReplayController {
     pub fn attach(broker: &BrokerHandle, tree: WorkspaceTreeHandle) -> Arc<Self> {
         Arc::new(Self {
+            keys: crate::shell::participant_keys::ParticipantKeys::for_broker(
+                broker,
+                Arc::clone(&tree),
+            ),
             tree,
             fanout: broker.fanout(),
             replay: Mutex::new(None),
@@ -413,7 +438,8 @@ impl ReplayController {
                     )
                 });
             if admitted.is_none() {
-                tree.close_ephemeral_room(room);
+                drop(tree);
+                self.forget_room(room);
                 return Err(TransportError::Room(format!(
                     "{owner} cannot admit the replay peer to its own replay room"
                 )));
@@ -454,10 +480,14 @@ impl ReplayController {
                 tree.desktop.active = workspace.id;
             }
         }
-        let peer = match ReplayPeer::join(&self.fanout, room.to_string(), trace) {
+        let sealer = self.keys.sealer(
+            crate::shell::participant_keys::Participant::Agent(REPLAY_AGENT.into()),
+            &room.to_string(),
+        );
+        let peer = match ReplayPeer::join(&self.fanout, room.to_string(), trace, sealer) {
             Ok(peer) => peer,
             Err(error) => {
-                self.tree.write().close_ephemeral_room(room);
+                self.forget_room(room);
                 return Err(error.into());
             }
         };
@@ -476,6 +506,7 @@ impl ReplayController {
         let Some(replay) = lock(&self.replay).take() else {
             return false;
         };
+        self.keys.forget_room(replay.room);
         let mut tree = self.tree.write();
         let windows = app_windows(&tree, replay.workspace);
         tree.close_ephemeral_room(replay.room);
@@ -496,6 +527,12 @@ impl ReplayController {
             .extend(windows.into_iter().map(|(_, _, surface)| surface));
         launches.closed.push(replay.room);
         true
+    }
+
+    /// Close the ephemeral `room` and forget every key it held.
+    fn forget_room(&self, room: RoomId) {
+        self.keys.forget_room(room);
+        self.tree.write().close_ephemeral_room(room);
     }
 
     fn with<T>(
@@ -697,6 +734,7 @@ impl ReplayController {
                 };
                 let (closed, room) = rekeyed
                     .ok_or_else(|| TransportError::Room("the replay room is gone".into()))?;
+                self.keys.forget_room(closed);
                 let peer = self.admit(room, &trace, &owner, presentation)?;
                 peer.inherit_checkpoints(&previous);
                 drop(previous);
@@ -780,6 +818,7 @@ impl ReplayController {
             "events": replay.trace.timeline.len(),
             "step": current,
             "steps": replay.steps.iter().map(step_json).collect::<Vec<_>>(),
+            "protected": protected_apps(&replay.trace),
         });
         drop(guard);
         status

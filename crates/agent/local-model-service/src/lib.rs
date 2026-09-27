@@ -26,8 +26,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use agent_provider_config::local::{
-    LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifact, PinnedArtifact,
-    RuntimeEngine, RuntimeRelease, SnapshotFile,
+    Accelerator, AcceleratorVendor, Configuration, LocalEndpoint, LocalModelRelease,
+    LocalModelStatus, ModelArtifact, PinnedArtifact, Placement, RuntimeEngine, RuntimeKind,
+    RuntimeRelease, SnapshotFile,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -90,6 +91,58 @@ pub struct ProcessHandle {
     pub id: String,
 }
 
+/// The one device a runtime container is given, derived from the probed
+/// facts of the configuration it runs; never a caller-supplied path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceAccess {
+    /// The CPU alone.
+    None,
+    /// NVIDIA's container device interface: the card, its CUDA libraries and
+    /// its Vulkan driver.
+    NvidiaCdi,
+    /// The AMD compute and render nodes `ROCm` drives.
+    AmdCompute,
+    /// One DRM render node (`/dev/dri/renderD128`), which the Mesa Vulkan
+    /// drivers in the runtime pack drive.
+    RenderNode(PathBuf),
+}
+
+/// What the container for `kind` on `device` is given.
+///
+/// # Errors
+/// Returns [`ServiceError::InvalidPlacement`] when the processor and the
+/// device do not belong together, or the render node is not a plain
+/// `renderD<number>` name.
+pub fn device_access(
+    kind: RuntimeKind,
+    device: Option<&Accelerator>,
+) -> Result<DeviceAccess, ServiceError> {
+    match (kind, device) {
+        (RuntimeKind::Cpu, None) => Ok(DeviceAccess::None),
+        (RuntimeKind::NvidiaCuda | RuntimeKind::Vulkan, Some(device))
+            if device.vendor == AcceleratorVendor::Nvidia =>
+        {
+            Ok(DeviceAccess::NvidiaCdi)
+        }
+        (RuntimeKind::AmdRocm, Some(device)) if device.vendor == AcceleratorVendor::Amd => {
+            Ok(DeviceAccess::AmdCompute)
+        }
+        (RuntimeKind::Vulkan, Some(device)) => {
+            let node = device
+                .render_node
+                .as_deref()
+                .filter(|node| {
+                    node.strip_prefix("renderD").is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                })
+                .ok_or(ServiceError::InvalidPlacement)?;
+            Ok(DeviceAccess::RenderNode(Path::new("/dev/dri").join(node)))
+        }
+        _ => Err(ServiceError::InvalidPlacement),
+    }
+}
+
 /// An argv-vector representation suitable for a container supervisor. The
 /// service never joins these into a shell command. The container has no
 /// network: `socket_dir` is its only channel out, mounted at
@@ -99,7 +152,8 @@ pub struct RuntimeCommand {
     /// Digest-pinned OCI image from the signed runtime catalog. It is consumed
     /// by the container engine; a downloaded blob is never executed directly.
     pub runtime_image: String,
-    pub runtime_kind: agent_provider_config::local::RuntimeKind,
+    pub kind: RuntimeKind,
+    pub device: DeviceAccess,
     pub engine: RuntimeEngine,
     pub args: Vec<String>,
     pub model_path: PathBuf,
@@ -111,18 +165,20 @@ pub struct RuntimeCommand {
     pub runtime_extension_id: String,
 }
 
-/// The engine arguments for `model`, built only from signed catalog fields.
+/// The engine arguments for `model` on `kind`, built only from signed catalog
+/// fields.
 ///
 /// The model is served under its catalog id, which is what the provider
-/// profile and the gateway name in every request; vLLM would otherwise answer
-/// only to the container path. It listens on a Unix socket in the mounted
-/// socket directory, never a TCP port. The context is capped at the signed
-/// window so the KV cache is sized for it rather than for the model's
+/// profile and the gateway name in every request; an engine would otherwise
+/// answer only to the container path. It listens on a Unix socket in the
+/// mounted socket directory, never a TCP port. The context is capped at the
+/// signed window so the KV cache is sized for it rather than for the model's
 /// maximum, and a signed accelerator share keeps headroom on a card the
 /// desktop also uses.
 #[must_use]
 pub fn runtime_args(
     engine: RuntimeEngine,
+    kind: RuntimeKind,
     model: &LocalModelRelease,
     model_container_path: &str,
 ) -> Vec<String> {
@@ -147,6 +203,39 @@ pub fn runtime_args(
                     format!("{:.2}", f64::from(percent) / 100.0),
                 ]);
             }
+            args
+        }
+        // `llama-server` is the image's entrypoint. It binds a Unix socket
+        // when `--host` names a path ending in `.sock`. One slot keeps the
+        // cache at the signed window; the container holds at most one GPU, so
+        // it is `Vulkan0`, and on the CPU nothing is offloaded.
+        RuntimeEngine::LlamaCpp => {
+            let mut args: Vec<String> = vec![
+                "--model".into(),
+                model_container_path.into(),
+                "--alias".into(),
+                model.id.clone(),
+                "--ctx-size".into(),
+                model.context_window.to_string(),
+                "--parallel".into(),
+                "1".into(),
+                "--host".into(),
+                format!("{CONTAINER_SOCKET_DIR}/{SOCKET_NAME}"),
+                "--jinja".into(),
+                "--no-webui".into(),
+                "--offline".into(),
+            ];
+            let (device, layers) = if kind == RuntimeKind::Cpu {
+                ("none", "0")
+            } else {
+                ("Vulkan0", "all")
+            };
+            args.extend([
+                "--device".into(),
+                device.into(),
+                "--n-gpu-layers".into(),
+                layers.into(),
+            ]);
             args
         }
     }
@@ -202,6 +291,9 @@ pub struct ServiceState {
 pub struct ManagedModel {
     /// [`ModelArtifact::identity`] of the installed release.
     pub identity: String,
+    /// The configuration it was set up for: the runtime pack, the processor
+    /// and the device.
+    pub placement: Placement,
     /// SHA-256 of every object the release placed in the store.
     #[serde(default)]
     pub objects: BTreeSet<String>,
@@ -394,9 +486,14 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
-    fn managed(model: &LocalModelRelease, status: LocalModelStatus) -> ManagedModel {
+    fn managed(
+        model: &LocalModelRelease,
+        placement: &Placement,
+        status: LocalModelStatus,
+    ) -> ManagedModel {
         ManagedModel {
             identity: model.artifact.identity(),
+            placement: placement.clone(),
             objects: object_digests(model),
             status,
             process: None,
@@ -411,6 +508,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     pub fn install_model(
         &mut self,
         model: &LocalModelRelease,
+        placement: &Placement,
     ) -> Result<LocalModelStatus, ServiceError> {
         self.require_license_acceptance(model)?;
         model
@@ -420,7 +518,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.materialize_model(model, &mut |_| {})?;
         self.state.models.insert(
             model.id.clone(),
-            Self::managed(model, LocalModelStatus::Installed),
+            Self::managed(model, placement, LocalModelStatus::Installed),
         );
         self.persist()?;
         Ok(LocalModelStatus::Installed)
@@ -437,12 +535,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &mut self,
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
+        placement: &Placement,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
         self.require_license_acceptance(model)?;
         self.supervisor
             .pull_runtime_image(&runtime.release.oci_image)?;
-        self.install_model(model)
+        self.install_model(model, placement)
     }
 
     /// Background-worker variant that atomically publishes each received model
@@ -455,6 +554,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &mut self,
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
+        placement: &Placement,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
         self.require_license_acceptance(model)?;
@@ -468,7 +568,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         published
             .models
             .entry(model.id.clone())
-            .or_insert_with(|| Self::managed(model, LocalModelStatus::NotInstalled));
+            .or_insert_with(|| Self::managed(model, placement, LocalModelStatus::NotInstalled));
         let state_path = self.root.join(STATE_FILE);
         let model_id = model.id.clone();
         let total = model.artifact.download_bytes();
@@ -497,9 +597,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if let Some(error) = progress_error {
             return Err(error);
         }
-        published
-            .models
-            .insert(model_id, Self::managed(model, LocalModelStatus::Installed));
+        published.models.insert(
+            model_id,
+            Self::managed(model, placement, LocalModelStatus::Installed),
+        );
         persist_state(&state_path, &published)?;
         self.state = published;
         Ok(LocalModelStatus::Installed)
@@ -574,12 +675,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     ///
     /// # Errors
     /// Returns [`ServiceError::LicenseNotAccepted`] or a persistence error.
-    pub fn queue_install(&mut self, model: &LocalModelRelease) -> Result<(), ServiceError> {
+    pub fn queue_install(
+        &mut self,
+        model: &LocalModelRelease,
+        placement: &Placement,
+    ) -> Result<(), ServiceError> {
         self.require_license_acceptance(model)?;
         self.state.models.insert(
             model.id.clone(),
             Self::managed(
                 model,
+                placement,
                 LocalModelStatus::Downloading {
                     received_bytes: 0,
                     total_bytes: model.artifact.download_bytes(),
@@ -661,21 +767,40 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.update_status(model_id, LocalModelStatus::Starting, None)
     }
 
-    /// Start the runtime under a supervisor, serving on a socket in
-    /// `socket_dir`. Model paths are content addressed and the runtime must
-    /// have an accepted signed extension record.
+    /// Start `configuration` under a supervisor, serving on a socket in
+    /// `socket_dir`. Model paths are content addressed, the runtime must have
+    /// an accepted signed extension record, and the container is given only
+    /// the configuration's own device.
     ///
     /// # Errors
-    /// Returns an error when the runtime is not accepted, `socket_dir` is not
-    /// absolute, the model is not installed, or the supervisor fails to start
-    /// it.
+    /// Returns an error when the runtime is not accepted or is not the
+    /// configuration's, the placement is not the one the model was set up
+    /// for, `socket_dir` is not absolute, the model is not installed, or the
+    /// supervisor fails to start it.
     pub fn start(
         &mut self,
         runtime: &SignedRuntime,
-        model: &LocalModelRelease,
+        configuration: &Configuration<'_>,
         socket_dir: &Path,
     ) -> Result<LocalEndpoint, ServiceError> {
         runtime.validate()?;
+        let model = configuration.model;
+        if &runtime.release != configuration.runtime
+            || !runtime.release.kinds.contains(&configuration.kind)
+            || !model.engines.contains(&runtime.release.engine)
+            || !model.allowed_runtimes.contains(&configuration.kind)
+        {
+            return Err(ServiceError::InvalidPlacement);
+        }
+        let placed = self
+            .state
+            .models
+            .get(&model.id)
+            .ok_or_else(|| ServiceError::ModelNotInstalled(model.id.clone()))?;
+        if placed.placement != configuration.placement() {
+            return Err(ServiceError::InvalidPlacement);
+        }
+        let device = device_access(configuration.kind, configuration.device)?;
         let model_path = self.model_path(model)?;
         let model_container_path = match &model.artifact {
             ModelArtifact::HfSnapshot { .. } if model_path.is_dir() => {
@@ -694,9 +819,15 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .map_err(|_| ServiceError::InvalidEndpoint)?;
         let command = RuntimeCommand {
             runtime_image: runtime.release.oci_image.clone(),
-            runtime_kind: runtime.release.kind,
+            kind: configuration.kind,
+            device,
             engine: runtime.release.engine,
-            args: runtime_args(runtime.release.engine, model, model_container_path),
+            args: runtime_args(
+                runtime.release.engine,
+                configuration.kind,
+                model,
+                model_container_path,
+            ),
             model_path,
             model_container_path: model_container_path.into(),
             socket_dir: socket_dir.to_path_buf(),
@@ -957,6 +1088,8 @@ pub enum ServiceError {
     InvalidSnapshotLayout,
     #[error("runtime is not an accepted signed local-model extension")]
     RuntimeNotAccepted,
+    #[error("this configuration does not run here")]
+    InvalidPlacement,
     #[error("model is not installed: {0}")]
     ModelNotInstalled(String),
     #[error("model license has not been accepted for this exact release: {0}")]
@@ -974,7 +1107,7 @@ pub enum ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_provider_config::local::RuntimeKind;
+    use agent_provider_config::local::{ExpectedSpeed, Fit, SpeedClass};
     use std::io::Write as _;
 
     fn artifact(bytes: &[u8]) -> PinnedArtifact {
@@ -984,6 +1117,8 @@ mod tests {
             size_bytes: bytes.len() as u64,
         }
     }
+    /// A single-file GGUF release llama.cpp runs through Vulkan or on the
+    /// CPU.
     fn model(bytes: &[u8]) -> LocalModelRelease {
         LocalModelRelease {
             id: "tiny".into(),
@@ -995,19 +1130,22 @@ mod tests {
             license_url: "https://catalog.example.invalid/license".into(),
             requires_acceptance: false,
             installed_size_bytes: bytes.len() as u64,
-            allowed_runtimes: [RuntimeKind::Cpu].into(),
+            engines: [RuntimeEngine::LlamaCpp].into(),
+            allowed_runtimes: [RuntimeKind::Vulkan, RuntimeKind::Cpu].into(),
             required_memory_mib: 1,
-            required_accelerator_mib: 0,
+            required_accelerator_mib: 1,
             context_window: 1,
             capabilities: BTreeSet::new(),
             accelerator_memory_percent: None,
         }
     }
 
-    /// A snapshot release over `files`, and a transport that serves each
-    /// file's bytes by URL.
+    /// A snapshot release vLLM serves on a CUDA card, over `files`, and a
+    /// transport that serves each file's bytes by URL.
     fn snapshot(files: &[(&str, &[u8])]) -> (LocalModelRelease, Objects) {
         let mut release = model(b"unused");
+        release.engines = [RuntimeEngine::Vllm].into();
+        release.allowed_runtimes = [RuntimeKind::NvidiaCuda].into();
         let mut objects = BTreeMap::new();
         let files = files
             .iter()
@@ -1071,6 +1209,8 @@ mod tests {
         }
     }
 
+    /// A fake runtime supervisor: it records what it would run and answers at
+    /// once, so a launch is checked without a container engine.
     #[derive(Default)]
     struct Supervisor {
         pulled: Vec<String>,
@@ -1092,11 +1232,16 @@ mod tests {
         }
     }
 
-    fn runtime() -> SignedRuntime {
-        let manifest = b"{\"schemaVersion\":2}";
-        let digest = hex::encode(Sha256::digest(manifest));
+    fn signed(
+        id: &str,
+        engine: RuntimeEngine,
+        kinds: &[RuntimeKind],
+        repository: &str,
+    ) -> SignedRuntime {
+        let manifest = format!("{{\"schemaVersion\":2,\"id\":\"{id}\"}}");
+        let digest = hex::encode(Sha256::digest(manifest.as_bytes()));
         let pin = PinnedArtifact {
-            url: format!("https://registry.example.invalid/v2/vllm/manifests/sha256:{digest}"),
+            url: format!("https://registry.example.invalid/v2/{id}/manifests/sha256:{digest}"),
             sha256: digest.clone(),
             size_bytes: manifest.len() as u64,
         };
@@ -1104,9 +1249,9 @@ mod tests {
         let signed = system_extension::SignedExtensionManifest::sign(
             system_extension::ExtensionManifest {
                 schema_version: system_extension::SCHEMA_VERSION,
-                id: "vllm".into(),
+                id: id.into(),
                 kind: ExtensionKind::LocalModelRuntime,
-                version: "0.10.1".into(),
+                version: "1".into(),
                 artifact: system_extension::PinnedArtifact {
                     source: pin.url.clone(),
                     sha256: pin.sha256.clone(),
@@ -1133,14 +1278,102 @@ mod tests {
                 committed_revision: 1,
             },
             release: RuntimeRelease {
-                id: "vllm".into(),
-                kind: RuntimeKind::NvidiaCuda,
-                version: "0.10.1".into(),
-                engine: RuntimeEngine::Vllm,
+                id: id.into(),
+                kinds: kinds.iter().copied().collect(),
+                version: "1".into(),
+                engine,
                 artifact: pin,
-                oci_image: format!("docker.io/vllm/vllm-openai@sha256:{digest}"),
+                oci_image: format!("{repository}@sha256:{digest}"),
             },
         }
+    }
+
+    fn runtime() -> SignedRuntime {
+        signed(
+            "vllm",
+            RuntimeEngine::Vllm,
+            &[RuntimeKind::NvidiaCuda],
+            "docker.io/vllm/vllm-openai",
+        )
+    }
+
+    fn llama() -> SignedRuntime {
+        signed(
+            "llama-cpp-vulkan",
+            RuntimeEngine::LlamaCpp,
+            &[RuntimeKind::Vulkan, RuntimeKind::Cpu],
+            "ghcr.io/ggml-org/llama.cpp",
+        )
+    }
+
+    fn card() -> Accelerator {
+        Accelerator {
+            vendor: AcceleratorVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+            pci_slot: "0000:01:00.0".into(),
+            render_node: Some("renderD129".into()),
+            kernel_driver: "nvidia".into(),
+            integrated: false,
+            dedicated_mib: 8188,
+            shared_mib: 0,
+            compute: Some("615.71.09".into()),
+            restart: None,
+        }
+    }
+
+    fn igpu() -> Accelerator {
+        Accelerator {
+            vendor: AcceleratorVendor::Amd,
+            name: "AMD Radeon 780M Graphics".into(),
+            pci_slot: "0000:66:00.0".into(),
+            render_node: Some("renderD128".into()),
+            kernel_driver: "amdgpu".into(),
+            integrated: true,
+            dedicated_mib: 512,
+            shared_mib: 15_644,
+            compute: None,
+            restart: None,
+        }
+    }
+
+    fn configuration<'a>(
+        runtime: &'a SignedRuntime,
+        model: &'a LocalModelRelease,
+        kind: RuntimeKind,
+        device: Option<&'a Accelerator>,
+    ) -> Configuration<'a> {
+        Configuration {
+            runtime: &runtime.release,
+            model,
+            kind,
+            device,
+            required_mib: 1,
+            budget_mib: 2,
+            shared_memory: device.is_none_or(|device| device.integrated),
+            fit: Fit::Good,
+            speed: ExpectedSpeed {
+                tokens_per_second: 20,
+                prompt_tokens_per_second: 200,
+                answer_seconds: 12,
+                class: SpeedClass::Interactive,
+            },
+        }
+    }
+
+    fn placed(
+        runtime: &SignedRuntime,
+        kind: RuntimeKind,
+        device: Option<&Accelerator>,
+    ) -> Placement {
+        Placement {
+            runtime: runtime.release.id.clone(),
+            kind,
+            device: device.map(|device| device.pci_slot.clone()),
+        }
+    }
+
+    fn on_card() -> Placement {
+        placed(&runtime(), RuntimeKind::NvidiaCuda, Some(&card()))
     }
 
     /// A content-addressed fetch resumes and promotes atomically, and a verified fetch publishes each
@@ -1208,7 +1441,7 @@ mod tests {
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
             service
-                .install_with_runtime_progress(&runtime(), &release)
+                .install_with_runtime_progress(&runtime(), &release, &on_card())
                 .unwrap();
             assert_eq!(service.supervisor.pulled.len(), 1);
             assert!(service.supervisor.pulled[0].contains("@sha256:"));
@@ -1235,6 +1468,7 @@ mod tests {
                 service.state.models["tiny"].status,
                 LocalModelStatus::Installed
             );
+            assert_eq!(service.state.models["tiny"].placement, on_card());
         }
 
         // Phase: a_tampered_file_never_becomes_part_of_a_snapshot.
@@ -1252,7 +1486,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-            assert!(service.install_model(&release).is_err());
+            assert!(service.install_model(&release, &on_card()).is_err());
             assert!(!service.model_path(&release).unwrap().exists());
         }
 
@@ -1263,7 +1497,7 @@ mod tests {
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
             assert!(matches!(
-                service.install_model(&release),
+                service.install_model(&release, &on_card()),
                 Err(ServiceError::InvalidSnapshotLayout)
             ));
             assert!(!service.model_path(&release).unwrap().exists());
@@ -1278,7 +1512,7 @@ mod tests {
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
             assert!(matches!(
-                service.install_model(&release),
+                service.install_model(&release, &on_card()),
                 Err(ServiceError::SnapshotTooLarge)
             ));
         }
@@ -1301,15 +1535,16 @@ mod tests {
             licensed.requires_acceptance = true;
             let mut service =
                 LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
+            let cpu = placed(&llama(), RuntimeKind::Cpu, None);
             assert!(matches!(
-                service.queue_install(&licensed),
+                service.queue_install(&licensed, &cpu),
                 Err(ServiceError::LicenseNotAccepted(_))
             ));
             service.record_license_acceptance(&licensed).unwrap();
-            service.queue_install(&licensed).unwrap();
+            service.queue_install(&licensed, &cpu).unwrap();
             licensed.version = "2".into();
             assert!(matches!(
-                service.queue_install(&licensed),
+                service.queue_install(&licensed, &cpu),
                 Err(ServiceError::LicenseNotAccepted(_))
             ));
         }
@@ -1333,8 +1568,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-            service.install_model(&release).unwrap();
-            service.install_model(&sibling).unwrap();
+            service.install_model(&release, &on_card()).unwrap();
+            service.install_model(&sibling, &on_card()).unwrap();
             service.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
                 id: "active".into(),
             });
@@ -1386,15 +1621,18 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut service =
                 LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-            service.install_model(&release).unwrap();
+            service.install_model(&release, &on_card()).unwrap();
             let sockets = dir.path().join("run");
-            let endpoint = service.start(&runtime(), &release, &sockets).unwrap();
+            let (runtime, card) = (runtime(), card());
+            let on_card = configuration(&runtime, &release, RuntimeKind::NvidiaCuda, Some(&card));
+            let endpoint = service.start(&runtime, &on_card, &sockets).unwrap();
             assert_eq!(endpoint.socket, sockets.join(SOCKET_NAME));
             let command = service.supervisor.command.clone().unwrap();
             assert_eq!(command.socket_dir, sockets);
+            assert_eq!(command.device, DeviceAccess::NvidiaCdi);
             assert!(command.runtime_image.contains("@sha256:"));
             assert!(matches!(
-                service.start(&runtime(), &release, Path::new("relative")),
+                service.start(&runtime, &on_card, Path::new("relative")),
                 Err(ServiceError::InvalidEndpoint)
             ));
         }
@@ -1404,7 +1642,12 @@ mod tests {
             let mut release = model(b"weights");
             release.id = "qwen/qwen3-4b-awq".into();
             release.context_window = 8192;
-            let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
+            let args = runtime_args(
+                RuntimeEngine::Vllm,
+                RuntimeKind::NvidiaCuda,
+                &release,
+                "/models/model",
+            );
             let after = |flag: &str| {
                 args.iter()
                     .position(|arg| arg == flag)
@@ -1418,11 +1661,108 @@ mod tests {
             assert!(!args.iter().any(|arg| arg == "--host" || arg == "--port"));
             assert_eq!(after("--gpu-memory-utilization"), None);
             release.accelerator_memory_percent = Some(70);
-            let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
+            let args = runtime_args(
+                RuntimeEngine::Vllm,
+                RuntimeKind::NvidiaCuda,
+                &release,
+                "/models/model",
+            );
             assert!(
                 args.windows(2)
                     .any(|pair| pair == ["--gpu-memory-utilization", "0.70"])
             );
         }
+    }
+
+    /// llama-server runs the GGUF under its catalogue id, on the socket only, within the signed
+    /// window; the container gets the configuration's own render node and nothing else; a
+    /// placement the model was not set up for, or a device that does not belong to it, is refused.
+    #[test]
+    fn llama_server_runs_the_gguf_on_its_own_device_and_socket_only() {
+        let bytes = b"GGUF weights";
+        let mut release = model(bytes);
+        release.id = "qwen/qwen3-4b-gguf".into();
+        release.context_window = 8192;
+        let dir = tempfile::tempdir().unwrap();
+        let mut service =
+            LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
+        let (runtime, igpu, card) = (llama(), igpu(), card());
+        service
+            .install_with_runtime_progress(
+                &runtime,
+                &release,
+                &placed(&runtime, RuntimeKind::Vulkan, Some(&igpu)),
+            )
+            .unwrap();
+        assert_eq!(
+            service.supervisor.pulled.as_slice(),
+            std::slice::from_ref(&runtime.release.oci_image)
+        );
+        let sockets = dir.path().join("run");
+        let on_igpu = configuration(&runtime, &release, RuntimeKind::Vulkan, Some(&igpu));
+        let endpoint = service.start(&runtime, &on_igpu, &sockets).unwrap();
+        assert_eq!(endpoint.model_id, "qwen/qwen3-4b-gguf");
+        let command = service.supervisor.command.clone().unwrap();
+        assert_eq!(command.engine, RuntimeEngine::LlamaCpp);
+        assert_eq!(
+            command.device,
+            DeviceAccess::RenderNode("/dev/dri/renderD128".into())
+        );
+        assert_eq!(command.model_container_path, "/models/model.gguf");
+        let after = |flag: &str| {
+            command
+                .args
+                .iter()
+                .position(|arg| arg == flag)
+                .and_then(|index| command.args.get(index + 1))
+                .map(String::as_str)
+        };
+        assert_eq!(after("--model"), Some("/models/model.gguf"));
+        assert_eq!(after("--alias"), Some("qwen/qwen3-4b-gguf"));
+        assert_eq!(after("--ctx-size"), Some("8192"));
+        assert_eq!(after("--host"), Some("/run/tilo-model/api.sock"));
+        assert_eq!(after("--device"), Some("Vulkan0"));
+        assert_eq!(after("--n-gpu-layers"), Some("all"));
+        assert!(!command.args.iter().any(|arg| arg == "--port"));
+        assert!(command.args.iter().any(|arg| arg == "--offline"));
+
+        // On the CPU nothing is offloaded.
+        let cpu = runtime_args(
+            RuntimeEngine::LlamaCpp,
+            RuntimeKind::Cpu,
+            &release,
+            "/models/model.gguf",
+        );
+        assert!(cpu.windows(2).any(|pair| pair == ["--device", "none"]));
+        assert!(cpu.windows(2).any(|pair| pair == ["--n-gpu-layers", "0"]));
+
+        // It was set up for the iGPU: the card is another configuration.
+        let on_card = configuration(&runtime, &release, RuntimeKind::Vulkan, Some(&card));
+        assert!(matches!(
+            service.start(&runtime, &on_card, &sockets),
+            Err(ServiceError::InvalidPlacement)
+        ));
+        // vLLM does not load a GGUF, whatever the placement says.
+        let vllm = super::tests::runtime();
+        let wrong_engine = configuration(&vllm, &release, RuntimeKind::NvidiaCuda, Some(&card));
+        assert!(matches!(
+            service.start(&vllm, &wrong_engine, &sockets),
+            Err(ServiceError::InvalidPlacement)
+        ));
+        // A render node is a plain `renderD<number>` name, never a path.
+        let mut odd = igpu.clone();
+        odd.render_node = Some("../../dev/mem".into());
+        assert!(matches!(
+            device_access(RuntimeKind::Vulkan, Some(&odd)),
+            Err(ServiceError::InvalidPlacement)
+        ));
+        assert!(matches!(
+            device_access(RuntimeKind::Cpu, Some(&igpu)),
+            Err(ServiceError::InvalidPlacement)
+        ));
+        assert_eq!(
+            device_access(RuntimeKind::Vulkan, Some(&card)).unwrap(),
+            DeviceAccess::NvidiaCdi
+        );
     }
 }

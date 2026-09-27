@@ -10,7 +10,10 @@
 //!   signed document ops exactly as the broker fanned them out, presence
 //!   (View subset, caret and selection, the `Interaction` lifecycle), and
 //!   inspect keyframes;
-//! - the **environment** it ran in ([`Environment`]).
+//! - the **environment** it ran in ([`Environment`]), including a marker
+//!   for each capture-protected app that was present ([`ProtectedApp`]):
+//!   such an app contributes nothing else — no snapshot, op, presence,
+//!   keyframe, geometry or frame.
 //!
 //! Timestamps are monotonic offsets from the start of the recording
 //! ([`Offset`]), never wall clock, so reordering by clock skew is
@@ -59,7 +62,7 @@ pub const REDACTED_FROM_RELATION: &str = "redacted-from";
 /// Record relation from a session to a record it recorded.
 pub const RECORDED_RELATION: &str = "recorded";
 /// Layout version of the `session` map. Readers refuse any other.
-pub const FORMAT_VERSION: u64 = 2;
+pub const FORMAT_VERSION: u64 = 3;
 
 /// Monotonic time since the recording started, in microseconds.
 #[derive(
@@ -168,6 +171,15 @@ pub struct SurfaceGeometry {
     pub output: String,
 }
 
+/// A capture-protected app that was present in a recorded room. This
+/// marker is all a session keeps of it; review and replay show the capture
+/// placeholder in its place.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ProtectedApp {
+    pub app_id: String,
+    pub room: String,
+}
+
 /// Where a recording ran.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
@@ -177,6 +189,8 @@ pub struct Environment {
     pub surfaces: Vec<SurfaceGeometry>,
     pub theme: String,
     pub locale: String,
+    /// Capture-protected apps that were present, sorted.
+    pub protected: Vec<ProtectedApp>,
 }
 
 /// Which end of the recorded window a snapshot describes.
@@ -202,8 +216,10 @@ pub struct RouteSnapshot {
     pub frames: Vec<SignedOp>,
 }
 
-/// One signed document op, verbatim as the broker fanned it out. MLS
-/// ciphertext stays ciphertext.
+/// One signed document op as the broker fanned it out. The recorder keeps an
+/// op of an encrypted channel opened with the channel's keys, so its
+/// signature covers the sealed form it arrived in; one it could not open
+/// stays ciphertext.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DocumentOp {
     pub route: Route,

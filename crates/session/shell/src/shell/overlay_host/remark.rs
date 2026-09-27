@@ -17,7 +17,7 @@ use vello::kurbo::{Point, Rect};
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::collab_broker_capnp::{InspectCaller, InspectionJob};
 use crate::shell::remark::pick::{PickNode, PickScene, PickSurface};
-use crate::shell::remark::review::{ModelUse, Review, Verdict};
+use crate::shell::remark::review::{ModelUse, Review, SetUpChoice, Verdict};
 use crate::shell::remark::view::{RemarkView, StateNode, StepFrame, StepState};
 use crate::shell::remark::{
     CommunityRoom, DestinationKind, Directory, Flow, Request, Sending, Stage,
@@ -116,7 +116,7 @@ pub(crate) struct RemarkHost {
     shell_tree_at: Option<Instant>,
 }
 
-fn app_label(app_id: &str) -> String {
+pub(super) fn app_label(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
         let tail = app_id.rsplit('.').next().unwrap_or(app_id);
         let mut chars = tail.chars();
@@ -379,6 +379,7 @@ impl ShellOverlayHost {
                 Request::RefreshPick => refresh = true,
                 Request::OpenReview => self.open_remark_review(),
                 Request::SetUpReviewModel => self.set_up_review_model(),
+                Request::ConfirmReviewModel { action } => self.confirm_review_model(&action),
                 Request::Send => self.start_remark_delivery(),
             }
         }
@@ -967,31 +968,105 @@ impl ShellOverlayHost {
         changed
     }
 
-    /// Set up the review model in place: the hub's own `set-up-on-device`
-    /// action for `feedback.review`, confirmed by the person pressing it.
-    fn set_up_review_model(&self) {
+    /// The AI hub's ways to set up the review model here, recommendation
+    /// first: its `set-up-on-device` action on the review task and each
+    /// `set-up-on-device-<rank>` after it, each with the hub's own words.
+    fn review_model_offers(&self) -> Vec<(u64, String, SetUpChoice)> {
         const RESOURCE: &str = "settings.ai-task:feedback.review";
         const ACTION: &str = "set-up-on-device";
+        let Some(broker) = self.app_action_broker.as_ref() else {
+            return Vec::new();
+        };
+        let rank = |action: &str| -> Option<usize> {
+            if action == ACTION {
+                return Some(0);
+            }
+            action
+                .strip_prefix(ACTION)?
+                .strip_prefix('-')?
+                .parse::<usize>()
+                .ok()
+                .filter(|rank| *rank > 0)
+        };
+        let tag = |tags: &[String], prefix: &str| {
+            tags.iter().find(|tag| tag.starts_with(prefix)).cloned()
+        };
+        let mut offers: Vec<(usize, u64, String, SetUpChoice)> = broker
+            .surfaces()
+            .into_iter()
+            .flat_map(|surface| {
+                let peer = surface.peer_id;
+                let room = surface.route.cluster_id.clone();
+                surface
+                    .actions
+                    .into_iter()
+                    .filter(|action| action.resource == RESOURCE)
+                    .filter_map(move |action| {
+                        let rank = rank(&action.action)?;
+                        let tags = &action.contract.tags;
+                        Some((
+                            rank,
+                            peer,
+                            room.clone(),
+                            SetUpChoice {
+                                fit: tag(tags, "fit-"),
+                                speed: tag(tags, "speed-"),
+                                action: action.action,
+                                label: action.action_label,
+                                terms: action.description.unwrap_or_default(),
+                            },
+                        ))
+                    })
+            })
+            .collect();
+        offers.sort_by_key(|(rank, ..)| *rank);
+        offers
+            .into_iter()
+            .map(|(_, peer, room, choice)| (peer, room, choice))
+            .collect()
+    }
+
+    /// Offer to set up the review model in place: what the hub recommends
+    /// for this device, and its alternatives. Nothing downloads until the
+    /// person confirms one.
+    fn set_up_review_model(&self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let choices: Vec<SetUpChoice> = self
+            .review_model_offers()
+            .into_iter()
+            .map(|(_, _, choice)| choice)
+            .collect();
+        if let Some(review) = chrome.borrow_mut().remark.review.as_mut() {
+            review.model = if choices.is_empty() {
+                ModelUse::Floor
+            } else {
+                ModelUse::Offer {
+                    choices,
+                    expanded: false,
+                }
+            };
+        }
+    }
+
+    /// Set up the choice the person confirmed, through the hub's own action:
+    /// the confirmation is theirs, given on the offer that showed its size,
+    /// license, fit and speed.
+    fn confirm_review_model(&self, action: &str) {
+        const RESOURCE: &str = "settings.ai-task:feedback.review";
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let Some(broker) = self.app_action_broker.clone() else {
             return;
         };
-        let offered = broker.surfaces().into_iter().find_map(|surface| {
-            surface
-                .actions
-                .iter()
-                .find(|action| action.resource == RESOURCE && action.action == ACTION)
-                .map(|action| {
-                    (
-                        surface.peer_id,
-                        surface.route.cluster_id.clone(),
-                        action.action_label.clone(),
-                    )
-                })
-        });
-        let Some((peer, room, label)) = offered else {
+        // The hub is asked again: the choice must still be one it offers.
+        let offered = self
+            .review_model_offers()
+            .into_iter()
+            .find(|(_, _, choice)| choice.action == action);
+        let Some((peer, room, choice)) = offered else {
             if let Some(review) = chrome.borrow_mut().remark.review.as_mut() {
                 review.model = ModelUse::Floor;
             }
@@ -1004,7 +1079,7 @@ impl ShellOverlayHost {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: peer.to_string(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, ACTION),
+                address: tilo_actions::ActionAddress::new(RESOURCE, action),
             },
             argument: tilo_actions::remote::InvokeArgument::None,
             context: None,
@@ -1016,7 +1091,7 @@ impl ShellOverlayHost {
         ));
         if let Some(review) = chrome.borrow_mut().remark.review.as_mut() {
             review.model = ModelUse::SettingUp {
-                model: label,
+                model: choice.label,
                 progress: None,
             };
         }

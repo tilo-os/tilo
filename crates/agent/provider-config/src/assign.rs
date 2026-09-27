@@ -744,16 +744,28 @@ mod tests {
         }
     }
 
+    fn card(vram_mib: u64) -> Accelerator {
+        Accelerator {
+            vendor: AcceleratorVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            pci_slot: "0000:01:00.0".into(),
+            render_node: Some("renderD128".into()),
+            kernel_driver: "nvidia".into(),
+            integrated: false,
+            dedicated_mib: vram_mib,
+            shared_mib: 0,
+            compute: Some("580".into()),
+            restart: None,
+        }
+    }
+
     fn gpu(vram_mib: u64) -> HardwareSnapshot {
         HardwareSnapshot {
             cpu_threads: 16,
             memory_mib: 32_768,
             available_memory_mib: 24_000,
             free_storage_mib: 100_000,
-            accelerators: vec![Accelerator::Nvidia {
-                vram_mib,
-                driver: "580".into(),
-            }],
+            accelerators: vec![card(vram_mib)],
         }
     }
 
@@ -1145,9 +1157,10 @@ mod tests {
     #[test]
     fn a_card_waiting_for_a_restart_holds_presets_instead_of_degrading() {
         let pending = HardwareSnapshot {
-            accelerators: vec![Accelerator::RestartRequired {
-                vendor: AcceleratorVendor::Nvidia,
-                reason: RestartReason::DriverStaged,
+            accelerators: vec![Accelerator {
+                compute: None,
+                restart: Some(RestartReason::DriverStaged),
+                ..card(0)
             }],
             ..gpu(0)
         };
