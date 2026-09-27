@@ -473,7 +473,6 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-smithay-client-toolkit = { version = "0.20" }
 strict-num = { version = "0.1" }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tiny-skia = { version = "0.12" }
@@ -489,7 +488,6 @@ wayland-protocols = { version = "0.32", default-features = false, features = ["c
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
-xkeysym = { version = "0.2", default-features = false, features = ["bytemuck"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
@@ -512,7 +510,6 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-smithay-client-toolkit = { version = "0.20" }
 strict-num = { version = "0.1" }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tiny-skia = { version = "0.12" }
@@ -528,7 +525,6 @@ wayland-protocols = { version = "0.32", default-features = false, features = ["c
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
-xkeysym = { version = "0.2", default-features = false, features = ["bytemuck"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
@@ -551,7 +547,6 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-smithay-client-toolkit = { version = "0.20" }
 strict-num = { version = "0.1" }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tiny-skia = { version = "0.12" }
@@ -567,7 +562,6 @@ wayland-protocols = { version = "0.32", default-features = false, features = ["c
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
-xkeysym = { version = "0.2", default-features = false, features = ["bytemuck"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
@@ -590,7 +584,6 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-smithay-client-toolkit = { version = "0.20" }
 strict-num = { version = "0.1" }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tiny-skia = { version = "0.12" }
@@ -606,6 +599,5 @@ wayland-protocols = { version = "0.32", default-features = false, features = ["c
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
-xkeysym = { version = "0.2", default-features = false, features = ["bytemuck"] }
 
 ### END HAKARI SECTION
