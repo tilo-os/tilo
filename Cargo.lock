@@ -2148,6 +2148,7 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dav",
  "serde",
@@ -2164,6 +2165,7 @@ dependencies = [
 name = "cloud-source-dropbox"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
@@ -2182,6 +2184,7 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-gdrive",
  "md-5",
@@ -2202,6 +2205,7 @@ name = "cloud-source-icloud"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-icloud",
  "getrandom 0.4.3",
@@ -2227,6 +2231,7 @@ name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-onedrive",
  "reqwest",
