@@ -225,7 +225,7 @@ impl Fixture {
     }
 }
 async fn live(client: &Client) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while client.status() == Status::Connecting {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -265,7 +265,7 @@ async fn native_client_uses_real_grants_muted_start_five_objects_and_synchronous
         if sequence == 5 {
             sender.try_send(frame(sequence)).unwrap();
         }
-        let received = tokio::time::timeout(Duration::from_secs(5), async {
+        let received = tokio::time::timeout(crate::HANG_BOUND, async {
             loop {
                 if let Some(value) = receiver.try_recv() {
                     break value;
@@ -328,7 +328,7 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
     // Client `Live` follows the relay's ADMITTED reply, but the relay counts
     // the session as accepted only once SETUP completes. Wait for that before
     // replaying so the original's admission is ordered first.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while fixture.relay.counters().accepted < 1 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -339,7 +339,7 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
     let replayed = Client::start(replay, custody).unwrap();
     // The replay is refused in the admission preface: it ends Failed and is
     // never admitted.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while replayed.status() != Status::Failed {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -403,7 +403,7 @@ async fn native_client_expires_received_audio_and_reconnects_with_fresh_proof() 
     live(&sender).await;
     sender.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while receiver.counters().queued_received == 0 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -424,7 +424,7 @@ async fn native_client_expires_received_audio_and_reconnects_with_fresh_proof() 
     assert!(receiver.try_recv().is_none(), "no outage replay");
     sender.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
-    let next = tokio::time::timeout(Duration::from_secs(5), async {
+    let next = tokio::time::timeout(crate::HANG_BOUND, async {
         loop {
             if let Some(next) = receiver.try_recv() {
                 break next;
@@ -467,7 +467,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     unaffected.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
     unaffected.try_send(frame(0)).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while old.counters().queued_received < 2 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -475,7 +475,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     .await
     .unwrap();
     sender.close();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while old.status() == Status::Live {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -500,7 +500,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     // attach may expire at the sender first).
     let mut received = std::collections::BTreeSet::new();
     let mut next = 0u64;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while received.len() != 2 {
             if next.is_multiple_of(10) {
                 let step = next / 10;
@@ -549,7 +549,7 @@ async fn native_relay_keeps_a_subscriber_live_when_a_new_publisher_joins() {
     signed(grant.metadata.request.clone(), GrantOperation::Leave);
     let receiver = f.client(false, 1);
     live(&receiver).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while f.relay.counters().accepted < 1 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }

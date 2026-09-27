@@ -1,4 +1,5 @@
 use super::*;
+use crate::HANG_BOUND;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode};
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
@@ -62,7 +63,7 @@ fn cancelled_http_asset_resolution_keeps_queued_worker_charged() {
                 )
                 .await
                 .unwrap();
-            timeout(Duration::from_secs(2), async {
+            timeout(HANG_BOUND, async {
                 while receiver.available_bytes()
                     != receiver.initial_bytes - CONNECTION_BYTES - (4 * IO_BYTES + HEADER_BYTES)
                 {
@@ -78,7 +79,7 @@ fn cancelled_http_asset_resolution_keeps_queued_worker_charged() {
             gate.finish().await;
             // The lease drops on the blocking worker: its bytes, then its
             // request slot. Wait for both rather than observing between them.
-            timeout(Duration::from_secs(2), async {
+            timeout(HANG_BOUND, async {
                 while receiver.available_bytes() != receiver.initial_bytes
                     || fixture.ingress.asset_requests.available_permits() != 24
                 {
@@ -129,7 +130,7 @@ fn cancelled_asset_read_keeps_queued_file_and_buffer_work_charged() {
             gate.finish().await;
             // The lease drops on the blocking worker: its bytes, then its
             // request slot. Wait for both rather than observing between them.
-            timeout(Duration::from_secs(2), async {
+            timeout(HANG_BOUND, async {
                 while receiver.available_bytes() != receiver.initial_bytes
                     || ingress.asset_requests.available_permits() != 24
                 {
@@ -190,7 +191,7 @@ async fn h2_slow_reader_keeps_response_backing_charged_until_drain_or_reset() {
         if reset {
             drop(body);
         } else {
-            let rest = timeout(Duration::from_secs(3), body.collect())
+            let rest = timeout(HANG_BOUND, body.collect())
                 .await
                 .unwrap()
                 .unwrap()
@@ -198,7 +199,7 @@ async fn h2_slow_reader_keeps_response_backing_charged_until_drain_or_reset() {
             assert_eq!(first.len() + rest.len(), BODY_BYTES);
             assert!(rest.iter().all(|byte| *byte == 0x6a));
         }
-        timeout(Duration::from_secs(2), async {
+        timeout(HANG_BOUND, async {
             while lease.upgrade().is_some() {
                 tokio::task::yield_now().await;
             }
@@ -278,7 +279,7 @@ async fn h2_final_static_frame_retains_its_asset_charge_until_drain_or_reset() {
             assert_eq!(first.len() + rest.len(), IO_BYTES);
             assert!(rest.iter().all(|byte| *byte == 0x78));
         }
-        timeout(Duration::from_secs(2), async {
+        timeout(HANG_BOUND, async {
             while receiver.available_bytes() != receiver.initial_bytes - CONNECTION_BYTES {
                 tokio::task::yield_now().await;
             }
@@ -401,7 +402,7 @@ async fn h2_read_frame(
     socket: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
 ) -> (u8, u8, u32, Vec<u8>) {
     let mut header = [0; 9];
-    timeout(Duration::from_secs(2), socket.read_exact(&mut header))
+    timeout(HANG_BOUND, socket.read_exact(&mut header))
         .await
         .unwrap()
         .unwrap();
@@ -439,10 +440,7 @@ async fn stalled_h2_headers_leave_control_lane_available_and_continuation_flood_
     h2_frame(&mut stalled, 1, 1, 3, &headers).await; // No END_HEADERS.
     let response = fixture.raw("/peer/v3/challenge", "", b"challenge bytes");
     let control = async {
-        let request = timeout(Duration::from_secs(1), receiver.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let request = timeout(HANG_BOUND, receiver.recv()).await.unwrap().unwrap();
         assert_eq!(request.route(), Route::Challenge);
         request
             .respond(
@@ -764,7 +762,7 @@ impl Fixture {
         socket.write_all(format!("POST {path} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\nContent-Length: {}\r\n{extra}\r\n", self.address.port(), body.len()).as_bytes()).await.unwrap();
         socket.write_all(body).await.unwrap();
         let mut output = Vec::new();
-        tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut output))
+        tokio::time::timeout(HANG_BOUND, socket.read_to_end(&mut output))
             .await
             .unwrap()
             .unwrap();
@@ -775,7 +773,7 @@ impl Fixture {
         socket.write_all(format!("POST /peer/v3/challenge HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n{headers}\r\n", self.address.port()).as_bytes()).await.unwrap();
         socket.write_all(body).await.unwrap();
         let mut output = Vec::new();
-        timeout(Duration::from_secs(3), socket.read_to_end(&mut output))
+        timeout(HANG_BOUND, socket.read_to_end(&mut output))
             .await
             .unwrap()
             .unwrap();
@@ -971,10 +969,7 @@ async fn media_tls_routes_preserve_inert_request_and_reject_oversize_reply() {
             b"bounded-inert-body",
         );
         let actor = async {
-            let request = timeout(Duration::from_secs(2), receiver.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let request = timeout(HANG_BOUND, receiver.recv()).await.unwrap().unwrap();
             assert_eq!(request.target(), route.path());
             assert_eq!(request.body(), b"bounded-inert-body");
             assert_eq!(request.proof(), Some(&[0, 17][..]));
@@ -1229,11 +1224,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
     let client = fixture.raw("/tilo-peer/enrollment/challenge", &headers, &body);
     let actor = async {
-        let Some(command) = timeout(Duration::from_secs(2), requests.recv())
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(command) = timeout(HANG_BOUND, requests.recv()).await.ok().flatten() else {
             return;
         };
         let EnrollmentRequest::Challenge(request) = command.request else {
@@ -1268,10 +1259,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let before = owner.committed_generation();
     let client = fixture.raw("/tilo-peer/enrollment/complete", &headers, &body);
     let actor = async {
-        let command = timeout(Duration::from_secs(2), requests.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
         let EnrollmentRequest::Complete(request) = command.request else {
             panic!("wrong native command")
         };
@@ -1340,7 +1328,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let mut socket = fixture.connect(false).await;
     socket.write_all(format!("GET / HTTP/1.1\r\nHost: localhost:{}\r\nCookie: __Host-tilo-local-owner={credential}\r\nConnection: close\r\n\r\n",fixture.address.port()).as_bytes()).await.unwrap();
     let mut navigation = Vec::new();
-    timeout(Duration::from_secs(3), socket.read_to_end(&mut navigation))
+    timeout(HANG_BOUND, socket.read_to_end(&mut navigation))
         .await
         .unwrap()
         .unwrap();
@@ -1372,10 +1360,7 @@ async fn local_enrollment_owner_wait_deadline_cancels_unconsumed_private_command
     let mut socket = fixture.connect(false).await;
     socket.write_all(format!("POST /tilo-peer/enrollment/challenge HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: https://localhost:{}\r\nCookie: __Host-tilo-local-owner={credential}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",fixture.address.port(),fixture.address.port(),body.len()).as_bytes()).await.unwrap();
     socket.write_all(&body).await.unwrap();
-    let command = timeout(Duration::from_secs(1), requests.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
     let mut response = Vec::new();
     timeout(Duration::from_secs(6), socket.read_to_end(&mut response))
         .await
@@ -1634,10 +1619,7 @@ async fn local_https_enrollment_renewal_may_only_request_governance_omission() {
         let request_headers = format!("{headers}{extra}");
         let client = fixture.raw(path, &request_headers, &complete);
         let actor = async {
-            let command = timeout(Duration::from_secs(2), requests.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
             assert!(command.is_https());
             assert_eq!(command.omits_governance(), expected);
             assert!(matches!(command.request, EnrollmentRequest::Complete(_)));

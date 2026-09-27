@@ -21,7 +21,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let mut runtime = ActionRuntime::new(committed.clone());
     let host = LocalHost::start(&owner).await.unwrap();
     let mut connected = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while !matches!(connected.recv().await.unwrap(), Inbound::Ready { .. }) {}
     })
     .await
@@ -47,7 +47,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let old_signer = old_signing.bind(route.clone(), owner.identity.native_cert.clone());
     let old_mutation = mutation(&owner, "must-not-commit-retired-runtime");
     let old_waiting = tokio::spawn(old_signer.commit(&route, old_mutation));
-    let queued_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let queued_deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
     while old_signing.retirement_ready().unwrap() {
         assert!(
             tokio::time::Instant::now() < queued_deadline,
@@ -98,7 +98,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
         .bind(route.clone(), owner.identity.native_cert.clone());
     let fresh_mutation = mutation(&owner, "fresh-runtime-committed");
     let mut fresh_waiting = tokio::spawn(new_signer.commit(&route, fresh_mutation));
-    let fresh_result = tokio::time::timeout(Duration::from_secs(3), async {
+    let fresh_result = tokio::time::timeout(crate::HANG_BOUND, async {
         loop {
             tokio::select! {
                 result = &mut fresh_waiting => break result.unwrap(),

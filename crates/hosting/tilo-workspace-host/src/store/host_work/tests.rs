@@ -337,7 +337,7 @@ fn host_work_special_fifo_refuses_without_blocking_shared_inventory() {
                 (
                     false,
                     receive
-                        .recv_timeout(Duration::from_secs(5))
+                        .recv_timeout(crate::HANG_BOUND)
                         .expect("FIFO worker must terminate after controlled release"),
                 )
             }

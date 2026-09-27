@@ -1,6 +1,5 @@
 use super::*;
 use crate::host::{ActionRuntime, CheckpointCadence, LocalHost, refresh_actions};
-use std::time::Duration;
 
 // Removing the production pre-mount checkpoint leaves the old generation and
 // old signed publication in place, regardless of the independent worker gate.
@@ -19,7 +18,7 @@ async fn mount_refresh_commits_before_normal_worker_factory() {
     let mut runtime = ActionRuntime::new(committed.clone());
     let host = LocalHost::start(&owner).await.unwrap();
     let mut connected = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while !connected.is_ready() {
             connected
                 .recv()
@@ -133,7 +132,7 @@ fn mount_refresh_original_origin_retired_after_encoding_never_writes() {
             // Real authority retirement invalidates its captured origin before
             // waiting for the already-held owner turn. No clock is substituted.
             *thread_slot.lock().unwrap() = Some(std::thread::spawn(move || retiring.invalidate()));
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
             while time.now_ns().is_ok() {
                 assert!(
                     std::time::Instant::now() < deadline,

@@ -1282,18 +1282,14 @@ fn delivery_replay_guard_prevents_concurrent_owner_update_until_selection_finish
         done_tx.send(()).unwrap();
         owner
     });
-    started_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
-        .unwrap();
+    started_rx.recv_timeout(crate::HANG_BOUND).unwrap();
     assert!(
         done_rx
             .recv_timeout(std::time::Duration::from_millis(20))
             .is_err()
     );
     drop(current);
-    done_rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap();
+    done_rx.recv_timeout(crate::HANG_BOUND).unwrap();
     let owner = waiting.join().unwrap();
     assert_eq!(owner.pending().len(), 1);
 }

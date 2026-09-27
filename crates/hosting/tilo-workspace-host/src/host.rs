@@ -2425,7 +2425,7 @@ mod tests {
                 drop(operation);
                 result
             }
-            Poll::Pending => tokio::time::timeout(Duration::from_secs(5), operation)
+            Poll::Pending => tokio::time::timeout(crate::HANG_BOUND, operation)
                 .await
                 .unwrap(),
         };
@@ -2529,7 +2529,7 @@ mod tests {
         let could_reconnect = reconnect.is_some();
         if let Some(attempt) = reconnect.as_mut() {
             let mut session = (&mut attempt.task).await.unwrap().unwrap();
-            tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::time::timeout(crate::HANG_BOUND, async {
                 loop {
                     if matches!(
                         session.recv().await.expect("live prerequisite stream"),

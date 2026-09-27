@@ -77,7 +77,7 @@ async fn call(
     let original = OnboardingRequest::decode(&wire).unwrap();
     let transport = client.post(original.operation.path(), wire.clone());
     let actor = async {
-        let request = timeout(Duration::from_secs(5), receiver.recv())
+        let request = timeout(crate::HANG_BOUND, receiver.recv())
             .await
             .unwrap()
             .unwrap();
@@ -284,7 +284,7 @@ async fn onboarding_pinned_tls_five_operations_reach_actual_scoped_service() {
             .is_ok()
     );
     stop.send(true).unwrap();
-    timeout(Duration::from_secs(5), serving)
+    timeout(crate::HANG_BOUND, serving)
         .await
         .unwrap()
         .unwrap()

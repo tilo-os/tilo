@@ -212,7 +212,7 @@ impl ScopedAppFixture {
         self.host.signing.clone()
     }
     pub(crate) async fn next_startup_signature(&mut self) -> crate::host_signing::PendingSignature {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
         loop {
             self.host.pump(&self.owner).unwrap();
             if let Ok(pending) = self.signatures.try_recv() {

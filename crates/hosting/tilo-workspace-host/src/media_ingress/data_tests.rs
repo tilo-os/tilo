@@ -1614,7 +1614,7 @@ async fn installed_https_abandoned_staging_is_reclaimed_for_a_new_upload() {
     ));
     // Abandoned stages were reclaimed; the admitted stage is removed after its
     // durable receipt (asynchronously), leaving no idle staging behind.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
     loop {
         let idle = h.f.owner.idle_upload_stages(&work, device).unwrap();
         let remaining = idle

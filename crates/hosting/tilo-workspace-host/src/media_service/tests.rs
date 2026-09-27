@@ -511,7 +511,7 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     let publisher = connect(publisher_proof.clone(), Some(outgoing.consume()), None)
         .await
         .unwrap();
-    let actual = tokio::time::timeout(Duration::from_secs(5), async {
+    let actual = tokio::time::timeout(crate::HANG_BOUND, async {
         let b = incoming
             .consume()
             .routed_broadcast(namespace.as_str())

@@ -162,7 +162,7 @@ pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<
     let wt = web_transport_quinn::ClientBuilder::new()
         .with_server_certificates(vec![h.certificate.clone()])?;
     let transport = timeout(
-        Duration::from_secs(5),
+        crate::HANG_BOUND,
         wt.connect(
             web_transport_quinn::proto::ConnectRequest::new(
                 format!("{}{LIVE_WEBTRANSPORT_PATH}", h.ingress.origin()).parse::<url::Url>()?,
@@ -172,7 +172,7 @@ pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<
     )
     .await??;
     let client = timeout(
-        Duration::from_secs(5),
+        crate::HANG_BOUND,
         LiveClient::start(transport, &token, Some(&path)),
     )
     .await?
@@ -188,7 +188,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
     assert_eq!(status, StatusCode::OK);
     // A forged token is refused before any origin is attached.
     if let Ok(forged) = live_connect(&h, b"forged-token".to_vec()).await {
-        timeout(Duration::from_secs(5), forged.session().closed())
+        timeout(crate::HANG_BOUND, forged.session().closed())
             .await
             .expect("forged token closes");
     }
@@ -198,7 +198,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(Duration::from_secs(5), client.member(&path))
+    let own = timeout(crate::HANG_BOUND, client.member(&path))
         .await
         .unwrap()
         .expect("own namespace is relayed back to the room scope");
@@ -221,7 +221,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         .encode()
         .unwrap()
     };
-    let received = timeout(Duration::from_secs(5), async {
+    let received = timeout(crate::HANG_BOUND, async {
         let mut seq = 0;
         loop {
             seq += 1;
@@ -262,7 +262,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         matches!(admission.outcome(), AdmissionOutcome::Accepted { .. }),
         "{admission:?}"
     );
-    let forwarded = timeout(Duration::from_secs(5), async {
+    let forwarded = timeout(crate::HANG_BOUND, async {
         let mut group = ops.recv_group().await.unwrap().unwrap();
         group.read_frame().await.unwrap().unwrap().payload.to_vec()
     })
@@ -364,7 +364,7 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(Duration::from_secs(5), client.member(&path))
+    let own = timeout(crate::HANG_BOUND, client.member(&path))
         .await
         .unwrap()
         .unwrap();
