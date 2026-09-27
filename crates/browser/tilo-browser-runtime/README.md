@@ -16,6 +16,10 @@ WASM_BINDGEN=/absolute/path/to/wasm-bindgen \
 crates/browser/tilo-browser-runtime/scripts/build.sh /absolute/path/to/assets
 ```
 
+This is the Cloud frontend's monolithic module (`--features cloud,static-apps`).
+The default build of the crate is the web toolkit core, which loads apps as
+side modules at run time; see [WEB_RUNTIME.md](WEB_RUNTIME.md).
+
 Serve the generated directory from a secure origin with WebGPU. `index.html` is
 an executable diagnostic fixture. Production hosts import `host.mjs`; `host.d.ts`
 describes its API. The build copies canonical product fonts, manifest and licenses.
@@ -23,11 +27,12 @@ The development WASM is intentionally unoptimized; production packaging is separ
 
 ## Applications
 
-`src/catalog.rs` is the one list of component apps in the build and the
+`src/catalog.rs` is the one list of installed component apps and the
 `ApplicationCatalog` both hosts resolve through: `mountDesktop({app})` for a
-standalone app and the canonical desktop for its tabs. An app is available once
-it exposes `definition()` (see `crates/sdk/ui-core/src/application.rs`), builds for
-wasm32, and has a line in `INSTALLED` declaring its record scope.
+standalone app and the canonical desktop for its tabs. An app exposes
+`definition()` (see `crates/sdk/ui-core/src/application.rs`) and builds for
+wasm32; it is installed either compiled in (a line in `COMPILED`, with
+`static-apps`) or at run time from its side module (WEB_RUNTIME.md).
 
 `app` is a full app id (`so.tilo.word-processor`, `so.tilo.ebook`, ...), one of
 the aliases `writer` and `chat`, or `desktop` for the canonical desktop, which
