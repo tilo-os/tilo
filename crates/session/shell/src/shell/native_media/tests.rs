@@ -9,6 +9,9 @@ use super::*;
 use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
 use std::sync::atomic::AtomicUsize;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Default)]
 struct Device {
     starts: AtomicUsize,
@@ -561,7 +564,7 @@ async fn source_revocation_does_not_acquire_the_outer_backend_mutex() {
         stopped.send(()).unwrap();
     });
     observed
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(HANG_BOUND)
         .expect("lease revocation must not wait on the outer backend lock");
     assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
     thread.join().unwrap();

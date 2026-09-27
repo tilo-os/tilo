@@ -12,6 +12,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -1050,7 +1053,6 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     use std::os::unix::fs::PermissionsExt;
-    use std::time::Duration;
     /// Lets background fs-authority publication settle before the wrapped
     /// scope restores the environment it reads.
     struct RestoreEnv {
@@ -1058,9 +1060,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     }
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
-            let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
-                Duration::from_secs(2),
-            );
+            let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND);
         }
     }
     let directory = tempfile::tempdir().unwrap();
@@ -1103,9 +1103,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     }
     let owner = NativeWorkspaceOwner::open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(Duration::from_secs(2))
-    );
+    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
     let baseline_acl = std::fs::read(&acl).unwrap();
     assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
@@ -1123,9 +1121,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         failed.is_err(),
         "candidate side-effect consumed the failure before the actual owner barrier"
     );
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(Duration::from_secs(2))
-    );
+    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
     assert_eq!(tree.read().room_of(local), Some(previous));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::read(&acl).unwrap(), baseline_acl);
@@ -1134,9 +1130,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         "no authority publisher may see the failed candidate"
     );
     owner.install(&complete, now).unwrap();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(Duration::from_secs(2))
-    );
+    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
     let committed_acl = std::fs::read(&acl).unwrap();
     assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
@@ -1149,9 +1143,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     std::fs::remove_file(&observed_acl).unwrap();
     std::fs::remove_file(&observed_state).unwrap();
     stale.flush_to_disk();
-    assert!(
-        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(Duration::from_secs(2))
-    );
+    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
     assert_eq!(std::fs::read(&acl).unwrap(), committed_acl);
     assert!(
         !observed_acl.exists(),

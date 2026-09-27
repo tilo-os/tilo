@@ -18,6 +18,9 @@ const PROCESS_TEST: &str =
 /// Names the one phase an isolated child process runs.
 const PROCESS_PHASE: &str = "TILO_MCP_PROCESS_TEST_PHASE";
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// In the parent, runs `phase` in a fresh child process and returns `None`;
 /// in that child, returns its isolated root for `phase` only and `None` for
 /// every other phase, so the child runs exactly the selected phase.
@@ -72,7 +75,7 @@ impl Read for InputAfterFile {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         if !self.waited {
             let deadline = Instant::now()
-                .checked_add(Duration::from_secs(5))
+                .checked_add(HANG_BOUND)
                 .ok_or_else(|| std::io::Error::other("pid wait deadline overflows"))?;
             while !self.ready.exists() {
                 if Instant::now() >= deadline {

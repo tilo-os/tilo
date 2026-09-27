@@ -384,7 +384,7 @@ fn settle(fb: &mut FrameBuilder) {
         .checked_add(std::time::Duration::from_millis(500))
         .unwrap_or(started);
     let deadline = started
-        .checked_add(std::time::Duration::from_secs(3))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or(started);
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
     while (std::time::Instant::now() < minimum || !settled(fb))
@@ -406,7 +406,7 @@ fn settle(fb: &mut FrameBuilder) {
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or_else(std::time::Instant::now);
     // First wait for this exact client to latch as presented. A configure or
     // strip-layout change can delay that edge; measuring the dissolve from

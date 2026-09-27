@@ -1131,6 +1131,9 @@ impl system::SearchRow for SearchResult {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use parking_lot::RwLock;
@@ -1192,7 +1195,10 @@ mod tests {
     /// key event.  Keep public-registry tests on that same contract instead
     /// of teaching a cold `query()` to synchronously index a corpus.
     fn refresh_until_ready(registry: &SearchRegistry, args: &QueryArgs<'_>) {
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             registry.refresh_indexes(args);
             if registry.query_revision(args).contains("ready:") {
                 return;

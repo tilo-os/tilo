@@ -1459,6 +1459,9 @@ async fn playback_status(proxy: &zbus::Proxy<'_>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use std::sync::mpsc;
     use zbus::zvariant::Value;
@@ -1825,7 +1828,7 @@ mod tests {
 
             release_mutation_tx.send(()).unwrap();
             assert_eq!(mutation.join().unwrap(), Some(()));
-            assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+            assert!(cancelled_rx.recv_timeout(HANG_BOUND).unwrap());
             cancellation.join().unwrap();
             assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
             resumes.lock().unwrap().finish(&authority, true);

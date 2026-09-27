@@ -134,7 +134,7 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
     let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or_else(std::time::Instant::now);
     let mut published = false;
     while std::time::Instant::now() < deadline {

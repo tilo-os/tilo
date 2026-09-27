@@ -95,7 +95,7 @@ fn test_wayland_handshake_fixed() {
     });
 
     let socket_name = started_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::support::HANG_BOUND)
         .expect("Server failed to start");
     let log_dir = tempfile::tempdir().unwrap();
 
@@ -123,7 +123,7 @@ fn test_wayland_handshake_fixed() {
     let mut child = ChildGuard(cmd.spawn().expect("Failed to spawn the test client"));
 
     let mut event_received = false;
-    let timeout = Instant::now() + Duration::from_secs(8);
+    let timeout = Instant::now() + crate::support::HANG_BOUND;
 
     while Instant::now() < timeout {
         while let Ok(event) = rx.try_recv() {

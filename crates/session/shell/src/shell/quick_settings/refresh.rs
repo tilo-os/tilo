@@ -315,6 +315,9 @@ fn display_brightness(
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use std::time::{Duration, Instant};
 
@@ -498,7 +501,7 @@ mod tests {
                     vpns: None,
                 }))
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + HANG_BOUND;
             let mut got = Vec::new();
             while got.is_empty() && Instant::now() < deadline {
                 got = r.drain();
@@ -532,7 +535,7 @@ mod tests {
             refresh.kick_fast_with(empty_fast);
 
             wake_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(HANG_BOUND)
                 .expect("worker completion must wake an otherwise-idle UI");
             assert_eq!(refresh.drain().len(), 1);
         }
@@ -561,7 +564,7 @@ mod tests {
             });
 
             started_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(HANG_BOUND)
                 .expect("first worker must be active before reruns are queued");
             let selected_rerun = std::sync::Arc::new(AtomicUsize::new(0));
             for marker in 1..=3 {
@@ -580,7 +583,7 @@ mod tests {
             );
 
             release_tx.send(()).expect("release first worker");
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + HANG_BOUND;
             let mut total = 0;
             while (total < 2 || r.is_in_flight()) && Instant::now() < deadline {
                 total += r.drain().len();

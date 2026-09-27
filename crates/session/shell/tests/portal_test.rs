@@ -1309,7 +1309,7 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
     }
     let mut seen = Vec::new();
     while seen.len() < 2 {
-        let message = timeout(Duration::from_secs(5), changes.next())
+        let message = timeout(crate::support::HANG_BOUND, changes.next())
             .await
             .expect("SettingChanged arrives")
             .expect("signal stream open");

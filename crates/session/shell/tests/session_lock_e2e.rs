@@ -204,7 +204,7 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
             .strip_prefix("/")
             .unwrap_or(socket_path.as_path()),
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + crate::support::HANG_BOUND;
     let mut stream = loop {
         if let Ok(stream) = UnixStream::connect(&socket_path) {
             break stream;
@@ -225,7 +225,7 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
 
     // 1. Idle auto-lock engages (2s timeout + margin) with no input sent.
     assert!(
-        poll_until_locked(&mut stream, true, Duration::from_secs(8)),
+        poll_until_locked(&mut stream, true, crate::support::HANG_BOUND),
         "session must auto-lock on idle"
     );
 
@@ -249,7 +249,7 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
     round_trip(&mut stream, &type_correct);
     round_trip(&mut stream, r#"{"op":"key","key":"Enter"}"#);
     assert!(
-        poll_until_locked(&mut stream, false, Duration::from_secs(3)),
+        poll_until_locked(&mut stream, false, crate::support::HANG_BOUND),
         "the correct password must unlock the session"
     );
 

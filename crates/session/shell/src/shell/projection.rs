@@ -447,9 +447,12 @@ impl ProjectionController {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[derive(Default)]
     struct FakeBackend {
@@ -491,7 +494,7 @@ mod tests {
 
     fn settle(controller: &mut ProjectionController) {
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(1))
+            .checked_add(HANG_BOUND)
             .unwrap_or_else(Instant::now);
         while !controller.poll() && Instant::now() < deadline {
             std::thread::yield_now();

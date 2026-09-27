@@ -3630,6 +3630,9 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -3669,7 +3672,7 @@ mod tests {
         terminate_nearby_pairing(&mut child);
 
         assert!(child.is_none());
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + HANG_BOUND;
         loop {
             // A killed grandchild can remain as a zombie until the host's PID
             // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping

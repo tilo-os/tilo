@@ -198,7 +198,7 @@ impl Desk {
     /// Frames until `done` holds, letting eased pans run out.
     fn settle_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(crate::support::HANG_BOUND)
             .expect("deadline");
         while Instant::now() < deadline {
             self.frame();

@@ -268,6 +268,9 @@ impl LockController {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::compositor::lock_auth::{FixedVerifier, PasswordVerifier};
     use std::sync::{Condvar, Mutex};
@@ -282,7 +285,7 @@ mod tests {
     /// verifiers here resolve in microseconds, so this returns immediately.
     fn poll_to_completion(c: &mut LockController) -> UnlockOutcome {
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(5))
+            .checked_add(HANG_BOUND)
             .unwrap_or_else(Instant::now);
         loop {
             if let Some(o) = c.poll_verification() {

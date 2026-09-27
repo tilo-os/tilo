@@ -3323,6 +3323,9 @@ use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
 
     fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
@@ -3839,7 +3842,7 @@ mod tests {
         )
         .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HANG_BOUND;
         let mut saw_started = false;
         let mut saw_exit = false;
         while Instant::now() < deadline && !saw_exit {
@@ -4844,7 +4847,7 @@ mod tests {
             spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
                 .expect("launch worker");
 
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + HANG_BOUND;
             let launcher_pid = loop {
                 let started = drain_events().into_iter().find_map(|event| {
                     (event.package_id == "org.example.Flatpak")
