@@ -306,7 +306,7 @@ fn pause_realtime_consent_after_mint() {
         .and_then(|mut hook| hook.take());
     if let Some(hook) = hook {
         let _ = hook.minted.send(());
-        let _ = hook.resume.recv_timeout(std::time::Duration::from_secs(5));
+        let _ = hook.resume.recv_timeout(tilo_test_env::hang_bound());
     }
 }
 

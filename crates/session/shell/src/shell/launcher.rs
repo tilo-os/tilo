@@ -3841,7 +3841,7 @@ mod tests {
         )
         .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         let mut saw_started = false;
         let mut saw_exit = false;
         while Instant::now() < deadline && !saw_exit {
@@ -4563,7 +4563,7 @@ mod tests {
             assert_eq!(app.display_name, "Hello");
 
             // wait for the worker to report the child's exit
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             let mut failed = None;
             let mut saw_started = false;
             while Instant::now() < deadline && failed.is_none() {
@@ -4846,7 +4846,7 @@ mod tests {
             spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
                 .expect("launch worker");
 
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = tilo_test_env::hang_deadline();
             let launcher_pid = loop {
                 let started = drain_events().into_iter().find_map(|event| {
                     (event.package_id == "org.example.Flatpak")
