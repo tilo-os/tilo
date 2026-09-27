@@ -428,8 +428,14 @@ impl PendingHostDocument {
         });
         let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
         let complete = move || {
+            // The owner turn already finished with a definite result and, on
+            // success, an exact receipt. Dropping the waiting worker commit
+            // (for example because that worker unmounted) must not latch the
+            // whole signer and block every other route.
             if reply.send(result).is_err() {
-                service.fail("host signer response dropped after admission; outcome unknown");
+                tracing::warn!(
+                    "host signer response dropped after admission; owner outcome retained"
+                );
             }
         };
         (Box::new(complete), outcome)
