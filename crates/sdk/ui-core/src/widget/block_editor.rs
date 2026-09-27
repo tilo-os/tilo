@@ -545,6 +545,12 @@ pub struct BlockEditor {
     stack_measures: usize,
     /// Shows its blocks without taking input: a message or comment as sent.
     read_only: bool,
+    /// How every line is aligned within the editor's width (a centred
+    /// slide title); left unless the owner says otherwise.
+    text_align: crate::richtext::TextAlign,
+    /// Every line's type size relative to its kind's: a slide's text box
+    /// sets its own body size and headings grow with it.
+    font_scale: f32,
     #[cfg(test)]
     painted_blocks: usize,
     dirty: bool,
@@ -704,6 +710,8 @@ impl BlockEditor {
             #[cfg(test)]
             stack_measures: 0,
             read_only: false,
+            text_align: crate::richtext::TextAlign::Left,
+            font_scale: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
             dirty: true,
@@ -1201,6 +1209,57 @@ impl BlockEditor {
             Self::set_focus(self, false);
         }
         self.dirty = true;
+    }
+
+    /// Align every line within the editor's width: a text box whose
+    /// alignment belongs to the box rather than to each paragraph.
+    #[must_use]
+    pub fn with_text_align(mut self, align: crate::richtext::TextAlign) -> Self {
+        self.set_text_align(align);
+        self
+    }
+
+    /// Change how every line is aligned.
+    pub fn set_text_align(&mut self, align: crate::richtext::TextAlign) {
+        if self.text_align != align {
+            self.text_align = align;
+            self.dirty = true;
+        }
+    }
+
+    /// How every line is aligned.
+    #[must_use]
+    pub fn text_align(&self) -> crate::richtext::TextAlign {
+        self.text_align
+    }
+
+    /// Size body text at `px` logical pixels; every other kind keeps its
+    /// size relative to body text.
+    #[must_use]
+    pub fn with_body_size(mut self, px: f32) -> Self {
+        self.set_body_size(px);
+        self
+    }
+
+    /// Change the body text size (see [`Self::with_body_size`]).
+    pub fn set_body_size(&mut self, px: f32) {
+        let body = BlockKind::Paragraph.font_size();
+        let scale = if px.is_finite() && px > 0.0 && body > 0.0 {
+            px / body
+        } else {
+            1.0
+        };
+        if self.font_scale.to_bits() != scale.to_bits() {
+            self.font_scale = scale;
+            self.structure_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The body text size, in logical pixels.
+    #[must_use]
+    pub fn body_size(&self) -> f32 {
+        BlockKind::Paragraph.font_size() * self.font_scale
     }
 
     /// Whether the editor shows its blocks without taking input.
@@ -6656,7 +6715,11 @@ impl BlockEditor {
         stack.heights.clear();
         stack.measured = false;
         let mut total = 0.0_f32;
+        let font_scale = self.font_scale;
         for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
+            // A line the editor made since (a split, a paste) takes the
+            // editor's body size too.
+            block.line.set_size(block.kind.font_size() * font_scale);
             let content = match (
                 block.line.stacked_height(width),
                 text_renderer.as_deref_mut(),
@@ -7245,6 +7308,10 @@ impl Widget for BlockEditor {
                 ""
             };
             block.line.inner_mut().set_placeholder(hint);
+            // New lines (a split, a paste) take the editor's alignment too.
+            if block.line.align() != self.text_align {
+                block.line.set_align(self.text_align);
+            }
         }
 
         self.draw_block_drag_affordance(scene, transform, theme);

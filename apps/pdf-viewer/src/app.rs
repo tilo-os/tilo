@@ -3365,11 +3365,6 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// The type of a comment relative to body text in the editor.
-    pub(crate) fn comment_type_scale(&self) -> f32 {
-        self.type_px.sm / ui::tokens::TypeScale::default().lg
-    }
-
     /// A comment or reply field holding `blocks`, focused at its end: Enter
     /// sends, Shift+Enter breaks the line.
     fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
@@ -3382,7 +3377,8 @@ impl PdfApp {
             .with_editor(
                 ui::widget::BlockEditor::new()
                     .with_wrap_lines(true)
-                    .with_compact_paragraph_spacing(true),
+                    .with_compact_paragraph_spacing(true)
+                    .with_body_size(self.type_px.sm),
             )
             .with_placeholder(hint)
             .with_submit(SubmitKey::Enter);
@@ -3391,7 +3387,7 @@ impl PdfApp {
         surface
             .editor_mut()
             .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
-        ui::widget::Embedded::new(surface).with_text_scale(self.comment_type_scale())
+        ui::widget::Embedded::new(surface)
     }
 
     /// Whether `target` is the edit currently in progress.

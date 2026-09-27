@@ -235,9 +235,13 @@ jobs:
               qemu_packages=(qemu-efi-aarch64 qemu-system-arm)
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-qemu openssh-client podman \
               jq qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux "${qemu_packages[@]}"
+            test -r /usr/lib/ipxe/qemu/efi-virtio.rom || {
+              echo '::error::ipxe-qemu did not provide efi-virtio.rom for QEMU disk boot'
+              exit 1
+            }
           elif command -v dnf >/dev/null; then
             if [[ $ARCH == x86_64 ]]; then
               qemu_packages=(edk2-ovmf qemu-system-x86-core)

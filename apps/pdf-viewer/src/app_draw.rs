@@ -2679,7 +2679,9 @@ impl PdfApp {
 
     /// A read-only view of a comment or reply, in comment type.
     fn comment_view(&self) -> RichTextView {
-        RichTextView::new().with_text_scale(self.comment_type_scale())
+        let mut view = RichTextView::new();
+        view.editor_mut().set_body_size(self.type_px.sm);
+        view
     }
 
     /// The height `blocks` take shown at `width`, measured with the view

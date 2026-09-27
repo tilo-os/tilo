@@ -833,25 +833,6 @@ impl Theme {
         self
     }
 
-    /// This theme with its type `factor` times its current size: text scale
-    /// and type sizes together. Unlike [`Self::with_text_scale`] it composes
-    /// with a scale already applied, for a part of a surface set in smaller
-    /// or larger type than the rest (a comment bubble, a caption).
-    #[must_use]
-    pub fn scaled_by(&self, factor: f32) -> Self {
-        let mut theme = self.clone();
-        let factor = if factor.is_finite() { factor } else { 1.0 };
-        let target = (self.text_scale * factor).clamp(0.5, 4.0);
-        let applied = if self.text_scale > 0.0 {
-            target / self.text_scale
-        } else {
-            1.0
-        };
-        theme.text_scale = target;
-        theme.multiply_type_sizes(applied);
-        theme
-    }
-
     fn multiply_type_sizes(&mut self, factor: f32) {
         let scale = &mut self.tokens.typography.scale;
         scale.xs *= factor;
@@ -1786,24 +1767,5 @@ mod configured_theme {
             );
             assert_eq!(Theme::configured_from(None).name, Theme::dark().name);
         }
-    }
-}
-
-#[cfg(test)]
-mod scaled_type {
-    use super::*;
-
-    #[test]
-    fn a_scaled_theme_composes_with_the_scale_already_applied() {
-        let base = Theme::dark().with_text_scale(2.0);
-        let small = base.scaled_by(0.5);
-        assert!((small.text_scale - 1.0).abs() < 1e-6);
-        let plain = Theme::dark();
-        assert!(
-            (small.tokens.typography.scale.lg - plain.tokens.typography.scale.lg).abs() < 1e-4,
-            "half of doubled type is plain type"
-        );
-        assert!((base.scaled_by(1.0).text_scale - 2.0).abs() < 1e-6);
-        assert!((Theme::dark().scaled_by(f32::NAN).text_scale - 1.0).abs() < 1e-6);
     }
 }

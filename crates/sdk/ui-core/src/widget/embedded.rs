@@ -6,6 +6,10 @@
 //! layout tree, node bindings and the event plumbing a host gives it.
 //! [`Embedded`] is that host, owned by the parent: lay the child out in a
 //! rectangle, then draw it and route events to it as usual.
+//!
+//! A child can live in its own coordinate space under a transform: a text
+//! box on a slide is laid out at the slide's size and drawn scaled to the
+//! canvas, with pointer events mapped back into it and its caret mapped out.
 
 use std::collections::HashMap;
 
@@ -13,6 +17,8 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
+use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
 use super::Widget;
@@ -28,8 +34,10 @@ pub struct Embedded<W: Widget> {
     bindings: BoundNodeMap,
     root: Option<NodeId>,
     rect: Rect,
-    /// The widget's type relative to the theme it is drawn with.
-    text_scale: f32,
+    /// From the child's own space to the owner's.
+    transform: Affine,
+    /// The text colour the child paints with, in place of the theme's.
+    text_color: Option<Color>,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -42,43 +50,41 @@ impl<W: Widget + 'static> Embedded<W> {
             bindings: BoundNodeMap::new(),
             root: None,
             rect: Rect::ZERO,
-            text_scale: 1.0,
+            transform: Affine::IDENTITY,
+            text_color: None,
         }
     }
 
-    /// Set the widget's type `factor` times the theme's: smaller for a
-    /// comment or a message row, larger for a caption.
-    #[must_use]
-    pub fn with_text_scale(mut self, factor: f32) -> Self {
-        self.set_text_scale(factor);
-        self
+    /// Place the child's own space in the owner's: layout rectangles are in
+    /// the child's space, and it is drawn, hit and its caret reported
+    /// through `transform` (a slide's text box scaled onto the canvas).
+    pub fn set_transform(&mut self, transform: Affine) {
+        self.transform = transform;
     }
 
-    /// Change the widget's type relative to the theme's.
-    pub fn set_text_scale(&mut self, factor: f32) {
-        if (self.text_scale - factor).abs() > f32::EPSILON {
-            self.text_scale = factor;
-            // Every size the tree measured is stale.
-            self.root = None;
-        }
+    /// Paint the child's text in `color` rather than the theme's (a text
+    /// box coloured by its slide).
+    pub fn set_text_color(&mut self, color: Option<Color>) {
+        self.text_color = color;
     }
 
-    /// Run `run` with `theme` and `text` at the widget's type scale.
-    fn scaled<T>(
-        &mut self,
-        theme: &Theme,
-        text: &mut TextRenderer,
-        run: impl FnOnce(&mut Self, &Theme, &mut TextRenderer) -> T,
-    ) -> T {
-        if (self.text_scale - 1.0).abs() <= f32::EPSILON {
-            return run(self, theme, text);
-        }
-        let scaled = theme.scaled_by(self.text_scale);
-        let before = text.text_scale();
-        text.set_text_scale(scaled.text_scale);
-        let result = run(self, &scaled, text);
-        text.set_text_scale(before);
-        result
+    /// The theme the child is laid out and painted with, when it is not
+    /// the owner's.
+    fn recoloured(&self, theme: &Theme) -> Option<Theme> {
+        self.text_color.map(|color| {
+            let mut theme = theme.clone();
+            theme.tokens.colors.text_primary = color;
+            theme.text_primary = color;
+            theme
+        })
+    }
+
+    /// Where the child's caret is, in the owner's space, for the input
+    /// method's candidate window.
+    pub fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.widget
+            .ime_cursor_rect()
+            .map(|rect| self.transform.transform_rect_bbox(rect))
     }
 
     /// The hosted widget.
@@ -91,9 +97,10 @@ impl<W: Widget + 'static> Embedded<W> {
         &mut self.widget
     }
 
-    /// Where the widget was last laid out, at the height it wanted.
+    /// Where the widget was last laid out, at the height it wanted, in the
+    /// owner's space.
     pub fn rect(&self) -> Rect {
-        self.rect
+        self.transform.transform_rect_bbox(self.rect)
     }
 
     fn rebuild(&mut self, theme: &Theme) {
@@ -114,17 +121,13 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// Lay the widget out at `rect`'s width and origin, as tall as its
     /// content wants (at least `rect`'s height); returns that height.
-    pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
-        self.scaled(theme, text, |host, theme, text| {
-            host.layout_at(rect, theme, text)
-        })
-    }
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "logical pixel sizes narrow to Taffy's f32"
     )]
-    fn layout_at(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+    pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let recoloured = self.recoloured(theme);
+        let theme = recoloured.as_ref().unwrap_or(theme);
         if self.root.is_none() || self.widget.take_structure_dirty() {
             self.rebuild(theme);
         }
@@ -170,10 +173,11 @@ impl<W: Widget + 'static> Embedded<W> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.scaled(theme, text, |host, theme, text| {
-            host.widget.draw(scene, transform, text, theme, presence);
-            host.widget.mark_drawn();
-        });
+        let recoloured = self.recoloured(theme);
+        let theme = recoloured.as_ref().unwrap_or(theme);
+        self.widget
+            .draw(scene, transform * self.transform, text, theme, presence);
+        self.widget.mark_drawn();
     }
 
     /// Route one window event to the widget.
@@ -193,10 +197,28 @@ impl<W: Widget + 'static> Embedded<W> {
         // Keys can reach a field before it is first laid out (typing right
         // after it opens); give the widget its tree so they are not lost.
         if self.root.is_none() {
-            self.rebuild(&Theme::dark().scaled_by(self.text_scale));
+            self.rebuild(&Theme::dark());
         }
         let Some(root) = self.root else {
             return;
+        };
+        // Pointer positions arrive in the owner's space; the child hits in
+        // its own.
+        let mapped;
+        let event = match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } if self.transform != Affine::IDENTITY => {
+                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let local = self.transform.inverse() * logical;
+                mapped = WindowEvent::CursorMoved {
+                    device_id: *device_id,
+                    position: PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor),
+                };
+                &mapped
+            }
+            _ => event,
         };
         let mut focus = None;
         self.widget.handle_event(
@@ -215,5 +237,71 @@ impl<W: Widget + 'static> Embedded<W> {
     /// Bring the widget up to date with the document.
     pub fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.widget.sync(state, path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{BlockContent, BlockEditor};
+    use winit::event::{ElementState, MouseButton};
+
+    fn click(host: &mut Embedded<BlockEditor>, doc: &mut AutoCommit, at: Point) {
+        let device_id = unsafe { std::mem::zeroed() };
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id,
+                position: PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            host.handle_event(
+                &event,
+                1.0,
+                &Modifiers::default(),
+                doc,
+                &automerge::ROOT,
+                &mut handled,
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_under_a_transform_is_hit_and_reported_where_it_is_drawn() {
+        let theme = Theme::dark();
+        let mut text = crate::font_catalog::fixture_renderer();
+        let mut doc = AutoCommit::new();
+        let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+        host.widget_mut()
+            .present_blocks(&[BlockContent::paragraph("a", "a line of text")]);
+        // The box is laid out at (100, 100)..(500, ..) in its own space and
+        // drawn at half size, 10 px in.
+        host.set_transform(Affine::translate((10.0, 10.0)) * Affine::scale(0.5));
+        let height = host.layout(Rect::new(100.0, 100.0, 500.0, 100.0), &theme, &mut text);
+        assert!(height > 0.0);
+        let drawn = host.rect();
+        assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
+        // A click where the box is drawn lands in it.
+        click(
+            &mut host,
+            &mut doc,
+            Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
+        );
+        assert!(host.widget().is_focused(), "the click reached the box");
+        let caret = host.ime_cursor_rect().expect("a focused line has a caret");
+        assert!(
+            drawn.inflate(1.0, 1.0).contains(caret.center()),
+            "{caret:?} within {drawn:?}"
+        );
     }
 }

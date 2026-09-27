@@ -213,6 +213,12 @@ has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
 has "$relay_workflow" 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
   'relay CI depends on resolve-or-create for the frozen RPM snapshot'
+for caller in "$image_workflow" "$relay_workflow"; do
+  awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$caller" \
+    | grep -Fx '    enable-openid-connect: true' >/dev/null \
+    && ok "$(basename "$caller") grants OIDC to the reusable RPM snapshot" \
+    || bad "$(basename "$caller") omits OIDC on the reusable RPM snapshot caller"
+done
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
