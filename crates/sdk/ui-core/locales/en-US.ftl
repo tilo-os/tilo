@@ -248,3 +248,24 @@ relative-ago-years = { $count ->
 # A software participant in history, presence and activity rows.
 participant-agent = { $name } · Agent
 participant-unknown-agent = Unknown agent
+
+# History as published actions, for the palette, scripts, agents and assistive technology.
+history-action-resource = Document history
+history-action-open = Open history
+history-action-list = List changes
+history-action-view-at = Preview a version
+history-action-compare = Compare changes
+history-action-close = Close preview
+history-action-restore = Restore a version
+history-action-param-resource = The document whose history to use, as History lists it. Defaults to the open document.
+history-action-param-cursor = Where the previous page ended.
+history-action-param-entry = One change, as History lists it.
+history-action-param-entries = Changes, as History lists them.
+history-action-param-session = A preview opened by Preview a version.
+history-action-param-heads = The live heads the preview reported. Restore is refused if the document changed since.
+history-action-denied = You don't have permission for this part of the document's history.
+history-action-stale-document = That document is no longer open.
+history-action-stale-cursor = The history changed since this page. List it again from the start.
+history-action-unknown-entry = That change isn't in this document's history.
+history-action-unknown-session = That preview isn't open.
+history-action-invalid = That History request isn't valid.
