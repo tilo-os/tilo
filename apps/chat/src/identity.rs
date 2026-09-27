@@ -38,7 +38,7 @@ impl LocalIdentity {
     pub fn demo() -> Self {
         Self {
             id: model::ME.to_string(),
-            name: "You".to_string(),
+            name: crate::i18n::t("chat-identity-you"),
             initials: "QD".to_string(),
             color_idx: 0,
         }
@@ -163,7 +163,7 @@ fn user_display() -> String {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
+        .unwrap_or_else(|| crate::i18n::t("chat-identity-you"));
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
@@ -171,7 +171,7 @@ fn user_display() -> String {
         .collect::<Vec<_>>()
         .join(" ");
     if display.is_empty() {
-        "You".to_string()
+        crate::i18n::t("chat-identity-you")
     } else {
         display
     }
