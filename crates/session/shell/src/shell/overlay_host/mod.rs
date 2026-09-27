@@ -9668,7 +9668,8 @@ impl ShellOverlayHost {
     }
 
     /// Move a window to room `room` (tree order). The overview stays up so
-    /// the window can be seen leaving the row.
+    /// the window can be seen leaving the row. A client window asks first
+    /// what crosses, on the transfer sheet.
     fn move_overview_window(&mut self, tab: u64, room: usize) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -9684,7 +9685,7 @@ impl ShellOverlayHost {
             return false;
         };
         match crate::shell::window_actions::move_tab_to_workspace(&mut state, tab, target) {
-            Ok(()) => {
+            Ok(_) => {
                 drop(state);
                 self.overview_window_selection = None;
                 true
@@ -19634,17 +19635,7 @@ impl ShellOverlayHost {
             return;
         }
         let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
-        let label = t_args(
-            "help-pill",
-            &[(
-                "chord",
-                crate::shell::keyboard_shortcuts::action_chord_text(
-                    &self.shortcut_config,
-                    settings_store::hardware::ShortcutAction::ShortcutHelp,
-                )
-                .into(),
-            )],
-        );
+        let label = t("help-pill");
         let label = label.as_str();
         let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
         // Label padding `s6` across / `s3` down, `s4` off the display

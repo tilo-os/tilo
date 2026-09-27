@@ -17,8 +17,8 @@ tab-closed-undo-hint-unbound = Zum Rückgängigmachen auswählen
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint. { $chord } wechselt zur nächsten Option.
-display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, { $chord } wechselt zur nächsten Anordnung, Escape schließt.
+display-sheet-subtitle = Wähle, wo dein Desktop erscheint. Super+P wechselt zur nächsten Option.
+display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
 display-mode-extend = Erweitern
 display-mode-extend-detail = Ein Desktop über alle Bildschirme
 display-mode-mirror = Spiegeln
@@ -287,8 +287,8 @@ qs-power-kept-awake-by-apps = { $power } · { $count } Apps verhindern den Ruhez
 
 # Schnelleinstellungen: Steuerungen bearbeiten
 qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Zum Anordnen ziehen · { $chord }
-qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder { $modifier } plus Pfeiltasten verwenden
+qs-edit-help = Zum Anordnen ziehen · Strg + Auf/Ab
+qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
 qs-edit-active-heading = AKTIVE STEUERUNGEN
 qs-edit-available-heading = VERFÜGBAR
 qs-edit-reset = Standard wiederherstellen
@@ -298,8 +298,8 @@ qs-edit-done-a11y = Bearbeiten der Schnelleinstellungen beenden
 qs-edit-required-a11y = Erforderliche Steuerung der Schnelleinstellungen
 qs-edit-remove-a11y = Steuerung aus den Schnelleinstellungen entfernen
 qs-edit-add-a11y = Steuerung zu den Schnelleinstellungen hinzufügen
-qs-edit-required-control-a11y = Erforderlich; mit { $modifier } plus Pfeiltasten anordnen
-qs-edit-optional-control-a11y = Zum Hinzufügen oder Entfernen auswählen; mit { $modifier } plus Pfeiltasten anordnen
+qs-edit-required-control-a11y = Erforderlich; mit Strg plus Pfeiltasten anordnen
+qs-edit-optional-control-a11y = Zum Hinzufügen oder Entfernen auswählen; mit Strg plus Pfeiltasten anordnen
 
 # Schnelleinstellungen: WLAN
 qs-wifi = WLAN
@@ -770,7 +770,7 @@ capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
 # Die Hilfe-Pille in der Bildschirmecke
-help-pill = Hilfe  F1 · { $chord }
+help-pill = Hilfe  F1 · Super+?
 
 # Arbeitsbereichsübersicht
 overview-go-to = Wechseln zu
@@ -1688,12 +1688,12 @@ onboarding-tour-skip = Tour überspringen
 onboarding-tour-enter = Tilo betreten
 onboarding-tour-navigate-title = Alles in Reichweite
 onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
-onboarding-tour-search-title = Suche  ·  { $search } oder { $alternate }
+onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
 onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht  ·  { $chord } oder Wischen mit vier Fingern
+onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Wischen mit vier Fingern
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
-onboarding-tour-move-title = Bewegen  ·  { $modifier }+Pfeiltasten oder Wischen mit drei Fingern
+onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
 onboarding-tour-move-body = Auf und Ab wechseln zwischen Arbeitsbereichen. Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens.
 onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
 onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
@@ -1702,7 +1702,7 @@ onboarding-tour-workspace-body = Ein dauerhafter Ort für ein Projekt, seine Per
 onboarding-tour-strip-title = Streifen
 onboarding-tour-strip-body = Eine waagerechte Reihe von Fenstergruppen in einem Arbeitsbereich. Füge einen weiteren Streifen hinzu, wenn die Arbeit eine zweite Spur braucht.
 onboarding-tour-window-group-title = Fenstergruppe
-onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit { $previous } oder { $next } zwischen Gruppen.
+onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit Super+Links oder Super+Rechts zwischen Gruppen.
 onboarding-tour-tab-title = Tab
 onboarding-tour-tab-body = Eine App oder ein Dokument in einer Fenstergruppe. Ziehe Tabs, um sie ohne überlappende Fenster anzuordnen.
 onboarding-tour-collaborate-title = Teilen bleibt bewusst
@@ -1871,7 +1871,7 @@ shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
 shell-path-read-failed = { $path } kann nicht gelesen werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
-editor-hint-focused = Live geteilter Code  ·  { $chord } zum Rückgängigmachen
+editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
 editor-hint-click = Zum Bearbeiten klicken
 notes-empty-title = Diese Notiz ist leer
 notes-empty-body = Schreib hier, was du willst. Änderungen werden beim Tippen gespeichert.
@@ -1881,6 +1881,42 @@ window-move-unknown-workspace = Dieser Arbeitsbereich existiert nicht mehr.
 window-move-same-workspace = Das Fenster ist bereits in diesem Arbeitsbereich.
 window-move-pinned = Dieses Fenster gehört zu seinem Arbeitsbereich und kann nicht verschoben werden.
 window-move-document-refused = Das Arbeitsbereichsdokument hat die Änderung nicht angenommen, daher wurde nichts verschoben.
+window-move-hosted-workspace = Die Dokumente dieses Arbeitsbereichs verwahrt ein Raumbesitzer, daher können Fenster von diesem Gerät aus noch nicht hinein- oder herausgebracht werden.
+window-move-not-permitted = In diesem Arbeitsbereich darfst du diese App nicht öffnen.
+window-move-already-moving = Dieses Fenster wird bereits verschoben.
+window-move-nobody-to-confirm = Zum Verschieben eines Fensters muss die Person an diesem Desktop zustimmen, was mitgeht, und es ist niemand da.
+window-transfer-title = „{ $window }“ nach { $to } verschieben?
+window-transfer-carries = Das Dokument in „{ $window }“ geht mit seinem vollständigen Bearbeitungsverlauf nach { $to }, und das Fenster öffnet sich dort so, wie du es verlassen hast.
+window-transfer-move-detail = Verschieben: Es verlässt { $from }; der Verlauf dort vermerkt, dass es nach { $to } verschoben wurde.
+window-transfer-copy-detail = Kopieren: { $to } erhält eine eigene Kopie mit dem bisherigen Verlauf, das Original bleibt in { $from }, und ab dann ändern sich beide getrennt.
+window-transfer-access-only-you = In { $from } kannst nur du es öffnen.
+window-transfer-access-others = In { $from } können { $people } es gerade öffnen. Nach dem Verschieben verlieren sie den Zugriff; nach dem Kopieren behalten sie das Original.
+window-transfer-access-destination = In { $to } entscheiden die Mitglieder und Berechtigungen dieses Arbeitsbereichs, wer es öffnen kann.
+window-transfer-grants-stay = Was diese App in { $from } darf, bleibt dort und kommt nicht mit: { $grants }.
+window-transfer-move-blocked = Verschieben ist nicht möglich, weil ein anderes Fenster in { $from } dieses Dokument noch zeigt. Schließe es zuerst oder erstelle eine Kopie.
+window-transfer-choice-move = Verschieben – { $from } hat es danach nicht mehr
+window-transfer-choice-copy = Kopieren – { $from } behält das Original
+window-transfer-confirm = Weiter
+window-transfer-fresh-title = „{ $window }“ kann seine Arbeit nicht nach { $to } mitnehmen
+window-transfer-fresh-detail = Diese App hält deine Arbeit nur im laufenden Programm, daher kann nichts davon in einen anderen Arbeitsbereich wechseln. „{ $window }“ bleibt unverändert in { $from } geöffnet. Stattdessen kannst du in { $to } ein neues, leeres Fenster der App öffnen.
+window-transfer-choice-fresh = Neues Fenster in { $to } öffnen
+window-transfer-fresh-confirm = Öffnen
+window-transfer-failed-title = „{ $window }“ konnte nicht verschoben werden
+window-transfer-failed-detail = { $reason } Es ging nichts verloren: Das Dokument ist weiterhin in { $from }.
+window-transfer-failed-busy = Die App hat das Dokument noch geöffnet.
+window-transfer-failed-record = Das Dokument der App konnte nicht gelesen werden.
+window-transfer-failed-storage = Der Speicher der App war nicht erreichbar.
+window-transfer-failed-timeout = Die App hat im anderen Arbeitsbereich nicht rechtzeitig ein Fenster geöffnet.
+window-transfer-failed-closed = Das neue Fenster wurde geschlossen, bevor es sich geöffnet hat.
+window-transfer-reopen-failed = Das Dokument ist hier, aber die App hat kein Fenster geöffnet. Öffne es erneut, um weiterzumachen.
+window-transfer-bringing-edits = Deine letzten Änderungen werden übernommen …
+window-transfer-receipt-copied = „{ $window }“ aus { $from } hierher kopiert
+window-transfer-receipt-moved-out = „{ $window }“ nach { $to } verschoben
+window-transfer-receipt-moved-in = „{ $window }“ aus { $from } hierher verschoben
+window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens geschlossen
+window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
+window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
+window-transfer-late-edits-detail = Änderungen, die in { $from } während des Verschiebens gemacht wurden, wurden dem Dokument hinzugefügt.
 
 # Startfläche für leere Arbeitsbereiche und die Standardbefehle
 global-search-create-workspace = Arbeitsbereich erstellen

@@ -634,10 +634,11 @@ jobs:
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
-  # A pull request that changes only snapshot pins (os/rpms-snapshot.env,
-  # os/kernel-snapshot.env) changes no code. Instead of the Rust and security
-  # suites, which main runs after the merge, prove each changed pin is the
-  # signed snapshot CI published for this source.
+  # A pull request that changes only snapshot pins (os/kernel-snapshot.env)
+  # changes no code. Instead of the Rust and security suites, which main runs
+  # after the merge, prove each changed pin is the signed snapshot CI
+  # published for this source. RPM snapshots resolve by fingerprint and have
+  # no pin file.
   pins:
     if: needs.select.outputs.pins_required == 'true'
     needs: [select]

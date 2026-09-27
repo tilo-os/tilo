@@ -198,16 +198,7 @@ impl QuickSettingsRoot {
     const ACTION_COUNT: usize = 4;
     const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
     fn edit_help_copy() -> String {
-        let keycaps = ui::keycaps::active();
-        let chord = format!("{}/{}", keycaps.chord(["Ctrl"], "up"), keycaps.key("down"));
-        t_args("qs-edit-help", &[("chord", chord.into())])
-    }
-
-    /// The modifier that reorders controls, as the active layout prints it.
-    fn reorder_modifier() -> ui::ArgValue {
-        ui::keycaps::active()
-            .modifier(ui::KeyboardModifier::Control)
-            .into()
+        t("qs-edit-help")
     }
 
     /// Single-line height of a chrome type role at the user's text scale.
@@ -2343,14 +2334,11 @@ impl QuickSettingsRoot {
         let mut root = bounded(
             AccessNode::new(Role::Dialog)
                 .with_name(t("qs-title"))
-                .with_description(if self.edit_mode {
-                    t_args(
-                        "qs-edit-a11y-description",
-                        &[("modifier", Self::reorder_modifier())],
-                    )
+                .with_description(t(if self.edit_mode {
+                    "qs-edit-a11y-description"
                 } else {
-                    t("qs-a11y-description")
-                })
+                    "qs-a11y-description"
+                }))
                 .with_state(AccessState::new().modal(true)),
             self.panel,
         );
@@ -2385,14 +2373,11 @@ impl QuickSettingsRoot {
         for (index, c) in controls.into_iter().enumerate() {
             let node = AccessNode::new(Role::Button)
                 .with_name(Self::rendered_label(c, state))
-                .with_description(t_args(
-                    if c.required() {
-                        "qs-edit-required-control-a11y"
-                    } else {
-                        "qs-edit-optional-control-a11y"
-                    },
-                    &[("modifier", Self::reorder_modifier())],
-                ))
+                .with_description(t(if c.required() {
+                    "qs-edit-required-control-a11y"
+                } else {
+                    "qs-edit-optional-control-a11y"
+                }))
                 .with_state(AccessState::new().focusable(true));
             let rect = if index < active_count {
                 self.card(self.panel, index, true)
@@ -3036,13 +3021,9 @@ mod tests {
 
         fn edit_help_copy_uses_font_safe_keyboard_names() {
             let copy = QuickSettingsRoot::edit_help_copy();
-            assert_eq!(copy, "Drag to reorder · Ctrl+Up/Down");
+            assert_eq!(copy, "Drag to reorder · Ctrl + Up/Down");
             assert!(!copy.contains('↑'));
             assert!(!copy.contains('↓'));
-            ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
-            let german = QuickSettingsRoot::edit_help_copy();
-            ui::keycaps::set_active(ui::Keycaps::US);
-            assert_eq!(german, "Drag to reorder · Strg+↑/↓");
         }
 
         edit_add_remove_and_keyboard_reorder_change_model();
