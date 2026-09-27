@@ -95,7 +95,7 @@ impl ChatSearchProvider {
         for channel in &self.channels {
             let workspace = self.workspace_name(&channel.workspace);
             let subtitle = if channel.topic.trim().is_empty() {
-                workspace.to_string()
+                workspace.clone()
             } else {
                 format!("{workspace} · {}", channel.topic)
             };
@@ -190,11 +190,11 @@ impl ChatSearchProvider {
         let _ = self.catalog.upsert(resource_id, searchable_text, result);
     }
 
-    fn workspace_name(&self, id: &str) -> &str {
-        self.workspaces
-            .iter()
-            .find(|ws| ws.id == id)
-            .map_or("Workspace", |ws| ws.name.as_str())
+    fn workspace_name(&self, id: &str) -> String {
+        self.workspaces.iter().find(|ws| ws.id == id).map_or_else(
+            || crate::i18n::t("chat-action-workspace"),
+            |ws| ws.name.clone(),
+        )
     }
     fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|channel| channel.id == id)
@@ -234,7 +234,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    "Open workspace",
+                    &crate::i18n::t("chat-action-open-workspace"),
                     &crate::actions::ChatOperation::OpenWorkspace {
                         workspace: id.to_string(),
                     },
@@ -251,7 +251,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    "Open conversation",
+                    &crate::i18n::t("chat-action-open-conversation"),
                     &crate::actions::ChatOperation::OpenChannel {
                         workspace: channel.workspace.clone(),
                         channel: id.to_string(),
@@ -269,7 +269,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    "Open category",
+                    &crate::i18n::t("chat-action-open-category"),
                     &crate::actions::ChatOperation::OpenCategory {
                         workspace: category.workspace.clone(),
                         category: id.to_string(),
@@ -287,7 +287,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    "Open person",
+                    &crate::i18n::t("chat-action-open-person"),
                     &crate::actions::ChatOperation::OpenPerson {
                         user: id.to_string(),
                     },
@@ -309,7 +309,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
         }
         let open = tilo_actions::ActionSpec::operation(
             "open",
-            "Reveal message",
+            crate::i18n::t("chat-action-reveal-message"),
             tilo_actions::OperationKind::View,
             crate::actions::CHAT_OPERATION_TYPE,
             &crate::actions::ChatOperation::RevealMessage {
