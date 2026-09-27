@@ -1364,7 +1364,6 @@ search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
-search-provider-desktop-windows = Fenster auf dem Desktop
 search-provider-files = Dateien
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
@@ -1375,8 +1374,6 @@ search-badge-session = Sitzung
 search-badge-quick-action = Schnellaktion
 search-badge-shortcut = Kurzbefehl
 search-badge-tray = Statusbereich
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 
 # Suche: Wiedergabesteuerung eines laufenden Players
 search-media-pause = { $player } pausieren
@@ -1428,16 +1425,6 @@ search-tray-entry-on = { $item }: { $entry } (an)
 search-tray-entry-off = { $item }: { $entry } (aus)
 
 # Suche: Fenster auf dem Desktop
-search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
-search-window-group-untitled = Fenstergruppe { $group }
-search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
-search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
 
 # Suche: Shell-Aktionen als Palettenzeilen
 search-action-shortcut-help-toggle = Desktop-Hilfe anzeigen

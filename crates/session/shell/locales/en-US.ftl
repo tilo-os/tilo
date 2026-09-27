@@ -1361,7 +1361,6 @@ search-provider-editor = Editor
 search-provider-session = Session
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
-search-provider-desktop-windows = Desktop windows
 search-provider-files = Files
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
@@ -1372,8 +1371,6 @@ search-badge-session = Session
 search-badge-quick-action = Quick action
 search-badge-shortcut = Shortcut
 search-badge-tray = Tray
-search-badge-tab = Tab
-search-badge-window-group = Window group
 
 # Search: media transport for a running player
 search-media-pause = Pause { $player }
@@ -1425,16 +1422,6 @@ search-tray-entry-on = { $item }: { $entry } (on)
 search-tray-entry-off = { $item }: { $entry } (off)
 
 # Search: desktop windows
-search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
-search-window-group-untitled = Window group { $group }
-search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
-search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
 
 # Search: shell actions, as palette rows
 search-action-shortcut-help-toggle = Show desktop help

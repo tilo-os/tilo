@@ -74,6 +74,9 @@ use std::path::PathBuf;
 
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
+use ui::search::system::filters::{
+    FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip, toggle_kind,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -506,37 +509,12 @@ pub struct ShellOverlayHost {
     last_search_revision: String,
     /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
-    /// Painted chip rects this frame, indexed like
-    /// [`Self::search_registry`]'s `registered_kinds`. Cached from draw
-    /// so `handle_event` hit-tests without recomputing geometry.
-    search_chip_rects: Vec<Rect>,
-    /// Rect of the leading "All" chip, cached from draw for hit-testing.
-    search_all_chip_rect: Rect,
-    /// Chip rows the filter band is reserving. Changing it tells the
-    /// palette to grow so lower rows aren't painted over. See
-    /// [`Self::draw_search_banner`].
-    search_chip_rows: usize,
-    /// Height of the filter band's controls, measured from the label the
-    /// band draws with (see [`Self::filter_control_height`]) and cached
-    /// from draw so the scope-switch geometry helpers, which hit-testing
-    /// calls without a theme, agree with what was painted.
-    search_filter_control_h: f64,
-    /// Width of one scope segment: the widest scope label plus `s3` each
-    /// side, measured at draw and cached for the same reason.
-    search_scope_segment_w: f64,
-    /// The §9.6 pointer floor (`metrics.min_pointer_target`) at the live
-    /// theme, cached at draw like the control height so hit-testing and
-    /// semantic bounds grow a 28 px Selector to a 32 px target without a
-    /// theme in hand (S1-28).
-    search_pointer_floor_h: f64,
-    /// The band rect the chips and switch were laid out in, and whether the
-    /// switch took the first row alone, both frozen at draw. The palette's
-    /// band getters answer from `host_filter_strip_rows` live, so a row
-    /// request made during draw would otherwise change the band — and the
-    /// switch's geometry — before the next paint, and a click would be
-    /// tested against a layout nobody has seen yet.
-    search_band_at_draw: Rect,
-    search_scope_own_row: bool,
+    /// The palette's filter band: chips, scope switch, their pointer
+    /// targets and semantics, laid out and cached at draw.
+    search_filters: SearchFilters,
+    /// What [`Self::search_filters`] was last configured with, so an
+    /// unchanged band is not rebuilt every frame.
+    search_filter_inputs: Option<SearchFilterInputs>,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -1065,9 +1043,6 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
     }
 }
 
-/// Gap between a segmented control's outer track and its segments.
-const SEGMENT_INSET_PX: f64 = 2.0;
-
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
 // This file's layout math is all in `f64` (to match `kurbo`), but
@@ -1157,289 +1132,6 @@ fn f32_to_u8_saturating(v: f32) -> u8 {
 )]
 fn f64_floor_to_usize_saturating(v: f64) -> usize {
     v.floor() as usize
-}
-
-/// Narrowest a chip is ever squeezed to before its label is just an
-/// ellipsis: the §9.6 pointer floor — a pill narrower than a finger is
-/// not a target whatever it says. (Was a tuned 34 until 2026-09-17.)
-const CHIP_MIN_W_PX: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-/// Height of a Selector at 100 % text (HIG §9.6, `metrics.selector_height`).
-/// The unscaled token, for the constructor's resting value before any theme
-/// is seen; the live band reads `theme.tokens.metrics.selector_height` in
-/// [`ShellOverlayHost::filter_control_height`] and grows with the measured
-/// label from there.
-const SELECTOR_HEIGHT_PX: f64 = ui::tokens::Metrics::BASE.selector_height as f64;
-
-/// Share of the band's width the scope switch may take while it shares the
-/// first row with the kind chips. Past it — 200 % text on a narrow card —
-/// the switch takes the first row alone rather than eliding its labels
-/// (S1-29); see [`ShellOverlayHost::scope_switch_has_own_row`].
-const SCOPE_TRACK_SHARE: f64 = 0.55;
-
-/// Where each chip of the filter strip goes.
-#[derive(Debug, Clone, PartialEq)]
-struct ChipStrip {
-    /// One rect per chip, in the order handed in. Every chip gets one —
-    /// see [`lay_out_chip_strip`].
-    rects: Vec<Rect>,
-    /// Rows the chips want at their natural width; the host reserves
-    /// this many from the palette.
-    rows_needed: usize,
-}
-
-/// Lays the filter chips out across a band that may be too narrow.
-///
-/// Invariant: every chip gets a rect — an unpainted chip could never be
-/// clicked. Three behaviours in preference order: natural width while it
-/// fits; wrap to a new row (over eliding — `Applications` → `Ap…` stops
-/// saying what it filters); only once rows run out do leftovers share and
-/// narrow the last row, a transient case the next layout fixes.
-///
-/// `first_row_x1` bounds the first row, since the scope switch anchors to
-/// its right; later rows have the whole band. `gap` is the space between
-/// two chips — the caller's live `spacing.s2`, passed in because this is a
-/// pure geometry function without a theme in hand.
-fn lay_out_chip_strip(
-    natural: &[f64],
-    band: Rect,
-    first_row_x1: f64,
-    rows_available: usize,
-    row_h: f64,
-    control_h: f64,
-    gap: f64,
-) -> ChipStrip {
-    if natural.is_empty() || band.width() <= 0.0 {
-        return ChipStrip {
-            rects: Vec::new(),
-            rows_needed: 1,
-        };
-    }
-    let rows_available = rows_available.max(1);
-    let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
-
-    // Greedy wrap at natural width; `per_row` caps chips per row, used
-    // by the balancing pass below.
-    let wrap = |per_row: usize| -> Vec<Vec<usize>> {
-        let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
-        let mut x = band.x0;
-        for (i, w) in natural.iter().enumerate() {
-            let w = w.max(CHIP_MIN_W_PX);
-            // `plan` always starts with one row and is only ever pushed
-            // to, never cleared, so `len() - 1` cannot underflow — spelled
-            // with saturating_sub so the invariant doesn't need re-proving
-            // at every call site.
-            let row = plan.len().saturating_sub(1);
-            let row_full = plan
-                .get(row)
-                .is_some_and(|r| !r.is_empty() && (x + w > row_x1(row) || r.len() >= per_row));
-            if row_full {
-                plan.push(Vec::new());
-                x = band.x0;
-            }
-            let row = plan.len().saturating_sub(1);
-            if let Some(r) = plan.get_mut(row) {
-                r.push(i);
-            }
-            x += w + gap;
-        }
-        plan
-    };
-    let plan = wrap(usize::MAX);
-    let rows_needed = plan.len();
-
-    // Spread chips evenly over the rows used, rather than filling each
-    // to the brim and leaving a lone chip on the last row. Only adopted
-    // if it still fits in the same row count, so evenness never costs a
-    // chip.
-    let plan = if rows_needed > 1 {
-        let per_row = natural.len().div_ceil(rows_needed);
-        let balanced = wrap(per_row);
-        if balanced.len() == rows_needed {
-            balanced
-        } else {
-            plan
-        }
-    } else {
-        plan
-    };
-
-    let mut rects = vec![Rect::ZERO; natural.len()];
-    let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        let cy = band.y0 + usize_to_f64_lossy(row) * row_h + row_h / 2.0;
-        let mut x = band.x0;
-        for (slot, &id) in ids.iter().enumerate() {
-            // `widths` is built alongside `ids` by every caller below, so
-            // it always has one entry per id — `.get()` keeps a shape
-            // mismatch from panicking instead of proving it can't happen.
-            let Some(&w) = widths.get(slot) else {
-                continue;
-            };
-            let Some(rect) = rects.get_mut(id) else {
-                continue;
-            };
-            *rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
-            x += w + gap;
-        }
-    };
-
-    let kept_rows = rows_needed.min(rows_available);
-    for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
-        let widths: Vec<f64> = ids
-            .iter()
-            .map(|&i| {
-                natural
-                    .get(i)
-                    .copied()
-                    .unwrap_or(CHIP_MIN_W_PX)
-                    .max(CHIP_MIN_W_PX)
-            })
-            .collect();
-        place(row, ids, &widths, &mut rects);
-    }
-    let last = kept_rows.saturating_sub(1);
-    let leftover: Vec<usize> = plan
-        .get(last..)
-        .map(|rows| rows.iter().flatten().copied().collect())
-        .unwrap_or_default();
-    let widths = share_row(
-        &leftover
-            .iter()
-            .map(|&i| natural.get(i).copied().unwrap_or(CHIP_MIN_W_PX))
-            .collect::<Vec<_>>(),
-        row_x1(last) - band.x0,
-        gap,
-    );
-    place(last, &leftover, &widths, &mut rects);
-
-    ChipStrip { rects, rows_needed }
-}
-
-/// Widths for one row of chips that must all fit inside `available`.
-/// Chips narrower than an equal share keep their natural width and hand
-/// the rest to the ones that are over, so squeezing costs the long
-/// labels and leaves short ones alone.
-fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
-    if natural.is_empty() {
-        return Vec::new();
-    }
-    let n = usize_to_f64_lossy(natural.len());
-    let gaps = gap * (n - 1.0);
-    let total: f64 = natural.iter().sum();
-    if total + gaps <= available {
-        return natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
-    }
-    let base = ((available - gaps) / n).max(CHIP_MIN_W_PX);
-    let spare: f64 = natural
-        .iter()
-        .filter(|w| **w < base)
-        .map(|w| base - w)
-        .sum();
-    let over = natural.iter().filter(|w| **w >= base).count();
-    let share_over = if over > 0 {
-        base + spare / usize_to_f64_lossy(over)
-    } else {
-        base
-    };
-    natural
-        .iter()
-        .map(|w| {
-            if *w < base {
-                w.max(CHIP_MIN_W_PX)
-            } else {
-                share_over.min(*w).max(CHIP_MIN_W_PX)
-            }
-        })
-        .collect()
-}
-
-/// One pill in the search card's filter band, shared by the kind chips
-/// and the "All" reset chip.
-///
-/// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
-/// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
-/// hairline and inner glow) and whose label is ink chosen against whatever
-/// that tier painted, so it stays legible on every preset. Until
-/// 2026-09-17 the chosen chip wore `accent[5]` (§9.4 reserves accent for
-/// live state) and the idle one a `lift(0.35)` wash of its own.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate-mode paint helper: scene, transform, renderer, theme and this chip's own content"
-)]
-fn draw_filter_chip(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &str,
-    text_size: f32,
-    state: ui::chrome::SelectionState,
-) {
-    let colors = &theme.tokens.colors;
-    let radius = ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    let shape = RoundedRect::from_rect(rect, radius);
-    let tier = ui::chrome::selection_tier(theme, state);
-    if tier.fill.components[3] > 0.0 {
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tier.fill,
-            None,
-            &shape,
-        );
-    }
-    if let Some(border) = tier.border {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &shape,
-        );
-    }
-    if let Some(glow) = tier.inner_glow {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            glow,
-            None,
-            &RoundedRect::from_rect(rect.inset(1.0), (radius - 1.0).max(0.0)),
-        );
-    }
-    // The chosen chip's label is the control label (`text_primary`); the
-    // others recede to `text_dim`. Either way the ink is measured against
-    // the surface actually under it — the lifted body, or the panel ground
-    // showing through an idle chip.
-    let lifted = state.active || state.pressed || state.hover;
-    let under = if lifted {
-        tier.fill
-    } else {
-        ui::chrome::shell::panel_ground(theme)
-    };
-    let tone = if state.active {
-        colors.text_primary
-    } else {
-        colors.text_dim
-    };
-    let text_color = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-    // Control labels are medium weight (HIG §9.6); measured and drawn at
-    // the same weight so the centring holds.
-    let (lw, lh) = text_renderer.measure_weighted(label, text_size, None, TextWeight::Medium);
-    text_renderer.draw_text_weighted(
-        scene,
-        label,
-        text_size,
-        text_color,
-        transform.pre_translate(
-            (
-                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        TextWeight::Medium,
-    );
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
@@ -1763,7 +1455,7 @@ fn prepare_status_evidence(
 /// filter, so a translucent tint here would just lose contrast.
 pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
-/// Alpha of the `GlobalSearch` palette and Workspace-Settings modal
+/// Alpha of the search palette and Workspace-Settings modal
 /// surfaces. Paints solid rather than the design's translucent tint,
 /// since translucency drops legibility of long rows; the scrim beneath
 /// sells the depth instead.
@@ -1775,10 +1467,20 @@ pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 /// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
-/// Alpha of the scrim beneath the `GlobalSearch` palette and Overview
+/// Alpha of the scrim beneath the search palette and Overview
 /// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
 /// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
+
+/// What the palette's filter band shows: each registered kind with its
+/// label, the chosen kinds, and each scope with its label.
+#[derive(Clone, Debug, PartialEq)]
+struct SearchFilterInputs {
+    kinds: Vec<(crate::shell::search::ResourceKind, String)>,
+    selected: Vec<crate::shell::search::ResourceKind>,
+    scopes: Vec<(crate::shell::chrome_state::SearchScope, String)>,
+    active_scope: crate::shell::chrome_state::SearchScope,
+}
 
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
@@ -2328,14 +2030,8 @@ impl ShellOverlayHost {
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
-            search_chip_rects: Vec::new(),
-            search_all_chip_rect: Rect::ZERO,
-            search_chip_rows: 1,
-            search_filter_control_h: SELECTOR_HEIGHT_PX,
-            search_scope_segment_w: 0.0,
-            search_pointer_floor_h: f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
-            search_band_at_draw: Rect::ZERO,
-            search_scope_own_row: false,
+            search_filters: SearchFilters::default(),
+            search_filter_inputs: None,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
@@ -7759,180 +7455,90 @@ impl ShellOverlayHost {
         (!palette.children.is_empty()).then_some(palette.children.len())
     }
 
-    /// Stable address stem for a chip or segment: ASCII letters and digits
-    /// lower-cased, every other run of characters collapsed to one dash, so
-    /// `palette:filter:host-apps` and `palette:scope:this-app` read the same
-    /// in a script as on screen and never carry a second `:`. Callers add
-    /// an ordinal when two labels would collide.
-    fn search_filter_slug(label: &str) -> String {
-        let mut slug = String::with_capacity(label.len());
-        for c in label.chars() {
-            if c.is_ascii_alphanumeric() {
-                slug.push(c.to_ascii_lowercase());
-            } else if !slug.ends_with('-') {
-                slug.push('-');
-            }
-        }
-        slug.trim_matches('-').to_string()
-    }
-
-    /// `palette:filter:<slug>` for kind `i`, made unique against the kinds
-    /// before it: two providers may mint custom kinds whose labels differ
-    /// only in case or punctuation, and two nodes sharing one address would
-    /// make both unaddressable ("ambiguous target").
-    fn search_filter_key(kinds: &[crate::shell::search::ResourceKind], i: usize) -> String {
-        let slug = |k: &crate::shell::search::ResourceKind| Self::search_filter_slug(k.id());
-        let Some(kind) = kinds.get(i) else {
-            return format!("palette:filter:{i}");
-        };
-        let mine = slug(kind);
-        let taken = kinds.iter().take(i).any(|k| slug(k) == mine);
-        if mine.is_empty() || taken {
-            format!("palette:filter:{mine}-{i}")
-        } else {
-            format!("palette:filter:{mine}")
-        }
-    }
-
-    /// The filter band as semantics: one toggle per kind chip (plus the
-    /// leading "All" reset) and one radio per scope segment, each carrying
-    /// the rect it was last painted at, so a screen reader, a script and
-    /// the UX bench can name a chip instead of guessing where the strip
-    /// wrapped it to. Names are prefixed ("Filter: Files") so they never
-    /// collide with a window title or a result row that shares the word;
-    /// the `palette:*` keys are the scriptable address. A control with no
-    /// rect yet (before the first paint) is hidden rather than dropped,
-    /// so ordinals stay fixed.
-    fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        // `checked` is the toggle/radio state AT reads; `selected` mirrors
-        // it so "which one is chosen" also answers the selection question
-        // a list-style reader (and the bench's `selected` check) asks.
-        let bounded = |node: AccessNode, rect: Rect, checked: bool| {
-            let node = node.with_state(AccessState {
-                checked: Some(checked),
-                selected: checked,
-                hidden: rect.area() <= 0.0,
-                ..AccessState::default()
-            });
-            if rect.area() > 0.0 {
-                node.with_bounds(rect)
-            } else {
-                node
-            }
-        };
-
-        // Bounds are the pointer targets (`selector_hit_rect`: the painted
-        // pill grown to the §9.6 floor), the same rects a press is tested
-        // against — what a reader names is exactly what a finger hits.
-        let kinds = self.search_registry.registered_kinds();
-        let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
-        chips.push(bounded(
-            AccessNode::new(Role::ToggleButton)
-                .with_name(t("host-a11y-filter-all"))
-                .with_semantic_key("palette:filter:all")
-                .with_action_target("palette:filter:all")
-                .with_key(0),
-            self.search_all_chip_hit_rect(),
-            self.active_kind_filter.is_empty(),
-        ));
-        for (i, kind) in kinds.iter().enumerate() {
-            let key = Self::search_filter_key(&kinds, i);
-            chips.push(bounded(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(t_args(
-                        "host-a11y-filter-kind",
-                        &[("kind", kind.localized_label().into())],
-                    ))
-                    .with_semantic_key(key.clone())
-                    .with_action_target(key)
-                    .with_key(u64::try_from(i.saturating_add(1)).unwrap_or(u64::MAX)),
-                self.search_chip_hit_rect(i),
-                self.active_kind_filter.contains(kind),
-            ));
-        }
-
+    /// The band's inputs as this host shows them now: the registered kinds
+    /// with their labels, the chosen kinds, and the scopes with theirs.
+    fn search_filter_inputs(&self) -> SearchFilterInputs {
+        let kinds = self
+            .search_registry
+            .registered_kinds()
+            .into_iter()
+            .map(|kind| {
+                let label = kind.localized_label();
+                (kind, label)
+            })
+            .collect();
+        let scopes = self
+            .search_scope_list()
+            .into_iter()
+            .map(|scope| (scope, self.search_scope_pill_label(scope)))
+            .collect();
         let active_scope = self
             .chrome
             .as_ref()
             .map(|c| c.borrow().search_scope)
             .unwrap_or_default();
-        let scopes = self
-            .search_scope_list()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, scope)| {
-                let label = self.search_scope_pill_label(scope);
-                let key = format!("palette:scope:{}", scope.slug());
-                bounded(
-                    AccessNode::new(Role::RadioButton)
-                        .with_name(t_args(
-                            "host-a11y-scope",
-                            &[("scope", label.as_str().into())],
-                        ))
-                        .with_semantic_key(key.clone())
-                        .with_action_target(key)
-                        .with_key(u64::try_from(idx).unwrap_or(u64::MAX)),
-                    self.search_scope_segment_hit_rect(idx),
-                    scope == active_scope,
-                )
+        SearchFilterInputs {
+            kinds,
+            selected: self.active_kind_filter.clone(),
+            scopes,
+            active_scope,
+        }
+    }
+
+    /// Hand `inputs` to `filters` with this host's accessible names.
+    fn configure_search_filters(filters: &mut SearchFilters, inputs: &SearchFilterInputs) {
+        let kinds = inputs
+            .kinds
+            .iter()
+            .map(|(kind, label)| KindChip {
+                kind: kind.clone(),
+                label: label.clone(),
+                name: t_args("host-a11y-filter-kind", &[("kind", label.as_str().into())]),
             })
             .collect();
-
-        AccessNode::new(Role::Group)
-            .with_name(t("host-a11y-search-filters"))
-            .with_semantic_key("palette:filters")
-            .with_children(vec![
-                AccessNode::new(Role::Group)
-                    .with_name(t("host-a11y-result-kinds"))
-                    .with_children(chips),
-                AccessNode::new(Role::Group)
-                    .with_name(t("host-a11y-search-scope"))
-                    .with_children(scopes),
-            ])
+        let scopes = inputs
+            .scopes
+            .iter()
+            .map(|(scope, label)| ScopeSegment {
+                scope: *scope,
+                label: label.clone(),
+                name: t_args("host-a11y-scope", &[("scope", label.as_str().into())]),
+            })
+            .collect();
+        filters.configure(
+            kinds,
+            inputs.selected.clone(),
+            scopes,
+            inputs.active_scope,
+            FilterText {
+                all_label: t("search-filter-all"),
+                all_name: t("host-a11y-filter-all"),
+                filters_name: t("host-a11y-search-filters"),
+                kinds_name: t("host-a11y-result-kinds"),
+                scopes_name: t("host-a11y-search-scope"),
+            },
+        );
     }
 
-    /// Geometry for a path under [`Self::search_filters_accessibility`]:
-    /// `[0, i]` is chip `i` (0 = "All"), `[1, i]` is scope segment `i`.
-    fn search_filter_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
-        let rect = match path {
-            [0, 0] => self.search_all_chip_hit_rect(),
-            [0, i] => self.search_chip_hit_rect(i.checked_sub(1)?),
-            [1, i] => self.search_scope_segment_hit_rect(*i),
-            _ => return None,
-        };
-        (rect.area() > 0.0).then_some(rect)
+    /// Reconfigure the band only when what it shows has changed.
+    fn sync_search_filters(&mut self) {
+        let inputs = self.search_filter_inputs();
+        if self.search_filter_inputs.as_ref() != Some(&inputs) {
+            Self::configure_search_filters(&mut self.search_filters, &inputs);
+            self.search_filter_inputs = Some(inputs);
+        }
     }
 
-    /// Toggle a kind in the chip filter. Multiple kinds may be active
-    /// simultaneously; the empty state means "everything shows".
-    /// Toggle a kind in the chip filter. Multiple content kinds may be
-    /// active simultaneously; the empty state means "everything shows".
-    ///
-    /// Applications and Host Apps are the exception: they are alternative
-    /// launch sources, not additive content facets. In particular a picker
-    /// opened for a new window starts with both sources available. Clicking
-    /// the Host Apps chip must narrow to host rows, rather than merely
-    /// toggling that source out and leaving the Tilo-app rows behind.
-    fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
-        use crate::shell::search::ResourceKind;
-
-        if matches!(
-            kind,
-            ResourceKind::Application | ResourceKind::HostApplication
-        ) {
-            if self.active_kind_filter.as_slice() == std::slice::from_ref(&kind) {
-                self.active_kind_filter.clear();
-            } else {
-                self.active_kind_filter = vec![kind];
-            }
-            return;
+    /// The filter band as semantics, reflecting the current selection even
+    /// before the next paint re-lays it out.
+    fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
+        let inputs = self.search_filter_inputs();
+        if self.search_filter_inputs.as_ref() == Some(&inputs) {
+            return self.search_filters.accessibility();
         }
-        if let Some(pos) = self.active_kind_filter.iter().position(|k| k == &kind) {
-            self.active_kind_filter.remove(pos);
-        } else {
-            self.active_kind_filter.push(kind);
-        }
+        let mut filters = self.search_filters.clone();
+        Self::configure_search_filters(&mut filters, &inputs);
+        filters.accessibility()
     }
 
     /// Dispatch the selected palette row through the provider callback
@@ -9963,17 +9569,6 @@ impl ShellOverlayHost {
         WorkspaceSettingsOverlay::rect_for(self.rect)
     }
 
-    /// The band the scope + kind controls paint into — the palette's own
-    /// reserved filter band, not a floating surface, which keeps the
-    /// controls aligned with the query field and rows below.
-    fn search_banner_rect(&self) -> Rect {
-        let p = self.palette.get_rect();
-        if p.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        self.palette.filter_strip_rect()
-    }
-
     /// Full ordered list of scopes shown in the banner. Includes
     /// [`SearchScope::ActiveApp`] only when there's a currently focused
     /// tab — otherwise the pill would render an empty label.
@@ -10050,198 +9645,6 @@ impl ShellOverlayHost {
             }
             other => other.localized_label(),
         }
-    }
-
-    /// Individual scope-segment rect. `idx` indexes into
-    /// [`Self::search_scope_list`] (`ActiveApp` is 0 when present). One
-    /// segmented control, not loose pills, since the scopes are mutually
-    /// exclusive. Hit-test and draw share this helper.
-    fn search_scope_pill_rect(&self, idx: usize) -> Rect {
-        let b = self.search_banner_rect();
-        if b.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        let count = self.search_scope_list().len().max(1);
-        let track = self.search_scope_track_rect();
-        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / usize_to_f64_lossy(count);
-        let x0 = track.x0 + SEGMENT_INSET_PX + usize_to_f64_lossy(idx) * seg_w;
-        Rect::new(
-            x0,
-            track.y0 + SEGMENT_INSET_PX,
-            x0 + seg_w,
-            track.y1 - SEGMENT_INSET_PX,
-        )
-    }
-
-    /// Pointer and semantic target of scope segment `idx`: the segment's
-    /// x-range at the track's full height. The painted pill sits `2 px`
-    /// inside the track (a bezel, see [`SEGMENT_INSET_PX`]); the thing you
-    /// press, and the thing a script names, is the whole slice of the
-    /// control, so it shares the chips' height and edges.
-    fn search_scope_segment_hit_rect(&self, idx: usize) -> Rect {
-        let seg = self.search_scope_pill_rect(idx);
-        if seg.area() <= 0.0 {
-            return Rect::ZERO;
-        }
-        let track = self.search_scope_track_rect();
-        self.selector_hit_rect(Rect::new(seg.x0, track.y0, seg.x1, track.y1))
-    }
-
-    /// The pointer target of a Selector painted at `painted`: the same
-    /// width, grown about its centre to the §9.6 pointer floor
-    /// (`metrics.min_pointer_target`, cached at draw) when the pill is
-    /// shorter. A 28 px chip in a 36 px row therefore accepts a press 2 px
-    /// above and below its paint (S1-28). Hit-testing, semantic bounds and
-    /// the bench all read this rect; paint reads `painted`. The rows are
-    /// `row_h` apart and `row_h - s1 ≥` the floor, so two rows' targets
-    /// never overlap.
-    fn selector_hit_rect(&self, painted: Rect) -> Rect {
-        if painted.area() <= 0.0 {
-            return Rect::ZERO;
-        }
-        // The floor is already clamped to `row_h − s1` at draw
-        // (`search_pointer_floor_h`), so two rows' targets never overlap
-        // however the palette scales its rows; clipping to the band keeps
-        // the first and last rows' targets off the query field and the
-        // results.
-        let h = painted.height().max(self.search_pointer_floor_h);
-        let cy = painted.center().y;
-        let grown = Rect::new(painted.x0, cy - h / 2.0, painted.x1, cy + h / 2.0);
-        // Clipped to the band the pill was laid out in (frozen at draw),
-        // never to a band a pending row request has already moved.
-        let band = self.search_band_for_targets();
-        if band.area() <= 0.0 {
-            return grown;
-        }
-        let clipped = grown.intersect(band);
-        if clipped.area() <= 0.0 {
-            painted
-        } else {
-            clipped
-        }
-    }
-
-    fn search_all_chip_hit_rect(&self) -> Rect {
-        self.selector_hit_rect(self.search_all_chip_rect)
-    }
-
-    /// Pointer target of kind chip `i` (0 = the first registered kind; the
-    /// "All" reset is [`Self::search_all_chip_hit_rect`]).
-    fn search_chip_hit_rect(&self, i: usize) -> Rect {
-        self.selector_hit_rect(self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO))
-    }
-
-    /// Width the scope switch needs to show every label whole: one measured
-    /// segment per scope plus the bezel either side.
-    fn search_scope_measured_track_w(&self) -> f64 {
-        let count = self.search_scope_list().len().max(1);
-        self.search_scope_segment_w * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX
-    }
-
-    /// Whether the scope switch *wants* the band's first row alone: its
-    /// measured width passes [`SCOPE_TRACK_SHARE`] of the band — 200 % text
-    /// on a narrow card — so the labels stay whole and the kind chips start
-    /// on the next row, rather than "Workspace" eliding to "Works…" beside
-    /// a first row of chips (S1-29). This is what the band asks the palette
-    /// to reserve a row for.
-    fn scope_switch_wants_own_row(&self) -> bool {
-        let b = self.search_banner_rect();
-        b.width() > 0.0 && self.search_scope_measured_track_w() > b.width() * SCOPE_TRACK_SHARE
-    }
-
-    /// Whether the scope switch *takes* the first row alone: it wants to,
-    /// and the palette had already granted the band a second row when the
-    /// band was last drawn. On the frame the want first appears the band is
-    /// still one row tall, so the switch shares that row (capped, as
-    /// before) and the chips stay where they are, off the results; the
-    /// next layout supplies the row. Frozen at draw
-    /// (`search_scope_own_row`), so a click is tested against the switch
-    /// that was painted, not one the pending row request has already moved.
-    fn scope_switch_has_own_row(&self) -> bool {
-        self.search_scope_own_row
-    }
-
-    /// The band the chips and switch were laid out in: the frame's frozen
-    /// rect once anything has been drawn, the palette's live band before.
-    fn search_band_for_targets(&self) -> Rect {
-        if self.search_band_at_draw.area() > 0.0 {
-            self.search_band_at_draw
-        } else {
-            self.search_banner_rect()
-        }
-    }
-
-    /// Outer track of the scope segmented control — the rounded body the
-    /// individual segments sit inside.
-    fn search_scope_track_rect(&self) -> Rect {
-        let b = self.search_band_for_targets();
-        if b.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        // Segments are as wide as the widest label needs (measured at
-        // draw). While the switch shares the first row it is capped at a
-        // share of the band so the kind chips keep that row; on its own
-        // row it may take the whole band.
-        let measured = self.search_scope_measured_track_w();
-        let w = if self.scope_switch_has_own_row() {
-            measured.min(b.width())
-        } else {
-            measured.min(b.width() * SCOPE_TRACK_SHARE)
-        };
-        let h = self.search_filter_control_h;
-        // Anchored to the *first* row of the band, not to the middle of
-        // it: when the kind chips wrap to a second row the switch must
-        // stay where it was, beside the row it shares, rather than
-        // drifting down into the gap between the two rows of chips.
-        let cy = b.y0 + self.palette.filter_strip_row_height() / 2.0;
-        Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
-    }
-
-    /// Label size for the filter band's chips and scope segments: the
-    /// chrome control label (HIG §9.6, `scale.sm` medium), renderer-
-    /// relative. The theme's `scale.sm` already carries the person's text
-    /// scale and the legacy `TextRenderer` APIs scale again (the round-one
-    /// systemic finding: 4× glyphs at 200 %), so the renderer's factor is
-    /// divided out here — the same cure `draw_shortcut_help_button` uses —
-    /// and every measure and draw in the band goes through this one size.
-    /// Until 2026-09-17 the band's labels painted at 48 px at 200 % and the
-    /// pills grew to hold them.
-    fn filter_label_size(theme: &Theme, text_renderer: &TextRenderer) -> f32 {
-        theme.tokens.typography.scale.sm / text_renderer.text_scale().max(f32::EPSILON)
-    }
-
-    /// Shared height for every control in the filter band, so the chips
-    /// and the scope switch sit on one centre line. The §9.6 Selector
-    /// height at 100 % text; it grows with the measured label line height
-    /// plus `s2` so a 200 % label sits inside its pill rather than
-    /// spilling over it, and stops `s1` short of the band's row so two
-    /// rows of chips keep a gutter instead of touching.
-    fn filter_control_height(theme: &Theme, text_renderer: &mut TextRenderer, row_h: f64) -> f64 {
-        let size = Self::filter_label_size(theme, text_renderer);
-        let (_, lh) = text_renderer.measure_weighted("Ag", size, None, TextWeight::Medium);
-        let s1 = f64::from(theme.tokens.spacing.s1);
-        (f64::from(lh) + f64::from(theme.tokens.spacing.s2))
-            .max(f64::from(theme.tokens.metrics.selector_height))
-            .min(row_h - s1)
-    }
-
-    /// Width one scope segment needs: the widest scope label at the
-    /// band's label size plus `s3` either side — measured, so "Everywhere"
-    /// and a long app title get room instead of an ellipsis.
-    fn scope_segment_width(&self, theme: &Theme, text_renderer: &mut TextRenderer) -> f64 {
-        let size = Self::filter_label_size(theme, text_renderer);
-        let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
-        self.search_scope_list()
-            .into_iter()
-            .map(|scope| {
-                let label = self.search_scope_pill_label(scope);
-                f64::from(
-                    text_renderer
-                        .measure_weighted(&label, size, None, TextWeight::Medium)
-                        .0,
-                ) + pad
-            })
-            .fold(0.0, f64::max)
     }
 
     /// The overview's model of every room, in tree order.
@@ -13136,7 +12539,11 @@ impl ShellOverlayHost {
         // is the segment's full-height slice of the track — the same rect
         // its semantic node publishes.
         for (idx, scope) in self.search_scope_list().iter().enumerate() {
-            if self.search_scope_segment_hit_rect(idx).contains(p) {
+            if self
+                .search_filters
+                .search_scope_segment_hit_rect(idx)
+                .contains(p)
+            {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.search_scope = *scope;
@@ -15810,7 +15217,7 @@ impl ShellOverlayHost {
             // untick every chip one at a time. Targets are the pointer
             // rects (`selector_hit_rect`), the same ones the semantic
             // nodes publish.
-            let all_hit = self.search_all_chip_hit_rect();
+            let all_hit = self.search_filters.search_all_chip_hit_rect();
             if all_hit.area() > 0.0 && all_hit.contains(p) {
                 if !self.active_kind_filter.is_empty() {
                     self.active_kind_filter.clear();
@@ -15821,10 +15228,10 @@ impl ShellOverlayHost {
                 return true;
             }
             let kinds = self.search_registry.registered_kinds();
-            for idx in 0..self.search_chip_rects.len() {
-                if self.search_chip_hit_rect(idx).contains(p) {
+            for idx in 0..self.search_filters.search_chip_rects.len() {
+                if self.search_filters.search_chip_hit_rect(idx).contains(p) {
                     if let Some(kind) = kinds.get(idx).cloned() {
-                        self.toggle_kind_filter(kind);
+                        toggle_kind(&mut self.active_kind_filter, kind);
                         self.last_search_query.clear(); // force a refresh
                         self.refresh_search_results(state, path);
                     }
@@ -18914,7 +18321,7 @@ impl Widget for ShellOverlayHost {
                 // The trailing child is the host's filter band (see
                 // `accessibility`); everything before it is the palette's.
                 [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
-                    self.search_filter_rect_for_path(rest)
+                    self.search_filters.rect_for_path(rest)
                 }
                 _ => self.palette.synthetic_accessibility_rect(child_path),
             },
@@ -23329,10 +22736,8 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
+    /// Paint the filter band into the palette's reserved strip and ask the
+    /// palette for the rows it needs.
     fn draw_search_banner(
         &mut self,
         scene: &mut Scene,
@@ -23340,276 +22745,25 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let tokens = &theme.tokens;
-        let band = self.search_banner_rect();
-        if band.width() <= 0.0 {
-            self.search_chip_rects.clear();
-            return;
-        }
-
-        let chip_text_size = Self::filter_label_size(theme, text_renderer);
-        let row_h = self.palette.filter_strip_row_height();
-        let control_h = Self::filter_control_height(theme, text_renderer, row_h);
-        // Cached before any geometry helper runs, so the switch painted
-        // below and the hit rects consulted later agree.
-        self.search_filter_control_h = control_h;
-        // The pointer floor a target may grow to: §9.6's 32, but never past
-        // `row_h − s1`, so neighbouring rows' targets keep the gutter the
-        // pills keep (the palette's row is `36·text_scale`; below 100 %
-        // text it is the row, not the floor, that bounds the target).
-        self.search_pointer_floor_h = f64::from(tokens.metrics.min_pointer_target)
-            .min(row_h - f64::from(tokens.spacing.s1))
-            .max(control_h);
-        self.search_scope_segment_w = self.scope_segment_width(theme, text_renderer);
-        // Frozen for this frame: the band everything below is laid out in,
-        // and whether the switch takes its first row alone (it wants to
-        // and the palette has already granted the second row). Hit-tests
-        // read these, not the palette's live getters, so a row request made
-        // a few lines down cannot move the targets before the next paint.
-        self.search_band_at_draw = band;
-        self.search_scope_own_row =
-            self.scope_switch_wants_own_row() && band.height() + 0.5 >= 2.0 * row_h;
-
-        self.draw_search_banner_scope_switch(
+        self.sync_search_filters();
+        let band = if self.palette.get_rect().width() <= 0.0 {
+            Rect::ZERO
+        } else {
+            self.palette.filter_strip_rect()
+        };
+        let previous_rows = self.search_filters.search_chip_rows;
+        let rows_needed = self.search_filters.draw(
             scene,
             transform,
             text_renderer,
             theme,
-            chip_text_size,
+            band,
+            self.palette.filter_strip_row_height(),
+            self.palette.host_filter_strip_rows(),
+            self.last_cursor,
         );
-
-        // Dynamic: one chip per kind any registered provider exposes, so
-        // a new provider gets a chip for free. Empty selection means
-        // "everything shows", stated by the leading "All" chip. Every
-        // chip is painted regardless of width; see [`lay_out_chip_strip`].
-        let kinds = self.search_registry.registered_kinds();
-        let kind_labels: Vec<String> = kinds
-            .iter()
-            .map(super::search::ResourceKindText::localized_label)
-            .collect();
-        let all_label = t("search-filter-all");
-        let labels: Vec<&str> = std::iter::once(all_label.as_str())
-            .chain(kind_labels.iter().map(String::as_str))
-            .collect();
-        // Chip padding is `s3` either side — the shared `Chip` primitive's
-        // own padding, so a filter chip and a chip anywhere else in the
-        // shell are one shape — and chips sit `s2` apart. Both are the
-        // live theme's steps, so a custom or scaled theme moves them too.
-        let chip_pad = f64::from(tokens.spacing.s3);
-        let chip_gap = f64::from(tokens.spacing.s2);
-        let natural: Vec<f64> = labels
-            .iter()
-            .map(|l| {
-                f64::from(
-                    text_renderer
-                        .measure_weighted(l, chip_text_size, None, TextWeight::Medium)
-                        .0,
-                ) + 2.0 * chip_pad
-            })
-            .collect();
-        // The scope track's left edge bounds the chip strip's first row —
-        // unless the switch has taken that row for itself (200 % text on a
-        // narrow card), in which case the chips start on the next row with
-        // the whole band and the switch keeps its labels whole (S1-29).
-        let track = self.search_scope_track_rect();
-        // `has` decides this frame's layout, `wants` what the band asks the
-        // palette to reserve: on the frame the want first appears the band
-        // is one row tall, so the switch still shares that row (capped) and
-        // the chips stay in it — never laid into a row that does not exist
-        // yet, over the first result — while the request goes out; the next
-        // layout grants the row and the switch takes it.
-        let own_row = self.scope_switch_has_own_row();
-        let wants_own_row = self.scope_switch_wants_own_row();
-        let reserved_rows = self.palette.host_filter_strip_rows();
-        let (chip_band, first_row_x1, rows_for_chips) = if own_row {
-            (
-                Rect::new(band.x0, band.y0 + row_h, band.x1, band.y1),
-                band.x1,
-                reserved_rows.saturating_sub(1).max(1),
-            )
-        } else {
-            (band, track.x0 - chip_pad, reserved_rows)
-        };
-        let strip = lay_out_chip_strip(
-            &natural,
-            chip_band,
-            first_row_x1,
-            rows_for_chips,
-            row_h,
-            control_h,
-            chip_gap,
-        );
-
-        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
-        for (i, label) in labels.iter().enumerate() {
-            let rect = strip.rects.get(i).copied().unwrap_or(Rect::ZERO);
-            let is_active = match i {
-                0 => self.active_kind_filter.is_empty(),
-                _ => i
-                    .checked_sub(1)
-                    .and_then(|k| kinds.get(k))
-                    .is_some_and(|kind| self.active_kind_filter.contains(kind)),
-            };
-            // Hover is judged on the pointer target, not the pill, so the
-            // 2 px of floor above and below a chip light it too.
-            let hover = self
-                .last_cursor
-                .is_some_and(|p| self.selector_hit_rect(rect).contains(p));
-            // Only a chip that had to be squeezed loses any of its label;
-            // it keeps one side's padding before it elides.
-            let label = text_renderer.elide_to_width_weighted(
-                label,
-                chip_text_size,
-                f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
-                TextWeight::Medium,
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                chip_text_size,
-                ui::chrome::SelectionState::new(is_active, hover, false),
-            );
-            match i {
-                0 => self.search_all_chip_rect = rect,
-                _ => chip_rects.push(rect),
-            }
-        }
-        self.search_chip_rects = chip_rects;
-
-        // The next layout grows the band and moves result rows down;
-        // until it runs, the chips stay squeezed into the band there is
-        // but remain clickable. A switch that wants its own row is one
-        // more row — asked for now, taken once granted.
-        let rows_needed = strip.rows_needed.saturating_add(usize::from(wants_own_row));
-        if rows_needed != self.search_chip_rows {
-            self.search_chip_rows = rows_needed;
-            if self.palette.set_host_filter_strip_rows(rows_needed) {
-                self.palette_layout_dirty = true;
-            }
-        }
-    }
-
-    /// The right-anchored scope switch (a pill track) in the search
-    /// banner — separated from the chip strip below it since the two
-    /// are laid out independently.
-    fn draw_search_banner_scope_switch(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        chip_text_size: f32,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let ground = ui::chrome::shell::panel_ground(theme);
-
-        let active = self
-            .chrome
-            .as_ref()
-            .map(|c| c.borrow().search_scope)
-            .unwrap_or_default();
-        let track = self.search_scope_track_rect();
-        // The track is the set's outline, not a body: a hairline derived on
-        // the panel ground (HIG §9.5), no fill — the segments carry the
-        // state. Until 2026-09-17 it wore a `lift(0.35)` body with a
-        // hairline measured against `surfaces.raised` and the chosen
-        // segment an `accent[5]` fill (§9.4).
-        let track_shape = RoundedRect::from_rect(
-            track,
-            ui::chrome::ChromeRole::Selector.radius(theme, track.height()),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::shell::HAIRLINE_ALPHA),
-            None,
-            &track_shape,
-        );
-        let scopes = self.search_scope_list();
-        for (idx, scope) in scopes.iter().enumerate() {
-            let seg = self.search_scope_pill_rect(idx);
-            let is_active = *scope == active;
-            let hover = self
-                .last_cursor
-                .is_some_and(|p| self.search_scope_segment_hit_rect(idx).contains(p));
-            // Each segment is a Selector on the shared tiers (§9.3): the
-            // chosen one lifted with hairline and glow, a hovered one half
-            // lifted, the rest transparent inside the track.
-            let tier = ui::chrome::selection_tier(
-                theme,
-                ui::chrome::SelectionState::new(is_active, hover, false),
-            );
-            let radius = ui::chrome::ChromeRole::Selector.radius(theme, seg.height());
-            let shape = RoundedRect::from_rect(seg, radius);
-            if tier.fill.components[3] > 0.0 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tier.fill,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(glow) = tier.inner_glow {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    glow,
-                    None,
-                    &RoundedRect::from_rect(seg.inset(1.0), (radius - 1.0).max(0.0)),
-                );
-            }
-            let under = if is_active || hover {
-                tier.fill
-            } else {
-                ground
-            };
-            let tone = if is_active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let ink = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-            let text = self.search_scope_pill_label(*scope);
-            // A segment that had to be squeezed under its measured width
-            // keeps `s2` of its padding before it elides.
-            let text = text_renderer.elide_to_width_weighted(
-                &text,
-                chip_text_size,
-                f64_to_f32_lossy(seg.width() - f64::from(tokens.spacing.s2)),
-                TextWeight::Medium,
-            );
-            let (tw, th) =
-                text_renderer.measure_weighted(&text, chip_text_size, None, TextWeight::Medium);
-            text_renderer.draw_text_weighted(
-                scene,
-                &text,
-                chip_text_size,
-                ink,
-                transform.pre_translate(
-                    (
-                        f64::midpoint(seg.x0, seg.x1) - f64::from(tw) / 2.0,
-                        f64::midpoint(seg.y0, seg.y1) - f64::from(th) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                TextWeight::Medium,
-            );
+        if rows_needed != previous_rows && self.palette.set_host_filter_strip_rows(rows_needed) {
+            self.palette_layout_dirty = true;
         }
     }
 
