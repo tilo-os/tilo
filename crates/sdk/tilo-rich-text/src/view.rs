@@ -44,6 +44,23 @@ impl RichTextView {
         }
     }
 
+    /// The editor that draws the view, for its alignment and body size.
+    pub fn editor_mut(&mut self) -> &mut BlockEditor {
+        self.host.widget_mut()
+    }
+
+    /// Lay the view out in its own space and draw it through `transform`
+    /// (a slide's text box, laid out at the slide's size, drawn scaled to a
+    /// thumbnail or the presentation).
+    pub fn set_transform(&mut self, transform: Affine) {
+        self.host.set_transform(transform);
+    }
+
+    /// Paint the text in `color` rather than the theme's.
+    pub fn set_text_color(&mut self, color: Option<ui::peniko::Color>) {
+        self.host.set_text_color(color);
+    }
+
     /// Show `blocks`. Returns whether anything changed.
     pub fn show(&mut self, blocks: &[BlockContent]) -> bool {
         self.host.widget_mut().present_blocks(blocks)
@@ -115,5 +132,27 @@ mod tests {
         assert!(two > one, "{two} > {one}");
         assert_eq!(view.blocks().len(), 2);
         assert!(view.host.widget().is_read_only());
+    }
+
+    #[test]
+    fn a_view_in_its_own_space_is_sized_by_its_body_text_and_drawn_scaled() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut small = RichTextView::new();
+        let mut large = RichTextView::new();
+        large.editor_mut().set_body_size(48.0);
+        large.editor_mut().set_text_align(ui::TextAlign::Center);
+        for view in [&mut small, &mut large] {
+            view.show(&[BlockContent::paragraph("a", "Title")]);
+        }
+        let box_rect = Rect::new(100.0, 50.0, 700.0, 50.0);
+        let small_h = small.layout(box_rect, &theme, &mut text);
+        large.set_transform(Affine::scale(0.5));
+        let large_h = large.layout(box_rect, &theme, &mut text);
+        assert!(large_h > small_h * 2.0, "{large_h} vs {small_h}");
+        // Laid out at its own size, reported where it is drawn.
+        assert!((large.rect().x0 - 50.0).abs() < 1e-9);
+        assert!((large.rect().width() - 300.0).abs() < 1e-9);
+        assert_eq!(large.editor_mut().text_align(), ui::TextAlign::Center);
     }
 }
