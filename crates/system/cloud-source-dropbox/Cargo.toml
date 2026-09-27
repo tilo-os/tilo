@@ -16,6 +16,7 @@ sha2.workspace = true
 hex.workspace = true
 # The in-memory Dropbox API behind `fake-server`.
 test-http = { path = "../../dev/test-http", optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 # `cloud_source_dropbox::fake::FakeDropbox`, an in-memory Dropbox API v2 on

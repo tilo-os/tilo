@@ -71,6 +71,8 @@ mod document_open_e2e;
 mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
+#[path = "emoji_picker_commit.rs"]
+mod emoji_picker_commit;
 #[path = "expand_fullscreen_visual.rs"]
 mod expand_fullscreen_visual;
 #[path = "file_drop_routing.rs"]
@@ -177,6 +179,8 @@ mod server_side_decorations;
 mod session_lock_e2e;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
+#[path = "shell_narration.rs"]
+mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
 #[path = "shortcuts_door.rs"]

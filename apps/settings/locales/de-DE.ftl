@@ -62,3 +62,26 @@ input-middle-emulation-description = Links und rechts gleichzeitig drücken für
 input-acceleration = Beschleunigung
 input-scroll-speed = Scrollgeschwindigkeit
 input-scroll-speed-description = Weg pro Mausradraste oder Fingerbewegung
+
+# Mouse & Keyboard pane: drawing tablets
+input-tablet-whole-desktop = Gesamter Desktop
+input-tablet-map-to = Zuordnen zu
+input-tablet-keep-aspect = Seitenverhältnis beibehalten
+input-tablet-keep-aspect-description = Nur den Teil des Tabletts verwenden, der zur Form des Bildschirms passt, damit Striche nicht verzerrt werden
+input-tablet-left-handed = Linkshändige Ausrichtung
+input-tablet-left-handed-description = Das Tablett umdrehen, mit den Tasten auf der rechten Seite
+input-tablet-tip-feel = Druckgefühl der Spitze
+input-tablet-tip-feel-description = Weich zeichnet schon bei leichter Berührung kräftig; fest braucht mehr Druck
+input-tablet-lower-button = Untere Stifttaste
+input-tablet-upper-button = Obere Stifttaste
+input-pen-button-default = Standard
+input-pen-button-left = Linksklick
+input-pen-button-middle = Mittelklick
+input-pen-button-right = Rechtsklick
+input-pen-button-back = Zurück
+input-pen-button-forward = Vorwärts
+input-pen-button-disabled = Nichts tun
+input-pad-title = Tasten von { $name }
+input-pad-button = Taste { $number }
+input-pad-button-none = Nichts tun
+input-pad-no-buttons = Dieses Pad meldet keine Tasten

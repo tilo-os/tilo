@@ -5700,6 +5700,9 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
+    if let Some(store) = crate::shell::emoji_picker::RecentsStore::for_user() {
+        frame_builder.host_mut().attach_emoji_recents_store(store);
+    }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
@@ -7690,6 +7693,13 @@ pub fn run() {
         } else {
             client_input::sync_keyboard_focus(&mut state, &frame_builder);
         }
+        // A picked emoji goes to the field that just got the keyboard back,
+        // through the seat's input method; what arrived feeds the recents.
+        let _ = crate::compositor::text_commit::relay(
+            &mut state,
+            frame_builder.host_mut(),
+            Instant::now(),
+        );
         // An app's idle inhibitor holds the screen on only while its window is visible.
         crate::compositor::idle_inhibit::sync_idle_inhibitors(
             &mut state,
@@ -8546,11 +8556,15 @@ pub fn run() {
                         &view,
                     )
                 });
+                if frame_builder.narrator_enabled() {
+                    frame_builder.narrate(&lock_screen::narration_tree(&view));
+                }
             } else {
                 native_accessibility.update_if_active(|| {
                     frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
                 });
                 frame_builder.note_keyboard_focus(test_control_ctx.focus);
+                frame_builder.narrate_chrome();
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
@@ -9189,6 +9203,7 @@ pub fn run() {
                 controller_nav.next_deadline(park_now),
                 backend.next_service_deadline(),
                 wayland_client_service_deadline(wayland_client_wake, park_now),
+                state.text_commit_deadline(),
             ],
         );
         let t_sleep_start = Instant::now();

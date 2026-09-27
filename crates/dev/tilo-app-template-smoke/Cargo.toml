@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
 
 [build-dependencies]
 tilo-app-cli = { path = "../tilo-app-cli" }

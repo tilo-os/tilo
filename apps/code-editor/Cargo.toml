@@ -48,6 +48,7 @@ url.workspace = true
 uuid.workspace = true
 hex.workspace = true
 sha2.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

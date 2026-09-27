@@ -381,6 +381,8 @@ pub struct FrameBuilder {
     magnifier_focus: crate::shell::magnifier::FocusTracker,
     /// The keyboard focus rectangle the compositor last reported, while the magnifier is on.
     keyboard_focus_rect: Option<Rect>,
+    /// Speaks the chrome when the screen reader is on; silent otherwise.
+    narrator: crate::shell::shell_narrator::ShellNarrator,
     /// The logical desktop the shell lays out in: the bounding box of every
     /// display's logical rectangle.
     viewport: (f64, f64),
@@ -614,6 +616,7 @@ impl FrameBuilder {
             visual_accessibility: VisualAccessibility::default(),
             magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
             keyboard_focus_rect: None,
+            narrator: crate::shell::shell_narrator::ShellNarrator::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
@@ -1643,6 +1646,27 @@ impl FrameBuilder {
             ) as u32;
         }
         self.visual_accessibility = VisualAccessibility::load();
+        self.narrator
+            .set_enabled(crate::shell::shell_narrator::screen_reader_setting());
+    }
+
+    /// Speak what changed in the chrome since the last frame (focus moves in
+    /// Quick Settings and the session menu, notifications, readouts).
+    pub fn narrate_chrome(&mut self) {
+        if self.narrator.enabled() {
+            let snapshot = self.host.chrome_narration_snapshot();
+            self.narrator.observe(&snapshot);
+        }
+    }
+
+    /// Speak what changed in a compositor-owned surface drawn outside the
+    /// chrome — the lock screen.
+    pub fn narrate(&mut self, snapshot: &ui::a11y::AccessNode) {
+        self.narrator.observe(snapshot);
+    }
+
+    pub fn narrator_enabled(&self) -> bool {
+        self.narrator.enabled()
     }
 
     fn refresh_configured_theme(&mut self) {

@@ -32,14 +32,7 @@ pub fn alpha(c: Color, a: f32) -> Color {
 /// Parse a hex colour string (`rrggbb`, optional leading `#`) to a `Color`.
 /// Used for authentic GTFS transit line colours (`routeColor`).
 pub fn hex_color(s: &str) -> Option<Color> {
-    let s = s.trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-    let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-    let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-    Some(Color::from_rgba8(r, g, b, 255))
+    ui::color::parse_hex(s)
 }
 
 pub fn stroke_rrect(

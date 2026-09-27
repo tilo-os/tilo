@@ -142,6 +142,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "url",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -162,6 +163,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -230,6 +232,7 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "tempfile",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -337,6 +340,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "word-processor",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -348,6 +352,7 @@ dependencies = [
  "settings-store",
  "tempfile",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -519,6 +524,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -546,6 +552,7 @@ dependencies = [
  "tilo-net",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -577,6 +584,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -603,6 +611,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -623,6 +632,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-test-env",
  "tracing",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -1044,6 +1054,7 @@ dependencies = [
  "vello",
  "walkdir",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -1311,6 +1322,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "serde_json",
+ "workspace-hack",
  "zbus",
 ]
 
@@ -1367,6 +1379,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.18",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -1376,6 +1389,7 @@ version = "0.1.0"
 dependencies = [
  "roxmltree 0.20.0",
  "thiserror 2.0.18",
+ "workspace-hack",
  "zip",
 ]
 
@@ -1431,6 +1445,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zip",
 ]
@@ -1526,6 +1541,7 @@ dependencies = [
  "tilo-automerge",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1555,6 +1571,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1618,6 +1635,7 @@ dependencies = [
  "tilo-ocr",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -1851,6 +1869,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-seal",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -1884,6 +1903,7 @@ dependencies = [
  "vello",
  "winit",
  "wire-frame",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -2059,6 +2079,7 @@ dependencies = [
  "runtime-portal",
  "tempfile",
  "tilo-test-env",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -2069,6 +2090,7 @@ dependencies = [
  "libc",
  "serde",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2099,6 +2121,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2109,6 +2132,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "url",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2124,6 +2148,7 @@ dependencies = [
  "tilo-dav",
  "url",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2141,6 +2166,7 @@ dependencies = [
  "test-http",
  "tilo-net",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2159,6 +2185,7 @@ dependencies = [
  "test-http",
  "tilo-net",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2183,6 +2210,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2200,6 +2228,7 @@ dependencies = [
  "test-http",
  "tilo-net",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -2253,6 +2282,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2281,11 +2311,15 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "workspace-hack",
 ]
 
 [[package]]
 name = "collab-link"
 version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
 
 [[package]]
 name = "collab-probe"
@@ -2299,6 +2333,7 @@ dependencies = [
  "runtime-portal",
  "tilo-automerge",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2381,6 +2416,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2401,6 +2437,7 @@ dependencies = [
  "tilo-clock",
  "windows-vm",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2438,6 +2475,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2507,6 +2545,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zbus",
 ]
@@ -2527,6 +2566,7 @@ dependencies = [
  "tilo-automerge",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3004,6 +3044,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3166,6 +3207,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3221,6 +3263,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3234,6 +3277,7 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-app",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3357,6 +3401,7 @@ name = "durable-store"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3387,6 +3432,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3558,6 +3604,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3870,6 +3917,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3953,6 +4001,7 @@ dependencies = [
  "vello",
  "winit",
  "wire-frame",
+ "workspace-hack",
  "xattr",
  "xdg-paths",
  "zip",
@@ -4003,6 +4052,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4221,6 +4271,7 @@ dependencies = [
  "tracing-subscriber",
  "wasmi",
  "wat",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -4229,6 +4280,7 @@ name = "format-provider-abi"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4241,6 +4293,7 @@ dependencies = [
  "shell",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4353,6 +4406,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wire-frame",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -4364,6 +4418,7 @@ dependencies = [
  "fastcdc",
  "postcard",
  "serde",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4373,6 +4428,7 @@ dependencies = [
  "blake3",
  "fs-content",
  "libc",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4800,6 +4856,7 @@ dependencies = [
  "url",
  "vello",
  "winit",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -5017,6 +5074,7 @@ dependencies = [
  "tracing-subscriber",
  "vello",
  "winit",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -5488,6 +5546,7 @@ version = "0.1.0"
 dependencies = [
  "runtime",
  "runtime-dylib",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5530,6 +5589,7 @@ dependencies = [
  "tilo-app",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6329,6 +6389,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6371,6 +6432,7 @@ dependencies = [
  "vello",
  "windows-sys 0.61.2",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zbus",
  "zstd",
@@ -6494,6 +6556,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-rt",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -6519,6 +6582,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -7291,6 +7355,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7763,6 +7828,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-net",
  "wire-frame",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
  "zstd",
@@ -7874,6 +7940,7 @@ dependencies = [
  "tilo-app",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7932,6 +7999,7 @@ checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 name = "mail"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "async-imap",
  "atomic-file",
@@ -7964,6 +8032,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -8003,6 +8072,7 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -8093,6 +8163,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -8266,6 +8337,7 @@ dependencies = [
  "tilo-app",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -8332,6 +8404,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -8522,6 +8595,7 @@ dependencies = [
  "serde_json",
  "tilo-user-identity",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -8790,6 +8864,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -8801,6 +8876,7 @@ dependencies = [
  "clap",
  "cli",
  "runtime-dylib",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -9529,6 +9605,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-rt",
  "tracing",
+ "workspace-hack",
  "zbus",
  "zeroize",
 ]
@@ -9554,6 +9631,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols-misc",
  "winit",
+ "workspace-hack",
  "xkbcommon",
 ]
 
@@ -9660,6 +9738,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -9780,6 +9859,7 @@ dependencies = [
  "tilo-seal",
  "vello",
  "winit",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -9833,6 +9913,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10102,6 +10183,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10123,6 +10205,9 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 [[package]]
 name = "pim-lines"
 version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
 
 [[package]]
 name = "pin-project"
@@ -10625,6 +10710,7 @@ dependencies = [
  "tilo-ocr",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10635,6 +10721,7 @@ dependencies = [
  "libc",
  "tempfile",
  "windows-sys 0.61.2",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10875,6 +10962,7 @@ dependencies = [
  "tilo-content",
  "tilo-resource",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10892,6 +10980,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-automerge",
  "tilo-content",
+ "workspace-hack",
  "zip",
 ]
 
@@ -10903,6 +10992,7 @@ dependencies = [
  "image",
  "qdoc",
  "tilo-content",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10918,6 +11008,7 @@ dependencies = [
  "tilo-content",
  "tilo-resource",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11334,6 +11425,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -11350,6 +11442,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11396,6 +11489,7 @@ dependencies = [
  "vello",
  "vte",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -11630,6 +11724,7 @@ dependencies = [
  "runtime-portal",
  "runtime-portal-xdg",
  "tilo-test-env",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11648,6 +11743,7 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -11664,6 +11760,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "tokio-util",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11672,6 +11769,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "tilo-connected-protocol",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11719,6 +11817,7 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "vte",
+ "workspace-hack",
  "xattr",
 ]
 
@@ -11743,6 +11842,7 @@ dependencies = [
  "tokio-util",
  "uuid",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11769,6 +11869,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "wire-frame",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -11784,6 +11885,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "tokio-util",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -11795,6 +11897,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-rt",
  "tilo-test-env",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -12025,6 +12128,7 @@ version = "0.8.3"
 dependencies = [
  "rustls-pki-types",
  "tempfile",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -12173,6 +12277,7 @@ dependencies = [
  "seccompiler",
  "tempfile",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -12213,6 +12318,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -12311,6 +12417,7 @@ dependencies = [
  "tilo-seal",
  "tracing",
  "windows-sys 0.61.2",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -12633,6 +12740,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -12647,6 +12755,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -12785,6 +12894,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zip",
 ]
@@ -12814,6 +12924,7 @@ dependencies = [
  "compat-service",
  "desktop-policy",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "file-explorer",
  "fluent",
  "fs",
@@ -12899,6 +13010,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "tts",
  "uuid",
  "vello",
  "vello_encoding",
@@ -12912,6 +13024,7 @@ dependencies = [
  "winit",
  "wire-frame",
  "word-processor",
+ "workspace-hack",
  "xattr",
  "xdg-paths",
  "zbus",
@@ -12940,6 +13053,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-automation",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13080,6 +13194,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
+ "workspace-hack",
  "zip",
 ]
 
@@ -13220,6 +13335,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13284,12 +13400,14 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-net",
+ "workspace-hack",
 ]
 
 [[package]]
 name = "spellcheck"
 version = "0.1.0"
 dependencies = [
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -13494,6 +13612,7 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13664,6 +13783,7 @@ name = "swipe"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13811,6 +13931,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14037,11 +14158,15 @@ dependencies = [
  "vello",
  "vte",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
 name = "test-http"
 version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
 
 [[package]]
 name = "themes"
@@ -14060,6 +14185,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14132,6 +14258,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14150,6 +14277,7 @@ dependencies = [
  "tempfile",
  "tilo-content",
  "tilo-pdf",
+ "workspace-hack",
  "xdg-paths",
  "zip",
 ]
@@ -14191,9 +14319,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-resource",
  "tilo-ui",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14215,6 +14345,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14235,6 +14366,7 @@ dependencies = [
  "threshold-identity",
  "toml 1.0.6+spec-1.1.0",
  "walkdir",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -14255,6 +14387,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-rt",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14263,6 +14396,7 @@ version = "0.1.0"
 dependencies = [
  "tilo-app",
  "tilo-app-cli",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14293,6 +14427,7 @@ dependencies = [
  "futures-util",
  "tokio",
  "tracing",
+ "workspace-hack",
  "zbus",
 ]
 
@@ -14303,6 +14438,7 @@ dependencies = [
  "media",
  "thiserror 2.0.18",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14312,6 +14448,7 @@ dependencies = [
  "adblock",
  "serde_json",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14321,6 +14458,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14335,6 +14473,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14347,6 +14486,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -14386,6 +14526,7 @@ dependencies = [
  "roxmltree 0.20.0",
  "test-http",
  "tilo-net",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14397,6 +14538,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-test-env",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -14427,6 +14569,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14434,6 +14577,7 @@ name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14462,6 +14606,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
+ "workspace-hack",
  "zbus",
 ]
 
@@ -14484,6 +14629,7 @@ dependencies = [
  "tokio",
  "url",
  "wire-frame",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14494,6 +14640,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-native-certs",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14507,6 +14654,7 @@ dependencies = [
  "sha2 0.11.0",
  "tilo-ntfs-protocol",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14518,6 +14666,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14535,6 +14684,7 @@ dependencies = [
  "tilo-clock",
  "tilo-net",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14546,6 +14696,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14578,6 +14729,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14593,6 +14745,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "workspace-hack",
  "xdg-paths",
  "zbus",
 ]
@@ -14613,6 +14766,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-rt",
  "tokio",
+ "workspace-hack",
  "xdg-paths",
  "zbus",
 ]
@@ -14626,6 +14780,7 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14673,6 +14828,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14693,6 +14849,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14713,6 +14870,7 @@ dependencies = [
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14728,6 +14886,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-resource-macros",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14737,6 +14896,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14754,6 +14914,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-crypto",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14765,6 +14926,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14783,6 +14945,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.18",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14793,6 +14956,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14800,6 +14964,7 @@ name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14893,6 +15058,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "wire-frame",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -14903,6 +15069,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "tilo-ui",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14912,6 +15079,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14919,6 +15087,7 @@ name = "tilo-unlock-helper"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14943,6 +15112,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -14960,6 +15130,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-model-gateway",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15013,6 +15184,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-vm-protocol",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15062,6 +15234,7 @@ dependencies = [
  "tilo-clock",
  "toml 1.0.6+spec-1.1.0",
  "walkdir",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -15404,6 +15577,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -15571,6 +15745,7 @@ dependencies = [
  "ssip-client",
  "thiserror 2.0.18",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15610,6 +15785,7 @@ dependencies = [
  "vello_encoding",
  "winit",
  "wire-frame",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -15709,6 +15885,7 @@ dependencies = [
  "typst-render",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -16063,6 +16240,7 @@ dependencies = [
  "vello",
  "wgpu",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16289,6 +16467,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -16508,6 +16687,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
 ]
 
@@ -16531,6 +16711,7 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16564,6 +16745,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
  "xdg-paths",
  "zeroize",
 ]
@@ -17027,6 +17209,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17350,6 +17533,7 @@ dependencies = [
  "tilo-app",
  "vello",
  "winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17642,6 +17826,7 @@ dependencies = [
  "tilo-clock",
  "tilo-net",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -18069,6 +18254,261 @@ dependencies = [
  "url",
  "vello",
  "winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "aead 0.5.2",
+ "aead 0.6.1",
+ "aes 0.9.3",
+ "aes-gcm 0.10.3",
+ "aes-gcm 0.11.1",
+ "aho-corasick",
+ "arrayvec",
+ "ashpd",
+ "base16ct 0.2.0",
+ "base16ct 1.0.0",
+ "base64ct",
+ "bit-set 0.8.0",
+ "bit-vec 0.8.0",
+ "bitflags 2.11.0",
+ "bumpalo",
+ "bytemuck",
+ "byteorder",
+ "bytes",
+ "cc",
+ "chacha20 0.10.2",
+ "chacha20poly1305 0.10.1",
+ "chrono",
+ "cipher 0.4.4",
+ "cipher 0.5.2",
+ "color",
+ "concurrent-queue",
+ "const-oid 0.10.2",
+ "const-oid 0.9.6",
+ "constant_time_eq",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "crypto-bigint 0.7.5",
+ "crypto-common 0.1.7",
+ "crypto-common 0.2.2",
+ "ctutils",
+ "curve25519-dalek 4.1.3",
+ "curve25519-dalek 5.0.0",
+ "data-encoding",
+ "der 0.7.10",
+ "der 0.8.1",
+ "deranged",
+ "derive_more",
+ "derive_more-impl",
+ "digest 0.10.7",
+ "digest 0.11.3",
+ "displaydoc",
+ "ecdsa 0.17.0",
+ "ed25519 3.0.0",
+ "ed25519-dalek 3.0.0",
+ "either",
+ "elliptic-curve 0.13.8",
+ "elliptic-curve 0.14.1",
+ "enumflags2",
+ "event-listener 5.4.1",
+ "event-listener-strategy",
+ "fastrand",
+ "ff 0.13.1",
+ "flate2",
+ "float-cmp",
+ "fontdb",
+ "form_urlencoded",
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-lite",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "generic-array 0.14.7",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.1",
+ "ghash 0.6.0",
+ "group 0.13.0",
+ "guillotiere",
+ "half",
+ "harfrust",
+ "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
+ "hayro-syntax",
+ "hickory-net",
+ "hickory-resolver",
+ "hmac 0.12.1",
+ "hpke-rs",
+ "hpke-rs-rust-crypto",
+ "hybrid-array",
+ "hyper",
+ "hyper-util",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_provider",
+ "icu_segmenter",
+ "idna",
+ "image",
+ "indexmap",
+ "inout 0.2.2",
+ "ipnet",
+ "iroh-base",
+ "iroh-dns",
+ "iroh-metrics",
+ "itertools 0.13.0",
+ "itertools 0.14.0",
+ "kurbo",
+ "libc",
+ "libm",
+ "linux-raw-sys 0.12.1",
+ "litemap",
+ "log",
+ "lru 0.16.3",
+ "memchr",
+ "mio",
+ "ml-kem",
+ "n0-error",
+ "naga",
+ "nom 7.1.3",
+ "noq",
+ "noq-proto",
+ "noq-udp",
+ "notify",
+ "num-bigint 0.4.6",
+ "num-bigint 0.5.1",
+ "num-integer",
+ "num-traits",
+ "once_cell",
+ "p256 0.13.2",
+ "p256 0.14.0",
+ "p384 0.13.1",
+ "parking_lot",
+ "peniko",
+ "percent-encoding",
+ "phf 0.13.1",
+ "phf_shared 0.13.1",
+ "phf_shared 0.14.0",
+ "pkcs8 0.11.0",
+ "poly1305 0.9.1",
+ "polyval 0.7.3",
+ "portable-atomic",
+ "postcard",
+ "potential_utf",
+ "ppv-lite86",
+ "proc-macro2",
+ "profiling",
+ "quick-xml 0.41.0",
+ "quote",
+ "rand 0.10.1",
+ "rand 0.8.8",
+ "rand 0.9.2",
+ "rand_chacha 0.10.0",
+ "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
+ "rand_core 0.6.4",
+ "rcgen",
+ "read-fonts 0.39.2",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "resvg",
+ "rqrr",
+ "rustc-hash 1.1.0",
+ "rustix 0.38.44",
+ "rustix 1.1.4",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "scopeguard",
+ "sec1 0.7.3",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "serde_spanned 1.1.1",
+ "serde_with",
+ "sha2 0.10.9",
+ "sha2 0.11.0",
+ "sha3 0.12.0",
+ "signature 3.0.0",
+ "skrifa 0.42.1",
+ "slab",
+ "slotmap",
+ "smallvec",
+ "smol_str 0.3.6",
+ "socket2 0.6.3",
+ "spin 0.9.9",
+ "spki 0.8.0",
+ "stable_deref_trait",
+ "strict-num",
+ "subtle",
+ "syn 1.0.109",
+ "syn 2.0.117",
+ "sync_wrapper",
+ "syntect",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "time-macros",
+ "tiny-skia",
+ "tiny-skia-path",
+ "tinystr",
+ "tls_codec 0.5.0",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tokio-websockets",
+ "toml 1.0.6+spec-1.1.0",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+ "ttf-parser",
+ "unic-langid",
+ "unic-langid-impl",
+ "unicode-bidi",
+ "unicode-normalization",
+ "unicode-properties",
+ "url",
+ "usvg",
+ "uuid",
+ "wasmi",
+ "wasmi_collections",
+ "wasmi_core",
+ "wasmi_ir",
+ "wasmparser 0.239.0",
+ "wayland-backend",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "wayland-sys",
+ "winnow 0.7.14",
+ "writeable",
+ "yoke",
+ "zbus",
+ "zbus_macros",
+ "zerocopy",
+ "zerofrom",
+ "zeroize",
+ "zerotrie",
+ "zerovec",
+ "zstd",
+ "zstd-safe",
+ "zstd-sys",
 ]
 
 [[package]]

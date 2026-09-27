@@ -504,6 +504,46 @@ pub fn build_accessibility_tree(
     }
 }
 
+/// The lock screen as the shell narrator reads it: the same labels as the
+/// AT-SPI tree above, with the password field focused and protected (its
+/// length is never spoken) and the status line a live region — assertive
+/// for a failed attempt, polite for verifying and the redacted count.
+pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
+    use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+    let clock = match (view.clock.is_empty(), view.date.is_empty()) {
+        (true, _) => "Session locked".to_string(),
+        (false, true) => format!("Session locked, {}", view.clock),
+        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
+    };
+    let mut status = AccessNode::new(Role::StaticText).with_name("Lock status");
+    if view.verifying {
+        status = status
+            .with_live(Politeness::Polite)
+            .with_value("Verifying password");
+    } else if let Some(error) = view.error {
+        status = status
+            .with_live(Politeness::Assertive)
+            .with_value(lock_error_status(error));
+    } else {
+        status = status.with_live(Politeness::Polite);
+        if view.notification_count > 0 {
+            status = status.with_value(count_label(view.notification_count));
+        }
+    }
+    let mut password_state = AccessState::new().focused(!view.verifying).protected(true);
+    password_state.disabled = view.verifying;
+    AccessNode::new(Role::Window)
+        .with_name("Tilo lock screen")
+        .with_children(vec![
+            AccessNode::new(Role::StaticText).with_name(clock),
+            AccessNode::new(Role::TextInput)
+                .with_name("Password")
+                .with_description("Type your password and press Enter")
+                .with_state(password_state),
+            status,
+        ])
+}
+
 fn access_rect(rect: Rect) -> AccessRect {
     AccessRect::new(rect.x0, rect.y0, rect.x1, rect.y1)
 }

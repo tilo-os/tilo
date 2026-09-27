@@ -45,6 +45,7 @@ atomic-file = { path = "../../../crates/system/atomic-file", optional = true }
 zbus = { workspace = true, features = ["tokio"], optional = true }
 tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"], optional = true }
 futures-util = { version = "0.3", optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["full"] }

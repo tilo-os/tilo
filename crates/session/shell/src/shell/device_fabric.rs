@@ -2754,7 +2754,7 @@ mod tests {
                 "tilo.display.scale",
                 "tilo.network.interface.mac",
                 "tilo.storage.mount.usb",
-                "tilo.input.pen_output",
+                "tilo.input.tablets",
                 "tilo.audio.output_device",
                 "tilo.agent_providers.api_key",
             ] {

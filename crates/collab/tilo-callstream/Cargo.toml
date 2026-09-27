@@ -16,6 +16,7 @@ path = "src/lib.rs"
 media = { path = "../../media/core", features = ["realtime"] }
 thiserror.workspace = true
 tracing = "0.1"
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

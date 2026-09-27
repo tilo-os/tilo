@@ -572,7 +572,7 @@ pub const CATALOGUE: &[Capability] = &[
     Capability {
         id: "table",
         summary: "Turn the run of bullets immediately above the instruction into a table.",
-        actions: &["InsertTable", "SpliceText", "RemoveBlocks"],
+        actions: &["InsertFilledTable", "RemoveBlocks"],
     },
     Capability {
         id: "caption",
@@ -594,8 +594,7 @@ pub fn dispatched(id: &str) -> Vec<RichTextAction> {
     let block = || "block".to_string();
     match id {
         "table" => vec![
-            wp::insert_table_action("block", 1, 1),
-            wp::splice_text_action(wp::RegionKind::Body, "block", 0, 0, ""),
+            wp::insert_filled_table_action("block", vec![vec![String::new()]]),
             wp::remove_blocks_action(vec![block()]),
         ],
         "caption" => vec![
@@ -727,39 +726,6 @@ pub fn table_cells(lines: &[&str]) -> Vec<Vec<String>> {
         r.resize(cols, String::new());
     }
     rows
-}
-
-/// The cells of the table `table_id`, ordered row-major, as block ids.
-pub fn cells_of(blocks: &[Block], table_id: &str) -> Vec<(i64, i64, String)> {
-    let mut cells: Vec<(i64, i64, String)> = blocks
-        .iter()
-        .filter(|b| b.kind == "cell")
-        .filter(|b| matches!(b.attrs.get("table"), Some(AttrVal::Str(t)) if t == table_id))
-        .map(|b| {
-            let n = |k: &str| match b.attrs.get(k) {
-                Some(AttrVal::Int(v)) => *v,
-                _ => 0,
-            };
-            (n("row"), n("col"), b.id.clone())
-        })
-        .collect();
-    cells.sort();
-    cells
-}
-
-/// Every table id present in `blocks`.
-pub fn table_ids(blocks: &[Block]) -> Vec<String> {
-    let mut ids: Vec<String> = blocks
-        .iter()
-        .filter(|b| b.kind == "cell")
-        .filter_map(|b| match b.attrs.get("table") {
-            Some(AttrVal::Str(t)) => Some(t.clone()),
-            _ => None,
-        })
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
 }
 
 /// The first image block, if any.
@@ -1043,36 +1009,6 @@ mod tests {
             assert_eq!(
                 table_cells(&["a - 1 - x", "b - 2"]),
                 vec![vec!["a", "1", "x"], vec!["b", "2", ""]]
-            );
-        }
-
-        // Case `cells_are_found_by_table_id_in_row_major_order`.
-        {
-            let mut c1 = BTreeMap::new();
-            c1.insert("table".into(), AttrVal::Str("t1".into()));
-            c1.insert("row".into(), AttrVal::Int(1));
-            c1.insert("col".into(), AttrVal::Int(0));
-            let mut c0 = c1.clone();
-            c0.insert("row".into(), AttrVal::Int(0));
-            let blocks = vec![
-                Block {
-                    id: "x".into(),
-                    kind: "cell".into(),
-                    text: String::new(),
-                    attrs: c1,
-                },
-                Block {
-                    id: "y".into(),
-                    kind: "cell".into(),
-                    text: String::new(),
-                    attrs: c0,
-                },
-            ];
-            assert_eq!(table_ids(&blocks), vec!["t1".to_string()]);
-            let cells = cells_of(&blocks, "t1");
-            assert_eq!(
-                cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(),
-                vec!["y", "x"]
             );
         }
     }

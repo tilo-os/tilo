@@ -54,6 +54,7 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 # without the `portal` feature). Unix builds with `portal` hand URIs to the
 # OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native

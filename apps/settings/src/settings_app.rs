@@ -1480,6 +1480,62 @@ impl SettingsApp {
                 prefs.input.keyboard_layout = id;
                 "active keyboard source updated"
             }
+            crate::actions::InputOperation::SetTabletOutput { device, output } => {
+                let output = crate::panes::mouse_keyboard::tablet_output_for_id(&output)
+                    .ok_or_else(|| "that display is not connected".to_string())?;
+                tablet_entry(&mut prefs, &device)?.output = output;
+                "tablet mapping updated"
+            }
+            crate::actions::InputOperation::SetTabletKeepAspect { device, enabled } => {
+                tablet_entry(&mut prefs, &device)?.keep_aspect = enabled;
+                "tablet aspect ratio updated"
+            }
+            crate::actions::InputOperation::SetTabletLeftHanded { device, enabled } => {
+                tablet_entry(&mut prefs, &device)?.left_handed = enabled;
+                "tablet orientation updated"
+            }
+            crate::actions::InputOperation::SetTabletTipFeel { device, value } => {
+                let feel = valid_input_fraction(value)?;
+                tablet_entry(&mut prefs, &device)?.pressure_curve =
+                    settings_store::hardware::pressure_curve_for_feel(feel);
+                "pen tip feel updated"
+            }
+            crate::actions::InputOperation::SetTabletButton {
+                device,
+                button,
+                action,
+            } => {
+                let action = crate::panes::mouse_keyboard::stylus_button_for_id(&action)
+                    .ok_or_else(|| "unsupported pen button action".to_string())?;
+                let config = tablet_entry(&mut prefs, &device)?;
+                match button.as_str() {
+                    "lower" => config.lower_button = action,
+                    "upper" => config.upper_button = action,
+                    _ => return Err("unknown pen button".into()),
+                }
+                "pen button updated"
+            }
+            crate::actions::InputOperation::SetPadButton {
+                device,
+                button,
+                action,
+            } => {
+                if button >= crate::panes::mouse_keyboard::MAX_PAD_BUTTONS {
+                    return Err("unknown pad button".into());
+                }
+                let shortcut = crate::panes::mouse_keyboard::pad_button_for_id(&action)
+                    .ok_or_else(|| "unsupported pad button action".to_string())?;
+                let config = tablet_entry(&mut prefs, &device)?;
+                match shortcut {
+                    Some(shortcut) => {
+                        config.pad_buttons.insert(button, shortcut);
+                    }
+                    None => {
+                        config.pad_buttons.remove(&button);
+                    }
+                }
+                "pad button updated"
+            }
         };
         prefs.input.normalise_keyboard_sources();
         prefs
@@ -1585,6 +1641,19 @@ impl SettingsApp {
             }
         }
     }
+}
+
+/// The saved settings of the tablet or pad `device`, created on first use.
+/// Keys are device identities from the compositor's snapshot, so anything
+/// else is refused rather than stored.
+fn tablet_entry<'a>(
+    prefs: &'a mut crate::prefs::SystemPrefs,
+    device: &str,
+) -> Result<&'a mut settings_store::hardware::TabletConfig, String> {
+    if device.is_empty() || device.len() > 512 || device.chars().any(char::is_control) {
+        return Err("unknown tablet".into());
+    }
+    Ok(prefs.input.tablets.entry(device.to_string()).or_default())
 }
 
 fn valid_input_fraction(value: f64) -> Result<f64, String> {
@@ -2431,6 +2500,115 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the saved curve is the exact preset constant"
+    )]
+    fn tablet_operations_persist_per_device_and_refuse_unknown_choices() {
+        use crate::actions::InputOperation;
+        use settings_store::hardware::{ShortcutAction, StylusButtonAction};
+        let _config = crate::prefs::test_env::ConfigGuard::new();
+        let pen = "056a:0374:Wacom Intuos S Pen".to_string();
+        let pad = "056a:0374:Wacom Intuos S Pad".to_string();
+        for operation in [
+            InputOperation::SetTabletOutput {
+                device: pen.clone(),
+                output: crate::panes::mouse_keyboard::WHOLE_DESKTOP.into(),
+            },
+            InputOperation::SetTabletKeepAspect {
+                device: pen.clone(),
+                enabled: true,
+            },
+            InputOperation::SetTabletLeftHanded {
+                device: pen.clone(),
+                enabled: true,
+            },
+            InputOperation::SetTabletTipFeel {
+                device: pen.clone(),
+                value: 0.0,
+            },
+            InputOperation::SetTabletButton {
+                device: pen.clone(),
+                button: "upper".into(),
+                action: "shortcut:search".into(),
+            },
+            InputOperation::SetTabletButton {
+                device: pen.clone(),
+                button: "lower".into(),
+                action: "right".into(),
+            },
+            InputOperation::SetPadButton {
+                device: pad.clone(),
+                button: 1,
+                action: "shortcut:workspace_overview".into(),
+            },
+        ] {
+            SettingsApp::apply_input_operation(operation).expect("a valid tablet choice applies");
+        }
+        let saved = crate::prefs::SystemPrefs::load().input.tablets;
+        let pen_config = &saved[&pen];
+        assert_eq!(pen_config.output, None);
+        assert!(pen_config.keep_aspect && pen_config.left_handed);
+        assert_eq!(
+            pen_config.pressure_curve,
+            settings_store::hardware::PRESSURE_CURVE_PRESETS[0]
+        );
+        assert_eq!(
+            pen_config.upper_button,
+            StylusButtonAction::Shortcut(ShortcutAction::Search)
+        );
+        assert_eq!(pen_config.lower_button, StylusButtonAction::Right);
+        assert_eq!(
+            saved[&pad].pad_buttons.get(&1),
+            Some(&ShortcutAction::WorkspaceOverview)
+        );
+        // The compositor reads the same document.
+        let compositor =
+            settings_store::hardware::tablets_from_section(&settings_store::load_section("input"));
+        assert_eq!(compositor.get(&pen), Some(pen_config));
+
+        SettingsApp::apply_input_operation(InputOperation::SetPadButton {
+            device: pad.clone(),
+            button: 1,
+            action: "none".into(),
+        })
+        .unwrap();
+        assert!(
+            crate::prefs::SystemPrefs::load().input.tablets[&pad]
+                .pad_buttons
+                .is_empty()
+        );
+
+        for refused in [
+            InputOperation::SetTabletOutput {
+                device: pen.clone(),
+                output: "HDMI-A-9".into(),
+            },
+            InputOperation::SetTabletButton {
+                device: pen.clone(),
+                button: "sideways".into(),
+                action: "right".into(),
+            },
+            InputOperation::SetTabletButton {
+                device: pen.clone(),
+                button: "lower".into(),
+                action: "shortcut:make_coffee".into(),
+            },
+            InputOperation::SetPadButton {
+                device: pad,
+                button: 99,
+                action: "none".into(),
+            },
+            InputOperation::SetTabletKeepAspect {
+                device: String::new(),
+                enabled: true,
+            },
+        ] {
+            assert!(SettingsApp::apply_input_operation(refused).is_err());
+        }
+    }
 
     fn layout_at(app: &mut SettingsApp, w: f32, h: f32) {
         layout_at_with_theme(app, w, h, &ui::Theme::dark());

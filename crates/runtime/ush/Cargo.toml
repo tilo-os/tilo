@@ -38,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 serde_json.workspace = true

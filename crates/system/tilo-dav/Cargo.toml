@@ -11,6 +11,7 @@ roxmltree.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
 zeroize = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 default = ["client"]

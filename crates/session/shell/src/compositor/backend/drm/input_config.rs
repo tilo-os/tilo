@@ -673,7 +673,9 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
             let milli = (settings.accel_speed_for(caps.is_touchpad()) * 1000.0).round() as i32;
             milli
         }),
-        left_handed: caps.supports_left_handed.then_some(settings.left_handed),
+        // A pen's orientation is its tablet's own setting, applied when its
+        // coordinates are mapped; the mouse preference must not also turn it.
+        left_handed: caps.supports_left_handed.then_some(settings.left_handed && !caps.is_tablet_tool),
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
@@ -1326,6 +1328,21 @@ mod tests {
             ..DeviceCaps::default()
         };
         assert_eq!(pad.kind(), InputDeviceKind::TabletPad);
+    }
+
+    #[test]
+    fn a_pen_is_never_turned_by_the_mouse_handedness() {
+        let pen = DeviceCaps {
+            is_tablet_tool: true,
+            supports_left_handed: true,
+            ..DeviceCaps::default()
+        };
+        let left = InputSettings {
+            left_handed: true,
+            ..Default::default()
+        };
+        assert_eq!(plan_for(&left, &pen).left_handed, Some(false));
+        assert_eq!(plan_for(&left, &mouse()).left_handed, Some(true));
     }
 
     #[derive(Default)]

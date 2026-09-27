@@ -54,9 +54,10 @@ mail-parser = "0.11.4"
 mail-builder = "0.4.4"
 # The base64 encodings XOAUTH2 and the sandboxed HTML data: URL use.
 base64.workspace = true
-# The shared OAuth client (PKCE, loopback redirect, token exchange and
-# refresh); its HTTPS half is compiled with `live`.
-tilo-oauth = { path = "../../crates/system/tilo-oauth", default-features = false }
+# Tilo's one OAuth client registration per provider (with Gmail's and
+# Outlook's mail scopes) and the custody of Mail's grants: sign-in, sealing
+# and refresh. The custodian and its HTTPS client are compiled with `live`.
+account-custody = { path = "../../crates/system/account-custody", default-features = false }
 
 # Live IMAP and SMTP for the account engine. These are optional and gated by
 # `live`; the default build uses the offline backend.
@@ -71,6 +72,7 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -79,7 +81,7 @@ thin = ["dep:runtime-dylib"]
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["tilo-oauth/client", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
+live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 # Render HTML mail bodies with WPE WebKit; requires the stack from
 # os/dev/build-wpe.sh.
 html-webview = ["ui/webview-wpe"]
@@ -88,6 +90,9 @@ html-webview = ["ui/webview-wpe"]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true
+# The fake authorization server and browser for the Gmail and Outlook
+# sign-in tests.
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 
 [lints]
 workspace = true
