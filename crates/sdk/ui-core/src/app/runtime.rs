@@ -18,6 +18,13 @@ use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// Retained layout and widget lookup state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "the safe area and content origin are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,

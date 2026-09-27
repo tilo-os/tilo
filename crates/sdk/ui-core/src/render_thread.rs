@@ -119,6 +119,13 @@ pub enum RenderRequest {
 
 /// A device and a renderer whose pipelines are compiled for it, with no
 /// surface yet.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "only the native event-loop runner takes a renderer back to reuse"
+    )
+)]
 pub(crate) struct PreparedRenderer {
     pub(crate) context: RenderContext,
     pub(crate) device_id: usize,
@@ -126,6 +133,7 @@ pub(crate) struct PreparedRenderer {
 }
 
 impl PreparedRenderer {
+    #[cfg(feature = "native")]
     pub(crate) fn device_lost(&self) -> bool {
         self.context
             .devices
@@ -289,6 +297,7 @@ impl RenderThreadHandle {
 
     /// [`Self::shutdown_and_join`], taking back the worker's context and
     /// renderer if it was still running.
+    #[cfg(feature = "native")]
     pub(crate) fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
         self.stop(true)
     }
