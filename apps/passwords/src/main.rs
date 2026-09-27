@@ -32,6 +32,11 @@ fn main() {
         &LaunchSpec::new("so.tilo.passwords", passwords::app_root)
             .shot_root(shot)
             .allowed_options(&["--screen"])
-            .configure_app(|app| app.set_window_title(Some("Passwords".into()))),
+            .configure_app(|app| {
+                app.set_window_title(Some("Passwords".into()));
+                // The vault shows secrets: keep it out of screenshots,
+                // recordings and screen shares.
+                app.set_capture_protected(true);
+            }),
     );
 }
