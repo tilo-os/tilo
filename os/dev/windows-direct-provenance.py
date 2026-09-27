@@ -251,7 +251,6 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
     bundle = Path(str(identity_path) + ".bundle")
     bounded_file(signature, 64 * 1024)
     bounded_file(bundle, 2 * 1024 * 1024)
-    ci_proof_raw = bounded_file(ci_guest_proof_path, 64 * 1024)
     require(key.is_file() and not key.is_symlink(),
             "CI verification key is not a regular file")
     key_value = key_arg if key_arg is not None else str(key.resolve(strict=True))
@@ -266,12 +265,16 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
     require(result.returncode == 0,
             "CI installer medium identity signature verification failed: " + result.stderr.strip())
     identity = json.loads(raw)
-    require(type(identity) is dict and set(identity) == {
-        "schema", "target_profile", "target_image", "live_base_image",
-        "build_revision", "run_id", "run_attempt", "qcow2_sha256",
-        "archive_sha256", "guest_proof_sha256"},
-        "CI installer medium identity has unexpected fields")
-    require(identity["schema"] == "tilo.whpx-ci-installer-medium.v1"
+    common = {"schema", "target_profile", "target_image", "live_base_image",
+              "build_revision", "run_id", "run_attempt", "qcow2_sha256",
+              "archive_sha256"}
+    require(type(identity) is dict and identity.get("schema") in (
+        "tilo.whpx-ci-installer-medium.v1", "tilo.whpx-ci-installer-medium.v2"),
+        "CI installer medium identity has an unknown schema")
+    legacy = identity["schema"].endswith(".v1")
+    require(set(identity) == common | ({"guest_proof_sha256"} if legacy else {"proof_policy"}),
+            "CI installer medium identity has unexpected fields")
+    require((legacy or identity["proof_policy"] == "backend-derived-windows-whpx-v2")
             and identity["target_profile"] in ("generic", "lenovo-83ed")
             and type(identity["target_image"]) is str
             and identity["target_image"].split("@", 1)[0]
@@ -287,21 +290,28 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
             and type(identity["run_attempt"]) is str
             and re.fullmatch(r"[0-9]+", identity["run_attempt"])
             and all(type(identity[key]) is str and HEX.fullmatch(identity[key])
-                    for key in ("qcow2_sha256", "archive_sha256", "guest_proof_sha256"))
-            and hashlib.sha256(ci_proof_raw).hexdigest() == identity["guest_proof_sha256"],
-            "CI installer medium identity or native guest proof differs")
-    ci_proof = json.loads(ci_proof_raw)
-    require(type(ci_proof) is dict
-            and ci_proof.get("schema") == "tilo.vm-install-image-proof.v2"
-            and ci_proof.get("architecture") == "arm64"
-            and ci_proof.get("installed_image_digest") == identity["target_image"].split("@", 1)[1]
-            and type(ci_proof.get("selected_target")) is dict
-            and ci_proof["selected_target"].get("schema") == "tilo.installer-offline-target.v1"
-            and ci_proof["selected_target"].get("target_ref") == identity["target_image"]
-            and ci_proof["selected_target"].get("target_digest")
-            == ci_proof["installed_image_digest"]
-            and ci_proof["selected_target"].get("hardware_profile") == identity["target_profile"],
-            "CI-native guest proof differs from signed medium target")
+                    for key in ("qcow2_sha256", "archive_sha256")),
+            "CI installer medium identity differs")
+    if legacy:
+        require(ci_guest_proof_path is not None,
+                "v1 signed medium requires its native CI guest proof")
+        ci_proof_raw = bounded_file(ci_guest_proof_path, 64 * 1024)
+        require(type(identity["guest_proof_sha256"]) is str
+                and HEX.fullmatch(identity["guest_proof_sha256"])
+                and hashlib.sha256(ci_proof_raw).hexdigest() == identity["guest_proof_sha256"],
+                "CI installer medium identity or native guest proof differs")
+        ci_proof = json.loads(ci_proof_raw)
+        require(type(ci_proof) is dict
+                and ci_proof.get("schema") == "tilo.vm-install-image-proof.v2"
+                and ci_proof.get("architecture") == "arm64"
+                and ci_proof.get("installed_image_digest") == identity["target_image"].split("@", 1)[1]
+                and type(ci_proof.get("selected_target")) is dict
+                and ci_proof["selected_target"].get("schema") == "tilo.installer-offline-target.v1"
+                and ci_proof["selected_target"].get("target_ref") == identity["target_image"]
+                and ci_proof["selected_target"].get("target_digest")
+                == ci_proof["installed_image_digest"]
+                and ci_proof["selected_target"].get("hardware_profile") == identity["target_profile"],
+                "CI-native guest proof differs from signed medium target")
     return {**identity, "identity_sha256": hashlib.sha256(raw).hexdigest()}
 
 
@@ -322,6 +332,10 @@ def checked_medium_pair(board, generic, board_checked, generic_checked,
             and board["run_attempt"] == generic["run_attempt"]
             and board["qcow2_sha256"] == board_checked.get("installer_medium_sha256")
             and generic["qcow2_sha256"] == generic_checked.get("installer_medium_sha256")
+            and board["schema"] == generic["schema"]
+            and (board["schema"] != "tilo.whpx-ci-installer-medium.v2"
+                 or (board["proof_policy"] == "backend-derived-windows-whpx-v2"
+                     and generic["proof_policy"] == "backend-derived-windows-whpx-v2"))
             and board_checked.get("first_boot_verified") is False
             and generic_checked.get("first_boot_verified") is True,
             "signed CI media do not match the paired WHPX install proofs")
@@ -480,7 +494,7 @@ def dual_ci_medium_gate(args, board_checked, board_child_digest,
     """Require paired CI media and separate generic full-boot proof for board copy."""
     names = ("generic_ci_image", "generic_index_manifest", "generic_child_manifest",
              "generic_vm_proof_checked", "generic_medium_identity",
-             "generic_ci_guest_proof", "board_medium_identity", "board_ci_guest_proof")
+             "board_medium_identity")
     require(all(getattr(args, name, None) is not None for name in names),
             "physical Lenovo install requires paired signed CI media and generic WHPX proof")
     index_digest, child_digest, children, kind = signed_ci_child(
