@@ -1788,3 +1788,22 @@ mod configured_theme {
         }
     }
 }
+
+#[cfg(test)]
+mod scaled_type {
+    use super::*;
+
+    #[test]
+    fn a_scaled_theme_composes_with_the_scale_already_applied() {
+        let base = Theme::dark().with_text_scale(2.0);
+        let small = base.scaled_by(0.5);
+        assert!((small.text_scale - 1.0).abs() < 1e-6);
+        let plain = Theme::dark();
+        assert!(
+            (small.tokens.typography.scale.lg - plain.tokens.typography.scale.lg).abs() < 1e-4,
+            "half of doubled type is plain type"
+        );
+        assert!((base.scaled_by(1.0).text_scale - 2.0).abs() < 1e-6);
+        assert!((Theme::dark().scaled_by(f32::NAN).text_scale - 1.0).abs() < 1e-6);
+    }
+}

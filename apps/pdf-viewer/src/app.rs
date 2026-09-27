@@ -57,6 +57,7 @@ use crate::source::{
 use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
 use tilo_content::{ContentState, ContentStore};
+use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitKey};
 
 const TOOLBAR_H: f64 = 56.0;
 /// Default width of the thumbnail rail; the user can drag-resize it within
@@ -417,19 +418,87 @@ pub(crate) struct FieldWidgetHit {
     pub(crate) pdf_checked: bool,
 }
 
-/// A live inline text edit (comment body, thread reply, or signer name),
-/// backed by the shared multiline [`TextInput`]. The text is local until
-/// committed, so a burst of keystrokes is a single undo step. `Enter` commits
-/// (the input is `with_enter_submits`), `Shift+Enter` inserts a newline.
+/// A live inline text edit. The text is local until committed, so a burst
+/// of keystrokes is a single undo step. `Enter` commits, `Shift+Enter`
+/// breaks the line.
 struct Editing {
     target: EditTarget,
-    input: TextInput,
+    input: EditInput,
 }
 
+/// What an edit is typed into.
+enum EditInput {
+    /// A single run of text (a signer's name, a form field, a free text box),
+    /// in the shared multiline [`TextInput`].
+    Plain(Box<TextInput>),
+    /// A comment or reply, written as rich text in the SDK editor.
+    Rich(Box<CommentField>),
+}
+
+/// The key a comment's (or one of its replies') view is kept under.
+fn comment_view_key(comment: &str, reply: Option<&str>) -> String {
+    match reply {
+        Some(reply) => format!("{comment}\u{1f}{reply}"),
+        None => comment.to_owned(),
+    }
+}
+
+/// The SDK editor a comment or reply is written in.
+pub(crate) type CommentField = ui::widget::Embedded<RichTextSurface<Draft>>;
+
 impl Editing {
-    /// The current edited text.
-    fn text(&self) -> &str {
-        self.input.value()
+    /// The current edited text, as plain text.
+    fn text(&self) -> String {
+        match &self.input {
+            EditInput::Plain(input) => input.value().to_owned(),
+            EditInput::Rich(field) => field.widget().source().plain_text(),
+        }
+    }
+
+    /// Whether a press-drag is extending the edit's selection.
+    fn is_dragging(&self) -> bool {
+        match &self.input {
+            EditInput::Plain(input) => input.is_dragging(),
+            EditInput::Rich(_) => false,
+        }
+    }
+
+    /// Whether the person asked to commit (Enter) since the last call.
+    fn take_submit(&mut self) -> bool {
+        match &mut self.input {
+            EditInput::Plain(input) => input.take_submit(),
+            EditInput::Rich(field) => {
+                field.widget_mut().take_outcome() == Some(FieldOutcome::Submit)
+            }
+        }
+    }
+
+    /// Replace what the edit holds, as if typed (for tests).
+    #[cfg(test)]
+    fn set_text(&mut self, text: &str) {
+        match &mut self.input {
+            EditInput::Plain(input) => input.set_text(text),
+            EditInput::Rich(field) => {
+                field
+                    .widget_mut()
+                    .source_mut()
+                    .reset(&tilo_rich_text::plain_blocks(text));
+                field.widget_mut().present_now();
+            }
+        }
+    }
+
+    /// The paragraphs written in a comment or reply, trailing blank ones
+    /// dropped.
+    fn clips(&self) -> Vec<qdoc_rich_text::ClipBlock> {
+        let EditInput::Rich(field) = &self.input else {
+            return tilo_rich_text::plain_clips(self.text().trim_end());
+        };
+        let mut clips = field.widget().source().clip_blocks();
+        while clips.last().is_some_and(|clip| clip.text.trim().is_empty()) {
+            clips.pop();
+        }
+        clips
     }
 }
 
@@ -561,6 +630,9 @@ pub struct PdfApp {
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
+    /// Comments and replies as written, one read-only view each, keyed by
+    /// [`comment_view_key`]; measured and drawn by the Comments rail.
+    comment_views: std::cell::RefCell<HashMap<String, RichTextView>>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -1083,6 +1155,7 @@ impl PdfApp {
             portal_import_rx: None,
             selected_anno: None,
             editing: None,
+            comment_views: std::cell::RefCell::new(HashMap::new()),
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
@@ -1663,6 +1736,21 @@ impl PdfApp {
             .collect();
         self.adopted = PdfDoc::adopted(state);
         self.comments = PdfDoc::list_comments(state);
+        let shown: HashSet<String> = self
+            .comments
+            .iter()
+            .flat_map(|comment| {
+                std::iter::once(comment_view_key(&comment.id, None)).chain(
+                    comment
+                        .replies
+                        .iter()
+                        .map(|reply| comment_view_key(&comment.id, Some(&reply.id))),
+                )
+            })
+            .collect();
+        self.comment_views
+            .get_mut()
+            .retain(|key, _| shown.contains(key));
         self.signatures = PdfDoc::list_signatures(state)
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
@@ -3225,6 +3313,27 @@ impl PdfApp {
     /// text and dropping the caret at the end. Any in-flight edit is dropped
     /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: &str) {
+        if let EditTarget::CommentBody(id) | EditTarget::Reply(id) = &target {
+            let blocks = match &target {
+                // The comment as written, unless the edit starts from other text.
+                EditTarget::CommentBody(_) => self
+                    .comments
+                    .iter()
+                    .find(|comment| &comment.id == id && comment.body == initial)
+                    .map_or_else(
+                        || tilo_rich_text::plain_blocks(initial),
+                        |comment| comment.blocks.clone(),
+                    ),
+                _ => tilo_rich_text::plain_blocks(initial),
+            };
+            let field = self.comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
+            self.editing = Some(Editing {
+                target,
+                input: EditInput::Rich(Box::new(field)),
+            });
+            self.dirty = true;
+            return;
+        }
         // The same type-scale steps the sidebar measures and paints these
         // texts at, so the editor's glyphs are the glyphs it replaces.
         let size = match &target {
@@ -3249,8 +3358,40 @@ impl PdfApp {
         input.set_text(initial);
         input.set_cursor_pos(initial.len());
         input.set_focus(true);
-        self.editing = Some(Editing { target, input });
+        self.editing = Some(Editing {
+            target,
+            input: EditInput::Plain(Box::new(input)),
+        });
         self.dirty = true;
+    }
+
+    /// The type of a comment relative to body text in the editor.
+    pub(crate) fn comment_type_scale(&self) -> f32 {
+        self.type_px.sm / ui::tokens::TypeScale::default().lg
+    }
+
+    /// A comment or reply field holding `blocks`, focused at its end: Enter
+    /// sends, Shift+Enter breaks the line.
+    fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
+        let hint = if reply {
+            "Reply…"
+        } else {
+            "Write a comment…"
+        };
+        let mut surface = RichTextSurface::over(Draft::with_blocks(blocks))
+            .with_editor(
+                ui::widget::BlockEditor::new()
+                    .with_wrap_lines(true)
+                    .with_compact_paragraph_spacing(true),
+            )
+            .with_placeholder(hint)
+            .with_submit(SubmitKey::Enter);
+        surface.present_now();
+        surface.set_focus(true);
+        surface
+            .editor_mut()
+            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+        ui::widget::Embedded::new(surface).with_text_scale(self.comment_type_scale())
     }
 
     /// Whether `target` is the edit currently in progress.
@@ -3263,7 +3404,8 @@ impl PdfApp {
     /// an abandoned marker never litters the page.
     fn commit_edit(&mut self, state: &mut AutoCommit) {
         let Some(e) = self.editing.take() else { return };
-        let text = e.text().to_string();
+        let text = e.text();
+        let clips = e.clips();
         match e.target {
             EditTarget::CommentBody(id) => {
                 let trimmed = text.trim();
@@ -3276,16 +3418,13 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                self.perform_action(
-                    state,
-                    &crate::actions::set_comment_body_action(&id, text.trim_end()),
-                );
+                self.perform_action(state, &crate::actions::set_comment_text_action(&id, clips));
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
-                let body = text.trim();
-                if !body.is_empty() {
-                    let action = crate::actions::add_reply_action(&id, &self.author.clone(), body);
+                if !text.trim().is_empty() {
+                    let action =
+                        crate::actions::add_reply_text_action(&id, &self.author.clone(), clips);
                     self.perform_action(state, &action);
                     self.reload(state);
                 }
@@ -8523,7 +8662,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             // Type a real name into the signer identity field and commit it.
             app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
-            app.editing.as_mut().unwrap().input.set_text("Grace Hopper");
+            app.editing.as_mut().unwrap().set_text("Grace Hopper");
             app.commit_edit(&mut st.doc);
             assert!(app.editing.is_none(), "committing closes the editor");
             assert_eq!(
@@ -8538,7 +8677,7 @@ mod tests {
             );
             // Committing an empty name falls back to the app author identity.
             app.begin_edit(EditTarget::Signer, "whatever");
-            app.editing.as_mut().unwrap().input.set_text("   ");
+            app.editing.as_mut().unwrap().set_text("   ");
             app.commit_edit(&mut st.doc);
             assert_eq!(
                 app.signer_name, app.author,
@@ -9338,11 +9477,7 @@ mod tests {
             });
             app.commit_drag(&mut st.doc);
             app.create_note(&mut st.doc, 1, (120.0, 300.0));
-            app.editing
-                .as_mut()
-                .unwrap()
-                .input
-                .insert_at_cursor("Check this claim");
+            app.editing.as_mut().unwrap().set_text("Check this claim");
             app.commit_edit(&mut st.doc);
             app.signer_name = "Grace Hopper".into();
             app.place_signature(&mut st.doc, 1, (360.0, 520.0));

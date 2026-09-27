@@ -1173,17 +1173,15 @@ impl PdfDoc {
     /// stored in the first format (a plain `body`) reads as a paragraph per
     /// line until [`Self::migrate_comment_text`] rewrites it.
     fn read_text(doc: &AutoCommit, entry: &ObjId) -> (String, Vec<ui::widget::BlockContent>) {
-        match tilo_rich_text::rich_text_at(doc, entry, TEXT) {
-            Some(root) => (
+        if let Some(root) = tilo_rich_text::rich_text_at(doc, entry, TEXT) {
+            return (
                 qdoc_rich_text::RichText::plain_text_under(doc, &root).unwrap_or_default(),
                 tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
-            ),
-            None => {
-                let body = read_str(doc, entry, LEGACY_BODY).unwrap_or_default();
-                let blocks = tilo_rich_text::plain_blocks(&body);
-                (body, blocks)
-            }
+            );
         }
+        let body = read_str(doc, entry, LEGACY_BODY).unwrap_or_default();
+        let blocks = tilo_rich_text::plain_blocks(&body);
+        (body, blocks)
     }
 
     /// Rewrite every comment and reply still holding the first format's
