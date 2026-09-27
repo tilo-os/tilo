@@ -450,7 +450,6 @@ portal-network-cert-system-domain = The network's certificate is checked against
 portal-network-cert-unchecked = The network's certificate is not checked. Only continue on a network you trust.
 
 # Top bar
-topbar-workspace-name-tooltip = Open workspace settings
 topbar-clocks-notification-title = Clocks
 topbar-clocks-notification-body = Time is up
 
