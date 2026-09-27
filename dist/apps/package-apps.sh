@@ -19,12 +19,16 @@ source_epoch=${SOURCE_DATE_EPOCH:-0}
     printf 'SOURCE_DATE_EPOCH must be a non-negative integer\n' >&2
     exit 2
 }
-policy_max_tapp_bytes=5242880
+# The same byte count the Rust package checks compile in.
+size_policy=$repo_root/crates/packaging/tilo-app-package/max-app-bytes
+policy_max_tapp_bytes=$(<"$size_policy")
+[[ $policy_max_tapp_bytes =~ ^[1-9][0-9]*$ ]] \
+    || { printf '%s must hold a positive byte count\n' "$size_policy" >&2; exit 1; }
 max_tapp_bytes=${MAX_TAPP_BYTES:-$policy_max_tapp_bytes}
 [[ $max_tapp_bytes =~ ^[0-9]+$ ]] \
     || { printf 'MAX_TAPP_BYTES must be an integer\n' >&2; exit 1; }
 (( max_tapp_bytes <= policy_max_tapp_bytes )) \
-    || { printf 'MAX_TAPP_BYTES cannot exceed the 5 MiB app policy\n' >&2; exit 1; }
+    || { printf 'MAX_TAPP_BYTES cannot exceed the %s-byte app policy\n' "$policy_max_tapp_bytes" >&2; exit 1; }
 target_dir=$(realpath -m "${CARGO_TARGET_DIR:-$repo_root/target}")
 release_dir=$target_dir/release
 thin_app_dir=$target_dir/thin-app

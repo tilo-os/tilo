@@ -51,6 +51,7 @@ suites = [
   "os/tests/disk_image_root_podman_store.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
+  "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
   "os/tests/boot_order_enlist_test.py",
@@ -139,7 +140,6 @@ suites = [
   "os/tests/test_restore_thin_cache.py",
   "os/tests/test_retain_development_rootfs.py",
   "os/tests/test_rootfs_layer_audit.py",
-  "os/tests/test_rpm_snapshot_inputs.py",
   "os/tests/test_secureboot_evidence.py",
   "os/tests/test_sign_development_rootfs.py",
   "os/tests/test_signing_recovery.py",
@@ -154,6 +154,7 @@ suites = [
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
+  "os/tests/test_wpe_recipe_inputs.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
@@ -167,11 +168,11 @@ inputs = ["os/", ".forgejo/workflows/"]
 suites = [
   "os/containers/tilo-relay/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
+  "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
-  "os/tests/test_reconcile_snapshot_pins.py",
   "os/tests/wpe_runtime_check.sh",
   "os/tests/test_raw_layer_epoch.py",
 ]
@@ -811,7 +812,7 @@ reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fai
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"
-reason = "needs the built tilo-doubletake test receiver"
+reason = "needs the built tilo-doubletake binaries and OpenH264 from the opt-in codec pack on an assembled image"
 
 [[unrequired]]
 suite = "os/tests/boot_chain_invariants.sh"

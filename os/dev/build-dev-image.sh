@@ -178,8 +178,10 @@ export SOURCE_DATE_EPOCH
 mkdir -p "$TMPDIR"
 export TMPDIR
 
-rpms_ref="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
-[ -n "$rpms_ref" ] || die "os/rpms-snapshot.env pins no RPMS_REF"
+rpms_ref="${RPMS_REF:-}"
+if [ -z "$rpms_ref" ]; then
+  rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
+fi
 
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS

@@ -16,7 +16,7 @@ use crate::shell::i18n::t;
 
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, GLYPH, LIST_TOP, STATUS_DOT, trailing_dot_center,
     trailing_status_glyph,
 };

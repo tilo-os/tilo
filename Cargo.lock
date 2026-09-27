@@ -27,6 +27,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "accesskit_android"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "929aff36b0d3dd22ddb59191989d5293ed958294d7728bd6c2ec9778f73414aa"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer",
+ "jni 0.21.1",
+ "log",
+]
+
+[[package]]
 name = "accesskit_atspi_common"
 version = "0.20.0"
 source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
@@ -2148,8 +2160,10 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dav",
+ "percent-encoding",
  "serde",
  "serde_json",
  "test-http",
@@ -2164,6 +2178,7 @@ dependencies = [
 name = "cloud-source-dropbox"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
@@ -2182,6 +2197,7 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-gdrive",
  "md-5",
@@ -2202,6 +2218,7 @@ name = "cloud-source-icloud"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-icloud",
  "getrandom 0.4.3",
@@ -2227,8 +2244,10 @@ name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-onedrive",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
@@ -2566,7 +2585,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "containers",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3921,6 +3939,7 @@ dependencies = [
  "chrono",
  "feed-rs",
  "hex",
+ "quick-xml 0.41.0",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -5779,6 +5798,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7287,16 +7315,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
@@ -7433,6 +7451,18 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "launcher-macos"
+version = "0.1.0"
+dependencies = [
+ "launcher",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -8347,7 +8377,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.0",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand 0.10.1",
@@ -11801,10 +11831,12 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "app-cli",
  "app-host",
+ "async-imap",
  "atomic-file",
  "chrono-tz",
  "cli",
@@ -11831,6 +11863,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-ui",
@@ -13020,6 +13053,7 @@ dependencies = [
  "os-actions",
  "package-store",
  "parking_lot",
+ "percent-encoding",
  "pipewire",
  "pollster",
  "postcard",
@@ -13027,6 +13061,7 @@ dependencies = [
  "qcms",
  "qdoc",
  "qdoc-codecs",
+ "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13071,6 +13106,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -13082,6 +13118,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-runtime",
  "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -13094,6 +13131,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tts",
+ "url",
  "uuid",
  "vello",
  "vello_encoding",
@@ -14791,6 +14829,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "reqwest",
  "roxmltree 0.20.0",
  "test-http",
@@ -14838,13 +14877,18 @@ dependencies = [
  "blake3",
  "chat",
  "collab-types",
+ "desktop-policy",
+ "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
+ "hex",
  "notes",
  "serde",
  "serde_json",
  "taffy",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-resource",
@@ -14865,6 +14909,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-test-env",
+ "url",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -14961,8 +15006,10 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "jni 0.21.1",
  "libc",
  "mime_guess",
+ "ndk-context",
  "open",
  "smithay-client-toolkit",
  "smithay-clipboard",
@@ -14981,6 +15028,35 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15399,6 +15475,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-runtime"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "libc",
+ "runtime-fs",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-seal"
 version = "0.1.0"
 dependencies = [
@@ -15442,6 +15539,7 @@ name = "tilo-ui"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "accesskit_android",
  "accesskit_winit",
  "adblock",
  "advisory-lock",
@@ -15469,8 +15567,11 @@ dependencies = [
  "hypher",
  "icu_segmenter",
  "image",
+ "jni 0.21.1",
  "libc",
  "media",
+ "ndk",
+ "ndk-context",
  "percent-encoding",
  "pkg-config",
  "pollster",
@@ -15615,6 +15716,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17249,7 +17351,6 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "vello",
- "video-player",
  "winit",
  "workspace-hack",
 ]
@@ -17775,7 +17876,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
@@ -18382,6 +18483,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest",
  "serde",

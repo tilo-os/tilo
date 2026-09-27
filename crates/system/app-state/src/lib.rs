@@ -1098,14 +1098,16 @@ fn sync_directory_ancestors(
     // directory, including ancestors left by an interrupted earlier open.
     // It does not include creating the OS-owned C:\Users or volume root.
     // Query the OS known folder, not USERPROFILE supplied by an environment.
-    #[cfg(windows)]
+    // On Android the root is the app's sandbox, whose ancestors the app may
+    // not even open; `ui::android_main!` makes it `$HOME`.
+    #[cfg(any(windows, target_os = "android"))]
     let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
             .and_then(|f| f.sync_all())
             .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         if profile_root.as_deref() == Some(path) {
             break;
         }

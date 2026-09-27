@@ -7,6 +7,7 @@ license.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
 
 [dependencies]
+chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true

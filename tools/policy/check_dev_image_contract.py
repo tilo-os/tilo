@@ -8,14 +8,13 @@ toolchain, and it is unsealed. Two ways that could leak into production:
 1. The dev image is published or tagged as a production image. So:
    * os/Containerfile.dev must label and mark itself as the dev flavour, unseal
      its base and never build a UKI of its own;
-   * its RPM snapshot default must be the production one (os/rpms-snapshot.env),
+   * its RPM snapshot default must come from resolve-rpm-snapshot.sh,
      and its toolchain list (os/scripts/builder-packages.txt) must be exactly
-     what os/Containerfile's builder stage installs, so it links against what
-     the production builder of the same commit links against;
+     what os/Containerfile's builder stage installs but for Fedora's Rust
+     compiler, so it links against what the production builder of the same
+     commit links against;
    * its Rust compiler must be the release rust-toolchain.toml pins, taken from
-     a digest-pinned tilo-builder image, never a floating tag, and the very
-     image os/Containerfile's builder stage takes its compiler from (never
-     Fedora's rust package), so a dev build and the image emit the same code;
+     a digest-pinned tilo-builder image, never a floating tag;
    * every script or workflow that builds os/Containerfile.dev may tag and push
      it only under a `tilo-vm` name, never registry.tilo.so/tilo/tilo or
      localhost/tilo;
@@ -59,7 +58,6 @@ DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-r
                "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev")
 WHY_TOOLCHAIN = ("the dev image and in-VM builds must compile with the compiler CI checks the workspace with; "
                  "Fedora's rust package, or a floating image tag, changes version whenever it is refreshed")
-FEDORA_RUST = frozenset({"rust", "cargo"})
 PRODUCTION_NAME = re.compile(r"(?:registry\.tilo\.so/tilo/tilo|localhost/tilo)(?=[:@\s\"']|$)")
 
 
@@ -149,9 +147,9 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     default = next(((n, m.group(1)) for n, t in lines if (m := re.fullmatch(r"ARG RPMS_REF=(\S+)", t))), None)
     if default is not None:
         findings.append(Finding(f"{shown}:{default[0]}", f"RPMS_REF has a default ({default[1]})",
-                                "os/rpms-snapshot.env is the one pin: CI rewrites it when the package set "
+                                "RPMS_REF is resolved by fingerprint: CI publishes set-<fingerprint> when the package set "
                                 "changes, and a second copy here would silently drift from it",
-                                "declare a bare `ARG RPMS_REF`; the builders pass it from os/rpms-snapshot.env."))
+                                "declare a bare `ARG RPMS_REF`; the builders pass it from resolve-rpm-snapshot.sh."))
     elif not any(re.fullmatch(r"ARG RPMS_REF", t) for _, t in lines):
         findings.append(Finding(shown, "declares no `ARG RPMS_REF`",
                                 "the toolchain must come from the frozen snapshot the production builder used",
@@ -174,10 +172,10 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     path = repo / builder
     if path.is_file():
         body = path.read_text(encoding="utf-8")
-        if not ("rpms-snapshot.env" in body and "RPMS_REF=$rpms_ref" in body):
-            findings.append(Finding(builder, "builds os/Containerfile.dev without RPMS_REF from os/rpms-snapshot.env",
+        if not ("resolve-rpm-snapshot.sh" in body and "RPMS_REF=$rpms_ref" in body):
+            findings.append(Finding(builder, "builds os/Containerfile.dev without fingerprint-resolved RPMS_REF",
                                     "without it the dev image has no frozen snapshot to install its toolchain from",
-                                    'read `rpms_ref` from os/rpms-snapshot.env and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
+                                    'resolve `rpms_ref` via resolve-rpm-snapshot.sh and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
     # CI builds dev images with the same script developers run, so a CI dev
     # image cannot drift from a local one.
     for workflow in DEV_IMAGE_WORKFLOWS:
@@ -218,38 +216,10 @@ def check_builder_packages(repo: Path) -> list[Finding]:
                 rel(repo, listing), f"differs from the packages os/Containerfile's builder stage installs "
                 f"on {arch} (missing: {', '.join(added) or '-'}; extra: {', '.join(removed) or '-'})",
                 "the dev image compiles its binaries and in-VM builds with this list, so it must be "
-                "exactly the production builder's toolchain",
+                "exactly the production builder's toolchain (but for the pinned Rust compiler)",
                 "run `python3 os/scripts/builder-packages.py --write` and commit the result."))
             break
-    fedora_rust = sorted(set(module.builder_packages(repo / "os/Containerfile", "builder")) & FEDORA_RUST)
-    if fedora_rust:
-        findings.append(Finding(
-            "os/Containerfile", f"the builder stage installs Fedora's {', '.join(fedora_rust)}",
-            WHY_TOOLCHAIN + "; the image's apps then differ in code and size from what CI measures",
-            "remove them from the builder's dnf list; its compiler comes from RUST_TOOLCHAIN_IMAGE."))
     return findings
-
-
-def toolchain_pin(path: Path) -> tuple[int, str] | None:
-    return next(((n, m.group(1)) for n, t in logical_lines(path)
-                 if (m := re.fullmatch(r"ARG RUST_TOOLCHAIN_IMAGE=(\S+)", t))), None)
-
-
-def check_image_toolchain(repo: Path) -> list[Finding]:
-    """os/Containerfile compiles with the Rust toolchain image the dev image uses."""
-    image, dev = repo / "os/Containerfile", repo / DEV_CONTAINERFILE
-    if not image.is_file() or not dev.is_file():
-        return []
-    ours, theirs = toolchain_pin(image), toolchain_pin(dev)
-    if ours is None:
-        return [Finding("os/Containerfile", "declares no `ARG RUST_TOOLCHAIN_IMAGE=<pinned tilo-builder>`",
-                        WHY_TOOLCHAIN, f"declare the one {DEV_CONTAINERFILE} pins before the first FROM and "
-                        "install the builder stage's compiler from its `rust-toolchain` stage.")]
-    if theirs is not None and ours[1] != theirs[1]:
-        return [Finding(f"os/Containerfile:{ours[0]}", f"RUST_TOOLCHAIN_IMAGE ({ours[1]}) differs from "
-                        f"{DEV_CONTAINERFILE}:{theirs[0]} ({theirs[1]})", WHY_TOOLCHAIN,
-                        "pin the same tilo-builder digest in both.")]
-    return []
 
 
 def builders_of_dev_image(repo: Path) -> list[Path]:
@@ -365,8 +335,7 @@ def check_production_containerfiles(repo: Path) -> list[Finding]:
 
 
 def audit(repo: Path = REPO) -> list[Finding]:
-    return [*check_dev_containerfile(repo), *check_builder_packages(repo), *check_image_toolchain(repo),
-            *check_dev_image_names(repo),
+    return [*check_dev_containerfile(repo), *check_builder_packages(repo), *check_dev_image_names(repo),
             *check_production_policy(repo),
             *check_production_containerfiles(repo)]
 

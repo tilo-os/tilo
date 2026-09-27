@@ -37,10 +37,10 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
-use crate::shell::notification::{
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
+use tilo_desktop::notifications::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
-use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
 
 /// Linux `BTN_LEFT`. The Wayland pointer protocol carries raw evdev button codes, not an enum, so the winit `MouseButton` has to be mapped back.
 const BTN_LEFT: u32 = 0x110;
@@ -2911,7 +2911,7 @@ mod tests {
             let mut fb = FrameBuilder::new((1600, 900));
             let mut state = state_sharing(KILL_SURFACE);
             fb.with_chrome(|chrome| {
-                for i in 0..crate::shell::notification::MAX_NOTIFICATIONS * 3 {
+                for i in 0..tilo_desktop::notifications::MAX_NOTIFICATIONS * 3 {
                     chrome.push_notification(format!("App toast {i}"), "noise");
                 }
             });

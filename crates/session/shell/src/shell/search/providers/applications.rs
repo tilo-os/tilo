@@ -19,12 +19,12 @@ use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
