@@ -196,8 +196,44 @@ impl HostImageLoader {
         if !self.in_flight.contains(url) {
             return false;
         }
+        // A closed component must not receive a late publication.
+        if !self.wake.authorize_publication() {
+            self.in_flight.remove(url);
+            self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
         let slot = decoded_slot(bytes, self.max_dimension);
         self.settle(url, slot)
+    }
+
+    /// Reopen only a previously admitted failed slot; arbitrary URLs cannot enter here.
+    pub fn retry(&mut self, url: &str) -> bool {
+        if !self.wake.authorize_publication() || self.in_flight.contains(url) {
+            return false;
+        }
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return false;
+        };
+        let Some(entry) = slots.slots.get_mut(url) else {
+            return false;
+        };
+        if !matches!(entry.slot, Slot::Failed) {
+            return false;
+        }
+        entry.slot = Slot::Loading;
+        self.in_flight.insert(url.into());
+        self.shared.pending.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    /// Whether `url` has settled with a decoded image.
+    pub fn loaded(&self, url: &str) -> bool {
+        self.shared.slots.lock().ok().is_some_and(|slots| {
+            slots
+                .slots
+                .get(url)
+                .is_some_and(|entry| matches!(entry.slot, Slot::Ready(_)))
+        })
     }
 
     fn settle(&mut self, url: &str, slot: Slot) -> bool {
@@ -291,9 +327,44 @@ impl NativeLoader {
     }
 }
 
+thread_local! {
+    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl ImageStore {
+    /// Install a legacy host factory for thumbnail-sized browser images.
+    ///
+    /// New hosts that also serve document attachments should use
+    /// [`with_host_factory_with_max_dimension`](Self::with_host_factory_with_max_dimension)
+    /// so [`with_max_dimension`](Self::with_max_dimension) retains its bound.
+    pub fn with_host_factory<R>(
+        factory: std::rc::Rc<dyn Fn() -> Self>,
+        construct: impl FnOnce() -> R,
+    ) -> R {
+        Self::with_host_factory_with_max_dimension(std::rc::Rc::new(move |_| factory()), construct)
+    }
+
+    /// Construct app caches under a host's asynchronous service while retaining
+    /// the requested decoded-image bound and component wake custody.
+    pub fn with_host_factory_with_max_dimension<R>(
+        factory: std::rc::Rc<dyn Fn(u32) -> Self>,
+        construct: impl FnOnce() -> R,
+    ) -> R {
+        struct Restore(Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                HOST_FACTORY.with_borrow_mut(|slot| *slot = self.0.take());
+            }
+        }
+        let _restore = Restore(HOST_FACTORY.with_borrow_mut(|slot| slot.replace(factory)));
+        construct()
+    }
+
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
+        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
+            return factory(THUMBNAIL_MAX_DIMENSION);
+        }
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
@@ -308,6 +379,10 @@ impl ImageStore {
     /// Decoded dimensions are bounded to 1..=4096; the worker, queue and
     /// total cache memory limits remain the same as for the thumbnail store.
     pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
+        let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
+        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
+            return factory(max_dimension);
+        }
         Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
     }
 
@@ -535,6 +610,24 @@ pub fn paint_image_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes() {
+        let (store, mut host) = ImageStore::host_driven();
+        store.get("retained");
+        host.take_requests();
+        assert!(host.complete("retained", None));
+        assert!(store.get("retained").is_none());
+        assert!(!host.retry("unknown"));
+        assert!(host.retry("retained"));
+        assert!(!host.retry("retained"));
+        assert!(host.complete("retained", Some(&png_bytes(9, 7, [1, 2, 3]))));
+        assert!(host.loaded("retained"));
+        let image = store.get("retained").unwrap();
+        assert_eq!((image.width, image.height), (9, 7));
+        assert_eq!(store.pending(), 0);
+        assert!(!host.retry("retained"));
+    }
 
     /// Upper bound for waiting on background decodes. `block_until_idle`
     /// returns as soon as the queue drains, so this only matters when a

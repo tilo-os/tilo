@@ -27,8 +27,8 @@ use std::thread;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
-    action_stream, channel_handle, collab_service, context_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, stream,
+    action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
+    presence_event, presence_handle, presence_payload, presence_stream, stream,
 };
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
@@ -432,6 +432,37 @@ impl channel_handle::Server for ChannelHandle {
         results.get().set_stream(client);
         Promise::ok(())
     }
+
+    /// This harness stores no committed history: answer every open with the
+    /// explicit legacy mode so the route uses the incremental op stream.
+    fn committed_document(
+        self: Rc<Self>,
+        _params: channel_handle::CommittedDocumentParams,
+        mut results: channel_handle::CommittedDocumentResults,
+    ) -> Promise<(), capnp::Error> {
+        match runtime_collab::committed_document::Reply::Legacy.encode() {
+            Ok(reply) => {
+                results.get().set_reply(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error.into())),
+        }
+    }
+
+    fn subscribe_action_catalogue(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeActionCatalogueParams,
+        mut results: channel_handle::SubscribeActionCatalogueResults,
+    ) -> Promise<(), capnp::Error> {
+        let client: action_catalogue_stream::Client =
+            capnp_rpc::new_client(EmptyActionCatalogueStream {
+                initial: RefCell::new(Some(
+                    serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                )),
+            });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
 }
 
 struct OpStream {
@@ -688,5 +719,23 @@ impl action_stream::Server for ActionStream {
             out.set_from_user_id(&value.author);
             Ok(())
         })
+    }
+}
+
+struct EmptyActionCatalogueStream {
+    initial: RefCell<Option<String>>,
+}
+
+impl action_catalogue_stream::Server for EmptyActionCatalogueStream {
+    fn read(
+        self: Rc<Self>,
+        _params: action_catalogue_stream::ReadParams,
+        mut results: action_catalogue_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let Some(initial) = self.initial.borrow_mut().take() else {
+            return Promise::from_future(std::future::pending());
+        };
+        results.get().set_catalogue_json(&initial);
+        Promise::ok(())
     }
 }

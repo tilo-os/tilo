@@ -19,6 +19,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
+# Wall-clock time that also works in the browser (wasm32) build.
+web-time = "1"
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource-macros = { path = "../tilo-resource-macros" }
 
