@@ -2710,7 +2710,12 @@ RUN case "${TILO_GENERATION}" in \
 # Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
 # that backend the same way; the forbidden-package gate below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
-RUN find /usr/lib /usr/lib64 \
+# Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
+# does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
+# warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
+# recreated on first boot rather than baked into the image.
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+    find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
          -o -name 'libevent_openssl.so*' \
@@ -2739,6 +2744,7 @@ RUN find /usr/lib /usr/lib64 \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && python3 /run/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 
 # ---------------------------------------------------------------------------
