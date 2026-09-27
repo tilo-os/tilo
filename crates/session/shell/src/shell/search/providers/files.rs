@@ -5,7 +5,7 @@
 //! contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
 //! background. Neither starts at session construction — the first palette
 //! query (or an explicit [`FilesProvider::rescan`]) opens the index and
-//! kicks the walk, so OverlayHost boot does not pay for file search. Enter
+//! kicks the walk, so `OverlayHost` boot does not pay for file search. Enter
 //! routes a hit through [`crate::shell::doc_open`], which resolves the
 //! extension to the installed package that opens it.
 
