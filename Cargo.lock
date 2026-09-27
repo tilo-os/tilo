@@ -8991,6 +8991,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-test-env",
  "tracing",
  "url",
  "uuid",

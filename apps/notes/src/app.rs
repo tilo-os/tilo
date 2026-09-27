@@ -6018,23 +6018,11 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Background file I/O can stall for many seconds on a loaded disk; this
-    /// bound only catches work that never finishes.
-    const IO_HANG_BOUND: Duration = Duration::from_secs(60);
-
     fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
+        tilo_test_env::wait_until("Markdown background I/O", || {
             app.drain_markdown_transfer(doc);
-            if !app.markdown_job.is_pending() && app.markdown_transfer.is_none() {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Markdown background I/O did not finish"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+            !app.markdown_job.is_pending() && app.markdown_transfer.is_none()
+        });
     }
 
     fn admit_pending_import(app: &mut NotesApp, state: &mut ui::State) {
@@ -6415,7 +6403,7 @@ mod tests {
             .unwrap();
             let store = workspace_image_store(tmp.path());
             assert!(store.get("image.png").is_none());
-            store.block_until_idle(IO_HANG_BOUND);
+            store.block_until_idle(tilo_test_env::hang_bound());
             let image = store.get("image.png").expect("workspace image must decode");
             assert_eq!(
                 (image.width, image.height),
@@ -6423,7 +6411,7 @@ mod tests {
                 "document images retain readable source detail"
             );
             assert!(store.get("../../etc/passwd").is_none());
-            store.block_until_idle(IO_HANG_BOUND);
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(store.get("../../etc/passwd").is_none());
         }
 
