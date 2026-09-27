@@ -467,8 +467,8 @@ async fn bootstrap_authorized_collaborator(
     hash: Hash,
     expected: &[u8],
 ) -> Hydrator {
-    let document = tokio::time::timeout(
-        Duration::from_secs(12),
+    let document = tilo_test_env::within(
+        "the authenticated collaborator bootstrap",
         fetch_remote_doc(
             endpoint,
             ticket.node.clone(),
@@ -478,7 +478,6 @@ async fn bootstrap_authorized_collaborator(
         ),
     )
     .await
-    .expect("authenticated collaborator bootstrap timed out")
     .expect("signed collaborator bootstraps through the filesystem protocol");
     assert!(
         Namespace::from_bytes("collab", &document)
@@ -489,12 +488,11 @@ async fn bootstrap_authorized_collaborator(
     let hydrator = Hydrator::new(endpoint.clone(), Arc::new(ContentStore::memory()));
     hydrator.add_peer(ticket.node.clone());
     assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(12),
+        tilo_test_env::within(
+            "the authenticated collaborator blob request",
             hydrator.read(hash, 0, expected.len() as u64)
         )
         .await
-        .expect("authenticated collaborator blob request timed out")
         .unwrap()
         .as_slice(),
         expected,
@@ -511,28 +509,26 @@ async fn assert_revoked_collaborator_is_denied(
     bytes: &[u8],
 ) {
     assert!(
-        tokio::time::timeout(
-            Duration::from_secs(12),
+        tilo_test_env::within(
+            "the revoked collaborator blob request",
             hydrator.read(hash, 0, bytes.len() as u64)
         )
         .await
-        .expect("revoked collaborator blob request timed out")
         .is_err(),
         "an already-authenticated collaborator is denied by the revised authority"
     );
     assert!(
-        tokio::time::timeout(
-            Duration::from_secs(12),
+        tilo_test_env::within(
+            "the revoked collaborator namespace request",
             fetch_remote_doc(
                 endpoint,
                 ticket.node.clone(),
                 identity,
                 ticket.workspace_id(),
                 &None
-            ),
+            )
         )
         .await
-        .expect("revoked collaborator namespace request timed out")
         .is_err(),
         "the same authenticated collaborator loses its next namespace request too"
     );
@@ -547,12 +543,11 @@ async fn assert_owner_retains_content_access(
     let hydrator = Hydrator::new(endpoint.clone(), Arc::new(ContentStore::memory()));
     hydrator.add_peer(remote);
     assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(12),
+        tilo_test_env::within(
+            "the owner blob request",
             hydrator.read(hash, 0, expected.len() as u64)
         )
         .await
-        .expect("owner blob request timed out")
         .unwrap()
         .as_slice(),
         expected,
@@ -2499,7 +2494,7 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
             .await
             .unwrap(),
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the backend GC absence observation", async {
         loop {
             let observation = owner_store
                 .observe_eviction_request(
@@ -2515,8 +2510,7 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("backend GC did not emit an exact absence observation");
+    .await;
     assert!(owner_store.local(owner_manifest).await.is_none());
 
     let owner_hydrator = Hydrator::new(owner_ep.clone(), Arc::clone(&owner_store));

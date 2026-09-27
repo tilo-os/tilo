@@ -893,9 +893,8 @@ mod tests {
             "backfill waits for the reader"
         );
         drop(reader);
-        tokio::time::timeout(Duration::from_secs(2), waiting)
+        tilo_test_env::within("the backfill after the reader drops", waiting)
             .await
-            .unwrap()
             .unwrap();
     }
 }
