@@ -15,6 +15,12 @@ scenario still need to call them as one resumable workflow.
   C: pagefile, an exact GPT readback, and sufficient C: headroom. It shrinks
   only the reviewed C: partition and creates exactly a 2 GiB ESP, 1 GiB boot,
   and 32 or 45 GiB root. A resumed run accepts only exact intermediate maps.
+  When `Get-PartitionSupportedSize` rejects the reviewed target, `execute`
+  queries DiskPart and requests the same whole-MiB shrink as both `desired`
+  and `minimum`. It rechecks disk identity, GPT, BitLocker, C: identity and
+  free space before that command, then requires the exact GPT map and NTFS
+  size change before creating any Tilo partition. A failed or partial shrink
+  stops the workflow for inspection.
 - `prepare-windows-direct-source.py template` creates a **sparse VM file**
   with only synthetic Windows GPT entries and the exact free target extent.
   Its synthetic Windows partition contents are empty and must never be
