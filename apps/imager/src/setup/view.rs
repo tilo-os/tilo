@@ -3809,7 +3809,7 @@ mod tests {
                 app.desktop_flow.state(),
                 DesktopFlowState::Ready(_)
             ));
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + crate::HANG_BOUND;
             loop {
                 app.poll_background();
                 if app
@@ -3838,7 +3838,7 @@ mod tests {
                 .unwrap();
 
             app.apply_command(SetupCommand::ReleaseInternalDownload);
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + crate::HANG_BOUND;
             loop {
                 app.poll_background();
                 if app
@@ -3939,7 +3939,7 @@ mod tests {
             app.apply_command(SetupCommand::Next);
 
             app.apply_command(SetupCommand::StartInternalDownload);
-            blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            blocked_rx.recv_timeout(crate::HANG_BOUND).unwrap();
             let requests = server.requests().len();
             app.apply_command(SetupCommand::StartInternalDownload);
             let duplicate_status = app.status.clone();
@@ -3953,7 +3953,7 @@ mod tests {
                 "A Full Tilo download cannot start in its current state."
             );
             assert_eq!(requests_after, requests);
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + crate::HANG_BOUND;
             loop {
                 app.poll_background();
                 if app
@@ -4673,7 +4673,7 @@ mod tests {
                 .unwrap();
             invoke_encoded_setup(&mut app, &next).unwrap();
 
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
             let observed = loop {
                 Widget::update(&mut app, &mut state, &automerge::ROOT);
                 let resource = Widget::resources(&app, &state).pop().unwrap();
@@ -5535,7 +5535,7 @@ mod tests {
     }
 
     fn wait_for_app(app: &mut SetupApp, what: &str, done: impl Fn(&SetupApp) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + crate::HANG_BOUND;
         loop {
             app.poll_background();
             if done(app) {
