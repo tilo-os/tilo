@@ -76,6 +76,11 @@ window-switcher-app-description = This app's windows in this workspace, most rec
 window-switcher-untitled = Untitled window
 window-switcher-caption-paged = { $title } ({ $position } of { $count })
 
+# The overview's row of the current workspace's windows.
+overview-windows-title = Windows in this workspace
+overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click to close it, or drag it onto another workspace to move it there.
+overview-window-move-failed = Can't move this window
+
 # Fixed shell chords, as the shortcut guide and the keyboard map name them
 shortcut-screenshot = Screenshot
 shortcut-switch-windows = Switch windows
