@@ -89,6 +89,12 @@ impl InputMethodService {
         self.kind
     }
 
+    /// The running service's process group, if it has one.
+    pub fn process_group(&self) -> Option<libc::pid_t> {
+        let group = self.process_group.load(Ordering::Acquire);
+        (group > 0).then_some(group)
+    }
+
     /// Shared with the socket callback. A service that does not own the seat
     /// rejects new connections even though the listening source stays
     /// registered.
@@ -188,14 +194,14 @@ impl InputMethodService {
                 })
             }
             InputMethodOwner::Composer(engine) => {
-                let config_home = crate::shell::launcher::runtime_dir()
-                    .join("tilo-session")
-                    .join("input-method");
+                let runtime = crate::shell::launcher::runtime_dir();
+                let config_home = runtime.join("tilo-session").join("input-method");
                 let launch = super::input_method::composer_launch(
                     engine,
                     &request.layout,
                     &self.socket,
                     &config_home,
+                    &super::xwayland_composer::composer_authority_path(&runtime),
                 );
                 for (path, body) in &launch.files {
                     if let Some(parent) = path.parent() {
@@ -542,6 +548,14 @@ impl InputMethodServices {
         for service in &mut self.services {
             service.tick();
         }
+        // X11 displays connect the composer and discount its connection by
+        // this group.
+        super::xwayland_composer::set_composer_process_group(
+            self.services
+                .iter()
+                .find(|service| service.kind() == TrustedInputMethod::Composer)
+                .and_then(InputMethodService::process_group),
+        );
     }
 
     /// The private display paths, for unlinking at teardown.
