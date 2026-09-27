@@ -19187,9 +19187,6 @@ dependencies = [
  "zeroize",
  "zerotrie",
  "zerovec",
- "zstd",
- "zstd-safe",
- "zstd-sys",
 ]
 
 [[package]]
