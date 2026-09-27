@@ -5843,23 +5843,29 @@ mod private_transport_tests {
     // more than 4 MiB when it runs alone). Run it on its own thread with an
     // explicit stack instead of depending on RUST_MIN_STACK.
     #[test]
-    fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+    fn route_prefix_beyond_the_frame_cap_uses_one_all_original_selection_then_converges() {
         std::thread::Builder::new()
-            .name("thirty-four-route-prefix".into())
+            .name("route-prefix-beyond-cap".into())
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .unwrap()
-                    .block_on(Box::pin(thirty_four_route_prefix_scenario()));
+                    .block_on(Box::pin(route_prefix_beyond_cap_scenario()));
             })
             .unwrap()
             .join()
             .unwrap();
     }
 
-    async fn thirty_four_route_prefix_scenario() {
+    /// A checkpoint prefix of `PREFIX_ROUTES` record frames, followed by the
+    /// two records that did not fit. Production caps a prefix at
+    /// `RETENTION_PREFIX_FRAME_CAP`; selection treats every prefix size
+    /// alike, so a small cap exercises the same cut at a fraction of the
+    /// signing and retention work.
+    async fn route_prefix_beyond_cap_scenario() {
+        const PREFIX_ROUTES: usize = 4;
         use crate::store::{
             bounded::{Step, WorkLimit},
             shell_selection::tests::replay_frames,
@@ -5898,7 +5904,7 @@ mod private_transport_tests {
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root_key.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
-            device_label: "34 route production prefix".into(),
+            device_label: "route prefix beyond cap".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
@@ -5908,12 +5914,12 @@ mod private_transport_tests {
         let (observer, _observer_key) = certified_device(
             &root_key,
             root_key.verifying_key().to_bytes(),
-            "34 route observer",
+            "route prefix observer",
         );
         let (fenced_observer, _fenced_observer_key) = certified_device(
             &root_key,
             root_key.verifying_key().to_bytes(),
-            "34 route fenced observer",
+            "route prefix fenced observer",
         );
         let now = web_time::SystemTime::UNIX_EPOCH
             .checked_add(web_time::Duration::from_secs(4000))
@@ -5927,7 +5933,7 @@ mod private_transport_tests {
             now,
         )
         .unwrap();
-        let documents = (0..34)
+        let documents = (0..PREFIX_ROUTES + 2)
             .map(|index| {
                 let mut document = automerge::AutoCommit::new();
                 document
@@ -5980,9 +5986,9 @@ mod private_transport_tests {
             .iter()
             .map(|message| frame(&authority, message))
             .collect::<Vec<_>>();
-        assert_eq!(baseline.len(), 35);
-        assert_eq!(next.len(), 35);
-        assert_eq!(third.len(), 35);
+        assert_eq!(baseline.len(), PREFIX_ROUTES + 3);
+        assert_eq!(next.len(), PREFIX_ROUTES + 3);
+        assert_eq!(third.len(), PREFIX_ROUTES + 3);
 
         let id = crate::room_workspace_id(room).unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -6136,19 +6142,18 @@ mod private_transport_tests {
             &workspace,
             next.iter()
                 .skip(1)
-                .take(32)
+                .take(PREFIX_ROUTES)
                 .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
                 .collect(),
             source.clone(),
             crate::auth::PeerRole::Device,
             Arc::new(crate::metrics::Metrics::default()),
-            vec![None; 32],
+            vec![None; PREFIX_ROUTES],
         )
         .await
         .unwrap();
-        // A liveness guard, not a latency budget: this 32-record all-Original
-        // selection alone takes about 2 s in an unoptimized build, so a 2 s
-        // bound failed on timing whenever the machine was busy.
+        // A liveness guard, not a latency budget: a busy machine must not
+        // fail this on timing.
         tokio::time::timeout(std::time::Duration::from_secs(30), reached)
             .await
             .unwrap_or_else(|_| {
@@ -6254,13 +6259,13 @@ mod private_transport_tests {
             &workspace,
             next.iter()
                 .skip(1)
-                .take(32)
+                .take(PREFIX_ROUTES)
                 .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
                 .collect(),
             source.clone(),
             crate::auth::PeerRole::Device,
             Arc::new(crate::metrics::Metrics::default()),
-            vec![None; 32],
+            vec![None; PREFIX_ROUTES],
         )
         .await
         .unwrap();
@@ -6280,7 +6285,7 @@ mod private_transport_tests {
             ],
             "the failed prefix or reconnect did not take the guarded all-Original path"
         );
-        for (index, expected) in next.iter().skip(1).take(32).enumerate() {
+        for (index, expected) in next.iter().skip(1).take(PREFIX_ROUTES).enumerate() {
             let observed =
                 tokio::time::timeout(std::time::Duration::from_secs(2), reopened_state_rx.recv())
                     .await
@@ -6303,7 +6308,7 @@ mod private_transport_tests {
                 .map(|frame| crate::transport::encode(&frame).unwrap())
                 .collect::<Vec<_>>()
         };
-        for raw in baseline.iter().chain(next.iter().take(33)) {
+        for raw in baseline.iter().chain(next.iter().take(PREFIX_ROUTES + 1)) {
             assert!(
                 retained_after_prefix.contains(raw),
                 "selected CURRENT omitted old basis or an exact Original prefix frame"
@@ -6313,7 +6318,7 @@ mod private_transport_tests {
         enqueue_checkpoint_prefix(
             &workspace,
             next.iter()
-                .skip(33)
+                .skip(PREFIX_ROUTES + 1)
                 .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
                 .collect(),
             source.clone(),
@@ -6351,10 +6356,13 @@ mod private_transport_tests {
         let chunks = [
             (third.iter().take(1).collect::<Vec<_>>(), vec![None]),
             (
-                third.iter().skip(1).take(32).collect::<Vec<_>>(),
-                vec![None; 32],
+                third.iter().skip(1).take(PREFIX_ROUTES).collect::<Vec<_>>(),
+                vec![None; PREFIX_ROUTES],
             ),
-            (third.iter().skip(33).collect::<Vec<_>>(), vec![None; 2]),
+            (
+                third.iter().skip(PREFIX_ROUTES + 1).collect::<Vec<_>>(),
+                vec![None; 2],
+            ),
         ];
         for (chunk, budgets) in chunks {
             enqueue_checkpoint_prefix(
