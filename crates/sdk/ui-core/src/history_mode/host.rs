@@ -1357,6 +1357,15 @@ impl HistoryHost {
                 .is_some_and(|scope| {
                     scope.content_schema.is_some()
                         || matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. })
+                        || (matches!(
+                            scope.presentation,
+                            HistoryPresentation::Domain { .. }
+                                | HistoryPresentation::DomainWithAssets { .. }
+                        ) && matches!(
+                            self.source(),
+                            HistorySourceRegistration::HostDocument { .. }
+                                | HistorySourceRegistration::OwnedDocument { .. }
+                        ))
                 })
             {
                 compare = compare.push(Box::new(self.command_button(

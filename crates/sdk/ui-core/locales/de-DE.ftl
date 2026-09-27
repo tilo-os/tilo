@@ -13,6 +13,7 @@ standalone-history-restore-stale = Das Dokument hat sich während der Prüfung g
 standalone-history-restore-pending = Schließe die aktuelle Bearbeitung ab und stelle die Version dann wieder her.
 standalone-history-restore-denied = Nur Bearbeitende können eine Version wiederherstellen.
 standalone-history-restore-unavailable = Diese Version kann hier nicht wiederhergestellt werden.
+standalone-history-preview-resource = Dokument
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
    *[other] { $path } und { $more } weitere bearbeitet
@@ -21,6 +22,18 @@ history-removed-field = { $more ->
     [0] { $path } entfernt
    *[other] { $path } und { $more } weitere entfernt
 }
+history-review-title = { $resource } wiederherstellen
+history-review-confirm = Version wiederherstellen
+history-review-refresh = Prüfung aktualisieren
+history-review-cancel = Abbrechen
+history-review-body = Version: { $version }
+
+    Die Wiederherstellung bringt das Dokument als eine neue Änderung genau auf diese Version zurück. Spätere Änderungen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
+history-review-selected-version = Ausgewählte Version
+history-review-not-content = Diese Aktivität enthält keinen wiederherstellbaren Dokumentinhalt.
+history-review-no-clock = Die aktuelle Uhrzeit ist nicht verfügbar. Die Wiederherstellung kann den Ablauf von Berechtigungen nicht prüfen.
+history-restore-unsupported = Diese Version kann mit dem Inhaltsformat dieser App nicht sicher wiederhergestellt werden.
+history-preview-description = { $resource } in dieser Version
 
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?

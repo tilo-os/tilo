@@ -15,8 +15,8 @@ use vello::{
 };
 use winit::event::{MouseScrollDelta, WindowEvent};
 
-pub(super) struct PreviewCanvas {
-    pub(super) preview: Option<Box<dyn HistoryPreview>>,
+pub(crate) struct PreviewCanvas {
+    pub(crate) preview: Option<Box<dyn HistoryPreview>>,
     rect: Rect,
     cursor: Point,
     error: Option<String>,
@@ -24,7 +24,7 @@ pub(super) struct PreviewCanvas {
     dirty: bool,
 }
 impl PreviewCanvas {
-    pub(super) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
+    pub(crate) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
         self.status = None;
         match result {
             Ok(preview) => {
@@ -38,13 +38,19 @@ impl PreviewCanvas {
         }
         self.dirty = true;
     }
-    pub(super) fn set_status(&mut self, status: Option<String>) {
+    pub(crate) fn clear(&mut self) {
+        self.preview = None;
+        self.error = None;
+        self.status = None;
+        self.dirty = true;
+    }
+    pub(crate) fn set_status(&mut self, status: Option<String>) {
         if self.status != status {
             self.status = status;
             self.dirty = true;
         }
     }
-    pub(super) fn navigate(&mut self, command: PreviewNavigation) -> bool {
+    pub(crate) fn navigate(&mut self, command: PreviewNavigation) -> bool {
         let handled = self
             .preview
             .as_mut()
@@ -52,7 +58,7 @@ impl PreviewCanvas {
         self.dirty |= handled;
         handled
     }
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             preview: None,
             rect: Rect::ZERO,
