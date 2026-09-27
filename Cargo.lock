@@ -13089,6 +13089,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-clock",
  "tilo-content",
+ "tilo-copy-lint",
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
@@ -14792,6 +14793,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-copy-lint"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-crypto"
 version = "0.1.0"
 dependencies = [
@@ -14877,6 +14885,7 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-resource",
  "tilo-ui",

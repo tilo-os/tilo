@@ -136,6 +136,7 @@ members = [
     # Dev
     "crates/dev/collab-link",
     "crates/dev/collab-probe",
+    "crates/dev/copy-lint",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
