@@ -1460,7 +1460,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
         reason = "certified inherited identities are supplied by Unix launch services"
     )
 )]
-trait SdkCertifiedIdentity: Send {
+trait SdkCertifiedIdentity: Send + Sync {
     fn channel_keys(
         &self,
         workspace_id: &str,
@@ -1582,7 +1582,8 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
     )
 )]
 enum SdkDocumentSigner {
-    Certified(Box<dyn SdkCertifiedIdentity>),
+    /// Shared so the identity service can be asked off the shovel thread.
+    Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
     /// still rejects the uncertified join before any op reaches policy.
@@ -1659,7 +1660,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     Ok(SdkJoinIdentity {
         presentation,
         participant_kind: "person",
-        signer: SdkDocumentSigner::Certified(Box::new(identity)),
+        signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
     })
 }
 
@@ -2467,6 +2468,10 @@ async fn drive_shovel(
     );
     let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
     key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A certified identity service is asked on a blocking thread. The
+    // periodic round runs alongside this loop, which keeps sending while the
+    // routes keep receiving; at most one round is in flight.
+    let mut key_fetch: Option<KeyFetch> = None;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -2478,8 +2483,19 @@ async fn drive_shovel(
     loop {
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
-            _ = key_refresh.tick(), if asks_channel_keys => {
-                refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+            _ = key_refresh.tick(), if asks_channel_keys && key_fetch.is_none() => {
+                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx).await;
+                continue;
+            }
+            fetched = async {
+                match key_fetch.as_mut() {
+                    Some(fetch) => fetch.await,
+                    None => std::future::pending().await,
+                }
+            }, if key_fetch.is_some() =>
+            {
+                key_fetch = None;
+                apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await;
                 continue;
             }
         };
@@ -2670,8 +2686,14 @@ async fn drive_shovel(
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
-            // before its first edit rather than at the next tick.
-            refresh_all_route_keys(&routes, &mut signer, &inbound_tx).await;
+            // before its first edit rather than at the next tick. Only
+            // sending waits for that; the routes keep receiving.
+            if let Some(fetch) = key_fetch.take() {
+                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+            }
+            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx).await {
+                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+            }
         }
     }
 }
@@ -3623,20 +3645,27 @@ enum FrameSend {
     reason = "the host identity transport is retained only on the shovel LocalSet"
 )]
 async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
-    let Ok(known) = route.encryption.lock().map(|keys| {
-        keys.asks_identity_service()
-            .then(|| (keys.generation(), keys.state()))
-    }) else {
+    let Ok(known) = route
+        .encryption
+        .lock()
+        .map(|keys| keys.asks_identity_service().then(|| keys.generation()))
+    else {
         return false;
     };
-    let Some((generation, state)) = known else {
+    let Some(generation) = known else {
         return false;
     };
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let reply = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            identity.channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+            let query = KeyQuery::of(route, generation);
+            let mut fetched = certified_channel_keys(std::sync::Arc::clone(identity), vec![query])
+                .await
+                .into_iter();
+            return fetched
+                .next()
+                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation));
         }
         LocalSdkDocumentSigner::Host(identity) => {
             identity
@@ -3645,22 +3674,160 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
         }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
     };
-    let reply = match reply {
-        Ok(reply) => reply,
-        Err(error) => {
-            tracing::debug!(?error, "collab: identity service refused channel keys");
-            runtime_identity::wire::ChannelKeysReply {
-                access: runtime_identity::wire::ChannelAccess::Unavailable,
-                generation,
-                keys: None,
-            }
+    update_route_keys(route, answered_keys(reply, generation), generation)
+}
+
+/// The keys the identity service answered, or, when it could not answer,
+/// that they are unavailable.
+fn answered_keys(
+    reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
+    generation: u64,
+) -> runtime_identity::wire::ChannelKeysReply {
+    reply.unwrap_or_else(|error| {
+        tracing::debug!(?error, "collab: identity service refused channel keys");
+        runtime_identity::wire::ChannelKeysReply {
+            access: runtime_identity::wire::ChannelAccess::Unavailable,
+            generation,
+            keys: None,
         }
-    };
+    })
+}
+
+/// Take the identity service's `reply` for `route`, asked at `generation`.
+/// Returns whether the route's state or keys changed.
+fn update_route_keys(
+    route: &SdkRoute,
+    reply: runtime_identity::wire::ChannelKeysReply,
+    generation: u64,
+) -> bool {
     let Ok(mut keys) = route.encryption.lock() else {
         return false;
     };
+    let state = keys.state();
     keys.update(reply.access, reply.generation, reply.keys.as_deref());
     keys.generation() != generation || keys.state() != state
+}
+
+/// One route's question to the identity service, taken off the route so it
+/// can be asked on another thread.
+struct KeyQuery {
+    route: String,
+    workspace_id: String,
+    app_id: String,
+    record_id: String,
+    generation: u64,
+}
+
+impl KeyQuery {
+    fn of(route: &SdkRoute, generation: u64) -> Self {
+        Self {
+            route: route.spec.channel_id(),
+            workspace_id: route.spec.cluster_id.to_string(),
+            app_id: route.spec.app_id.clone(),
+            record_id: route.spec.record.clone().unwrap_or_default(),
+            generation,
+        }
+    }
+}
+
+/// The identity service's answers to one round of key questions: by route,
+/// with the generation each was asked at.
+type FetchedKeys = Vec<(String, u64, runtime_identity::wire::ChannelKeysReply)>;
+
+/// A round of key questions in flight on a blocking thread.
+type KeyFetch = std::pin::Pin<Box<dyn std::future::Future<Output = FetchedKeys>>>;
+
+/// Ask a certified identity service `queries` on a blocking thread: its
+/// socket answers as slowly as the service does, and the shovel thread
+/// carries every route's ops meanwhile.
+async fn certified_channel_keys(
+    identity: std::sync::Arc<dyn SdkCertifiedIdentity>,
+    queries: Vec<KeyQuery>,
+) -> FetchedKeys {
+    tokio::task::spawn_blocking(move || {
+        queries
+            .into_iter()
+            .map(|query| {
+                let reply = identity.channel_keys(
+                    &query.workspace_id,
+                    &query.app_id,
+                    &query.record_id,
+                    query.generation,
+                );
+                (
+                    query.route,
+                    query.generation,
+                    answered_keys(reply, query.generation),
+                )
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Start a round of key questions for every route that asks the identity
+/// service. A certified service is asked off this thread and the round is
+/// returned to be awaited alongside the loop; a host's asynchronous service
+/// is asked here, and its answers are taken at once.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn refresh_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) -> Option<KeyFetch> {
+    let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
+        refresh_all_route_keys(routes, signer, inbound_tx).await;
+        return None;
+    };
+    let queries: Vec<KeyQuery> = routes
+        .values()
+        .filter_map(|route| {
+            let keys = route.encryption.lock().ok()?;
+            keys.asks_identity_service()
+                .then(|| KeyQuery::of(route, keys.generation()))
+        })
+        .collect();
+    if queries.is_empty() {
+        return None;
+    }
+    Some(Box::pin(certified_channel_keys(
+        std::sync::Arc::clone(identity),
+        queries,
+    )))
+}
+
+/// Take a finished round's answers, then deliver what waited on them.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn apply_fetched_keys(
+    routes: &std::collections::HashMap<String, SdkRoute>,
+    fetched: FetchedKeys,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) {
+    for (key, asked, reply) in fetched {
+        let Some(route) = routes.get(&key) else {
+            continue;
+        };
+        // A resend refreshed the route while the round was out: its answer
+        // is newer than this one.
+        if route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| keys.generation() == asked)
+        {
+            update_route_keys(route, reply, asked);
+        }
+        if !deliver_waiting(route, signer, inbound_tx).await {
+            return;
+        }
+    }
 }
 
 /// Bring every route's keys up to date, report access changes to the app,
@@ -3676,64 +3843,82 @@ async fn refresh_all_route_keys(
 ) {
     for route in routes.values() {
         refresh_route_keys(route, signer).await;
-        let (state, outbound, inbound) = {
-            let Ok(mut keys) = route.encryption.lock() else {
-                continue;
-            };
-            (
-                keys.take_state_change(),
-                keys.take_held_outbound(),
-                keys.take_held_inbound(),
-            )
-        };
-        if let Some(state) = state
-            && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
-                route: route.spec.clone(),
-                state,
-            })
-        {
+        if !deliver_waiting(route, signer, inbound_tx).await {
             return;
         }
-        for frame in outbound {
-            let outcome = send_document_frame(
-                route,
-                signer,
-                frame.cleartext.clone(),
-                frame.op_class,
-                &frame.covers,
-                &inbound_tx.state,
-            )
-            .await;
-            match outcome {
-                FrameSend::Sent(entry) => {
-                    // A whole mutation that waited is logged once sent; a
-                    // segment is not, since its transfer spans frames.
-                    if let Ok(collab_types::DocumentFrame::Whole(mutation)) =
-                        collab_types::DocumentFrame::decode(&frame.cleartext)
-                        && let Ok(mut log) = route.retained.lock()
-                    {
-                        log.record(&[entry], mutation_bytes(&mutation));
-                    }
-                }
-                FrameSend::Held => {}
-                FrameSend::Failed | FrameSend::Refused => {
-                    tracing::warn!("collab: an edit that waited for channel access was not sent");
+    }
+}
+
+/// Report `route`'s access change to the app, then send the edits and
+/// deliver the ciphertext that waited on its keys. `false` once the app
+/// side is gone.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn deliver_waiting(
+    route: &SdkRoute,
+    signer: &mut LocalSdkDocumentSigner,
+    inbound_tx: &InboundBridge,
+) -> bool {
+    let (state, outbound, inbound) = {
+        let Ok(mut keys) = route.encryption.lock() else {
+            return true;
+        };
+        (
+            keys.take_state_change(),
+            keys.take_held_outbound(),
+            keys.take_held_inbound(),
+        )
+    };
+    if let Some(state) = state
+        && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
+            route: route.spec.clone(),
+            state,
+        })
+    {
+        return false;
+    }
+    for frame in outbound {
+        let outcome = send_document_frame(
+            route,
+            signer,
+            frame.cleartext.clone(),
+            frame.op_class,
+            &frame.covers,
+            &inbound_tx.state,
+        )
+        .await;
+        match outcome {
+            FrameSend::Sent(entry) => {
+                // A whole mutation that waited is logged once sent; a
+                // segment is not, since its transfer spans frames.
+                if let Ok(collab_types::DocumentFrame::Whole(mutation)) =
+                    collab_types::DocumentFrame::decode(&frame.cleartext)
+                    && let Ok(mut log) = route.retained.lock()
+                {
+                    log.record(&[entry], mutation_bytes(&mutation));
                 }
             }
-        }
-        for (envelope, from_user_id) in inbound {
-            if let Some(complete) = inbound_envelope(
-                envelope,
-                from_user_id,
-                &route.encryption,
-                &inbound_tx.reassembly.live,
-                &route.retained,
-            ) && !inbound_tx.send_document(complete).await
-            {
-                return;
+            FrameSend::Held => {}
+            FrameSend::Failed | FrameSend::Refused => {
+                tracing::warn!("collab: an edit that waited for channel access was not sent");
             }
         }
     }
+    for (envelope, from_user_id) in inbound {
+        if let Some(complete) = inbound_envelope(
+            envelope,
+            from_user_id,
+            &route.encryption,
+            &inbound_tx.reassembly.live,
+            &route.retained,
+        ) && !inbound_tx.send_document(complete).await
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Shovel-thread Cap'n Proto endpoint for an application's pull directory.
@@ -4602,6 +4787,8 @@ mod tests {
 
     #[derive(Default)]
     struct Captures {
+        /// How long after it is asked for the op stream hands out each op.
+        op_stream_delay: Option<Duration>,
         joined: Vec<(String, Vec<u8>)>,
         signed_ops: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
@@ -4852,6 +5039,7 @@ mod tests {
 
     struct FakeOpStream {
         backlog: OpBacklog,
+        captures: SharedCaptures,
     }
 
     impl stream::Server for FakeOpStream {
@@ -4865,10 +5053,16 @@ mod tests {
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
             let (op, from) = backlog.remove(0);
-            let mut r = results.get();
-            r.set_op(&op);
-            r.set_from_user_id(&from);
-            Promise::ok(())
+            let delay = self.captures.lock().unwrap().op_stream_delay;
+            Promise::from_future(async move {
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
+                let mut r = results.get();
+                r.set_op(&op);
+                r.set_from_user_id(&from);
+                Ok(())
+            })
         }
     }
 
@@ -4984,6 +5178,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let client: stream::Client = capnp_rpc::new_client(FakeOpStream {
                 backlog: self.op_backlog.clone(),
+                captures: self.captures.clone(),
             });
             results.get().set_stream(client);
             Promise::ok(())
@@ -5723,6 +5918,152 @@ mod tests {
 
         (client_fd, captures, handle)
     }
+
+    /// A certified identity service that answers its first question at
+    /// once, with `keys`, and every later one only after `slow`.
+    #[cfg(unix)]
+    struct SlowIdentity {
+        keys: Vec<u8>,
+        asked: std::sync::atomic::AtomicUsize,
+        slow: Duration,
+    }
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for SlowIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            let first = self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0;
+            if !first {
+                thread::sleep(self.slow);
+            }
+            Ok(runtime_identity::wire::ChannelKeysReply {
+                access: runtime_identity::wire::ChannelAccess::Ready,
+                generation: 1,
+                keys: first.then(|| self.keys.clone()),
+            })
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([9; 64])
+        }
+    }
+
+    /// An endpoint keeps receiving while its identity service is slow to
+    /// answer a key refresh: an op that arrives during the refresh is
+    /// delivered at once, not once the service has answered.
+    #[test]
+    #[cfg(unix)]
+    fn a_slow_identity_service_never_holds_up_incoming_ops() {
+        const SLOW: Duration = Duration::from_secs(6);
+        // The op arrives after the first refresh tick, while it waits.
+        const ARRIVES: Duration = Duration::from_millis(1500);
+        let app_id = "so.tilo.test";
+        let cluster = Uuid::new_v4();
+        let workspace = cluster.to_string();
+        let channel = collab_types::document_channel_id(app_id, &workspace, "");
+        let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
+        let group = channel_crypto::ChannelGroup::create(
+            channel,
+            channel_crypto::MemberKey::generate("device").unwrap(),
+        )
+        .unwrap();
+        let frame = collab_types::DocumentMutation::Incremental(b"remote change".to_vec())
+            .encode()
+            .unwrap();
+        let (metadata, ciphertext) = group
+            .seal_content(artifact, document_frame_retention(&frame), &frame)
+            .unwrap();
+        let op = SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            crate::time::SystemTime::UNIX_EPOCH,
+            1,
+            metadata,
+        );
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                op_stream_delay: Some(ARRIVES),
+                ..Captures::default()
+            })),
+            op_backlog: vec![(postcard::to_stdvec(&op).unwrap(), "peer".to_owned())],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
+                    keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
+                    asked: std::sync::atomic::AtomicUsize::new(0),
+                    slow: SLOW,
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = crate::collaboration::Backend::Transport(Box::new(sdk));
+        let joined = crate::time::now();
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: app_id.into(),
+            cluster_id: cluster,
+            record: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        let events = poll_until(&mut manager, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, CollabEvent::Document { .. }))
+        });
+        let delivered = joined.elapsed();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CollabEvent::Document {
+                    decrypted_payload: Some(payload),
+                    ..
+                } if *payload == frame
+            )),
+            "the op arrived opened: {events:?}"
+        );
+        assert!(
+            delivered < ARRIVES + SLOW / 2,
+            "the op waited {delivered:?} on a key refresh"
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
 
     #[cfg(unix)]
     pub(super) fn capturing_manager() -> (CollaborationManager, Box<dyn Fn() -> Vec<SignedOp>>) {
