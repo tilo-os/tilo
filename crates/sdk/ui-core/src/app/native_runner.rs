@@ -42,6 +42,8 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    #[cfg(target_os = "android")]
+    text_input: super::android_text_input::TextInputSession,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
     last_primary_frame_presented: u64,
@@ -807,9 +809,44 @@ impl AppHandler {
         true
     }
 
+    /// A touch on the field that has the keyboard, which Android answers by
+    /// settling the composition and bringing a dismissed keyboard back.
+    #[cfg(target_os = "android")]
+    fn touches_focused_field(&self, window_id: WindowId, location: PhysicalPosition<f64>) -> bool {
+        let Some(window) = self
+            .window
+            .as_ref()
+            .filter(|window| window.id() == window_id)
+        else {
+            return false;
+        };
+        let Some(field) = self.app.focused_node else {
+            return false;
+        };
+        let scale = window.scale_factor();
+        let point = Point::new(location.x / scale, location.y / scale);
+        self.app
+            .inspect_node(field, |widget| widget.get_rect().contains(point))
+            .unwrap_or(false)
+    }
+
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
         let next = self.app.ime_window_state();
+        #[cfg(target_os = "android")]
+        if super::android_text_input::bridge::installed() {
+            let field = next.and(self.app.focused_node);
+            let restart = self.text_input.refocus(field);
+            if next != self.ime_state || restart {
+                super::android_text_input::bridge::update(
+                    next.as_ref(),
+                    window.scale_factor(),
+                    restart,
+                );
+                self.ime_state = next;
+            }
+            return;
+        }
         if next == self.ime_state {
             return;
         }
@@ -2674,6 +2711,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            #[cfg(target_os = "android")]
+            UserEvent::PlatformTextInput => {
+                for op in super::android_text_input::bridge::drain() {
+                    for event in self.text_input.events(op) {
+                        self.route_window_event(
+                            event_loop,
+                            window_id,
+                            event,
+                            native_input_isolation::EventOrigin::Platform,
+                        );
+                    }
+                }
+                window.request_redraw();
+            }
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
@@ -2924,6 +2975,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event
+            && touch.phase == winit::event::TouchPhase::Started
+            && self.ime_state.is_some()
+            && self.touches_focused_field(window_id, touch.location)
+        {
+            for settled in self.text_input.settle() {
+                self.route_window_event(
+                    event_loop,
+                    window_id,
+                    settled,
+                    native_input_isolation::EventOrigin::Platform,
+                );
+            }
+            super::android_text_input::bridge::touched();
+        }
         self.route_window_event(
             event_loop,
             window_id,
@@ -3529,6 +3596,8 @@ impl App {
         let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
+        #[cfg(target_os = "android")]
+        super::android_text_input::bridge::install(proxy.clone());
         let wake_proxy = proxy.clone();
         self.wake_scope
             .as_mut()
@@ -3566,6 +3635,8 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            #[cfg(target_os = "android")]
+            text_input: super::android_text_input::TextInputSession::default(),
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             last_primary_frame_presented: 0,

@@ -45,7 +45,9 @@ public class TiloActivity extends NativeActivity {
         installExtensions();
     }
 
-    private void installExtensions() {}
+    private void installExtensions() {
+        TiloTextInput.install(this);
+    }
 
     @Override
     protected void onDestroy() {
