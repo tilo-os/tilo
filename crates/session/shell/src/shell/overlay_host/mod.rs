@@ -873,6 +873,9 @@ pub struct ShellOverlayHost {
     /// The emoji picker. Its picks wait here for the compositor, which
     /// commits them through the seat's input method.
     emoji_picker: crate::shell::emoji_picker::EmojiPicker,
+    /// The focused text field's caret in desktop coordinates, as the
+    /// compositor last reported it; the emoji picker opens against it.
+    text_caret: Option<Rect>,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -2437,6 +2440,7 @@ impl ShellOverlayHost {
             window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             emoji_picker: crate::shell::emoji_picker::EmojiPicker::new(),
+            text_caret: None,
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -3178,14 +3182,16 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
-    /// Open the emoji picker over the display with focus, or close it.
+    /// Open the emoji picker at the focused field's caret (centred on the
+    /// display with focus when the field reports none), or close it.
     pub fn toggle_emoji_picker(&mut self) {
         if self.emoji_picker.is_open() {
             self.emoji_picker.close();
         } else {
-            let viewport = self.emoji_picker_viewport();
+            let caret = self.text_caret;
+            let viewport = self.emoji_picker_viewport_for(caret);
             self.emoji_picker
-                .open(viewport, &crate::shell::i18n::current_locale());
+                .open_at(viewport, caret, &crate::shell::i18n::current_locale());
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -3194,6 +3200,12 @@ impl ShellOverlayHost {
 
     pub fn emoji_picker_open(&self) -> bool {
         self.emoji_picker.is_open()
+    }
+
+    /// Where the focused text field's caret is, in desktop coordinates, or
+    /// `None` when no field takes text or it has not said.
+    pub fn set_text_caret(&mut self, caret: Option<Rect>) {
+        self.text_caret = caret;
     }
 
     /// The emoji picked since the last call, for the compositor to commit
@@ -3218,8 +3230,30 @@ impl ShellOverlayHost {
         &self.emoji_picker
     }
 
-    /// The display with focus on a partitioned desktop, else the desktop.
+    /// The display the open picker is placed on.
     fn emoji_picker_viewport(&self) -> Rect {
+        self.emoji_picker_viewport_for(self.emoji_picker.anchor())
+    }
+
+    /// The display holding `caret`, else the display with focus on a
+    /// partitioned desktop, else the desktop.
+    fn emoji_picker_viewport_for(&self, caret: Option<Rect>) -> Rect {
+        let output_rect = |output: &OutputGeometry| {
+            Rect::new(
+                output.x,
+                output.y,
+                output.x + output.width,
+                output.y + output.height,
+            )
+        };
+        if let Some(display) = caret.and_then(|caret| {
+            self.outputs
+                .iter()
+                .map(output_rect)
+                .find(|display| display.contains(caret.center()))
+        }) {
+            return display;
+        }
         let focused = self
             .is_partitioned()
             .then(|| {
@@ -3230,14 +3264,7 @@ impl ShellOverlayHost {
             .flatten();
         focused
             .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map_or(self.rect, |output| {
-                Rect::new(
-                    output.x,
-                    output.y,
-                    output.x + output.width,
-                    output.y + output.height,
-                )
-            })
+            .map_or(self.rect, output_rect)
     }
 
     /// Open global search, as a lone Super tap does.
