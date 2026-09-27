@@ -8193,8 +8193,12 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
     Ok(manifest)
 }
 
+fn is_sdk_crate_path(ui_path: &Path) -> bool {
+    ui_path.ends_with("crates/sdk/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
+}
+
 fn checkout_root_for_ui(ui_path: &Path) -> &Path {
-    if ui_path.ends_with("crates/sdk/ui-core") {
+    if is_sdk_crate_path(ui_path) {
         ui_path
             .ancestors()
             .nth(3)
@@ -8205,7 +8209,7 @@ fn checkout_root_for_ui(ui_path: &Path) -> &Path {
 }
 
 fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
-    if ui_path.ends_with("crates/sdk/ui-core") {
+    if is_sdk_crate_path(ui_path) {
         ui_path
             .parent()
             .unwrap_or_else(|| Path::new(".."))
