@@ -56,7 +56,7 @@ use ui::tilo_resource::{Doc, Resource};
 use ui::widget::Element;
 
 pub use blocks::{blocks_under, fill_under};
-pub use convert::{clip_block, content_of, document_mark};
+pub use convert::{clip_block, clip_of_content, content_of, content_of_clip, document_mark};
 pub use draft::Draft;
 pub use source::{Hosted, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};

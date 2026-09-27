@@ -178,6 +178,74 @@ pub fn clip_block(view: &BlockView) -> qdoc_rich_text::ClipBlock {
     }
 }
 
+/// What a paragraph an action carries shows as in the editor.
+pub fn content_of_clip(clip: &qdoc_rich_text::ClipBlock) -> BlockContent {
+    use qdoc_rich_text::ClipAttr;
+    let mut attrs: BTreeMap<String, qdoc::AttrVal> = clip
+        .attrs
+        .iter()
+        .map(|(key, value)| {
+            let value = match value {
+                ClipAttr::Bool(value) => qdoc::AttrVal::Bool(*value),
+                ClipAttr::Int(value) => qdoc::AttrVal::Int(*value),
+                ClipAttr::Str(value) => qdoc::AttrVal::Str(value.clone()),
+            };
+            (key.clone(), value)
+        })
+        .collect();
+    if let Some(level) = clip.level {
+        attrs.insert("level".into(), qdoc::AttrVal::Int(level));
+    }
+    if let Some(ordered) = clip.ordered {
+        attrs.insert("ordered".into(), qdoc::AttrVal::Bool(ordered));
+    }
+    if let Some(align) = &clip.align {
+        attrs.insert("align".into(), qdoc::AttrVal::Str(align.clone()));
+    }
+    content_of(&BlockView {
+        id: String::new(),
+        kind: clip.kind.clone(),
+        text: clip.text.clone(),
+        marks: clip.marks.clone(),
+        attrs,
+        children: Vec::new(),
+    })
+}
+
+/// A paragraph the editor shows, as an action carries it: written the way
+/// the editor stores it, then read back.
+pub fn clip_of_content(content: &BlockContent) -> qdoc_rich_text::ClipBlock {
+    use ui::automerge::{ObjType, ROOT, transaction::Transactable};
+    let mut doc = ui::automerge::AutoCommit::new();
+    let clips = doc
+        .put_object(ROOT, "clip", ObjType::Map)
+        .ok()
+        .filter(|root| {
+            qdoc_rich_text::RichText::initialize_under(&mut doc, root).is_ok()
+                && crate::fill_under(&mut doc, root, std::slice::from_ref(content)).is_ok()
+        })
+        .and_then(|root| qdoc::model::open(&doc, &root).ok())
+        .map(|containers| {
+            qdoc::model::materialize_region(&doc, &containers, qdoc::model::Region::Body)
+                .iter()
+                .map(clip_block)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    clips
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| qdoc_rich_text::ClipBlock {
+            kind: "paragraph".into(),
+            text: content.text.clone(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: BTreeMap::new(),
+        })
+}
+
 /// What a paragraph shows as in the editor.
 pub fn content_of(view: &BlockView) -> BlockContent {
     let text = view.text.clone();
