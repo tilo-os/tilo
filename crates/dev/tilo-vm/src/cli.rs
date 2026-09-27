@@ -688,7 +688,8 @@ pub struct CreateArgs {
     /// the VM's disk: the VM boots its loader and UKI (libvirt, whpx).
     #[arg(long)]
     pub boot_esp: Option<String>,
-    /// WHPX: boot the kernel/initrd from a dev-disk companion JSON bundle.
+    /// WHPX: boot a local disk from this companion JSON bundle. Published
+    /// disks fetch and verify their matching bundle automatically.
     #[arg(long, conflicts_with = "boot_esp")]
     pub direct_boot_bundle: Option<String>,
     /// Published dev disk tag to download (default: the newest main or release build).
