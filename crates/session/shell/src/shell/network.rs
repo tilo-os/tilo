@@ -12962,6 +12962,10 @@ mod tests {
     }
 
     /// Step every app and tick every network once.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the test drives its apps, which are not Send, on its own task"
+    )]
     async fn step_all(apps: &mut [&mut ui::App], nets: &[&ShellNetwork]) {
         for net in nets {
             net.tick();
@@ -12974,6 +12978,10 @@ mod tests {
 
     /// Run Chat's `action` on `resource` as `seat`, through its device's
     /// broker, the way the palette or an agent does, until it finishes.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the test drives its apps, which are not Send, on its own task"
+    )]
     async fn chat_invoke(
         host: &crate::shell::remote_actions::BrokerActionHost,
         seat: &ChatSeat,
