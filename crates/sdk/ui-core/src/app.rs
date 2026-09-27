@@ -101,6 +101,62 @@ mod room_record_launch_tests {
         assert_eq!(records.known_records(), vec![entry]);
         assert!(records.open_records().is_empty());
     }
+
+    /// What an app writes before it checks a record out never goes out on
+    /// the room's route, which carries the room index.
+    #[test]
+    fn nothing_the_app_wrote_leaves_before_its_record_is_checked_out() {
+        use crate::collaboration::{
+            CollabRequest, CollaborationManager, LoopbackTransport, RouteSpec, TransportCommand,
+        };
+        use automerge::transaction::Transactable as _;
+
+        let (transport, peer) = LoopbackTransport::new();
+        let mut manager = CollaborationManager::with_transport(Box::new(transport));
+        let room = RouteSpec::app("so.tilo.fixture", uuid::Uuid::new_v4());
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: room.app_id.clone(),
+            cluster_id: room.cluster_id,
+            record: None,
+            handle: None,
+        }));
+        peer.acknowledge_primary(Ok(room));
+        let _ = manager.poll();
+        let _ = peer.take_submitted();
+
+        let mut app = App::with_collaboration_manager(
+            State::new(),
+            Box::new(Text::new("before checkout")),
+            manager,
+        )
+        .with_records(
+            RecordSet::in_memory().with_home("room-a"),
+            AutoCommit::new(),
+        );
+        const MARK: &str = "written-before-any-checkout";
+        app.state_mut_for_test()
+            .doc
+            .put(automerge::ROOT, MARK, true)
+            .unwrap();
+        for _ in 0..3 {
+            app.step_headless();
+        }
+        let leaked = peer
+            .take_submitted()
+            .into_iter()
+            .any(|command| match command {
+                TransportCommand::Primary(CollabRequest::Document { mutation }) => {
+                    let data = match mutation {
+                        collab_types::DocumentMutation::Incremental(data)
+                        | collab_types::DocumentMutation::Snapshot(data) => data,
+                    };
+                    data.windows(MARK.len())
+                        .any(|window| window == MARK.as_bytes())
+                }
+                _ => false,
+            });
+        assert!(!leaked, "the pre-checkout write stayed off the room route");
+    }
 }
 
 const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;

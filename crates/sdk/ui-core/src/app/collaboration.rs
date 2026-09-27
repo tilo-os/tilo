@@ -194,7 +194,16 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     fn broadcast_doc_delta(&mut self) {
-        if self.collaboration.manager.is_connected() {
+        // With records in play the live document travels only on a
+        // record's route. Until one is checked out the primary route is the
+        // room's, which carries the room index: what an app wrote before its
+        // checkout goes out with the record, once checked out.
+        let awaiting_checkout = self
+            .persistence
+            .records
+            .as_ref()
+            .is_some_and(|records| records.active().is_none());
+        if self.collaboration.manager.is_connected() && !awaiting_checkout {
             match self.pending_primary_document_delta() {
                 Ok((delta, heads)) if !delta.is_empty() => {
                     tracing::debug!(
