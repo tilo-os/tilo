@@ -428,7 +428,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='recorded test time splits test jobs, not type-check shards'):
             self.setUp()
             changes = ["base/src/lib.rs"]
-            seconds = {"base": 900, "middle": 800, "qdoc": 150, "pkg": 10}
+            seconds = {"base": 400, "middle": 350, "qdoc": 150, "pkg": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
             self.assertEqual(plan["shard_count"], 1)
             self.assertEqual(len(plan["clippy_matrix"]["include"]), 1)
@@ -446,6 +446,42 @@ class SelectorTests(unittest.TestCase):
             finally:
                 ci_select.MAX_TEST_SHARDS = original
             self.assertEqual(capped["test_shard_count"], 1)
+        with self.subTest(phase='a package too heavy for one job runs partitioned on its own shards'):
+            self.setUp()
+            changes = ["base/src/lib.rs"]
+            packages, _ = ci_select.package_maps(self.metadata, self.root)
+            heavy = ci_select.TEST_PARTITION_WEIGHT  # seconds, so twice the target weight
+            seconds = {"base": heavy, "middle": 100, "qdoc": 150, "pkg": 10}
+            plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
+            self.assertEqual(plan["shard_count"], 1)
+            rows = plan["matrix"]["include"]
+            room = ci_select.TEST_PARTITION_WEIGHT - ci_select.package_cost(packages["base"])
+            count = min(ci_select.MAX_TEST_PARTITIONS,
+                        -(-ci_select.TEST_SECOND_WEIGHT * heavy // room))
+            self.assertGreater(count, 1)
+            # Partitions come first, one dedicated shard each, then the rest.
+            self.assertEqual([row["partition"] for row in rows[:count]],
+                             [f"count:{index}/{count}" for index in range(1, count + 1)])
+            self.assertEqual({row["test_packages"] for row in rows[:count]}, {"-p base"})
+            self.assertEqual({row["partition"] for row in rows[count:]}, {""})
+            self.assertEqual([row["shard"] for row in rows], list(range(1, len(rows) + 1)))
+            whole = [name for row in rows[count:] for name in row["test_packages"].split()[1::2]]
+            self.assertEqual(sorted(whole + ["base"]), plan["tested"])
+            self.assertEqual(plan["test_shard_count"], len(rows))
+            # Type-check shards are unaffected.
+            self.assertNotIn("partition", plan["clippy_matrix"]["include"][0])
+            # A package whose build alone exceeds the target gains nothing from
+            # partitions, and packages without recorded time are never split.
+            self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {"base": count})
+            original = ci_select.TEST_PARTITION_WEIGHT
+            try:
+                ci_select.TEST_PARTITION_WEIGHT = ci_select.package_cost(packages["base"])
+                self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {})
+            finally:
+                ci_select.TEST_PARTITION_WEIGHT = original
+            self.assertEqual(ci_select.test_partitions(set(packages), packages, {}), {})
+            unsplit = ci_select.make_plan(self.metadata, self.root, changes, 2)
+            self.assertEqual({row["partition"] for row in unsplit["matrix"]["include"]}, {""})
         with self.subTest(phase='recorded test time never changes selection or budgets'):
             self.setUp()
             changes = ["leaf/src/lib.rs"]
