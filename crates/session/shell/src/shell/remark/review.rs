@@ -123,6 +123,14 @@ pub enum ModelUse {
     Hosted { model: String, location: String },
     /// No usable model; the deterministic floor and action labels stand.
     Floor,
+    /// The hub's offer to set one up, shown in place and waiting for the
+    /// person's answer: the recommendation first, then the alternatives.
+    /// Nothing downloads until one is confirmed.
+    Offer {
+        choices: Vec<SetUpChoice>,
+        /// Whether the alternatives are shown.
+        expanded: bool,
+    },
     /// A model is being set up in place; the floor stands meanwhile.
     SettingUp {
         model: String,
@@ -130,6 +138,23 @@ pub enum ModelUse {
     },
     /// The model did not answer usably; the floor stands.
     Failed { reason: String },
+}
+
+/// One way to set the review model up, as the AI hub offers it: its
+/// set-up action on the review task, and that action's own words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SetUpChoice {
+    /// The hub action that sets it up (`set-up-on-device`, or
+    /// `set-up-on-device-<rank>` for an alternative).
+    pub action: String,
+    /// What would be set up: the model, its engine and the device.
+    pub label: String,
+    /// What it is confirmed against: size, license, memory and speed.
+    pub terms: String,
+    /// How much room it leaves (`fit-excellent`, `fit-good`, `fit-tight`).
+    pub fit: Option<String>,
+    /// How fast it answers (`speed-interactive`, `speed-slow`).
+    pub speed: Option<String>,
 }
 
 /// The review of one session.

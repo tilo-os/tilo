@@ -5117,34 +5117,44 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
                 ));
             }
         }
-        // The recommended configuration for the task, set up in place: the
-        // action names the model, engine and device, and its description the
-        // size, license, fit and speed it is confirmed against.
-        if !per_agent
-            && let Some(available) = state.installable_for(task)
-            && let Some(action) = local_operation_spec(
-                "set-up-on-device",
-                t_args(
-                    "ai-action-set-up-for-task",
-                    &[
-                        ("configuration", arg(pane::configuration_label(available))),
-                        ("task", arg(t(task.label_key))),
-                    ],
-                ),
-                OperationKind::Effect,
-                AGENT_MODEL_OPERATION_TYPE,
-                &AgentModelOperation::Install {
-                    id: available.package.id.clone(),
-                    revision: available.package.revision.clone(),
-                    placement: available.placement.clone(),
-                },
-                &["device-local", "ai", "downloads-model"],
-            )
-        {
-            resource = resource.with_action(
-                confirmed(action, tilo_actions::RiskLevel::Privileged)
-                    .with_description(pane::download_terms(available)),
-            );
+        // Every way to set the task up here, in rank order: the recommended
+        // configuration is `set-up-on-device`, each alternative
+        // `set-up-on-device-<rank>`. Each action names the model, engine and
+        // device; its description holds the size, license, memory and speed
+        // it is confirmed against, and its tags the fit and speed class, so
+        // any surface can offer the same choice. None downloads unconfirmed.
+        if !per_agent {
+            for (rank, available) in state
+                .installable(task)
+                .into_iter()
+                .take(MAX_DYNAMIC_RESOURCES)
+                .enumerate()
+            {
+                let tags = pane::setup_tags(available);
+                if let Some(action) = local_operation_spec(
+                    pane::setup_action_id(rank),
+                    t_args(
+                        "ai-action-set-up-for-task",
+                        &[
+                            ("configuration", arg(pane::configuration_label(available))),
+                            ("task", arg(t(task.label_key))),
+                        ],
+                    ),
+                    OperationKind::Effect,
+                    AGENT_MODEL_OPERATION_TYPE,
+                    &AgentModelOperation::Install {
+                        id: available.package.id.clone(),
+                        revision: available.package.revision.clone(),
+                        placement: available.placement.clone(),
+                    },
+                    &tags,
+                ) {
+                    resource = resource.with_action(
+                        confirmed(action, tilo_actions::RiskLevel::Privileged)
+                            .with_description(pane::download_terms(available)),
+                    );
+                }
+            }
         }
         section = section.with_child(resource);
     }

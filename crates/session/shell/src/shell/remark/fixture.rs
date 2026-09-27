@@ -391,6 +391,56 @@ impl FrameProvider for Replayed {
     }
 }
 
+/// What the AI hub offers for review on a laptop with an RTX 4070 beside a
+/// Radeon 780M: vLLM on the card, then llama.cpp on the card, the
+/// integrated GPU and the processor. Sample data lives only here.
+#[must_use]
+pub fn sample_offer() -> Vec<super::review::SetUpChoice> {
+    let choice = |rank: usize, label: &str, terms: &str, fit: &str, speed: &str| {
+        super::review::SetUpChoice {
+            action: if rank == 0 {
+                "set-up-on-device".into()
+            } else {
+                format!("set-up-on-device-{rank}")
+            },
+            label: format!("Set up {label} for Feedback review"),
+            terms: terms.into(),
+            fit: Some(fit.into()),
+            speed: Some(speed.into()),
+        }
+    };
+    vec![
+        choice(
+            0,
+            "Qwen3 4B (AWQ) with vLLM on NVIDIA GeForce RTX 4070 Laptop GPU",
+            "2.5 GiB download, 2.5 GiB on disk · License Apache-2.0 · Runs on this device · Needs 6.0 of 8.0 GiB graphics memory · Fast here, about 90 words a second",
+            "fit-good",
+            "speed-interactive",
+        ),
+        choice(
+            1,
+            "Qwen3 4B (GGUF) with llama.cpp on NVIDIA GeForce RTX 4070 Laptop GPU",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.2 of 8.0 GiB graphics memory · Fast here, about 77 words a second",
+            "fit-good",
+            "speed-interactive",
+        ),
+        choice(
+            2,
+            "Qwen3 4B (GGUF) with llama.cpp on AMD Radeon 780M Graphics",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.2 GiB of the memory the desktop also uses, 15.8 GiB to spare · Fast here, about 15 words a second",
+            "fit-excellent",
+            "speed-interactive",
+        ),
+        choice(
+            3,
+            "Qwen3 4B (GGUF) with llama.cpp on the processor",
+            "2.3 GiB download, 2.3 GiB on disk · License Apache-2.0 · Runs on this device · Needs 4.5 GiB of the memory the desktop also uses, 18.0 GiB to spare · Slow here, about 7 words a second",
+            "fit-excellent",
+            "speed-slow",
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

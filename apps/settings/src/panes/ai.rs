@@ -31,7 +31,10 @@ use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionBinding, Resource, ResourcePresentation};
 use tilo_model_gateway::{CredentialState, ProviderHealth, Reachability};
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, ProgressBar, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{
+    Button, Dropdown, OfferBindings, OfferPill, ProgressBar, Row, SetupChoice, SetupOffer, Spacer,
+    Text, TextInput, Toggle, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -116,24 +119,93 @@ fn speed_label(available: &AvailableModel) -> String {
     }
 }
 
-fn speed_pill(available: &AvailableModel) -> El {
-    semantic_status_pill(
-        &speed_label(available),
-        if available.speed.class == SpeedClass::Interactive {
-            StatusTone::Success
-        } else {
-            StatusTone::Warning
-        },
-    )
-}
-
-fn fit_pill(fit: Fit) -> El {
+fn fit_pill(fit: Fit) -> OfferPill {
     let (key, tone) = match fit {
         Fit::Excellent => ("ai-fit-excellent", StatusTone::Success),
         Fit::Good => ("ai-fit-good", StatusTone::Success),
         Fit::Tight => ("ai-fit-tight", StatusTone::Warning),
     };
-    semantic_status_pill(&t(key), tone)
+    OfferPill::new(t(key), tone)
+}
+
+/// The id of the `rank`th way to set a task up: the recommendation first.
+#[must_use]
+pub fn setup_action_id(rank: usize) -> String {
+    if rank == 0 {
+        "set-up-on-device".into()
+    } else {
+        format!("set-up-on-device-{rank}")
+    }
+}
+
+/// The tags a set-up action carries: what it is, and its fit and speed
+/// class, for a surface that offers it without the hub's own copy.
+#[must_use]
+pub fn setup_tags(available: &AvailableModel) -> [&'static str; 5] {
+    [
+        "device-local",
+        "ai",
+        "downloads-model",
+        match available.fit {
+            Fit::Excellent => "fit-excellent",
+            Fit::Good => "fit-good",
+            Fit::Tight => "fit-tight",
+        },
+        match available.speed.class {
+            SpeedClass::Interactive => "speed-interactive",
+            SpeedClass::Slow => "speed-slow",
+            SpeedClass::Impractical => "speed-impractical",
+        },
+    ]
+}
+
+/// One configuration as an offer shows it.
+fn setup_choice(available: &AvailableModel) -> SetupChoice {
+    SetupChoice {
+        title: configuration_label(available),
+        terms: download_terms(available),
+        pills: vec![
+            fit_pill(available.fit),
+            OfferPill::new(
+                speed_label(available),
+                if available.speed.class == SpeedClass::Interactive {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Warning
+                },
+            ),
+        ],
+    }
+}
+
+/// The hub's "Set this up?" offer for `recommended`, with `alternatives`
+/// behind "Show more".
+fn setup_offer(recommended: &AvailableModel, alternatives: &[&AvailableModel]) -> SetupOffer {
+    SetupOffer {
+        heading: t("ai-recommended-title"),
+        question: t_args(
+            "ai-set-up-question",
+            &[("configuration", arg(configuration_label(recommended)))],
+        ),
+        description: recommended.package.description.clone(),
+        recommended: setup_choice(recommended),
+        set_up: t("ai-set-up-yes"),
+        show_more: t_args(
+            "ai-show-more",
+            &[(
+                "count",
+                f64::from(u32::try_from(alternatives.len()).unwrap_or(u32::MAX)).into(),
+            )],
+        ),
+        show_fewer: t("ai-show-fewer"),
+        dismiss: None,
+        alternatives_title: t("ai-alternatives-title"),
+        instead: t("ai-set-up-instead"),
+        alternatives: alternatives
+            .iter()
+            .map(|alternative| setup_choice(alternative))
+            .collect(),
+    }
 }
 
 fn mib_gib(mib: u64) -> String {
@@ -957,23 +1029,24 @@ impl AiPane {
         if agent.is_none() && self.state.resolve(task, None).is_err() {
             let installable = self.state.installable(task);
             if let Some((recommended, alternatives)) = installable.split_first() {
-                self.recommendation_block(
+                body.push(self.recommendation_block(
                     tree,
                     task.id,
                     recommended,
                     (Some(resource_id), "set-up-on-device"),
                     alternatives,
-                    body,
-                );
+                    |index, _| (resource_id.to_owned(), setup_action_id(index + 1)),
+                ));
             }
         }
     }
 
     /// "Set this up?" for the configuration Tilo recommends here, naming the
     /// model, engine, device, size and license, with every other supported
-    /// configuration behind "Show more". The recommendation is set up through
-    /// `set_up` (a resource and its action); each alternative through its own
-    /// release resource. Every one is confirmed before anything downloads.
+    /// configuration behind "Show more": the toolkit's shared offer. The
+    /// recommendation is set up through `set_up` (a resource and its
+    /// action), each alternative through `alternative(index)`. Every one is
+    /// confirmed before anything downloads.
     fn recommendation_block(
         &self,
         tree: &Resource,
@@ -981,106 +1054,31 @@ impl AiPane {
         recommended: &AvailableModel,
         set_up: (Option<&str>, &str),
         alternatives: &[&AvailableModel],
-        body: &mut Vec<El>,
-    ) {
+        alternative: impl Fn(usize, &AvailableModel) -> (String, String),
+    ) -> El {
         let id = format!("ai.{}", block.replace(['/', '.', ':', '@'], "-"));
-        body.push(Box::new(
-            Row::new()
-                .push(Box::new(
-                    Text::new(&t("ai-recommended-title")).with_scaled_size(14.0),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(fit_pill(recommended.fit))
-                .push(hgap(8.0))
-                .push(speed_pill(recommended)),
-        ));
-        body.push(Box::new(
-            Text::new(&t_args(
-                "ai-set-up-question",
-                &[("configuration", arg(configuration_label(recommended)))],
-            ))
-            .with_scaled_size(13.0),
-        ));
-        body.push(caption(&recommended.package.description));
-        body.push(caption(&download_terms(recommended)));
-        let mut buttons = Row::new().push(Box::new(
-            bound_button(
-                tree,
-                set_up.0,
-                set_up.1,
-                &format!("{id}-set-up"),
-                &t("ai-set-up-yes"),
-            )
-            .primary(),
-        ));
-        let shown = self.alternatives_shown(block);
-        if !alternatives.is_empty() {
-            let toggled = Arc::clone(&self.shown);
-            let key = block.to_owned();
-            buttons = buttons.push(hgap(8.0)).push(Box::new(
-                Button::new(
-                    &format!("{id}-more"),
-                    &if shown {
-                        t("ai-show-fewer")
-                    } else {
-                        t_args(
-                            "ai-show-more",
-                            &[(
-                                "count",
-                                f64::from(u32::try_from(alternatives.len()).unwrap_or(u32::MAX))
-                                    .into(),
-                            )],
-                        )
-                    },
-                    None,
-                )
-                .fit_content(40.0)
-                .ghost()
-                .on_view(move || {
-                    if let Ok(mut shown) = toggled.lock()
-                        && !shown.remove(&key)
-                    {
-                        shown.insert(key.clone());
-                    }
-                    changed();
-                }),
-            ));
-        }
-        body.push(Box::new(buttons.push(Box::new(Spacer::new()))));
-        if !shown {
-            return;
-        }
-        body.push(Box::new(
-            Text::new(&t("ai-alternatives-title")).with_scaled_size(13.0),
-        ));
-        for alternative in alternatives {
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&configuration_label(alternative)).with_scaled_size(13.0),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(fit_pill(alternative.fit))
-                    .push(hgap(8.0))
-                    .push(speed_pill(alternative)),
-            ));
-            body.push(caption(&download_terms(alternative)));
-            let resource = release_resource_id(alternative);
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(bound_button(
-                        tree,
-                        Some(&resource),
-                        "install",
-                        &format!(
-                            "{id}-{}",
-                            alternative.key().replace(['/', '.', ':', '@'], "-")
-                        ),
-                        &t("ai-set-up-instead"),
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
-        }
+        let toggled = Arc::clone(&self.shown);
+        let key = block.to_owned();
+        let bindings = OfferBindings {
+            set_up: crate::actions::ai_binding(tree, set_up.0, set_up.1),
+            alternatives: alternatives
+                .iter()
+                .enumerate()
+                .map(|(index, available)| {
+                    let (resource, action) = alternative(index, available);
+                    crate::actions::ai_binding(tree, Some(&resource), &action)
+                })
+                .collect(),
+            toggle: Box::new(move || {
+                if let Ok(mut shown) = toggled.lock()
+                    && !shown.remove(&key)
+                {
+                    shown.insert(key.clone());
+                }
+                changed();
+            }),
+        };
+        setup_offer(recommended, alternatives).widget(&id, self.alternatives_shown(block), bindings)
     }
 
     fn tasks_card(&self, tree: &Resource) -> El {
@@ -1715,14 +1713,14 @@ impl AiPane {
             Some((recommended, alternatives)) => {
                 body.push(caption(&capabilities_text(&recommended.package)));
                 let resource = release_resource_id(recommended);
-                self.recommendation_block(
+                body.push(self.recommendation_block(
                     tree,
                     "device",
                     recommended,
                     (Some(&resource), "install"),
                     alternatives,
-                    &mut body,
-                );
+                    |_, available| (release_resource_id(available), "install".into()),
+                ));
             }
             None => body.push(caption(&t(if snapshot.available.is_empty() {
                 "ai-releases-none-fit"

@@ -1785,9 +1785,28 @@ impl Action {
         },
         chrome(
             "remark.review.model.set-up",
-            "Set up the review model",
-            "Download the recommended on-device model for review, after its license",
+            "Offer to set up the review model",
+            "Show the on-device configuration recommended for review here, and the others",
             crate::shell::remark::act::review_set_up_model,
+        ),
+        chrome(
+            "remark.review.model.more",
+            "Show or hide other ways to set it up",
+            "List every other configuration this device runs the review model in",
+            crate::shell::remark::act::review_model_more,
+        ),
+        Action {
+            id: "remark.review.model.confirm",
+            label: "Set up the offered review model",
+            subtitle: "Download and start the chosen configuration, after its size and license",
+            params: crate::shell::remark::act::CHOICE_PARAMS,
+            apply: crate::shell::remark::act::review_model_confirm,
+        },
+        chrome(
+            "remark.review.model.dismiss",
+            "Not now",
+            "Close the offer without setting anything up",
+            crate::shell::remark::act::review_model_dismiss,
         ),
         Action {
             id: "remark.conversation.open",
