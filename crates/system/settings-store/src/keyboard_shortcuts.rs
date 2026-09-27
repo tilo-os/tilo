@@ -432,16 +432,49 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
     ),
 ];
 
-/// The fixed shortcut `id` names.
+/// Chords the desktop keeps for itself only in some states, so they are
+/// not routed ahead of every application, yet nothing may be bound to
+/// them: Vim navigation (while Vim mode is on) and bare Escape, which
+/// dismisses whatever the desktop has open.
+pub static RESERVED_SHORTCUTS: &[FixedShortcut] = &[
+    fixed(
+        "reserved-vim-navigation",
+        "shortcut-vim-navigation",
+        ShortcutCategory::Navigation,
+        &[
+            key(&["Super", "Ctrl"], "h"),
+            key(&["Super", "Ctrl"], "j"),
+            key(&["Super", "Ctrl"], "k"),
+            key(&["Super", "Ctrl"], "l"),
+            key(&["Super", "Ctrl", "Shift"], "h"),
+            key(&["Super", "Ctrl", "Shift"], "l"),
+        ],
+    ),
+    fixed(
+        "reserved-dismiss",
+        "shortcut-dismiss",
+        ShortcutCategory::System,
+        &[key(&[], "escape")],
+    ),
+];
+
+/// The fixed or reserved shortcut `id` names.
 #[must_use]
 pub fn fixed_shortcut(id: &str) -> Option<&'static FixedShortcut> {
-    FIXED_SHORTCUTS.iter().find(|fixed| fixed.id == id)
+    FIXED_SHORTCUTS
+        .iter()
+        .chain(RESERVED_SHORTCUTS)
+        .find(|fixed| fixed.id == id)
 }
 
-/// The fixed shortcut `chord` belongs to, when it belongs to one.
+/// The fixed or reserved desktop shortcut `chord` belongs to, when it
+/// belongs to one: a chord no setting and no published action may take.
 #[must_use]
-pub fn fixed_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
-    FIXED_SHORTCUTS.iter().find(|fixed| fixed.owns(chord))
+pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
+    FIXED_SHORTCUTS
+        .iter()
+        .chain(RESERVED_SHORTCUTS)
+        .find(|fixed| fixed.owns(chord))
 }
 
 /// One row of the catalogue.
@@ -560,6 +593,10 @@ mod tests {
             assert_eq!(ShortcutAction::from_id(action.id()), Some(action));
             assert!(seen.insert(action.id()), "{} listed twice", action.id());
         }
+        for fixed in RESERVED_SHORTCUTS {
+            assert!(fixed.id.starts_with("reserved-"), "{}", fixed.id);
+            assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
+        }
         for fixed in FIXED_SHORTCUTS {
             assert!(fixed.id.starts_with("fixed-"), "{}", fixed.id);
             assert!(seen.insert(fixed.id), "{} listed twice", fixed.id);
@@ -595,11 +632,11 @@ mod tests {
         let before = config.clone();
         assert_eq!(
             config.set(ShortcutAction::Search, chord("Alt+Tab")),
-            Err(ShortcutConfigError::FixedShortcut("fixed-switch-windows"))
+            Err(ShortcutConfigError::Fixed("fixed-switch-windows"))
         );
         assert_eq!(
             config.set(ShortcutAction::NextTab, chord("Super+W")),
-            Err(ShortcutConfigError::FixedShortcut("fixed-close-tab"))
+            Err(ShortcutConfigError::Fixed("fixed-close-tab"))
         );
         assert_eq!(config, before);
     }
@@ -621,6 +658,25 @@ mod tests {
             Err(ShortcutConfigError::Conflict(
                 ShortcutAction::PreviousWorkspace
             ))
+        );
+    }
+
+    #[test]
+    fn reserved_chords_are_refused_to_actions_and_published_actions() {
+        let mut config = ShortcutConfig::default();
+        assert_eq!(
+            config.set(ShortcutAction::Search, chord("Super+Ctrl+H")),
+            Err(ShortcutConfigError::Fixed("reserved-vim-navigation"))
+        );
+        assert_eq!(
+            config.check_action_chord(&chord("Escape"), None),
+            Err(ShortcutConfigError::Fixed("reserved-dismiss"))
+        );
+        assert!(
+            catalogue(&config)
+                .iter()
+                .all(|entry| !entry.id.starts_with("reserved-")),
+            "reserved chords are not listed as shortcuts"
         );
     }
 

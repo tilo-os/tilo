@@ -107,6 +107,8 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastaturhilfe
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-vim-navigation = Vim-Navigation
+shortcut-dismiss = Schließen
 
 # Wie jedes änderbare Tastenkürzel des Desktops heißt
 shortcut-name-search = Globale Suche

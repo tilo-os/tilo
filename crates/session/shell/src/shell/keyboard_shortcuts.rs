@@ -439,7 +439,7 @@ fn refusal(
                 Some(holder(other.id(), name, "shortcut")),
             )
         }
-        ShortcutConfigError::FixedShortcut(id) => {
+        ShortcutConfigError::Fixed(id) => {
             let name =
                 fixed_shortcut(id).map_or_else(|| id.to_string(), |fixed| t(fixed.label_key));
             failure(
@@ -448,11 +448,6 @@ fn refusal(
                 Some(holder(id, name, "fixed")),
             )
         }
-        ShortcutConfigError::Fixed(name) => failure(
-            "shortcut_conflict",
-            message(name),
-            Some(json!({"chord": chord_json, "conflict": {"kind": "fixed", "label": name}})),
-        ),
         ShortcutConfigError::TakenByAction => {
             let held = chord
                 .and_then(|chord| config.action_for(chord))
