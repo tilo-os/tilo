@@ -82,6 +82,8 @@ pub mod test_control;
 pub mod toplevel_icon;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
+#[cfg(target_os = "linux")]
+pub(crate) mod xwayland_composer;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
