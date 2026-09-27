@@ -27,6 +27,16 @@ pub struct MetricsSnapshot {
     pub bytes_queued: u64,
     /// Total deltas fanned out to live peers.
     pub deltas_fanned_out: u64,
+    /// Workspace subscriptions accepted.
+    pub subscribes: u64,
+    /// Retained envelopes replayed to subscribers.
+    pub replayed_retained: u64,
+    /// Pending (offline-queued) envelopes replayed to reconnecting peers.
+    pub replayed_pending: u64,
+    /// Live subscribers dropped for any reason.
+    pub subscriber_dropped: u64,
+    /// Live subscribers dropped because they could not keep up.
+    pub subscriber_dropped_backpressure: u64,
 }
 
 /// Failure reading or writing [`METRICS_FILE`].

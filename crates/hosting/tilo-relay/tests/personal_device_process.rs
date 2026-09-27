@@ -13,6 +13,10 @@
     clippy::unreachable,
     reason = "test assertions and isolated fixture keys"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::process::{Command, Stdio};

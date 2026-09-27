@@ -16,6 +16,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -34,8 +38,8 @@ async fn op_on_relay1_reaches_device_on_relay2() {
 
     let members = vec![p1.device_pubkey(), p2.device_pubkey()];
     let (relay_key_1, relay_key_2) = (relay_dev_1.device_pubkey(), relay_dev_2.device_pubkey());
-    let relay1 = spawn_relay(&user, relay_dev_1, &[3], &members).await;
-    let relay2 = spawn_relay(&user, relay_dev_2, &[3], &members).await;
+    let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[3], &members)).await;
+    let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[3], &members)).await;
 
     // Wire them together — each dials the other. Same config option
     // a real deployment uses. Two directions means both A→B and B→A
