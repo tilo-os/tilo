@@ -7040,11 +7040,16 @@ impl ShellNetwork {
         if envelope.artifact != artifact
             || envelope.attestation_id
                 != collab_types::document_attestation_id(app_id, cluster_id, record_id)
-            || collab_types::validate_document_payload_route(
-                app_id, cluster_id, record_id, envelope,
-            )
-            .is_err()
         {
+            return None;
+        }
+        let payload =
+            collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)
+                .ok()?;
+        if crate::shell::collab_broker_capnp::room_index_comment_refused(
+            record_id, envelope, &payload,
+        ) {
+            tracing::warn!(room = %room, "dropping a comment-class room-index op that adds more than its author's own comment references");
             return None;
         }
         let actor = collab_types::Actor::person(Some(role), person)

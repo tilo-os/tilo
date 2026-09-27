@@ -691,6 +691,29 @@ pub(crate) fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     }
 }
 
+/// Whether a `Comment`-class op on a room's index route (`record_id` empty)
+/// carries anything but its author's own comment references. The class is
+/// all a role check sees; the shape is checked from the change itself, so a
+/// Commenter's op that adds any other reference, takes one out or writes
+/// elsewhere is refused here rather than spread to every member. Encrypted
+/// payloads stay opaque to a broker; the index's holder checks those.
+pub(crate) fn room_index_comment_refused(
+    record_id: &str,
+    envelope: &SignedOp,
+    payload: &collab_types::RoutedDocumentPayload,
+) -> bool {
+    if !record_id.is_empty() || envelope.op_class != collab_types::OpClass::Comment {
+        return false;
+    }
+    match payload {
+        collab_types::RoutedDocumentPayload::Cleartext(
+            collab_types::DocumentMutation::Incremental(delta),
+        ) => !ui::record::room::comment_references_delta(delta, envelope.author.as_bytes()),
+        collab_types::RoutedDocumentPayload::Encrypted { .. } => false,
+        _ => true,
+    }
+}
+
 /// Whether `evidence` is what `offered`'s confirmation policy asks for.
 /// Minting the grant that binds it to one delivery is
 /// [`CapnpBrokerState::confirmation_token`]'s job.
@@ -4749,6 +4772,12 @@ impl CapnpBrokerState {
         }
         collab_types::check_document_route(&route.record_id, envelope.op_class, &envelope.author)
             .map_err(|error| capnp::Error::failed(format!("document operation refused: {error}")))?;
+        if room_index_comment_refused(&route.record_id, envelope, &mutation) {
+            return Err(capnp::Error::failed(
+                "a comment-class room-index change may add only its author's own comment references"
+                    .into(),
+            ));
+        }
         Ok(mutation)
     }
 
@@ -12674,6 +12703,58 @@ pub(crate) mod tests {
                     .is_err(),
                 "labelling an edit to an ordinary record as a comment is refused"
             );
+
+            // On the room's index route a Comment-class op may carry only the
+            // Commenter's own comment references.
+            let index_op = |delta: Vec<u8>| {
+                let route = CrdtRoute::record("so.tilo.chat", room.clone(), "");
+                let mut op = SignedOp::new_unsigned(
+                    DocumentMutation::Incremental(delta)
+                        .encode()
+                        .expect("typed mutation"),
+                    document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                    author,
+                    document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                    collab_types::OpClass::Comment,
+                    SystemTime::now(),
+                    1,
+                );
+                sign_op(&mut op, &device).expect("device signs");
+                (route, op)
+            };
+            let parent_id = ui::record::RecordId::parse(parent).expect("a record id");
+            let index = automerge::AutoCommit::new();
+            let referencing = |id: &ui::record::RecordId, kind: &str| {
+                let mut replica = index.clone();
+                assert!(ui::record::room::reference(
+                    &mut replica,
+                    id,
+                    &ui::record::RecordKind::new(kind)
+                ));
+                replica.save_after(&[])
+            };
+            let own = ui::record::RecordId::for_comment(*author.as_bytes(), "m1", &parent_id)
+                .expect("own comment");
+            let (route, op) = index_op(referencing(&own, "chat.message"));
+            state
+                .authorize_certified_document(&route, &admit(&route), &op)
+                .expect("a commenter lists their own comment in the room");
+            for spam in [
+                referencing(&parent_id, "chat.channel"),
+                referencing(
+                    &ui::record::RecordId::for_comment([0x5A; 32], "m1", &parent_id)
+                        .expect("foreign comment"),
+                    "chat.message",
+                ),
+            ] {
+                let (route, op) = index_op(spam);
+                assert!(
+                    state
+                        .authorize_certified_document(&route, &admit(&route), &op)
+                        .is_err(),
+                    "a commenter adds no other reference to the room's index"
+                );
+            }
         }
 
         fn published_resource_views_validate_bindings_and_resource_cardinality() {

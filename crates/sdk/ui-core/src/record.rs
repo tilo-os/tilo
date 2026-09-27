@@ -1244,6 +1244,26 @@ pub mod room {
         changes_are_comment_references(&index_obj, &changes, author)
     }
 
+    /// Whether the incremental change `delta` does nothing but add entries
+    /// for comment records `author` owns to the room index every room shares
+    /// — decided from the change alone, so a broker that holds no index can
+    /// refuse a `Comment`-class index change before it goes further. The
+    /// holder of the index still checks it against its state
+    /// ([`comment_references_only`]).
+    pub fn comment_references_delta(delta: &[u8], author: &[u8; 32]) -> bool {
+        let Some(changes) = tilo_automerge::coverage::changes_in(delta) else {
+            return false;
+        };
+        let mut shared = AutoCommit::new();
+        if tilo_automerge::ApplyIncoming::apply_incoming(&mut shared, index_genesis()).is_err() {
+            return false;
+        }
+        let Some(index_obj) = index_ro(&shared) else {
+            return false;
+        };
+        changes_are_comment_references(&index_obj, &changes, author)
+    }
+
     fn changes_are_comment_references(
         index_obj: &ObjId,
         changes: &[automerge::Change],
@@ -3689,6 +3709,48 @@ mod tests {
         put_text(&mut replica, "title", "mine now");
         let delta = delta_since(&mut index, &mut replica);
         assert!(!room::comment_references_only(&index, &delta, &me));
+    }
+
+    /// A broker holds no room index, yet reaches the same verdict on a
+    /// `Comment`-class index change from the change alone: a Commenter's own
+    /// comment references pass; any other reference, a removal, a write
+    /// elsewhere or a snapshot does not.
+    #[test]
+    fn a_broker_judges_a_comment_class_index_change_without_the_index() {
+        let me = [3; 32];
+        let (mut index, mut replica, channel) = shared_index();
+        let mine = RecordId::for_comment(me, "m1", &channel).unwrap();
+        assert!(room::reference(
+            &mut replica,
+            &mine,
+            &RecordKind::new("chat.message")
+        ));
+        let delta = delta_since(&mut index, &mut replica);
+        assert!(room::comment_references_delta(&delta, &me));
+        assert!(!room::comment_references_delta(&delta, &[4; 32]));
+
+        let refused: [fn(&mut AutoCommit, &RecordId); 4] = [
+            |doc, _| {
+                room::reference(doc, &RecordId::minted(), &RecordKind::new("note"));
+            },
+            |doc, channel| {
+                let theirs = RecordId::for_comment([4; 32], "m1", channel).unwrap();
+                room::reference(doc, &theirs, &RecordKind::new("chat.message"));
+            },
+            |doc, channel| {
+                room::unreference(doc, channel);
+            },
+            |doc, _| put_text(doc, "title", "mine now"),
+        ];
+        for change in refused {
+            let mut replica = index.fork();
+            change(&mut replica, &channel);
+            let delta = delta_since(&mut index, &mut replica);
+            assert!(!delta.is_empty());
+            assert!(!room::comment_references_delta(&delta, &me));
+        }
+        assert!(!room::comment_references_delta(&replica.save(), &me));
+        assert!(!room::comment_references_delta(&[], &me));
     }
 
     #[test]
