@@ -477,12 +477,15 @@ fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
     // bytes (driven by [`mark_chrome`], not a second table).
     for mark in [Mark::Underline, Mark::Strikethrough] {
         let open = open_marker(&mark).as_bytes();
+        let (Some(&a), Some(&b)) = (open.first(), open.get(1)) else {
+            continue;
+        };
         if open.len() == 2
-            && open[0] == open[1]
-            && bytes.get(at) == Some(&open[0])
-            && bytes.get(at + 1) == Some(&open[1])
+            && a == b
+            && bytes.get(at) == Some(&a)
+            && bytes.get(at + 1) == Some(&b)
         {
-            return Some((open[0], mark));
+            return Some((a, mark));
         }
     }
     None
@@ -576,23 +579,11 @@ pub fn safe_external_url(value: &str) -> bool {
         .is_some_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
 }
 
-/// Serialise an [`InlineText`] back to a markdown string, weaving
-/// the inline markers back over the plain bytes. Output is
-/// byte-stable for any text+marks that came out of [`parse_inline`].
+/// Open/close delimiters and emission priority for a mark kind.
 ///
-/// Algorithm: walk `text` byte-by-byte; at each byte, open any mark
-/// span whose `range.start == i`, append the byte, then close any
-/// span whose `range.end == i+1`. Marks are emitted in this order
-/// (most-nested last on open, first on close):
-///
-/// 1. Bold (outermost)
-/// 2. Italic
-/// 3. Code / Link (innermost — exclusive with one another)
-
-/// Open delimiter, optional static close delimiter, and emission priority
-/// for a mark kind. One table feeds parse (`paired_mark_at`) and serialize
-/// (`open_marker` / `close_marker` / `priority`). External-link closes are
-/// value-dependent and handled in [`close_marker`].
+/// One table feeds parse ([`paired_mark_at`]) and serialize
+/// ([`open_marker`] / [`close_marker`] / [`priority`]). External-link
+/// closes are value-dependent and handled in [`close_marker`].
 fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
     match mark {
         Mark::Bold => ("**", Some("**"), 0),
@@ -625,6 +616,15 @@ fn priority(m: &Mark) -> u8 {
     mark_chrome(m).2
 }
 
+/// Serialise an [`InlineText`] back to a markdown string, weaving
+/// the inline markers back over the plain bytes. Output is
+/// byte-stable for any text+marks that came out of [`parse_inline`].
+///
+/// Algorithm: walk `text` byte-by-byte; at each byte, open any mark
+/// span whose `range.start == i`, append the byte, then close any
+/// span whose `range.end == i+1`. Marks are emitted in this order
+/// (most-nested last on open, first on close): bold outermost, then
+/// italic, then code/link innermost.
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
