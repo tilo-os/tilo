@@ -217,6 +217,14 @@ impl BlockKind {
             _ => 0,
         }
     }
+
+    /// The kind a bound block list spells as `stored` (`paragraph`,
+    /// `heading2`, `bullet:1`, `checklist:0:1`, `code:rust`, …), when it is
+    /// a valid spelling: how an owner reads blocks it stored in that form.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        let kind = kind_from_str(stored);
+        (kind_to_str(&kind) == stored).then_some(kind)
+    }
 }
 
 pub struct Block {
@@ -642,6 +650,9 @@ pub struct BlockEditor {
     find_previous_rect: Rect,
     find_next_rect: Rect,
     find_close_rect: Rect,
+    /// Presence keys from the host whose model owns the blocks
+    /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
+    presence_key: Option<present::PresenceKeyFn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -745,6 +756,7 @@ impl BlockEditor {
             find_previous_rect: Rect::ZERO,
             find_next_rect: Rect::ZERO,
             find_close_rect: Rect::ZERO,
+            presence_key: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -1161,6 +1173,12 @@ impl BlockEditor {
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
+    }
+
+    /// The id local edits are attributed to, if any.
+    #[must_use]
+    pub fn local_author(&self) -> Option<&str> {
+        self.local_author.as_deref()
     }
 
     pub fn set_local_author(&mut self, author: Option<String>) {
@@ -2111,6 +2129,98 @@ impl BlockEditor {
         line.set_text(&updated);
         line.set_marks(spans);
         line.set_cursor_pos(cursor);
+    }
+
+    /// Toggle `mark` as a toolbar button does: over the focused block's
+    /// selection, or, with nothing selected, for the text typed next.
+    /// `false` when no block is focused.
+    pub fn toggle_mark(&mut self, mark: Mark) -> bool {
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return false;
+        };
+        block.line.toggle_mark(mark);
+        self.dirty = true;
+        true
+    }
+
+    /// The marks a toolbar shows as on: those covering the whole selection
+    /// in the focused block, or the caret, with the ones set for the text
+    /// typed next.
+    pub fn active_marks(&self) -> Vec<Mark> {
+        let Some(line) = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .map(|block| &block.line)
+        else {
+            return Vec::new();
+        };
+        let (start, end) = line
+            .selection_range()
+            .filter(|(start, end)| start < end)
+            .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
+        let covers = |span: &MarkSpan| {
+            if start == end {
+                span.range.start < start && start <= span.range.end
+            } else {
+                span.range.start <= start && end <= span.range.end
+            }
+        };
+        let mut active: Vec<Mark> = Vec::new();
+        for span in line.marks().iter().filter(|span| covers(span)) {
+            if !active.contains(&span.mark) {
+                active.push(span.mark.clone());
+            }
+        }
+        for pending in line.pending_marks() {
+            if !active.iter().any(|mark| mark.same_kind(pending)) {
+                active.push(pending.clone());
+            }
+        }
+        active
+    }
+
+    /// Link the focused block's selection to `target`, or, with nothing
+    /// selected, insert `target` at the caret as its own linked text.
+    /// `false` when no block is focused or `target` is blank.
+    pub fn insert_link(&mut self, target: &str) -> bool {
+        let target = target.trim();
+        if target.is_empty() {
+            return false;
+        }
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return false;
+        };
+        let line = &mut block.line;
+        let mark = Mark::ExternalLink(target.to_owned());
+        if let Some((start, end)) = line.selection_range().filter(|(start, end)| start < end) {
+            let mut spans = line.marks().to_vec();
+            spans.retain(|span| {
+                !(matches!(span.mark, Mark::ExternalLink(_))
+                    && span.range.start < end
+                    && start < span.range.end)
+            });
+            spans.push(MarkSpan::new(start..end, mark));
+            line.set_marks(spans);
+        } else {
+            let at = line.cursor_pos().min(line.value().len());
+            let mut text = line.value().to_owned();
+            text.insert_str(at, target);
+            let mut spans = line.marks().to_vec();
+            crate::widget::marks::shift_after_edit(&mut spans, at, target.len(), 0);
+            spans.push(MarkSpan::new(at..at.saturating_add(target.len()), mark));
+            line.set_text(&text);
+            line.set_marks(spans);
+            line.set_cursor_pos(at.saturating_add(target.len()));
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// The focused block's kind.
+    pub fn focused_kind(&self) -> Option<&BlockKind> {
+        self.focused
+            .and_then(|index| self.blocks.get(index))
+            .map(|block| &block.kind)
     }
 
     /// Preserve authored formatting, caret, binding and outline context.
@@ -4728,9 +4838,7 @@ fn accessible_kind_name(kind: &BlockKind) -> &'static str {
 }
 
 fn valid_existing_kind(kind: &str) -> bool {
-    // Round-trip through the same parser/serializer the CRDT uses, so the
-    // accept/reject rule cannot drift from `kind_from_str` / `kind_to_str`.
-    kind_to_str(&kind_from_str(kind)) == kind
+    BlockKind::from_stored(kind).is_some()
 }
 
 fn kind_from_str(s: &str) -> BlockKind {
@@ -7739,16 +7847,36 @@ impl Widget for BlockEditor {
         }
         if let Some(selection) = self.document_selection {
             let (start, end) = selection.ordered();
-            let start_id = self.blocks.get(start.block)?.id.as_str();
+            if !self.presence_keyed_by_model() {
+                let start_id = self.blocks.get(start.block)?.id.as_str();
+                return Some((
+                    document_selection_presence_key(
+                        start_id,
+                        end.block.saturating_sub(start.block),
+                    ),
+                    PresencePayload::Selection {
+                        start: start.byte,
+                        end: end.byte,
+                    },
+                ));
+            }
+            // Keyed by the owning model's ids, a selection is reported as its
+            // part in the caret's block, which is where a peer's caret lands.
+            let from = if start.block == idx { start.byte } else { 0 };
+            let to = if end.block == idx {
+                end.byte
+            } else {
+                block.text().len()
+            };
             return Some((
-                document_selection_presence_key(start_id, end.block.saturating_sub(start.block)),
+                self.presence_key_for(&block.id),
                 PresencePayload::Selection {
-                    start: start.byte,
-                    end: end.byte,
+                    start: from.min(to),
+                    end: to.max(from),
                 },
             ));
         }
-        let key = block_presence_key(&block.id);
+        let key = self.presence_key_for(&block.id);
         // A selection takes priority over the bare caret.
         if let Some((start, end)) = block.line.selection_range() {
             return Some((key, PresencePayload::Selection { start, end }));
@@ -8714,7 +8842,7 @@ impl BlockEditor {
         )],
         ctx: &mut BlockDrawCtx<'_>,
     ) {
-        let key = block_presence_key(&b.id);
+        let key = self.presence_key_for(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
         let _tr_rect = {
@@ -9503,6 +9631,10 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     }
     CODE_HEADER_HEIGHT * scale
 }
+
+#[path = "block_editor_present.rs"]
+mod present;
+pub use present::{BlockContent, PresenceKeyFn};
 
 #[cfg(test)]
 #[path = "block_editor_fence_tests.rs"]

@@ -87,7 +87,6 @@ impl CheckpointRefreshTestOwner {
 mod tests {
     use super::*;
     use crate::host::{LocalHost, publish};
-    use std::time::Duration;
 
     #[tokio::test]
     async fn native_sync_refresh_real_session_commits_new_signed_checkpoint() {
@@ -117,13 +116,12 @@ mod tests {
             .await
             .unwrap();
         let mut session = host.connect(&owner).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tilo_test_env::within("the live session to become ready", async {
             while !session.is_ready() {
                 session.recv().await.expect("live actual subscription");
             }
         })
-        .await
-        .unwrap();
+        .await;
         let old_generation = owner.committed_generation();
         let old_checkpoint = owner
             .outgoing()
@@ -131,9 +129,8 @@ mod tests {
             .map(|entry| entry.bytes.to_vec())
             .collect::<Vec<_>>();
         session.request_checkpoint_refresh().unwrap();
-        let request = tokio::time::timeout(Duration::from_secs(3), requests.recv())
+        let request = tilo_test_env::within("the checkpoint refresh request", requests.recv())
             .await
-            .unwrap()
             .unwrap();
         if fail_store {
             std::fs::rename(

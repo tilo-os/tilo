@@ -31,6 +31,8 @@ mod advertised_globals;
 mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
+#[path = "bluetooth_pairing.rs"]
+mod bluetooth_pairing;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "capture_protection.rs"]
@@ -139,8 +141,6 @@ mod opening_configure_carries_the_tab_size;
 mod output_management_protocol;
 #[path = "overview_window_actions.rs"]
 mod overview_window_actions;
-#[path = "peer_join_toast_batches.rs"]
-mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
 #[path = "pen_and_key_capture.rs"]

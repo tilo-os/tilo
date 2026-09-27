@@ -219,11 +219,19 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              "that owns the bin to `packages`.")
         for key, features in (("features", component.features), ("dev_features", component.dev_features)):
             for feature in features:
+                if key == "dev_features" and "/" not in feature and len(component_packages) == 1:
+                    package = component_packages[0]
+                    if package in packages and feature not in packages[package].features:
+                        report.error(where, f"{key} entry {feature!r}: package {package!r} declares no feature",
+                                     f"add it to [features] in {packages[package].directory.relative_to(report.repo)}"
+                                     "/Cargo.toml or drop it from `dev_features`.")
+                    continue
                 package, _, name = feature.rpartition("/")
                 if not package or package not in component_packages:
                     report.error(where, f"{key} entry {feature!r} must be qualified with one of the "
                                  f"component's packages ({', '.join(component_packages[:6])}...)",
-                                 'write it as "<package>/<feature>".')
+                                 'write it as "<package>/<feature>" (or use an unqualified dev feature '
+                                 'when the component has one package).')
                 elif package in packages and name not in packages[package].features:
                     report.error(where, f"{key} entry {feature!r}: package {package!r} declares no feature "
                                  f"{name!r}",

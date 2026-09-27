@@ -12,7 +12,7 @@ use crate::common::TestUser;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
-use std::{net::Ipv4Addr, time::Duration};
+use std::net::Ipv4Addr;
 use tilo_relay::{
     Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding, daemon::RelayIdentity,
 };
@@ -62,9 +62,11 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     let relay = Relay::start_with_relay_mode(config, identity, mode.clone())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), relay.endpoint.online())
-        .await
-        .expect("custom packet relay must become online");
+    tilo_test_env::within(
+        "custom packet relay must become online",
+        relay.endpoint.online(),
+    )
+    .await;
     assert_eq!(
         relay.node_addr().relay_urls().collect::<Vec<_>>(),
         vec![&url]
@@ -117,9 +119,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     for client in [&first, &second] {
         client.send(Envelope::Subscribe { workspace_id }).unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(10), client.recv())
-                .await
-                .unwrap(),
+            tilo_test_env::within("a message on client", client.recv()).await,
             Some(Envelope::Ready { .. })
         ));
     }
@@ -147,9 +147,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             signature: [0; 64],
         })
         .unwrap();
-    let received = tokio::time::timeout(Duration::from_secs(10), second.recv())
+    let received = tilo_test_env::within("a message on second", second.recv())
         .await
-        .unwrap()
         .unwrap();
     let Envelope::Delta {
         author_device_public_key,
@@ -195,9 +194,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .send(Envelope::Subscribe { workspace_id })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(10), outsider_client.recv())
-            .await
-            .unwrap(),
+        tilo_test_env::within("a message on outsider_client", outsider_client.recv()).await,
         Some(Envelope::NotAuthorised { .. })
     ));
     outsider_client.close().await;

@@ -138,15 +138,8 @@ impl HostSigning {
                 self.owner
                     .desktop_command_with_delivery(request, direct_delivery)
             }
-            fn openable_applications(&self) -> Vec<(String, String)> {
-                crate::canonical_records::installed()
-                    .map(|entry| {
-                        (
-                            entry.app_id().to_owned(),
-                            entry.definition().title.to_owned(),
-                        )
-                    })
-                    .collect()
+            fn catalogue(&self) -> &dyn tilo_desktop_model::apps::AppCatalogue {
+                &crate::canonical_records::Installed
             }
         }
         Arc::new(Commands {
@@ -214,11 +207,20 @@ impl PendingSignature {
         self.0.matches_route(app, record)
     }
     pub fn apply(self, owner: &mut SessionOwner) -> (impl FnOnce() + use<>, Result<(), String>) {
+        self.apply_until(owner, crate::owner_commit::execution_deadline())
+    }
+    /// [`Self::apply`] with the caller's reply deadline chosen by the owner
+    /// turn instead of the shipping execution budget.
+    fn apply_until(
+        self,
+        owner: &mut SessionOwner,
+        deadline: std::time::Instant,
+    ) -> (impl FnOnce() + use<>, Result<(), String>) {
         let timing = self.1;
         let policy_time = self.2;
         timing.mark("owner_dequeued");
         self.0.apply_scoped_fenced(
-            crate::owner_commit::execution_deadline(),
+            deadline,
             |route, certificate, mutation, authorization| {
                 if let Some(authorization) = authorization {
                     let time = policy_time.as_ref().ok_or_else(|| HostDocumentTurnError::Refused("startup replay requires original registered owner time".into()))?;
@@ -802,7 +804,10 @@ mod tests {
         );
         assert!(service.health().is_ok());
         assert_eq!(owner.status(), before);
-        let (complete, result) = pending.apply(&mut owner);
+        // The owner turn starts the caller's reply deadline. Its shipping five
+        // seconds would also bound this runner's commit fsyncs, so the turn
+        // here grants the shared hang bound instead.
+        let (complete, result) = pending.apply_until(&mut owner, tilo_test_env::hang_deadline());
         result.unwrap();
         complete();
         let signed = waiting.await.unwrap().unwrap();
@@ -864,9 +869,8 @@ mod tests {
         drop(pending);
         drop(receiver);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            tilo_test_env::within("the signer to fail once its queue is dropped", waiting)
                 .await
-                .unwrap()
                 .unwrap()
                 .is_err()
         );
@@ -921,10 +925,12 @@ mod tests {
         let mut pending = Vec::with_capacity(LIMIT);
         for _ in 0..LIMIT {
             pending.push(
-                tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-                    .await
-                    .expect("bounded signer entered its owner queue")
-                    .expect("owner queue remains open"),
+                tilo_test_env::within(
+                    "the bounded signer to enter its owner queue",
+                    receiver.recv(),
+                )
+                .await
+                .expect("owner queue remains open"),
             );
         }
         assert_eq!(LIMIT - service.shared.outstanding_handoffs(), 0);
@@ -972,11 +978,12 @@ mod tests {
             .commit(first)
             .await
             .expect("consuming one exact receipt releases one permit");
-        let overflow_pending =
-            tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-                .await
-                .expect("waiting signer advances after exact receipt consumption")
-                .expect("owner queue remains open");
+        let overflow_pending = tilo_test_env::within(
+            "the waiting signer to advance after exact receipt consumption",
+            receiver.recv(),
+        )
+        .await
+        .expect("owner queue remains open");
         let (complete, result) = overflow_pending.apply(&mut owner);
         result.expect("waiting exact mutation remains admitted");
         complete();
@@ -1021,9 +1028,8 @@ mod tests {
         assert!(!waiting.is_finished());
 
         service.fail("owner authority retired while signing waited");
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        let error = tilo_test_env::within("closed capacity to wake the waiter", waiting)
             .await
-            .expect("closed capacity wakes waiter")
             .expect("signer task")
             .unwrap_err();
         assert_eq!(error, "owner authority retired while signing waited");

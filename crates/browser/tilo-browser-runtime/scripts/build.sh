@@ -21,7 +21,8 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
 fi
 revision=$(git rev-parse HEAD)
 source_status=$(git status --porcelain)
-cargo build --locked --profile "$profile" -j2 -p tilo-browser-runtime --target wasm32-unknown-unknown
+# The Cloud frontend's monolithic build: its apps and the peer compiled in.
+cargo build --locked --profile "$profile" -j2 -p tilo-browser-runtime --features cloud,static-apps --target wasm32-unknown-unknown
 mkdir -p "$out/pkg" "$out/fonts"
 "${WASM_BINDGEN:-wasm-bindgen}" "$artifact_target_dir/wasm32-unknown-unknown/$artifact_profile/tilo_browser_runtime.wasm" --target web --out-dir "$out/pkg"
 cp crates/browser/tilo-browser-runtime/web/*.mjs crates/browser/tilo-browser-runtime/web/*.d.ts "$out/"

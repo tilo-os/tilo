@@ -506,7 +506,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     assert_eq!(service.mounted(), [("cloud-1".to_owned(), mount.clone())]);
 
     // The first sync runs in the mount's worker; it reports health when done.
-    assert!(service.wait_for_health("cloud-1", Health::Healthy, Duration::from_secs(30)));
+    assert!(service.wait_for_health("cloud-1", Health::Healthy, tilo_test_env::hang_bound()));
     assert_eq!(
         std::fs::read_to_string(mount.join("Docs/hello.txt")).unwrap(),
         "hello from the cloud"

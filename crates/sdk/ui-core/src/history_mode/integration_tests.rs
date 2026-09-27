@@ -1574,12 +1574,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 .unwrap(),
             "old"
         );
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
-        while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-            && crate::time::now() < deadline
-        {
-            std::thread::sleep(crate::time::Duration::from_millis(10));
-        }
+        store.await_submitted(&first.id).unwrap();
         assert_eq!(
             store.save_status(&first.id).unwrap(),
             crate::record::RecordSaveStatus::Saved,
@@ -2539,7 +2534,7 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
         "the legitimate result is one authored undo step on its actual owner"
     );
 
-    let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+    let deadline = tilo_test_env::hang_deadline();
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
         && crate::time::now() < deadline
     {

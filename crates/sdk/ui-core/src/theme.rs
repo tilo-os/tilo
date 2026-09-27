@@ -192,7 +192,17 @@ pub struct AppearanceIntent {
 #[must_use]
 pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
     use chrono::{Datelike, Offset, Timelike};
-    let local: chrono::DateTime<chrono::Local> = crate::time::wall().into();
+    // Through the epoch offset: chrono converts only std's clock type, which
+    // is not the toolkit clock in the browser.
+    let since = crate::time::wall()
+        .duration_since(crate::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let local = chrono::DateTime::from_timestamp(
+        i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+        since.subsec_nanos(),
+    )
+    .unwrap_or_default()
+    .with_timezone(&chrono::Local);
     settings_store::day_schedule::LocalMoment {
         day_of_year: u16::try_from(local.ordinal()).unwrap_or(1),
         minute_of_day: u16::try_from(local.hour() * 60 + local.minute()).unwrap_or(0),

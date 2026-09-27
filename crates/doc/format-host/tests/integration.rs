@@ -33,6 +33,9 @@ use format_host::runner::{self, Limits, LoadedProvider};
 use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 const BUILD_HINT: &str =
     "builds a WASM provider; run crates/doc/format-host/tests/run-provider-integration.sh";
 
@@ -102,17 +105,16 @@ impl HostHarness {
     async fn connect(&self) -> anyhow::Result<format_router::Client> {
         // Tiny retry — the accept loop may not be polled yet on the first
         // dispatch tick.
-        let mut last = None;
-        for _ in 0..20 {
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        loop {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(stream) => return Ok(client_for(stream)),
-                Err(e) => {
-                    last = Some(e);
-                    tokio::time::sleep(Duration::from_millis(25)).await;
+                Err(e) if Instant::now() >= deadline => {
+                    return Err(anyhow::anyhow!("connect failed: {e:?}"));
                 }
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             }
         }
-        Err(anyhow::anyhow!("connect failed: {last:?}"))
     }
 }
 
@@ -312,7 +314,8 @@ fn registry_hot_reload() {
         // Rewrite the registry file in place — inotify picks it up.
         std::fs::write(&h.registry_path, markdown_registry(&wasm)).unwrap();
         // The watcher debounces 100ms; give it a couple ticks.
-        for _ in 0..40 {
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut list = client.list_request();
             let _ = list.get();

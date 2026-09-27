@@ -107,10 +107,11 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
     // phase: deduplicated_blob_references_cannot_expand_an_app_past_the_materialized_limit
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
-        // More than 5 MiB when referenced 2,049 times, while remaining below the
-        // independent 4,096-entry ceiling so this specifically exercises the
-        // materialized-byte guard.
-        let repeated = BlobHash::of(&vec![0x5a; 3072]);
+        // Past the materialized limit when referenced 2,049 times, while
+        // remaining below the independent 4,096-entry ceiling so this
+        // specifically exercises the materialized-byte guard.
+        let blob_len = tilo_app_package::MAX_APP_UNPACKED_BYTES / 2048;
+        let repeated = BlobHash::of(&vec![0x5a; usize::try_from(blob_len).unwrap()]);
         let mut collection = Collection::default();
         for index in 0..=2048 {
             collection
@@ -118,7 +119,7 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
                 .insert(format!("share/repeated-{index}"), repeated);
         }
         assert!(matches!(
-            validate_materialized_payload(&packed.meta.manifest, &collection, |_| Some(3072)),
+            validate_materialized_payload(&packed.meta.manifest, &collection, |_| Some(blob_len)),
             Err(tilo_app_package::UnpackError::PayloadTooLarge { .. })
         ));
     }

@@ -391,7 +391,7 @@ exit 1
             assert!(!socket.exists(), "socket should be removed on drop");
             // /proc/<pid> disappears once the kernel reaps the exited process; poll
             // briefly to avoid a schedule race.
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = tilo_test_env::hang_deadline();
             while PathBuf::from(format!("/proc/{pid}")).exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }

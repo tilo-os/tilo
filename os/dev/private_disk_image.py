@@ -19,10 +19,24 @@ def _identity(info):
     return info.st_dev, info.st_ino
 
 
-def _validated_loop_node(node, expected_device):
+def _disk_group():
+    try:
+        import grp
+        return grp.getgrnam('disk').gr_gid
+    except (ImportError, KeyError):
+        return None
+
+
+def _validated_loop_node(node, expected_device, created=True):
+    """A node this module created is root:root 0600. One udev made on a host
+    that runs it is root's, in group root or disk, with no access for others."""
     info = node.lstat()
-    if (not stat.S_ISBLK(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_uid != 0 or info.st_gid != 0
+    mode = stat.S_IMODE(info.st_mode)
+    if created:
+        owner_ok = mode == 0o600 and info.st_gid == 0
+    else:
+        owner_ok = mode & 0o7117 == 0 and info.st_gid in (0, _disk_group())
+    if (not stat.S_ISBLK(info.st_mode) or not owner_ok or info.st_uid != 0
             or info.st_rdev != expected_device or info.st_nlink != 1):
         raise ValueError('loop partition node differs from kernel identity')
     return info
@@ -114,7 +128,7 @@ def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev')
             owned = False
             try:
                 try:
-                    info = _validated_loop_node(node, expected_device)
+                    info = _validated_loop_node(node, expected_device, created=False)
                 except FileNotFoundError:
                     os.mknod(node, stat.S_IFBLK | 0o600, expected_device)
                     owned = True
@@ -129,7 +143,7 @@ def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev')
         cleanup_error = None
         for node, device, inode, raw_device, owned in reversed(held):
             try:
-                info = _validated_loop_node(node, raw_device)
+                info = _validated_loop_node(node, raw_device, created=owned)
                 if (info.st_dev, info.st_ino) != (device, inode):
                     raise ValueError('loop partition node changed before cleanup')
                 if owned:

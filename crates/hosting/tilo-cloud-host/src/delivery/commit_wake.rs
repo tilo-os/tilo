@@ -53,7 +53,7 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
         committed();
-        let waited = tokio::time::timeout(Duration::from_secs(2), waiter)
+        let waited = tokio::time::timeout(tilo_test_env::hang_bound(), waiter)
             .await
             .expect("woken by the commit")
             .unwrap();
@@ -64,7 +64,7 @@ mod tests {
     async fn a_commit_while_busy_is_kept_until_the_next_wait() {
         let mut wake = CommitWake::subscribe();
         committed();
-        tokio::time::timeout(Duration::from_millis(200), wake.changed())
+        tokio::time::timeout(tilo_test_env::hang_bound(), wake.changed())
             .await
             .expect("a commit made before waiting is not lost");
     }
