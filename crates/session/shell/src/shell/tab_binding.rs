@@ -2012,7 +2012,7 @@ mod tests {
                 "reopening starts one live group, not a live group beside a retained corpse"
             );
             assert!(
-                tree.reorder_group_within_strip(strip_id, reopened, 0),
+                tree.reorder_group_for_tests(strip_id, reopened, 0),
                 "the reopened group can move across the compact live ordering"
             );
             assert_eq!(

@@ -49,6 +49,7 @@ pub mod continuity_suggestion;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
 pub mod device_fabric;
