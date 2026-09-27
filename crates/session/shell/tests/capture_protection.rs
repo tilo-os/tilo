@@ -446,7 +446,7 @@ fn assert_prompt_withheld(
 
 /// Paint, then check every secret prompt the shell reports is withheld from
 /// a screenshot and a screen-share frame while the local display shows it.
-fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) {
+pub(crate) fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) {
     let scene = frame(fb);
     let prompts = fb.host().secret_prompt_rects();
     assert!(!prompts.is_empty(), "{what}: the prompt is a secret prompt");
