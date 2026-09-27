@@ -132,18 +132,18 @@ class Fingerprint(unittest.TestCase):
             self.assertIn("set-", combined)
             self.assertNotIn("rpms-snapshot.env", combined)
 
-    def test_image_builds_depend_on_resolve_or_create(self) -> None:
+    def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
         build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
         relay = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(encoding="utf-8")
         snapshot = (ROOT / ".forgejo/workflows/snapshot-rpms.yml").read_text(encoding="utf-8")
-        self.assertIn("uses: ./.forgejo/workflows/snapshot-rpms.yml", build)
+        for consumer in (build, relay):
+            self.assertIn("Resolve the exact signed RPM snapshot fingerprint", consumer)
+            self.assertIn("./os/dev/resolve-rpm-snapshot.sh", consumer)
+            self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", consumer)
+            self.assertNotIn("uses: ./.forgejo/workflows/snapshot-rpms.yml", consumer)
+            self.assertNotIn("os/rpms-snapshot.env", consumer)
         self.assertIn("needs.ensure-rpms.result == 'success'", build)
-        self.assertIn("resolve-rpm-snapshot.sh", build)
-        self.assertIn("uses: ./.forgejo/workflows/snapshot-rpms.yml", relay)
-        self.assertIn("workflow_call:", snapshot)
         self.assertIn("--tag \"$FINGERPRINT_TAG\"", snapshot)
-        self.assertNotIn("os/rpms-snapshot.env", build)
-        self.assertNotIn("os/rpms-snapshot.env", relay)
         self.assertNotIn("open-snapshot-pr.py", snapshot)
         self.assertNotIn("reconcile-snapshot-pins.py", snapshot)
 
