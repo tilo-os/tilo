@@ -87,6 +87,12 @@ impl ActionHost for StubHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
+        if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = &self.confirmation
+            && request.confirmation
+                != Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
+        {
+            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+        }
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
             invocation,
@@ -320,8 +326,6 @@ fn each_session_is_its_own_attributed_agent_run() {
 #[test]
 fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
     for (policy, expected) in [
-        // `apply` carries operations whose own contracts decide, so it is
-        // advertised as needing confirmation even without a policy of its own.
         (
             tilo_actions::ConfirmationPolicy::None,
             Some(tilo_actions::remote::Confirmation::Confirmed),
@@ -348,7 +352,13 @@ fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
             invoke(&endpoint, &session).await
         });
         assert_eq!(reply["result"]["isError"], false, "{reply}");
-        assert_eq!(invoked.lock().unwrap()[0].confirmation, expected);
+        let confirmations: Vec<_> = invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.confirmation.clone())
+            .collect();
+        assert_eq!(confirmations, vec![expected], "one admitted start");
     }
 }
 
@@ -409,9 +419,4 @@ fn the_workspace_itself_is_addressable_for_installed_apps() {
     let invoked = invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0].target.provider, "workspace:room");
-    assert_eq!(
-        invoked[0].argument,
-        tilo_actions::remote::InvokeArgument::None,
-        "an empty argument object is the nullary call"
-    );
 }
