@@ -37,6 +37,7 @@ bounded-zip = { path = "../bounded-zip", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 quick-xml = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 qdoc = { path = "../qdoc", features = ["bulk-instrumentation"] }

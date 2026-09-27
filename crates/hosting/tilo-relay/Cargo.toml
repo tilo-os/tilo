@@ -122,6 +122,8 @@ tracing.workspace = true
 
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
+sd-notify.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }

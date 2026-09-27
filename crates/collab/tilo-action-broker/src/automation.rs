@@ -270,8 +270,9 @@ pub fn replace_trigger_chords(keymap: &mut ShortcutConfig, chords: Vec<ActionCho
     keymap.actions != before
 }
 
-/// Why `shortcut`'s triggers cannot be saved in `workspace` by `saver`,
-/// with `keymap` the chords already taken on this device.
+/// Why `shortcut`'s triggers cannot be saved in `workspace` by
+/// `context.saver`, with `context.keymap` the chords already taken on this
+/// device.
 ///
 /// An input a trigger's payload ([`TriggerSpec::payload`]) names must have
 /// the payload's type, and an input the shortcut requires must be given by
@@ -283,8 +284,7 @@ pub fn replace_trigger_chords(keymap: &mut ShortcutConfig, chords: Vec<ActionCho
 pub fn check_triggers(
     shortcut: &Shortcut,
     workspace: &Workspace,
-    saver: &str,
-    keymap: &ShortcutConfig,
+    context: &SaveContext<'_>,
 ) -> Result<(), String> {
     if shortcut.triggers.is_empty() {
         return Ok(());
@@ -323,7 +323,7 @@ pub fn check_triggers(
     for trigger in &shortcut.triggers {
         validate_trigger(trigger)?;
         if let TriggerSpec::FileChanged { capability } = trigger {
-            readable_folder(workspace, capability, saver)?;
+            readable_folder(workspace, capability, context.saver)?;
         }
         let TriggerSpec::Keyboard { chord: text } = trigger else {
             continue;
@@ -332,9 +332,18 @@ pub fn check_triggers(
         if keyboard.replace(chord.clone()).is_some() {
             return Err("a shortcut takes at most one keyboard trigger".into());
         }
-        keymap
+        context
+            .keymap
             .check_action_chord(&chord, Some(&target))
-            .map_err(|error| format!("{} cannot run the shortcut: {error}", chord.display()))?;
+            .map_err(|error| match error {
+                settings_store::hardware::ShortcutConfigError::Fixed(id) => format!(
+                    "{} cannot run the shortcut: the desktop uses it for “{}”",
+                    chord.display(),
+                    settings_store::keyboard_shortcuts::fixed_shortcut(id)
+                        .map_or_else(|| id.to_string(), context.fixed_label)
+                ),
+                error => format!("{} cannot run the shortcut: {error}", chord.display()),
+            })?;
         if let Some(other) = others.iter().find(|other| {
             other.id != shortcut.id
                 && other.triggers.iter().any(|trigger| {
@@ -421,6 +430,8 @@ pub struct SaveContext<'a> {
     pub saver: &'a str,
     /// The chords already taken on this device.
     pub keymap: &'a ShortcutConfig,
+    /// What the desktop calls a fixed shortcut, in the person's language.
+    pub fixed_label: &'a dyn Fn(&settings_store::keyboard_shortcuts::FixedShortcut) -> String,
 }
 
 /// A shortcut to store, or remove, in one workspace.
@@ -490,7 +501,7 @@ pub fn plan_library(
     if !exists && replacing {
         return Err(format!("there is no shortcut `{}`", shortcut.id));
     }
-    check_triggers(&shortcut, workspace, context.saver, context.keymap)?;
+    check_triggers(&shortcut, workspace, context)?;
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     tilo_automation::check(&shortcut, context.catalog, &resolver).map_err(|errors| {
         errors

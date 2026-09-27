@@ -52,6 +52,7 @@ russh = { version = "0.63.3", default-features = false, features = ["ring", "fla
 tokio.workspace = true
 vte = "0.15.0"
 des = "0.9"
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Serialises tests that exercise the process-wide clipboard, so they never

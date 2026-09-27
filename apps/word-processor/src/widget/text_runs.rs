@@ -11,6 +11,14 @@ use ui::richtext::{BaselineShift, FontFamily, RichSpan};
 pub(super) type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
 
+/// True when a mark named `name` fully covers the half-open char range
+/// `[start, end)`. Same cover rule as `qdoc::model::has_mark_over`.
+pub(super) fn marks_cover_range(marks: &[MarkSpan], name: &str, start: usize, end: usize) -> bool {
+    marks
+        .iter()
+        .any(|m| m.name == name && m.start <= start && m.end >= end)
+}
+
 pub(super) fn char_has(index: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks
         .iter()

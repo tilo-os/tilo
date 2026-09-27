@@ -10,6 +10,7 @@ description = "Decode and apply untrusted Automerge bytes in memory- and time-li
 automerge.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

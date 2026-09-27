@@ -72,6 +72,7 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]

@@ -23,6 +23,7 @@ tilo-automerge-isolate.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
+workspace-hack = { version = "0.1" }
 [dev-dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 rcgen.workspace = true

@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 thiserror.workspace = true
 tilo-connected-protocol = { path = "../../session/tilo-connected-protocol" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

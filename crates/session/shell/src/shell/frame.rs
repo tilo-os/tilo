@@ -1430,7 +1430,7 @@ impl FrameBuilder {
     fn topbar_damage_rect(&self, section: &Scene, bounds: Option<Rect>) -> Option<FineDamageRect> {
         // An empty topbar is valid only for a non-production/test root; because a changed empty
         // section has no pixels to repair, it must not be the sole sparse authority.
-        if section.encoding_eq(&Scene::new()) {
+        if section.encoding().is_empty() {
             return None;
         }
         self.native_damage_rect(bounds)
@@ -1447,7 +1447,7 @@ impl FrameBuilder {
             Some(bounds) => self
                 .native_damage_rect(Some(bounds))
                 .map_or(QuickSettingsDamage::Unknown, QuickSettingsDamage::Bounds),
-            None if section.encoding_eq(&Scene::new()) => QuickSettingsDamage::Absent,
+            None if section.encoding().is_empty() => QuickSettingsDamage::Absent,
             None => QuickSettingsDamage::Unknown,
         }
     }
@@ -2127,7 +2127,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
-        if logical.encoding_eq(&Scene::new()) {
+        if logical.encoding().is_empty() {
             return false;
         }
         self.compose_layout_scene(&logical, scene);

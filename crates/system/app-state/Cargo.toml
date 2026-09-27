@@ -27,6 +27,7 @@ tilo-automerge.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 xdg-paths = { path = "../xdg-paths" }

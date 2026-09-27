@@ -93,6 +93,7 @@ zeroize.workspace = true
 # out loud without garble; the alphabet is declared at compile time.
 data-encoding.workspace = true
 data-encoding-macro.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 private-fs = { path = "../../system/private-fs" }

@@ -42,6 +42,7 @@ media = { path = "../../crates/media/core" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
 thumbnail = { path = "../../crates/media/thumbnail" }
+workspace-hack = { version = "0.1" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.

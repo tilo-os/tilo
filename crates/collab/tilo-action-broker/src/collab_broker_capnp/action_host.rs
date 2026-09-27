@@ -414,6 +414,14 @@ impl CapnpBrokerState {
         let roots = self.action_directory_roots();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
+        // Keyboard shortcuts are this device's own settings: offered to
+        // callers on this machine, never to a remote device.
+        let keyboard = self
+            .services
+            .keyboard_shortcuts
+            .as_ref()
+            .filter(|_| with_rows && caller.device_public_key().is_none())
+            .map(|service| (service, settings_store::hardware::ShortcutConfig::load()));
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -523,6 +531,25 @@ impl CapnpBrokerState {
                         })
                         .map(|descriptor| {
                             action_row(workspace_provider(&room), SHORTCUTS_APP_ID, descriptor)
+                        }),
+                );
+            }
+            if let Some((service, keymap)) = &keyboard {
+                rows.extend(
+                    service
+                        .catalogue_rows(&workspace_provider(&room), keymap)
+                        .into_iter()
+                        .filter(|row| {
+                            row.action.as_ref().is_some_and(|descriptor| {
+                                Self::allowed(
+                                    &workspace,
+                                    &policy,
+                                    now,
+                                    service.app_id(),
+                                    &descriptor.address.action,
+                                    descriptor.contract.permission,
+                                )
+                            })
                         }),
                 );
             }
@@ -1317,6 +1344,18 @@ impl CapnpBrokerState {
                 argument,
             );
         }
+        if let Some(service) = self.services.keyboard_shortcuts.as_ref()
+            && service.is_resource(&address.resource)
+            && caller.device_public_key().is_none()
+        {
+            return self.start_keyboard_shortcut_action(
+                service.as_ref(),
+                actor,
+                (&workspace, &policy, now),
+                address,
+                argument,
+            );
+        }
         if let Some(governance) = self.services.workspace_governance.as_ref()
             && governance.handles(&address.action)
         {
@@ -1373,6 +1412,7 @@ impl CapnpBrokerState {
                 catalog: &catalog,
                 saver: &actor.id,
                 keymap: &keymap,
+                fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
             },
         )
         .map_err(|reason| ActionHostError::Refused { reason })?;
@@ -1401,6 +1441,67 @@ impl CapnpBrokerState {
                 actor: actor.id.clone(),
             },
             tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+        );
+        Ok(id)
+    }
+
+    /// List or change the desktop's keyboard shortcuts for `actor` in
+    /// `workspace`. Changing one takes the same Settings grant as changing
+    /// any other setting; a clash fails naming what holds the chord.
+    fn start_keyboard_shortcut_action(
+        &self,
+        service: &dyn crate::services::KeyboardShortcutServices,
+        actor: &BrokerActor,
+        (workspace, policy, now): (&Workspace, &Actor, u64),
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<u64, ActionHostError> {
+        let mut keymap = settings_store::hardware::ShortcutConfig::load();
+        let descriptor = service
+            .descriptor(&keymap, address)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if !Self::allowed(
+            workspace,
+            policy,
+            now,
+            service.app_id(),
+            &address.action,
+            descriptor.contract.permission,
+        ) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let outcome =
+            service
+                .apply(&mut keymap, address, argument)
+                .and_then(|(output, changed)| {
+                    if changed {
+                        keymap.save().map_err(|error| {
+                            Box::new(tilo_actions::ActionFailure {
+                                code: "save_failed".into(),
+                                message: error.to_string(),
+                                details: None,
+                                retryable: true,
+                            })
+                        })?;
+                    }
+                    Ok(output)
+                });
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+            match outcome {
+                Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: *error,
+                },
+            },
         );
         Ok(id)
     }

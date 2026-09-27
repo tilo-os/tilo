@@ -8,6 +8,7 @@ description = "Connect to the user's SSH agent on any platform"
 
 [dependencies]
 russh = { version = "0.63.3", default-features = false, features = ["ring"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

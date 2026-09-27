@@ -38,6 +38,7 @@ bounded-command = { path = "../bounded-command" }
 tilo-crypto = { path = "../tilo-crypto" }
 
 tempfile.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

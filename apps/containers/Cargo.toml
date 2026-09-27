@@ -34,6 +34,7 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 containers = { path = ".", default-features = false, features = ["test-support"] }

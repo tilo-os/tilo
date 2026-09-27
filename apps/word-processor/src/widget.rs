@@ -61,6 +61,7 @@ use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
+use crate::text_offsets::{byte_to_char, char_to_byte};
 use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
@@ -869,19 +870,6 @@ fn inline_mark(name: &str) -> Option<crate::actions::editing::InlineMark> {
         "sub" => InlineMark::Subscript,
         _ => return None,
     })
-}
-
-fn char_to_byte(text: &str, char_off: usize) -> usize {
-    text.char_indices()
-        .nth(char_off)
-        .map_or(text.len(), |(b, _)| b)
-}
-fn byte_to_char(text: &str, byte_off: usize) -> usize {
-    let b = byte_off.min(text.len());
-    // Iterator-based rather than `text[..b]`: `b` isn't guaranteed to land on
-    // a char boundary, and this counts every char that starts before it
-    // without ever slicing through one.
-    text.char_indices().take_while(|&(i, _)| i < b).count()
 }
 
 /// Per-visual-line `(line_top, line_height)` for a shaped layout (same coordinate
@@ -11771,24 +11759,11 @@ impl WordProcessorWidget {
     /// Selection endpoints in document order, computed from the block cache
     /// (so it works during `draw`, which has no `state`).
     fn selection_span_cached(&self) -> Option<(Caret, Caret)> {
-        let anchor = self.inner.selection_anchor.clone()?;
-        let caret = self.inner.caret.clone();
-        if anchor == caret {
-            return None;
-        }
-        match (
-            self.block_index_cached(&anchor.block),
-            self.block_index_cached(&caret.block),
-        ) {
-            (Some(pa), Some(pc)) => {
-                if (pa, anchor.offset) <= (pc, caret.offset) {
-                    Some((anchor, caret))
-                } else {
-                    Some((caret, anchor))
-                }
-            }
-            _ => None,
-        }
+        crate::word_processor::ordered_selection_span(
+            self.inner.selection_anchor.as_ref(),
+            &self.inner.caret,
+            |id| self.block_index_cached(id),
+        )
     }
 
     /// Per-block selected char ranges spanning the selection (cache-based).
@@ -11796,21 +11771,15 @@ impl WordProcessorWidget {
         let Some((start, end)) = self.selection_span_cached() else {
             return vec![];
         };
-        let (Some(si), Some(ei)) = (
-            self.block_index_cached(&start.block),
-            self.block_index_cached(&end.block),
-        ) else {
-            return vec![];
-        };
-        (si..=ei)
-            .filter_map(|i| {
+        crate::word_processor::selection_block_ranges(
+            &start,
+            &end,
+            |id| self.block_index_cached(id),
+            |i| {
                 let b = self.blocks.get(i)?;
-                let blen = b.text.chars().count();
-                let s = if i == si { start.offset } else { 0 };
-                let e = if i == ei { end.offset } else { blen };
-                Some((b.id.clone(), s, e))
-            })
-            .collect()
+                Some((b.id.clone(), b.text.chars().count()))
+            },
+        )
     }
 
     fn selection_bytes_for(&self, block_id: &str, text: &str) -> Option<(usize, usize)> {
@@ -11976,11 +11945,10 @@ impl WordProcessorWidget {
             return false;
         }
         sel.iter().all(|(bid, s, e)| {
-            self.blocks.iter().find(|b| &b.id == bid).is_some_and(|b| {
-                b.marks
-                    .iter()
-                    .any(|m| m.name == name && m.start <= *s && m.end >= *e)
-            })
+            self.blocks
+                .iter()
+                .find(|b| &b.id == bid)
+                .is_some_and(|b| text_runs::marks_cover_range(&b.marks, name, *s, *e))
         })
     }
 

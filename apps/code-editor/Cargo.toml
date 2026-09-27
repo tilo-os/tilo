@@ -49,6 +49,7 @@ uuid.workspace = true
 bounded-command = { path = "../../crates/system/bounded-command" }
 hex.workspace = true
 sha2.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

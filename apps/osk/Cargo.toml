@@ -49,6 +49,7 @@ wayland-client.workspace = true
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # memfd_create for the synthetic XKB keymap fd handed to the compositor.
 libc.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-automerge.workspace = true

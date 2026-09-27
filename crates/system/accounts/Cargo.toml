@@ -36,6 +36,7 @@ url.workspace = true
 # interface; the credential helper runs as a bounded child process.
 cloud-source = { path = "../cloud-source" }
 bounded-command = { path = "../../../crates/system/bounded-command" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file

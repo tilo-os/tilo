@@ -928,12 +928,11 @@ impl BlockEditor {
                 continue;
             }
             // Headings are never indented — use the raw `line`, not `body`.
-            if let Some(rest) = line.strip_prefix("### ") {
-                editor.blocks.push(Block::heading(3, rest));
-            } else if let Some(rest) = line.strip_prefix("## ") {
-                editor.blocks.push(Block::heading(2, rest));
-            } else if let Some(rest) = line.strip_prefix("# ") {
-                editor.blocks.push(Block::heading(1, rest));
+            if let Some((level, prefix_len)) = heading_markdown_prefix(line) {
+                editor.blocks.push(Block::heading(
+                    level,
+                    line.get(prefix_len..).unwrap_or_default(),
+                ));
             } else {
                 editor.blocks.push(Block::paragraph(line));
             }
@@ -2070,13 +2069,7 @@ impl BlockEditor {
             return false;
         }
         let text = b.line.value().to_string();
-        let (level, prefix_len) = if text.starts_with("### ") {
-            (3u8, 4)
-        } else if text.starts_with("## ") {
-            (2u8, 3)
-        } else if text.starts_with("# ") {
-            (1u8, 2)
-        } else {
+        let Some((level, prefix_len)) = heading_markdown_prefix(&text) else {
             return false;
         };
         Self::remove_line_range(&mut b.line, 0..prefix_len);
@@ -3448,8 +3441,24 @@ pub enum CursorPlacement {
     Byte(usize),
 }
 
+/// Markdown heading prefix at the start of `text`: `(level, prefix_byte_len)`.
+///
+/// Shared by `from_markdown`, live `#`/`##`/`###` promotion, and the typed-prefix
+/// gate that only fires when the caret sits exactly on that prefix.
+fn heading_markdown_prefix(text: &str) -> Option<(u8, usize)> {
+    if text.starts_with("### ") {
+        Some((3, 4))
+    } else if text.starts_with("## ") {
+        Some((2, 3))
+    } else if text.starts_with("# ") {
+        Some((1, 2))
+    } else {
+        None
+    }
+}
+
 fn is_heading_prefix(s: &str) -> bool {
-    matches!(s, "# " | "## " | "### ")
+    heading_markdown_prefix(s).is_some_and(|(_, len)| len == s.len())
 }
 
 fn clamp_char_boundary(text: &str, byte: usize) -> usize {
@@ -4719,24 +4728,9 @@ fn accessible_kind_name(kind: &BlockKind) -> &'static str {
 }
 
 fn valid_existing_kind(kind: &str) -> bool {
-    let indent = |value: &str| {
-        value
-            .parse::<u8>()
-            .is_ok_and(|value| value <= MAX_LIST_INDENT)
-    };
-    matches!(
-        kind,
-        "paragraph" | "quote" | "divider" | "heading1" | "heading2" | "heading3"
-    ) || kind.strip_prefix("bullet:").is_some_and(indent)
-        || kind.strip_prefix("numbered:").is_some_and(indent)
-        || kind.strip_prefix("checklist:").is_some_and(|rest| {
-            let mut parts = rest.split(':');
-            parts.next().is_some_and(indent)
-                && matches!(parts.next(), Some("0" | "1"))
-                && parts.next().is_none()
-        })
-        || kind.starts_with("code:")
-        || matches!(kind, "table:0" | "table:1")
+    // Round-trip through the same parser/serializer the CRDT uses, so the
+    // accept/reject rule cannot drift from `kind_from_str` / `kind_to_str`.
+    kind_to_str(&kind_from_str(kind)) == kind
 }
 
 fn kind_from_str(s: &str) -> BlockKind {

@@ -10,6 +10,7 @@ tilo-agent-control-protocol = { path = "../control-protocol" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 collab-types = { path = "../../collab/collab-types" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

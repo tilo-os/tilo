@@ -24,6 +24,7 @@ shell = { path = "../../session/shell", default-features = false }
 media = { path = "../../media/core", features = ["realtime"] }
 cosmic-text = { workspace = true, features = ["fontconfig", "swash", "std"] }
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 proptest.workspace = true

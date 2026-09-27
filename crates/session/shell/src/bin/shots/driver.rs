@@ -83,8 +83,24 @@ impl ShellDriver {
         // real machine are yours.
         let mut tree = tree;
         tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+        let hosted_tabs = hosted_app_tabs(&tree);
+        let fb = FrameBuilder::with_tree(tree, viewport);
+        // Binding a tab never creates its document: the action that opens
+        // an app does. This driver opens every tab of the tree it is handed
+        // into its own fresh record store, so it is that action here —
+        // without it every in-process app renders "record does not exist".
+        let records = fb.chrome().records().clone();
+        for tab in hosted_tabs {
+            // A refusal stays on screen as that tile's unavailable card;
+            // the line here says which tab and why.
+            if let Err(error) =
+                shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
+            {
+                eprintln!("shots: tab {tab} has no document: {error}");
+            }
+        }
         Self {
-            fb: FrameBuilder::with_tree(tree, viewport),
+            fb,
             state: AutoCommit::new(),
             root_obj: automerge::ROOT.clone(),
             modifiers: Modifiers::default(),
@@ -579,6 +595,27 @@ impl ShellDriver {
         self.fb.pump_apps(&mut self.state, &root);
         self.fb.paint_settled()
     }
+}
+
+/// Every tab in `tree` whose tile is an in-process app — the tabs that
+/// the production open-app actions give a scratch document when they
+/// mint them (`window_actions`).
+fn hosted_app_tabs(tree: &WorkspaceTree) -> Vec<u64> {
+    use shell::shell::state::TileContent;
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter(|tab| {
+            matches!(
+                tab.tile,
+                TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
+            )
+        })
+        .map(|tab| tab.id)
+        .collect()
 }
 
 /// Append a tab to the first window group of the first workspace, straight

@@ -58,6 +58,7 @@ tempfile.workspace = true
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify.workspace = true
+workspace-hack = { version = "0.1" }
 
 [build-dependencies]
 capnpc.workspace = true

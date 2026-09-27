@@ -191,6 +191,7 @@ fn expected_coords(font: &Font, weight: u16, optical: Option<f32>) -> Vec<i16> {
 fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected: u16) {
     let buffer = renderer.shape_buffer("Hamburgefon", None, style);
     let shaped: Vec<_> = buffer
+        .buffer
         .layout_runs()
         .flat_map(|run| run.glyphs.iter())
         .map(|glyph| (glyph.font_id, glyph.font_weight))
@@ -894,12 +895,13 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
         let buffer = renderer.shape_buffer(text, None, &style);
         assert!(
             buffer
+                .buffer
                 .layout_runs()
                 .flat_map(|run| run.glyphs.iter())
                 .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0),
             "fixture must exercise GPOS mark offsets"
         );
-        let shaped = shaped_origins(&buffer);
+        let shaped = shaped_origins(&buffer.buffer);
         let scene = draw(&mut renderer, text, &style);
         assert_same_origins(&painted_origins(&scene), &shaped, "plain text");
 
