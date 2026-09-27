@@ -372,7 +372,11 @@ async fn serve_cli() -> anyhow::Result<()> {
             owner_key_file,
             valid_for_seconds,
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
-        Cmd::Review { command } => cmd_review(&storage, command),
+        // Review fetches packages with a blocking HTTP client, which must not
+        // run (or be dropped) on an async worker.
+        Cmd::Review { command } => tilo_rt::io::run(move || Ok(cmd_review(&storage, command)))
+            .await
+            .map_err(|error| anyhow::anyhow!("review: {error}"))?,
     }
 }
 
