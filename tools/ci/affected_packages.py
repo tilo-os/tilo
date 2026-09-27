@@ -191,6 +191,12 @@ REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 # of structural cost. Only shard balancing uses these numbers.
 TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
+# Test jobs are sharded on their own, by recorded test time: one test job per
+# this many recorded seconds, so a large tested set runs its suites on several
+# runners instead of queueing them on one. Each test job links only its own
+# packages' tests; the type-check shards above are unaffected.
+TEST_SHARD_SECONDS = 1_000
+MAX_TEST_SHARDS = 4
 
 
 def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
@@ -478,6 +484,12 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
+def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> int:
+    total = sum(test_seconds.get(name, 0) for name in names)
+    time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
+    return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -621,9 +633,23 @@ def make_plan(
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
-    matrix = []
+    # Type-check (Clippy/check) shards cover the selected closure.
+    check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
+            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
+    # Test shards cover the tested packages and scoped readers, split by
+    # recorded test time.
+    test_units = (tested | scoped_tests.keys()) & selected
+    test_shards = balance(test_units, packages,
+                          useful_test_shard_count(test_units, test_seconds or {}), test_seconds)
+    if selected and not test_shards:
+        # Keep the aggregate's test result applicable: one row whose steps skip.
+        test_shards = [{"shard": 1, "packages": "", "package_count": 0,
+                        "estimated_cost": 0, "recorded_test_seconds": 0}]
+    matrix = []
+    for arch, runner in runners.items():
+        for shard in test_shards:
             shard_names = set(shard["packages"].split()[1::2])
             test_names = sorted(tested & shard_names)
             scoped_names = sorted(scoped_tests.keys() & shard_names)
@@ -667,14 +693,15 @@ def make_plan(
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
+        "test_shard_count": len(matrix) // len(runners) if matrix else 0,
         "matrix": {"include": matrix},
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.
-        "clippy_matrix": {"include": [row for row in matrix if row["arch"] == "x86_64"]},
+        "clippy_matrix": {"include": [row for row in check_rows if row["arch"] == "x86_64"]},
         # Clippy type-checks every target it lints with the same flags, so on
         # x86_64 it is the all-target check. Other architectures, which are
         # not linted, keep a standalone all-target check.
-        "check_matrix": {"include": [row for row in matrix if row["arch"] != "x86_64"]},
+        "check_matrix": {"include": [row for row in check_rows if row["arch"] != "x86_64"]},
     }
 
 
@@ -698,6 +725,7 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
         handle.write(f"shard_count={plan['shard_count']}\n")
+        handle.write(f"test_shard_count={plan['test_shard_count']}\n")
 
 
 def main() -> int:
