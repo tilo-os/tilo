@@ -96,3 +96,29 @@ relative-time-days = { $count ->
         [one] { $count } d ago
        *[other] { $count } d ago
     }
+
+# Coarse relative times ("3 days ago"), as lists and cards show them.
+relative-ago-just-now = just now
+relative-ago-minutes = { $count } min ago
+relative-ago-hours = { $count } hr ago
+relative-ago-yesterday = yesterday
+relative-ago-days = { $count ->
+        [one] { $count } day ago
+       *[other] { $count } days ago
+    }
+relative-ago-weeks = { $count ->
+        [one] { $count } week ago
+       *[other] { $count } weeks ago
+    }
+relative-ago-months = { $count ->
+        [one] { $count } month ago
+       *[other] { $count } months ago
+    }
+relative-ago-years = { $count ->
+        [one] { $count } year ago
+       *[other] { $count } years ago
+    }
+
+# A software participant in history, presence and activity rows.
+participant-agent = { $name } · Agent
+participant-unknown-agent = Unknown agent
