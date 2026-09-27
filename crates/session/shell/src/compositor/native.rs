@@ -1549,22 +1549,24 @@ impl ControlState for FrameBuilderControlState<'_> {
         // A pointer is not a roster — different questions. Derived from
         // `collaborator_roster_rows` rather than re-walked, so reads can't drift from what a person sees.
         let chrome = self.fb.chrome();
-        let roster: Vec<serde_json::Value> =
-            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "label": row.label,
-                        "role": row.role,
-                        // Kept separate from the label, same as the panel: inferring which of
-                        // these is a person from the label alone is the one mistake to avoid.
-                        "is_agent": row.is_agent,
-                        // Named but not arrived — the one thing a harness watching a join needs,
-                        // and what a screenshot of a dimmed row can't be asserted on.
-                        "invited": row.invited,
-                    })
-                })
-                .collect();
+        let roster: Vec<serde_json::Value> = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.tree().desktop,
+            &crate::shell::state::local_user_id(),
+        )
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "label": row.label,
+                "role": row.role,
+                // Kept separate from the label, same as the panel: inferring which of
+                // these is a person from the label alone is the one mistake to avoid.
+                "is_agent": row.is_agent,
+                // Named but not arrived — the one thing a harness watching a join needs,
+                // and what a screenshot of a dimmed row can't be asserted on.
+                "invited": row.invited,
+            })
+        })
+        .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
@@ -2022,7 +2024,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     .tree()
                     .desktop.active_workspace()
                     .and_then(|ws| {
-                        crate::shell::workspace_settings::draft_subject(
+                        tilo_desktop::workspace_settings::draft_subject(
                             ws,
                             &chrome.ws_grant_draft,
                         )

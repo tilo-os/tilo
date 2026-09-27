@@ -449,12 +449,12 @@ fn apply_permission_profile_action(
                 tree.doc_insert_capability(workspace_id, &capability);
             }
         }
-        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use crate::shell::workspace_settings::PermissionProfileOperation;
+        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use tilo_desktop::workspace_settings::PermissionProfileOperation;
             let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
             let operation =
-                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
@@ -473,7 +473,7 @@ fn apply_permission_profile_action(
                 .active_workspace()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
                 .actor_for_person(&actor);
-            crate::shell::workspace_settings::apply_app_action_operation(
+            crate::shell::workspace_governance::apply_app_action_operation(
                 &mut tree,
                 workspace_id,
                 &person,
@@ -824,7 +824,7 @@ impl Action {
             "search-action-settings-open",
             "search-action-settings-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
             },
         ),
@@ -833,7 +833,7 @@ impl Action {
             "search-action-settings-members-open",
             "search-action-settings-members-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
             },
         ),
@@ -842,7 +842,7 @@ impl Action {
             "search-action-settings-privacy-open",
             "search-action-settings-privacy-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
             },
         ),
@@ -851,7 +851,7 @@ impl Action {
             "search-action-settings-apps-open",
             "search-action-settings-apps-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
             },
         ),
@@ -1214,9 +1214,12 @@ impl Action {
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
-                let followable = crate::shell::overlay_host::collaborator_roster_rows(&st.tree())
-                    .into_iter()
-                    .any(|row| row.id == id && row.followable);
+                let followable = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && row.followable);
                 if !followable {
                     return Err(ActionError::Refused(format!(
                         "`{id}` is not a connected, followable collaborator in this workspace"
@@ -1355,7 +1358,7 @@ impl Action {
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject};
-                use crate::shell::workspace_settings::AgentAuthorityPreset;
+                use tilo_desktop::workspace_settings::AgentAuthorityPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -2379,7 +2382,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -2422,7 +2425,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -2590,7 +2593,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -2633,7 +2636,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -3265,7 +3268,7 @@ mod tests {
             assert!(state.overlays.ws_settings);
             assert_eq!(
                 state.ws_settings_tab,
-                crate::shell::workspace_settings::WsTab::Permissions
+                tilo_desktop::workspace_settings::WsTab::Permissions
             );
         }
 

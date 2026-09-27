@@ -41,8 +41,6 @@ pub mod collab_history;
 pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
-mod collaboration_launchpad;
-mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
@@ -97,7 +95,6 @@ pub mod overlay_host;
 pub mod overview;
 pub mod pad_map;
 pub mod peer_actions;
-pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
 pub mod peer_view;
@@ -160,9 +157,8 @@ pub mod window_switcher;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
+pub mod workspace_governance;
 pub mod workspace_history;
-pub mod workspace_settings;
-mod workspace_settings_overlay;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::context_menu::MenuItem;
@@ -182,13 +178,13 @@ use crate::shell::tile::{
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
 
-use crate::shell::workspace_settings::WorkspaceSettings;
-pub use collaboration_launchpad::{
+use file_explorer::FileExplorerWidget;
+use terminal::TerminalWidget;
+pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
 };
-use file_explorer::FileExplorerWidget;
-use terminal::TerminalWidget;
+use tilo_desktop::workspace_settings::WorkspaceSettings;
 
 /// Root tilo shell handle. Owns the runtime workspace tree — the live
 /// counterpart to the persisted [`state::WorkspaceTree`], holding real
@@ -1544,7 +1540,9 @@ pub(crate) fn workspace_surface_chrome(
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(
-            collaboration_launchpad::CollaborationLaunchpad::new(),
+            tilo_desktop::launchpad::CollaborationLaunchpad::new(
+                overlay_host::workspace_rail_clearance_for_viewport,
+            ),
         )),
         // Compact top bars of the displays other than the primary.
         display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
