@@ -33,6 +33,9 @@ struct AppHandler {
     /// Between `suspended` and the next `resumed` the window has no native
     /// surface to render into, so a redraw must not try to create one.
     surface_suspended: bool,
+    /// What `suspended` took back from the render worker, for the next
+    /// surface.
+    suspended_renderer: Option<PreparedRenderer>,
     /// A real, separate fullscreen output for a root widget's audience view.
     /// It is deliberately not modelled as a floating surface: it has no
     /// desktop-space proxy or compositor handoff and is always destroyed
@@ -218,11 +221,7 @@ fn create_window_render(
     create_window_render_prepared(window, transparent, None, proxy)
 }
 
-pub(crate) struct PreparedRenderer {
-    context: RenderContext,
-    device_id: usize,
-    renderer: Renderer,
-}
+pub(crate) use crate::render_thread::PreparedRenderer;
 
 #[cfg(windows)]
 pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
@@ -565,6 +564,24 @@ impl AppHandler {
     /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
+        if let Some(retained) = self.suspended_renderer.take()
+            && !retained.device_lost()
+        {
+            match create_window_render_prepared(
+                window,
+                false,
+                Some(retained),
+                self.a11y_proxy.clone(),
+            ) {
+                Ok(render) => {
+                    self.render = Some(render);
+                    return Ok(());
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not render with the renderer kept over suspend");
+                }
+            }
+        }
         #[cfg(windows)]
         if let Some(preparation) = self.app.startup_renderer.take() {
             match preparation.recv() {
@@ -1806,7 +1823,7 @@ impl AppHandler {
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
         let send_cpu_frame_id = match &req {
             RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
-            RenderRequest::Shutdown => None,
+            RenderRequest::Shutdown { .. } => None,
         };
         let (send_result, send_bounds) = crate::render_thread::timing::around(
             self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
@@ -2960,7 +2977,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
     /// Android destroys the window's native surface when the activity leaves
     /// the screen and may kill the process any time after. Save the app's
-    /// state and drop the renderer while its surface is still valid; the
+    /// state and drop the surface while it is still valid; the renderer,
     /// window, widget tree and document stay for the next `resumed`.
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
@@ -2969,7 +2986,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             tracing::error!(%error, "could not save state on suspend");
         }
         if let Some(mut render) = self.render.take() {
-            render.shutdown_and_join();
+            self.suspended_renderer = render.shutdown_keeping_renderer();
         }
     }
 
@@ -3663,6 +3680,7 @@ impl App {
             window: None,
             render: None,
             surface_suspended: false,
+            suspended_renderer: None,
             audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,

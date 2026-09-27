@@ -168,8 +168,9 @@ directory, since fontdb cannot map a file inside an APK; the device's
   editor's accessibility node carries no value or selection.
 - **Size.** A debug x86_64 Calculator APK is 59 MB: about 33 MB is the
   compressed library and about 26 MB the compressed font catalog.
-- **Resume cost.** Suspending drops the renderer, and it is created with no
-  `wgpu::PipelineCache`, so every resume compiles vello's pipelines again.
+- **No pipeline cache.** A resume reuses the device and renderer, but a cold
+  start compiles vello's pipelines afresh: there is no persisted
+  `wgpu::PipelineCache`.
 
 ## Testing on an emulator
 
