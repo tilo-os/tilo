@@ -30,8 +30,16 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         thread::sleep(Duration::from_millis(100));
 
         peer_a.send(CollabRequest::document_incremental(b"hello".to_vec()));
-        thread::sleep(Duration::from_millis(100));
-        let events = peer_b.poll();
+        let mut events = Vec::new();
+        tilo_test_env::wait_until("the incremental at peer B", || {
+            events.extend(peer_b.poll());
+            events.iter().any(|event| {
+                matches!(
+                    document_mutation(event),
+                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+                )
+            })
+        });
         assert_eq!(
             events
                 .iter()
@@ -59,13 +67,13 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             key: PresenceKey::Workspace { id: "77".into() },
             payload: PresencePayload::Arrived,
         });
-        thread::sleep(Duration::from_millis(100));
-        let events = peer_b.poll();
-        assert!(events.iter().any(|event| matches!(
-        event,
-        CollabEvent::RemotePresenceUpdate { user_id, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
-            if user_id == "peer-a" && id == "77"
-    )), "typed presence keeps attribution and key: {events:?}");
+        tilo_test_env::wait_until("peer A's typed presence at peer B", || {
+            peer_b.poll().iter().any(|event| matches!(
+                event,
+                CollabEvent::RemotePresenceUpdate { user_id, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
+                    if user_id == "peer-a" && id == "77"
+            ))
+        });
     }
 
     // Case `route_specific_send_never_leaks_onto_the_primary_route`.
@@ -85,26 +93,22 @@ fn typed_socket_fans_out_on_its_own_route_only() {
 
         // A route refuses documents until it is joined and its document mode is
         // resolved; the refused attempt starts that join.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while sender
-            .try_send_to_route(
-                RouteSpec::app("photos", Uuid::nil()),
-                CollabRequest::document_incremental(b"photo-edit".to_vec()),
-            )
-            .is_err()
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "photos route never became publishable"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-        thread::sleep(Duration::from_millis(100));
-
-        assert!(photos.poll().iter().any(|event| matches!(
-            document_mutation(event),
-            Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
-        )));
+        tilo_test_env::wait_until("the photos route to become publishable", || {
+            sender
+                .try_send_to_route(
+                    RouteSpec::app("photos", Uuid::nil()),
+                    CollabRequest::document_incremental(b"photo-edit".to_vec()),
+                )
+                .is_ok()
+        });
+        tilo_test_env::wait_until("the photo edit on the photos route", || {
+            photos.poll().iter().any(|event| {
+                matches!(
+                    document_mutation(event),
+                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
+                )
+            })
+        });
         assert!(primary_observer.poll().iter().all(|event| !matches!(
             document_mutation(event),
             Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
