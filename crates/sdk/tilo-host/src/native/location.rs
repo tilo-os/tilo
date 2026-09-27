@@ -13,7 +13,7 @@
 //! round-trip on the app runtime ([`tilo_rt::app`]), hands the outcome back
 //! over an [`std::sync::mpsc`] channel and wakes the event loop.
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 use std::time::Duration;
 
 use crate::location::{LocationChannel, LocationOutcome};
@@ -30,7 +30,7 @@ impl crate::host::LocationProvider for DesktopLocation {
 /// How long to wait for the first location update before giving up. `GeoClue` can
 /// take a few seconds to acquire a fix; beyond this we report it unavailable
 /// rather than hanging the "Locating…" state forever.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Start the location request on the app runtime and return the receiver the
@@ -39,7 +39,7 @@ const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 /// loop of the wake scope the request was made under.
 fn request_location() -> LocationChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    #[cfg(all(feature = "portal", unix))]
+    #[cfg(all(feature = "portal", freedesktop))]
     {
         let wake = crate::wake::WakeHandle::new();
         drop(
@@ -52,7 +52,7 @@ fn request_location() -> LocationChannel {
         );
     }
     // Without the portal there is no location service to ask; answer at once.
-    #[cfg(not(all(feature = "portal", unix)))]
+    #[cfg(not(all(feature = "portal", freedesktop)))]
     let _ = tx.send(LocationOutcome::Unavailable(
         "device location needs the real-desktop build (`--features portal`)".to_string(),
     ));
@@ -62,7 +62,7 @@ fn request_location() -> LocationChannel {
 /// The async portal interaction: open the Location proxy, create a session,
 /// start it (which triggers the host permission prompt), and wait for the first
 /// `LocationUpdated` signal — all under a timeout.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 async fn location_future() -> LocationOutcome {
     use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy, StartOptions};
     use futures_util::StreamExt;
@@ -113,7 +113,7 @@ async fn location_future() -> LocationOutcome {
 
 /// Map a portal error to an honest, user-facing reason. A `Response` error is
 /// how the portal surfaces a denied/cancelled permission prompt.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 fn portal_reason(e: ashpd::Error) -> String {
     match e {
         ashpd::Error::Response(_) => "permission denied".to_string(),

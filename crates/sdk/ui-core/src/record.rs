@@ -35,6 +35,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 mod native_file;
 pub use native_file::{FileHistoryReader, InitialFileHistory};
+pub mod transfer;
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
@@ -377,16 +378,12 @@ mod file_identity {
     }
 }
 
-/// FNV-1a, 64-bit. Written out rather than imported: this hash names
-/// directories on disk, so it must be stable across every future crate
-/// version — a guarantee a library's default hasher does not make.
+/// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
+/// the directory names it produces stay stable.
 fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// What kind of thing a record is — `document`, `annotation-set`, `book`,
@@ -2245,6 +2242,10 @@ pub enum RecordOpenError {
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
+    /// The record left this room (see [`transfer`]); its history stays, but
+    /// it is never opened as a live document again.
+    #[error("record was moved out of this room")]
+    Retired,
 }
 
 impl From<durable_store::StoreError> for RecordOpenError {
@@ -2299,6 +2300,9 @@ fn validate_identity(
         ObjectAt::Missing | ObjectAt::Invalid => {
             return Err(RecordOpenError::IdentityMismatch);
         }
+    }
+    if transfer::is_retired(doc) {
+        return Err(RecordOpenError::Retired);
     }
     if want.id.is_package_primary() {
         return if primary_document(doc)

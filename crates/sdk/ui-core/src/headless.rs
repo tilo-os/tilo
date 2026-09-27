@@ -8681,6 +8681,46 @@ mod tests {
     }
 
     #[test]
+    fn a_tap_seats_the_caret_and_a_double_tap_selects_the_word() {
+        let tapped = |taps: usize| {
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(
+                    TextInput::local()
+                        .with_id("field")
+                        .with_initial_value("hello world"),
+                ),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("fixture-user".into()),
+            );
+            let rect = driver.targets()["field"];
+            // Inside "hello", clear of the field's padding.
+            let (x, y) = (rect.x0 + 24.0, rect.center().y);
+            for _ in 0..taps {
+                driver.tap_at(x, y);
+            }
+            driver
+                .access_node_named("field", None)
+                .unwrap()
+                .text_selection
+                .expect("a focused field reports its caret")
+        };
+
+        let caret = tapped(1);
+        assert_eq!(caret.anchor, caret.focus, "one tap selected {caret:?}");
+        assert!(caret.focus > 0 && caret.focus < 5, "{caret:?}");
+        assert_eq!(
+            tapped(2),
+            crate::a11y::AccessibleTextSelection {
+                anchor: 0,
+                focus: 5
+            }
+        );
+    }
+
+    #[test]
     fn semantic_actions_use_the_widget_path_and_report_mismatches() {
         // Case `semantic_set_value_and_focus_update_the_inspection_tree`.
         {

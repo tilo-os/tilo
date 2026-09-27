@@ -36,30 +36,34 @@ pub(in crate::https_owner) async fn prepared_transport() -> (tempfile::TempDir, 
     std::fs::write(&key, hex::decode(TLS_KEY).unwrap()).unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
     let config = transport_root.path().join("operator.json");
-    // The port is released before the transport binds it, so a concurrently
-    // running test binary can take it in between. Pick another port then.
-    let mut attempt = 0;
-    loop {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        std::fs::write(
-            &config,
-            serde_json::to_vec(&serde_json::json!({
-                "delivery_version": 3, "origin": format!("https://127.0.0.1:{port}"),
-                "certificate_der": cert, "key_der": key, "assets": assets
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        match PreparedTransport::load_explicit(&config).await {
-            Ok(transport) => return (transport_root, transport),
-            Err(error) if attempt < 8 && error.to_string().contains("Address already in use") => {
-                attempt += 1;
+    // Bind the TCP/UDP pair once and hand the sockets to the transport so the
+    // origin is never released between reservation and listen.
+    let mut refused = Vec::new();
+    let (udp, address, tcp) = loop {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = udp.local_addr().unwrap();
+        match std::net::TcpListener::bind(address) {
+            Ok(tcp) => break (udp, address, tcp),
+            Err(error) => {
+                assert!(refused.len() < 64, "no free TCP/UDP loopback pair: {error}");
+                refused.push(udp);
             }
-            Err(error) => panic!("prepared transport: {error:?}"),
         }
-    }
+    };
+    drop(refused);
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "delivery_version": 3, "origin": format!("https://{address}"),
+            "certificate_der": cert, "key_der": key, "assets": assets
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let transport = PreparedTransport::load_explicit_bound(&config, tcp, udp)
+        .await
+        .unwrap();
+    (transport_root, transport)
 }
 pub(in crate::https_owner) async fn fixture() -> Fixture {
     let (transport_root, transport) = prepared_transport().await;

@@ -1,0 +1,6 @@
+[
+  {"perform": {"target": "document-title-input", "action": "set_value", "value": "Project Atlas"}},
+  {"perform": {"target": "document-body-input", "action": "set_value", "value": "A durable first draft."}},
+  {"expect": {"target": "document-title-preview", "role": "heading", "name": "Project Atlas"}},
+  {"expect": {"target": "document-body-preview", "name": "A durable first draft."}}
+]

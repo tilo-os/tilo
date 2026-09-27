@@ -5,10 +5,11 @@
 //!
 //! - the currently displayed page's id (or `None` if nothing's
 //!   selected),
-//! - the live `BlockEditor` (re-built whenever the page changes),
-//! - the last-loaded body string, kept around so the app's tick can
-//!   compare against the editor's current `to_markdown()` and only
-//!   request a save when the user actually changed something.
+//! - the page's editor: the SDK rich-text editor bound to the page's body,
+//!   every edit a [`NotesAction::EditBody`](crate::actions::NotesAction),
+//! - the last-loaded body string, kept around so a Markdown-backed page can
+//!   compare against the editor's current content and only request a save
+//!   when the user actually changed something.
 //!
 //! The title heading stays — it's just a sibling of the editor now,
 //! pinned to the top of the panel. Title editing is still the
@@ -38,12 +39,13 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::Widget;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditOp, BlockEditor, EditOutcome, EditableLabel, EmptyState};
+use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
@@ -92,14 +94,36 @@ pub struct BacklinkChip {
     pub references: u32,
 }
 
+/// A page's body in the SDK rich-text editor, edited as Notes actions.
+pub type NotesEditor = RichTextSurface<RichTextField<crate::actions::NotesAction>>;
+
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
-/// editor's single-line (code/editor) default.
-fn notes_editor() -> BlockEditor {
-    BlockEditor::new()
-        .with_wrap_lines(true)
-        .with_compact_paragraph_spacing(true)
+/// editor's single-line (code/editor) default. `page` is the page whose body
+/// it edits; without one it shows what it is given and writes nothing.
+fn notes_editor(page: Option<PageId>) -> NotesEditor {
+    let context = page.map(|page| {
+        crate::actions::history_context(&crate::actions::edit_body_action(
+            page,
+            qdoc_rich_text::RichTextAction::AppendParagraph {
+                text: String::new(),
+            },
+        ))
+    });
+    let mut field = RichTextField::new(
+        crate::actions::NOTES_ACTION_TYPE,
+        move |doc| page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page)),
+        move |edit| crate::actions::edit_body_action(page.unwrap_or_default(), edit),
+    );
+    if let Some(context) = context {
+        field = field.with_context(context);
+    }
+    RichTextSurface::field(field).with_editor(
+        BlockEditor::new()
+            .with_wrap_lines(true)
+            .with_compact_paragraph_spacing(true),
+    )
 }
 
 /// The tag-chip row under the title (HIG §7b): title and tags read as one
@@ -145,8 +169,6 @@ pub(crate) fn tag_chip_band(
         gap: f64::from(spacing.s2),
     }
 }
-
-use crate::markdown::block_kind_wire;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -209,7 +231,7 @@ pub struct MainPanel {
     hovered_backlink: Option<PageId>,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
-    editor: BlockEditor,
+    editor: NotesEditor,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -254,10 +276,6 @@ pub struct MainPanel {
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
-    /// Semantic deltas emitted by the action-owned editor during an input
-    /// event. The app drains these through `NotesAction::ApplyBlockOps` before
-    /// the next sync; the widget itself never owns a document mutation.
-    pending_block_ops: Vec<BlockEditOp>,
     /// Mirrors the renderer's global text scale so title and tag geometry
     /// reserves the same physical height as the glyphs it contains.
     text_scale: f64,
@@ -297,7 +315,7 @@ impl MainPanel {
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
-            editor: notes_editor(),
+            editor: notes_editor(None),
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -317,7 +335,6 @@ impl MainPanel {
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
             empty_action_focused: false,
-            pending_block_ops: Vec::new(),
             text_scale: 1.0,
             bottom_inset: 0.0,
         }
@@ -362,8 +379,8 @@ impl MainPanel {
         self.set_title_value(title);
         let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = self.fresh_editor();
-        self.editor.set_blocks(blocks);
+        self.editor = self.fresh_editor(None);
+        self.editor.editor_mut().set_blocks(blocks);
         // Focus the editor's first block so the user can start
         // typing immediately. The App will route keystrokes through
         // its focused-node machinery, but the editor's internal
@@ -374,6 +391,7 @@ impl MainPanel {
         // scroll the first long paragraph on a narrow window and hide its
         // opening words before the person has interacted with it.
         self.editor
+            .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Start);
         self.take_body_snapshot();
         // Brand-new page → reset scroll to top (the previous page's
@@ -402,87 +420,41 @@ impl MainPanel {
         let mut specs = crate::markdown::parse(body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = self.fresh_editor();
-        self.editor.set_blocks(blocks);
+        self.editor = self.fresh_editor(None);
+        self.editor.editor_mut().set_blocks(blocks);
         self.editor.set_focus(true);
         self.editor
+            .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Start);
         self.take_body_snapshot();
         self.scroll_y = 0.0;
         self.dirty = true;
     }
 
-    /// Bind the panel's editor to a page's `blocks` List in the shared
-    /// Automerge document. `body` is the page's markdown, used only to
-    /// adopts an action-seeded list (a brand-new page is seeded by
-    /// `NotesAction::ApplyBlockOps` before this method runs); if the doc
-    /// already has blocks (an existing or remote page) `body` is ignored.
-    /// After this, the editor emits semantic operations for the app action
-    /// host and remote edits appear via `sync`.
-    pub fn bind_page(
-        &mut self,
-        state: &mut AutoCommit,
-        id: PageId,
-        title: &str,
-        blocks_list: ObjId,
-        body: &str,
-    ) {
-        self.page_id = Some(id);
-        self.dates = self.date_index.get(id);
-        self.set_title_value(title);
-        let specs = crate::markdown::parse(body);
-        let blocks = crate::markdown::specs_to_blocks(&specs);
-        // `BlockEditor::bind_blocks` adopts the durable plain text/kinds from
-        // the CRDT and therefore rebuilds its lines. Preserve the parsed
-        // Markdown marks long enough for the app to migrate them into native
-        // marks on an existing local page; a collaborative snapshot replaces
-        // these immediately after binding when it already has canonical marks.
-        let parsed_marks = blocks
-            .iter()
-            .map(|block| block.line.marks().to_vec())
-            .collect::<Vec<_>>();
-        self.editor = self.fresh_editor();
-        self.editor.set_blocks(blocks);
-        self.editor.set_local_author(self.local_author.clone());
-        self.editor.set_action_interception(true);
-        // The app action-seeds a new document before binding. This only adopts
-        // the action-owned list; it must not create or mutate it itself.
-        self.editor.bind_blocks(state, blocks_list);
-        for (block, marks) in self.editor.blocks_mut().iter_mut().zip(parsed_marks) {
-            block.line.set_marks(marks);
-        }
-        self.editor.set_focus(true);
-        self.editor
-            .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.take_body_snapshot();
-        self.scroll_y = 0.0;
-        self.dirty = true;
-    }
-
-    /// Bind an existing canonical page without creating schema, blocks or marks.
+    /// Bind the panel's editor to a page's body in the shared document,
+    /// showing it as it is now. The editor edits it through its action host
+    /// from then on; binding itself writes nothing.
     ///
     /// # Errors
-    /// Rejects a list that is absent or does not belong to the requested page.
+    /// Rejects a page without a body.
     pub fn bind_canonical_page(
         &mut self,
         doc: &AutoCommit,
         page: PageId,
         title: &str,
-        blocks: &ObjId,
     ) -> Result<(), String> {
-        if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(blocks) {
-            return Err("block list does not belong to the requested page".into());
+        if crate::doc::NotesDoc::page_body(doc, page).is_none() {
+            return Err("the page has no body".into());
         }
-        let mut editor = self.fresh_editor();
-        editor.set_local_author(self.local_author.clone());
+        let mut editor = self.fresh_editor(Some(page));
         editor
-            .bind_existing_block_objects(
-                doc,
-                &crate::doc::NotesDoc::checked_block_objects(doc, blocks)?,
-            )
-            .map_err(|error| error.to_string())?;
+            .editor_mut()
+            .set_local_author(self.local_author.clone());
+        editor.present_from(doc);
         editor.set_focus(true);
-        editor.focus_block(0, ui::widget::CursorPlacement::Start);
+        editor
+            .editor_mut()
+            .focus_block(0, ui::widget::CursorPlacement::Start);
         self.editor = editor;
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
@@ -491,11 +463,6 @@ impl MainPanel {
         self.body.clear();
         self.scroll_y = 0.0;
         self.dirty = true;
-        self.set_inline_marks(
-            &crate::doc::NotesDoc::page_block_marks(doc, page)
-                .into_iter()
-                .collect(),
-        );
         Ok(())
     }
 
@@ -509,9 +476,7 @@ impl MainPanel {
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
             let title = &workspace.get(page).ok_or("selected page missing")?.title;
-            let blocks =
-                crate::doc::NotesDoc::page_blocks_list(doc, page).ok_or("page blocks missing")?;
-            panel.bind_canonical_page(doc, page, title, &blocks)?;
+            panel.bind_canonical_page(doc, page, title)?;
         }
         Ok(panel)
     }
@@ -544,7 +509,7 @@ impl MainPanel {
     /// the editor on every `bind_page`.
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.local_author.clone_from(&author);
-        self.editor.set_local_author(author);
+        self.editor.editor_mut().set_local_author(author);
     }
 
     /// Route the window-level Find command into the shared structured editor,
@@ -559,7 +524,7 @@ impl MainPanel {
                 self.pending_rename = Some(title);
             }
         }
-        self.editor.open_find();
+        self.editor.editor_mut().open_find();
         *focus_target = self.editor_node;
         self.dirty = true;
         true
@@ -582,7 +547,7 @@ impl MainPanel {
         self.pending_backlink_open = None;
         self.focused_backlink = None;
         self.hovered_backlink = None;
-        self.editor = notes_editor();
+        self.editor = notes_editor(None);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.empty_action_rect = Rect::ZERO;
@@ -669,26 +634,28 @@ impl MainPanel {
         &mut self,
         previews: HashMap<PageId, ui::widget::TransclusionPreview>,
     ) {
-        self.editor.set_transclusion_previews(previews);
+        self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
-        self.editor.set_image_store(store);
+        self.editor.editor_mut().set_image_store(store);
     }
 
-    fn fresh_editor(&self) -> BlockEditor {
-        let mut editor = notes_editor();
-        editor.set_image_store(self.image_store.clone());
+    fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
+        let mut editor = notes_editor(page);
+        editor
+            .editor_mut()
+            .set_image_store(self.image_store.clone());
         editor
     }
 
     pub fn take_transclusion_open(&mut self) -> Option<PageId> {
-        self.editor.take_transclusion_open()
+        self.editor.editor_mut().take_transclusion_open()
     }
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
-        self.editor.take_external_link_open()
+        self.editor.editor_mut().take_external_link_open()
     }
 
     pub fn set_bottom_inset(&mut self, inset: f64) {
@@ -1003,86 +970,28 @@ impl MainPanel {
     /// True if the editor reported edits since the last call. Drains
     /// the editor's dirty flag.
     pub fn editor_is_dirty(&mut self) -> bool {
-        self.editor.is_dirty()
+        self.editor.editor_mut().is_dirty()
     }
 
-    /// Turn markdown into the action payload that seeds an empty durable page.
-    /// The parser mints stable UUIDs once here; the resulting action can be
-    /// replayed identically on every peer without the editor touching Automerge.
-    pub fn seed_block_ops(body: &str) -> Vec<BlockEditOp> {
-        Self::seed_block_ops_with_marks(body, |_| None).0
-    }
-
-    /// Produce the complete initial collaborative representation of a Markdown
-    /// page: UUID-addressed block inserts plus its non-empty native mark
-    /// snapshots. A caller supplies title-to-id resolution so `[[Page]]`
-    /// marks point at real stable resources before the payload is dispatched.
-    ///
-    /// Keeping the two action payloads together prevents a new or duplicated
-    /// page from becoming a metadata-only remote placeholder until someone
-    /// happens to open it locally.
-    pub fn seed_block_ops_with_marks<F>(
-        body: &str,
-        resolver: F,
-    ) -> (
-        Vec<BlockEditOp>,
-        Vec<(String, Vec<crate::actions::InlineMarkSpan>)>,
-    )
+    /// A page's first content from its Markdown: the blocks an empty body is
+    /// written with. `resolver` gives `[[Page]]` links the ids of real pages,
+    /// so they point at stable resources before the content is dispatched.
+    pub fn seed_blocks<F>(body: &str, resolver: F) -> Vec<ui::widget::BlockContent>
     where
         F: FnMut(&str) -> Option<PageId>,
     {
         let mut specs = crate::markdown::parse(body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
-        let blocks = crate::markdown::specs_to_blocks(&specs);
-        let mut after = None;
-        let mut ops = Vec::with_capacity(blocks.len());
-        let mut marks = Vec::new();
-        for block in blocks {
-            let id = block.id.clone();
-            let block_marks = block
-                .line
-                .marks()
-                .iter()
-                .map(crate::actions::InlineMarkSpan::from_ui)
-                .collect::<Vec<_>>();
-            ops.push(BlockEditOp::Insert {
-                block_id: id.clone(),
-                after: after.clone(),
-                kind: block_kind_wire(&block.kind),
-                text: block.text().to_string(),
-            });
-            if block.code_group.is_some() {
-                ops.push(BlockEditOp::SetCodeGroup {
-                    block_id: id.clone(),
-                    group_id: block.code_group,
-                });
-            }
-            if block.nesting > 0 {
-                ops.push(BlockEditOp::SetNesting {
-                    block_id: id.clone(),
-                    depth: block.nesting,
-                });
-            }
-            if !block_marks.is_empty() {
-                marks.push((id.clone(), block_marks));
-            }
-            after = Some(id);
-        }
-        (ops, marks)
+        crate::markdown::specs_to_blocks(&specs)
+            .iter()
+            .map(ui::widget::Block::content)
+            .collect()
     }
 
-    /// Drain local editor changes for the app's canonical action dispatcher.
-    pub fn take_block_ops(&mut self) -> Vec<BlockEditOp> {
-        self.pending_block_ops
-            .extend(self.editor.take_pending_semantic_ops());
-        std::mem::take(&mut self.pending_block_ops)
-    }
-
-    /// Snapshot the inline formatting carried by every live durable block.
-    /// Notes turns a changed snapshot into native Automerge marks through a
-    /// typed action; the editor deliberately remains a pure input widget.
+    /// The Notes formatting and page links of every block the editor shows.
     pub fn inline_marks(&self) -> Vec<(String, Vec<crate::actions::InlineMarkSpan>)> {
         self.editor
+            .editor()
             .blocks()
             .iter()
             .map(|block| {
@@ -1099,46 +1008,13 @@ impl MainPanel {
             .collect()
     }
 
-    /// Apply the Notes-owned native-mark snapshot read from the collaborative
-    /// document. Unknown/malformed spans were already excluded by the document
-    /// reader, but a final text-boundary check keeps an interrupted rebind from
-    /// ever painting an invalid range.
-    pub fn set_inline_marks(
-        &mut self,
-        marks: &std::collections::HashMap<String, Vec<crate::actions::InlineMarkSpan>>,
-    ) {
-        let mut changed = false;
-        for block in self.editor.blocks_mut() {
-            let mut next = marks
-                .get(&block.id)
-                .into_iter()
-                .flatten()
-                .filter_map(crate::actions::InlineMarkSpan::to_ui)
-                .filter(|span| {
-                    span.range.start < span.range.end
-                        && span.range.end <= block.text().len()
-                        && block.text().is_char_boundary(span.range.start)
-                        && block.text().is_char_boundary(span.range.end)
-                })
-                .collect::<Vec<_>>();
-            next.sort_by_key(|span| span.range.start);
-            if block.line.marks() != next {
-                block.line.set_marks(next);
-                changed = true;
-            }
-        }
-        if changed {
-            self.dirty = true;
-        }
-    }
-
     /// Re-serialise the editor's content into the cached `body` and
     /// return a clone for persistence. Called by the app's tick when
     /// `editor_is_dirty()` came back true.
     /// Serialization goes through `notes::markdown` so inline marks survive;
     /// the editor's own `to_markdown` only emits plain text.
     pub fn take_body_snapshot(&mut self) -> String {
-        let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
+        let specs = crate::markdown::blocks_to_specs(self.editor.editor().blocks());
         let md = crate::markdown::serialize(&specs);
         self.body.clone_from(&md);
         md
@@ -1147,7 +1023,7 @@ impl MainPanel {
     /// Compare content rather than paint dirtiness, which also changes on load
     /// and focus. Used only when recovering a failed legacy disk read.
     pub(crate) fn has_unsaved_body(&self) -> bool {
-        let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
+        let specs = crate::markdown::blocks_to_specs(self.editor.editor().blocks());
         crate::markdown::serialize(&specs) != self.body
     }
 
@@ -1164,25 +1040,43 @@ impl MainPanel {
     /// tests and any future read-only UI (status bar block count,
     /// etc.).
     pub fn editor(&self) -> &BlockEditor {
-        &self.editor
+        self.editor.editor()
     }
 
     /// Test/internal mutable accessor for the editor — used by the
     /// integration tests to drive split/merge/promote and observe
     /// the resulting markdown.
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
+        self.editor.editor_mut()
+    }
+
+    /// The editor with the rich text it is bound to: its undo steps and
+    /// edits are the page's.
+    pub fn body_editor_mut(&mut self) -> &mut NotesEditor {
         &mut self.editor
+    }
+
+    /// Whether the editor's block `id` is one the page stores.
+    #[must_use]
+    pub fn stores_block(&self, id: &str) -> bool {
+        self.editor.shows_stored(id)
+    }
+
+    /// Whether the undo step the body's last edit opened stays open for the
+    /// next letters of the word.
+    pub fn keeps_undo_step_open(&self) -> bool {
+        self.editor.keeps_undo_step_open()
     }
 
     /// Modal overlays own the visible caret while retaining the underlying edit.
     pub fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.title_label.suppress_caret_paint(suppressed);
-        self.editor.suppress_caret_paint(suppressed);
+        self.editor.editor_mut().suppress_caret_paint(suppressed);
     }
 
     pub fn suppress_tooltips(&mut self, suppressed: bool) {
         self.tooltips_suppressed = suppressed;
-        self.editor.set_tooltip_viewport(Some(if suppressed {
+        let viewport = if suppressed {
             Rect::ZERO
         } else {
             Rect::new(
@@ -1191,16 +1085,20 @@ impl MainPanel {
                 self.rect.x1,
                 self.rect.y1 - self.body_bottom_inset(),
             )
-        }));
+        };
+        self.editor
+            .editor_mut()
+            .set_tooltip_viewport(Some(viewport));
     }
 
     /// Reveal a block without mutating the collaborative document.
     pub fn reveal_block(&mut self, index: usize) -> bool {
-        if index >= self.editor.blocks().len() {
+        if index >= self.editor.editor().blocks().len() {
             return false;
         }
         self.editor.set_focus(true);
         self.editor
+            .editor_mut()
             .focus_block(index, ui::widget::CursorPlacement::Start);
         self.follow_caret = true;
         self.dirty = true;
@@ -1300,24 +1198,7 @@ impl Widget for MainPanel {
             self.dates = dates;
             self.dirty = true;
         }
-        if let Some(list) = self
-            .page_id
-            .and_then(|page| crate::doc::NotesDoc::page_blocks_list(state, page))
-            && (crate::doc::NotesDoc::has_block_order(state, &list)
-                || self.editor.has_object_projection())
-        {
-            let result =
-                crate::doc::NotesDoc::checked_block_objects(state, &list).and_then(|objects| {
-                    self.editor
-                        .sync_existing_block_objects(state, &objects)
-                        .map_err(|error| error.to_string())
-                });
-            if let Err(error) = result {
-                tracing::warn!(%error, "notes: ordered block projection refused");
-            }
-        } else {
-            self.editor.sync(state, path);
-        }
+        self.editor.sync(state, path);
     }
 
     fn build_layout(
@@ -1484,7 +1365,7 @@ impl Widget for MainPanel {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
             let editor_rect = self.editor.get_rect();
-            let last_block_bottom = self.editor.content_bottom();
+            let last_block_bottom = self.editor.editor().content_bottom();
             // Content height = where the lowest block actually ends,
             // minus the editor's top. This catches taffy under-reports
             // for flex-column overflow (same kludge ui::Scrollable uses
@@ -1514,9 +1395,10 @@ impl Widget for MainPanel {
             // partial pass yields a small non-zero height that clamps just as
             // destructively. An empty document has no blocks, and 0 is right
             // for it.
-            let measured = self.editor.blocks().is_empty()
+            let measured = self.editor.editor().blocks().is_empty()
                 || self
                     .editor
+                    .editor()
                     .blocks()
                     .iter()
                     .any(|b| b.line.get_rect().height() > 0.0);
@@ -1529,9 +1411,10 @@ impl Widget for MainPanel {
                     // The first caret starts below the editor's own top padding.
                     // Revealing the document start must retain that padding,
                     // rather than scrolling it away to pin the glyph to the clip.
-                    let at_document_start = self.editor.focused_index() == Some(0)
+                    let at_document_start = self.editor.editor().focused_index() == Some(0)
                         && self
                             .editor
+                            .editor()
                             .blocks()
                             .first()
                             .is_some_and(|block| block.line.cursor_pos() == 0);
@@ -1561,12 +1444,15 @@ impl Widget for MainPanel {
             // for a scrolled view.
             let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
-            self.editor.set_tooltip_viewport(Some(Rect::new(
+            let viewport = Rect::new(
                 self.rect.x0,
                 self.rect.y0 + self.scroll_top_inset(),
                 self.rect.x1,
                 self.rect.y1 - self.body_bottom_inset(),
-            )));
+            );
+            self.editor
+                .editor_mut()
+                .set_tooltip_viewport(Some(viewport));
             self.scroll_layout_dirty = false;
         }
     }
@@ -1766,6 +1652,7 @@ impl Widget for MainPanel {
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
             self.editor
+                .editor_mut()
                 .draw_overlay(scene, transform, text_renderer, theme);
         } else {
             // No note open: a composed zero-state rather than a bare line —
@@ -1956,6 +1843,7 @@ impl Widget for MainPanel {
         ) && self.title_rect.contains(self.last_pointer);
         if !self.title_label.is_editing() && press_in_title {
             self.begin_title_edit();
+            *focus_target = self.title_node;
             *handled = true;
             return;
         }
@@ -2015,7 +1903,6 @@ impl Widget for MainPanel {
             }
         }
         if let Some(n) = self.editor_node {
-            self.editor.begin_action_intercept();
             self.editor.handle_event(
                 event,
                 scale_factor,
@@ -2027,8 +1914,6 @@ impl Widget for MainPanel {
                 n,
                 taffy,
             );
-            self.pending_block_ops
-                .extend(self.editor.take_intercepted_ops());
             if self.editor.is_focused()
                 && *handled
                 && matches!(

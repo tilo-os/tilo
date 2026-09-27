@@ -1445,7 +1445,7 @@ mod tests {
 
         CalDoc::migrate_notes(&mut doc);
         let notes = CalDoc::notes(&doc, true, first).expect("notes are rich text now");
-        let blocks = tilo_rich_text::blocks_under(&mut doc, &notes).unwrap();
+        let blocks = tilo_rich_text::blocks_under(&doc, &notes).unwrap();
         let shown: Vec<(BlockKind, &str, u8)> = blocks
             .iter()
             .map(|block| (block.kind.clone(), block.text.as_str(), block.nesting))
@@ -1524,7 +1524,7 @@ mod tests {
                 .unwrap();
         }
         let notes = CalDoc::notes(&doc, true, id).unwrap();
-        let block = tilo_rich_text::blocks_under(&mut doc, &notes).unwrap()[0]
+        let block = tilo_rich_text::blocks_under(&doc, &notes).unwrap()[0]
             .id
             .clone();
         edit(RichTextAction::SpliceText {

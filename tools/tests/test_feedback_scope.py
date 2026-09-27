@@ -14,17 +14,19 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertIn('cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}', workflow)
             self.assertIn("if: matrix.test_packages != ''", workflow)
             self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
-            self.assertIn('needs: [builder, select, security, test, check, clippy, suites, pins]', workflow)
+            self.assertIn('needs: [builder, select, security, test, check, clippy, android, suites, pins]', workflow)
             self.assertIn('test "$BUILDER_RESULT" = success', workflow)
             self.assertIn('*:true:success)', workflow)
             self.assertIn('pull_request:false:skipped)', workflow)
             self.assertIn("if: needs.select.outputs.security_required == 'true'", workflow)
-            # Manual acceptance and the release-receipt branch both force full
-            # native qualification; ordinary before-SHA handling does not.
+            # Manual acceptance forces full native qualification; ordinary
+            # before-SHA handling does not. Temporary packaging/ARM branch
+            # full-check triggers were removed — use workflow_dispatch.
             selection = workflow.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
-            self.assertEqual(selection.count('selection_args+=(--full)'), 2)
+            self.assertEqual(selection.count('selection_args+=(--full)'), 1)
             self.assertIn('workflow_dispatch', selection)
-            self.assertIn('refs/heads/codex/package-desktop-release', selection)
+            self.assertNotIn('package-desktop-release', selection)
+            self.assertNotIn('arm64-platform-support', workflow)
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
             workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)

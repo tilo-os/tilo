@@ -213,6 +213,9 @@ impl NativeRedrawReasons {
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
+const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
+const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
+const SLOW_WAYLAND_CLIENT_DISPATCH: Duration = Duration::from_millis(10);
 const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
 
 fn slow_prepaint_phase(elapsed: Duration) -> bool {
@@ -227,19 +230,44 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
     }
 }
 
+fn dispatch_wayland_clients_fairly(
+    display: &mut Display<State>,
+    state: &mut State,
+) -> std::io::Result<usize> {
+    let started = Instant::now();
+    let dispatched = display
+        .backend()
+        .dispatch_ready_clients_bounded(state, WAYLAND_REQUESTS_PER_CLIENT_PER_TICK)?;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_WAYLAND_CLIENT_DISPATCH {
+        tracing::warn!(
+            target: "tilo::wayland_dispatch",
+            dispatched,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            per_client_limit = WAYLAND_REQUESTS_PER_CLIENT_PER_TICK,
+            "slow bounded Wayland client batch"
+        );
+    }
+    Ok(dispatched)
+}
+
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
 /// earliest real service/widget deadline and wakes early on registered fds.
 fn native_loop_park(
     now: Instant,
     backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
     cadence_needed: bool,
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
+    let wayland_retry = wayland_dispatch_pending
+        .then(|| now.checked_add(WAYLAND_PENDING_RETRY_FLOOR).unwrap_or(now));
     let semantic_deadline = deadlines
         .into_iter()
         .flatten()
+        .chain(wayland_retry)
         .chain(cadence_needed.then_some(frame_deadline))
         .min();
 
@@ -4800,6 +4828,12 @@ fn attach_collab_broker_bridges(
     broker: &crate::shell::collab_broker::BrokerHandle,
 ) {
     let dispatcher = broker.follow_dispatcher();
+    let handoff = dispatcher.clone();
+    frame_builder.with_chrome(move |chrome| {
+        chrome.window_transfers.set_handoff_link(Box::new(
+            crate::shell::window_transfer::BrokerHandoff::new(handoff),
+        ));
+    });
     frame_builder
         .host_mut()
         .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
@@ -8014,12 +8048,26 @@ pub fn run() {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-        reconcile_fullscreen_overlay(
+        let fullscreen_output = reconcile_fullscreen_overlay(
             &mut state,
             &mut frame_builder,
             &output_globals,
             backend.outputs(),
         );
+        // Adaptive sync engages where a fullscreen client is shown; while it
+        // is on, frames follow the content instead of the fixed refresh grid.
+        backend.set_fullscreen_output(fullscreen_output);
+        publish_output_colors(&state, backend.as_ref());
+        if frame_clock.set_adaptive(backend.adaptive_sync_active()) {
+            eprintln!(
+                "tilo compositor: pacing {}",
+                if frame_clock.is_adaptive() {
+                    "by content readiness (adaptive sync engaged)".to_owned()
+                } else {
+                    format!("to {:.3} Hz", 1.0 / frame_clock.interval().as_secs_f64())
+                }
+            );
+        }
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
@@ -9429,7 +9477,7 @@ pub fn run() {
         }
         state.pump_selection();
         let dispatch_started = Instant::now();
-        match display.dispatch_clients(&mut state) {
+        match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
                 let elapsed = dispatch_started.elapsed();
                 if dispatched > 0 || elapsed > Duration::from_millis(10) {
@@ -9508,6 +9556,7 @@ pub fn run() {
         let park = native_loop_park(
             park_now,
             backend_event_wake,
+            display.backend().has_pending_client_dispatch(),
             cadence_needed,
             frame_clock.next_deadline(),
             [
@@ -9767,17 +9816,13 @@ mod tests {
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
         // Phase `consumed_shell_input_is_a_redraw_edge`.
-        {
-            let mut session_changed = false;
-            session_changed |= true;
-            assert!(
-                NativeRedrawReasons {
-                    session: session_changed,
-                    ..NativeRedrawReasons::default()
-                }
-                .content_changed(false)
-            );
-        }
+        assert!(
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false)
+        );
         // Phase `client_routed_pointer_motion_still_redraws_the_compositor_cursor`.
         assert!(
             NativeRedrawReasons {
@@ -9793,7 +9838,7 @@ mod tests {
             let frame = now + Duration::from_millis(8);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, false, frame, [Some(keepalive)]),
+                native_loop_park(now, true, false, false, frame, [Some(keepalive)]),
                 Some(Duration::from_secs(1)),
                 "a registered backend wake fd lets a static desktop sleep until semantic work"
             );
@@ -9802,7 +9847,7 @@ mod tests {
         {
             let now = Instant::now();
             assert_eq!(
-                native_loop_park(now, true, false, now + Duration::from_millis(8), []),
+                native_loop_park(now, true, false, false, now + Duration::from_millis(8), []),
                 None,
                 "a static DRM session can block indefinitely because libinput wakes the outer loop"
             );
@@ -9811,7 +9856,7 @@ mod tests {
         {
             let now = Instant::now();
             assert_eq!(
-                native_loop_park(now, false, false, now + Duration::from_millis(8), []),
+                native_loop_park(now, false, false, false, now + Duration::from_millis(8), []),
                 Some(IDLE_BACKEND_POLL),
                 "a backend whose wake fd could not be registered must still be serviced"
             );
@@ -9824,6 +9869,7 @@ mod tests {
                 native_loop_park(
                     now,
                     true,
+                    false,
                     false,
                     now + Duration::from_millis(8),
                     [Some(repeat)],
@@ -9841,6 +9887,7 @@ mod tests {
                 native_loop_park(
                     now,
                     true,
+                    false,
                     false,
                     now + Duration::from_millis(8),
                     [wayland_client_service_deadline(true, now)],
@@ -9865,8 +9912,17 @@ mod tests {
             let frame = now + Duration::from_millis(8);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, true, frame, [Some(keepalive)]),
+                native_loop_park(now, true, false, true, frame, [Some(keepalive)]),
                 Some(Duration::from_millis(8))
+            );
+        }
+        // Phase `decoded_wayland_work_gets_a_fair_follow_up_without_spinning`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, true, true, false, now + Duration::from_millis(8), []),
+                Some(WAYLAND_PENDING_RETRY_FLOOR),
+                "decoded requests left by a bounded turn need another turn even after epoll is drained"
             );
         }
     }
@@ -9979,6 +10035,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
+                    false,
                     cadence_needed,
                     stale,
                     [widget_deadline_for_presenter(false, Some(stale))],
@@ -10009,7 +10066,14 @@ mod tests {
             );
             let frame = now + Duration::from_millis(7);
             assert_eq!(
-                native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    cadence_wait_needed(true, true),
+                    frame,
+                    []
+                ),
                 Some(Duration::from_millis(7)),
                 "the back-pressure guard must not weaken normal animation pacing"
             );
@@ -10021,13 +10085,21 @@ mod tests {
             let widget = now + Duration::from_millis(300);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    false,
+                    frame,
+                    [Some(keepalive), Some(widget)],
+                ),
                 Some(Duration::from_millis(300))
             );
             assert_eq!(
                 native_loop_park(
                     now + Duration::from_millis(1),
                     true,
+                    false,
                     false,
                     frame,
                     [Some(now)]
@@ -10168,6 +10240,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
+                    false,
                     true,
                     frame,
                     [lock_animation_park_deadline(now, due)]
@@ -10179,6 +10252,7 @@ mod tests {
                     now,
                     false,
                     false,
+                    false,
                     frame,
                     [lock_animation_park_deadline(now, due)]
                 ),
@@ -10188,6 +10262,7 @@ mod tests {
             assert_eq!(
                 native_loop_park(
                     now,
+                    false,
                     false,
                     false,
                     frame,
@@ -12399,15 +12474,46 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
     }
 }
 
+/// Tell colour-managed clients what each output displays: the HDR signal of
+/// an output driven in HDR, SDR otherwise. Surfaces are asked to render in
+/// HDR only while every output is HDR, since an HDR surface on an SDR output
+/// would be shown with its PQ signal unconverted.
+fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend::Backend) {
+    use crate::wayland::color_management::OutputDescription;
+    let outputs = backend.outputs();
+    let described: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            let description = backend
+                .output_hdr(output.id)
+                .map(|hdr| OutputDescription::hdr_pq(&hdr.display, hdr.sdr_white_nits));
+            (output.id, description)
+        })
+        .collect();
+    state.color_manager.update_outputs(|resource| {
+        let id = output_globals::output_id_of(resource)?;
+        described
+            .iter()
+            .find_map(|(output, description)| (*output == id).then_some(*description))
+            .flatten()
+    });
+    let preferred = match described.as_slice() {
+        [(_, Some(first)), rest @ ..] if rest.iter().all(|(_, d)| d.is_some()) => *first,
+        _ => OutputDescription::sdr(),
+    };
+    state.color_manager.set_preferred(preferred);
+}
+
+/// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
     globals: &output_globals::OutputGlobals,
     outputs: &[crate::compositor::backend::Output],
-) {
+) -> Option<crate::compositor::backend::OutputId> {
     let Some(target) = state.fullscreen_target.as_mut() else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
     let requested_id = target.pinned_output.or_else(|| {
         target
@@ -12420,7 +12526,7 @@ fn reconcile_fullscreen_overlay(
     let output = select_fullscreen_output(requested_id, centre, outputs);
     let Some(output) = output else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
@@ -12439,6 +12545,7 @@ fn reconcile_fullscreen_overlay(
     }
     let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+    Some(output.id)
 }
 
 fn select_fullscreen_output(

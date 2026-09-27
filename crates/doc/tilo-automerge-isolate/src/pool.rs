@@ -39,6 +39,9 @@ pub(crate) struct Pool {
     next: AtomicUsize,
     /// Which worker last saw each document state, and when.
     routes: Mutex<Routes>,
+    /// Times an apply rebuilt a worker copy from a full save.
+    #[cfg(test)]
+    full_rebuilds: AtomicUsize,
 }
 
 impl Pool {
@@ -49,11 +52,18 @@ impl Pool {
             slots: (0..count).map(|_| Mutex::new(None)).collect(),
             next: AtomicUsize::new(0),
             routes: Mutex::new(Routes::default()),
+            #[cfg(test)]
+            full_rebuilds: AtomicUsize::new(0),
         }
     }
 
     pub(crate) const fn limits(&self) -> &Limits {
         &self.limits
+    }
+
+    #[cfg(test)]
+    pub(crate) fn full_rebuilds(&self) -> usize {
+        self.full_rebuilds.load(Ordering::Relaxed)
     }
 
     pub(crate) fn apply(
@@ -88,10 +98,18 @@ impl Pool {
                 Reply::Uncached(cached) => {
                     next = match next {
                         Base::Cached => catch_up(doc, &cached).map_or_else(
-                            || Base::Full(full_save(doc)),
+                            || {
+                                #[cfg(test)]
+                                self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
+                                Base::Full(full_save(doc))
+                            },
                             |(from, delta)| Base::After(from, delta),
                         ),
-                        Base::After(..) => Base::Full(full_save(doc)),
+                        Base::After(..) => {
+                            #[cfg(test)]
+                            self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
+                            Base::Full(full_save(doc))
+                        }
                         // A worker that cannot build the caller's own save
                         // is not working.
                         Base::Full(_) => return Err(Rejected::Crashed),
@@ -662,5 +680,52 @@ mod tests {
         }
         *lock(&pool.slots[0]) = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
+    }
+
+    #[test]
+    fn isolate_load_avoids_a_full_rebuild_on_the_next_change() {
+        let pool = Pool::new(Limits {
+            workers: 2,
+            ..limits()
+        });
+        let mut seeded = AutoCommit::new();
+        for i in 0..32 {
+            seeded
+                .put(automerge::ROOT, format!("seed{i}"), i64::from(i))
+                .unwrap();
+            seeded.commit();
+        }
+        let saved = seeded.save();
+
+        let mut warm = pool.load(&saved).unwrap();
+        let before_warm = pool.full_rebuilds();
+        let mut remote = warm.fork();
+        remote.put(automerge::ROOT, "warm", 1).unwrap();
+        remote.commit();
+        let change = remote.save_after(&warm.get_heads());
+        assert_eq!(
+            pool.apply(&mut warm, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert_eq!(
+            pool.full_rebuilds(),
+            before_warm,
+            "Pool::load must leave the document warm for the next change"
+        );
+
+        let mut cold = AutoCommit::load(&saved).unwrap();
+        let before_cold = pool.full_rebuilds();
+        let mut remote = cold.fork();
+        remote.put(automerge::ROOT, "cold", 1).unwrap();
+        remote.commit();
+        let change = remote.save_after(&cold.get_heads());
+        assert_eq!(
+            pool.apply(&mut cold, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert!(
+            pool.full_rebuilds() > before_cold,
+            "a document never seen by a worker must still rebuild once from a full save"
+        );
     }
 }

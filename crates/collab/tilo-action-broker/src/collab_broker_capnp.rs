@@ -76,6 +76,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
+use collab_types::foreign_device::foreign_device_role;
 use collab_types::{Principal, Role as CapRole};
 use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 
@@ -418,6 +419,18 @@ struct CollabLaunchHandoff {
 struct VerifiedJoinIdentity {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
+    /// The certificate marks a foreign device, so its role is capped.
+    foreign: bool,
+}
+
+impl VerifiedJoinIdentity {
+    fn of(cert: &tilo_user_identity::DeviceCert) -> Self {
+        Self {
+            user_public_key: cert.user_public_key,
+            device_public_key: cert.device_public_key,
+            foreign: cert.capabilities.foreign,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -588,9 +601,12 @@ fn admit_verified_join_at(
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
     let principal_id = principal_id_for_root(verified.user_public_key);
-    let role = workspace
+    let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
+    if verified.foreign {
+        role = foreign_device_role(role, &workspace.capabilities, now);
+    }
     if role == CapRole::Denied {
         return Err("certified collaboration identity is blocked in this workspace".into());
     }
@@ -637,13 +653,14 @@ fn admit_agent_delegation_at(
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if workspace.owner.as_ref() != Some(&admitted.principal_id)
-        && workspace.decide_at(
-            &workspace.actor_for_person_at(&admitted.principal_id, now),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-            now,
-        ) != CapDecision::Allow
+    if admitted.verified.foreign
+        || (workspace.owner.as_ref() != Some(&admitted.principal_id)
+            && workspace.decide_at(
+                &workspace.actor_for_person_at(&admitted.principal_id, now),
+                &ResourceRef::Workspace,
+                Verb::Admin,
+                now,
+            ) != CapDecision::Allow)
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
@@ -701,10 +718,7 @@ fn verify_join_presentation(
             &Signature::from_bytes(&proof),
         )
         .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
-    Ok(VerifiedJoinIdentity {
-        user_public_key: cert.user_public_key,
-        device_public_key: cert.device_public_key,
-    })
+    Ok(VerifiedJoinIdentity::of(&cert))
 }
 
 fn verify_join_identity(
@@ -817,10 +831,7 @@ fn verify_enrolled_join_identity(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
-    let verified = VerifiedJoinIdentity {
-        user_public_key: cert.user_public_key,
-        device_public_key: cert.device_public_key,
-    };
+    let verified = VerifiedJoinIdentity::of(&cert);
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
     let tree = membership.snapshot()?;
@@ -876,6 +887,8 @@ enum ContextEnvelope {
         peer_id: Option<String>,
     },
     SnapshotRequested,
+    /// An encoded `ui::collaboration::handoff::HandoffRequest`.
+    Handoff(Vec<u8>),
 }
 
 /// Input contract published for one live application action.
@@ -2527,10 +2540,7 @@ impl CapnpBrokerState {
         admit_verified_join_at(
             &tree,
             &route,
-            VerifiedJoinIdentity {
-                user_public_key: certificate.user_public_key,
-                device_public_key: certificate.device_public_key,
-            },
+            VerifiedJoinIdentity::of(certificate),
             now / 1_000_000_000,
         )?;
         let mut workers = self
@@ -5183,11 +5193,14 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 capnp::Error::failed("certified document workspace is no longer available".into())
             })?;
-        let role = match &admitted.agent_id {
+        let mut role = match &admitted.agent_id {
             Some(agent) => workspace.role_of_agent_at(agent, now),
             None => workspace.role_of_at(&admitted.principal_id, now),
         }
         .ok_or_else(|| capnp::Error::failed("current document membership expired".into()))?;
+        if admitted.verified.foreign {
+            role = foreign_device_role(role, &workspace.capabilities, now);
+        }
         let mut current = admitted.clone();
         current.role = role;
         let actor = current
@@ -5275,6 +5288,9 @@ impl CapnpBrokerState {
             } => Self::fanout_context(channels, except, collaborators, permissions),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
+            }
+            CollabEvent::Handoff { request } => {
+                Self::fanout_handoff(channels, except, request.encode());
             }
             CollabEvent::ActionArrived { type_id, .. } => {
                 // Unreachable today; said out loud, not silently dropped.
@@ -5433,6 +5449,25 @@ impl CapnpBrokerState {
         let env = ContextEnvelope::FollowChanged {
             peer_id: peer_id.map(str::to_owned),
         };
+        for subs in channels {
+            subs.context.retain(|sub| {
+                if sub.peer_id == except {
+                    return true;
+                }
+                sub.tx.send(env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// Session-local handoff control for the instance(s) on the addressed
+    /// primary route. Like Follow, it rides the context stream tagged so the
+    /// client never mistakes it for a roster.
+    fn fanout_handoff<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        message: Vec<u8>,
+    ) {
+        let env = ContextEnvelope::Handoff(message);
         for subs in channels {
             subs.context.retain(|sub| {
                 if sub.peer_id == except {
@@ -8139,6 +8174,68 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
     }
 
+    fn handoff(
+        self: Rc<Self>,
+        params: channel_handle::HandoffParams,
+        _results: channel_handle::HandoffResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        // The same certified primary route a continuation report is bound to:
+        // an instance only ever speaks for itself.
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "handoff appId must match the certified connection route".into(),
+            ));
+        }
+        let Some(instance_id) = route
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return Promise::err(capnp::Error::failed(
+                "handoff requires a durable shell tab id".into(),
+            ));
+        };
+        let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "handoff route has no durable workspace room".into(),
+            ));
+        };
+        let message = match request.get_message() {
+            Ok(bytes) => bytes.to_vec(),
+            Err(error) => return Promise::err(error),
+        };
+        match self
+            .state
+            .services
+            .continuations
+            .as_ref()
+            .ok_or_else(|| "handoff unsupported".to_string())
+            .and_then(|service| service.handoff(room, app_id, instance_id, message))
+        {
+            Ok(()) => Promise::ok(()),
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
     fn clear_continuation(
         self: Rc<Self>,
         params: channel_handle::ClearContinuationParams,
@@ -9351,6 +9448,10 @@ impl context_stream::Server for ContextStreamServer {
                 }
                 ContextEnvelope::SnapshotRequested => {
                     ctx.set_snapshot_requested(true);
+                    return Ok(());
+                }
+                ContextEnvelope::Handoff(message) => {
+                    ctx.set_handoff(&message);
                     return Ok(());
                 }
             };
@@ -11220,6 +11321,7 @@ pub mod tests {
                     verified: VerifiedJoinIdentity {
                         user_public_key: [0; 32],
                         device_public_key: [0; 32],
+                        foreign: false,
                     },
                     principal_id: "fixture-application".into(),
                     display_handle: None,
@@ -12067,6 +12169,7 @@ pub mod tests {
         VerifiedJoinIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: [42; 32],
+            foreign: false,
         }
     }
 
@@ -12127,6 +12230,40 @@ pub mod tests {
             .is_err(),
             "a member cannot submit another device's envelope through this session"
         );
+    }
+
+    #[test]
+    fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
+        let root = SigningKey::from_bytes(&[23; 32]);
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Foreign");
+        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Comment,
+        ));
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let foreign = VerifiedJoinIdentity {
+            foreign: true,
+            ..verified_device(&root)
+        };
+
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        assert_eq!(admitted.role, CapRole::Owner);
+        admit_agent_delegation(&tree, &route, &mut admitted, "scribe").unwrap();
+
+        let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
+        assert_eq!(admitted.role, CapRole::Editor);
+        assert!(admit_agent_delegation(&tree, &route, &mut admitted, "scribe").is_err());
+
+        tree.workspaces[0].grant_capability(collab_types::foreign_device::foreign_device_cap(
+            Verb::Comment,
+        ));
+        let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
+        assert_eq!(admitted.role, CapRole::Commenter);
     }
 
     #[test]
@@ -12382,6 +12519,7 @@ pub mod tests {
             VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: device.verifying_key().to_bytes(),
+                foreign: false,
             },
         )
         .expect("owner is admitted");
@@ -13357,6 +13495,43 @@ pub mod tests {
                 .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
+    }
+
+    #[test]
+    fn a_handoff_request_reaches_exactly_the_addressed_instance() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let room = uuid::Uuid::new_v4().to_string();
+        let key =
+            |app: &str, record: &str| CrdtRoute::record(app, room.clone(), record).channel_key();
+        let mut addressed = state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7);
+        let mut sibling = state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8);
+        let mut other_app = state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9);
+        let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
+        // The route SessionFollowDispatcher::request_handoff addresses.
+        state.fanout_to_route(
+            &CollabEvent::Handoff {
+                request: request.clone(),
+            },
+            u64::MAX,
+            &CrdtRoute::record("dev.tilo.notes", room.clone(), "continuation:5"),
+        );
+        assert!(matches!(
+            addressed.try_recv(),
+            Ok(ContextEnvelope::Handoff(message))
+                if ui::collaboration::handoff::HandoffRequest::decode(&message) == Some(request)
+        ));
+        assert!(
+            sibling.try_recv().is_err(),
+            "another window of the app is not asked"
+        );
+        assert!(other_app.try_recv().is_err());
     }
 
     #[test]
@@ -14728,6 +14903,7 @@ mod host_worker_capacity_tests {
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: [92; 32],
+                foreign: false,
             },
             principal_id: "host".into(),
             display_handle: None,

@@ -57,7 +57,9 @@ on:
       - os/tests/test_prepare_wpe_stage.py
       - os/tests/wpe_stage_cache.py
       - os/dev/wpe-stage-artifact.py
+      - os/Containerfile.wpe
       - os/tests/test_wpe_stage_artifact.py
+      - os/tests/test_wpe_recipe_inputs.py
       - os/tests/development_wpe_artifact_native.py
       - os/dev/private_disk_image.py
       - os/tests/test_private_disk_image.py
@@ -108,7 +110,8 @@ jobs:
           cp os/dev/{retain-development-rootfs.py,import-development-rootfs.py,rebind-development-trust.py,initramfs-trust.py,complete-initramfs-rebind.py,rebind-development-rootfs.py} "$context/dev/"
           cp os/dev/{audit-rootfs-layers.py,installed_material_audit.py} "$context/dev/"
           cp os/dev/wpe-stage-artifact.py "$context/dev/"
-          cp os/tests/{test_wpe_stage_artifact.py,development_wpe_artifact_native.py} "$context/"
+          mkdir -p "$context/os" && cp os/Containerfile.wpe "$context/os/"
+          cp os/tests/{test_wpe_stage_artifact.py,test_wpe_recipe_inputs.py,development_wpe_artifact_native.py} "$context/"
           cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
           cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py} "$context/"
           cp os/tests/development_rebind_native.py "$context/"
@@ -134,6 +137,6 @@ jobs:
                 "$image" -uc 'status=0; for fixture in development_prediction_native.py test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py development_rebind_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
             wpe-artifact)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -euc 'python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_wpe_stage_artifact.py; python3 -O /fixture/os/tests/test_wpe_stage_artifact.py; python3 /fixture/os/tests/development_wpe_artifact_native.py' ;;
+                "$image" -euc 'python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_wpe_stage_artifact.py; python3 -O /fixture/os/tests/test_wpe_stage_artifact.py; python3 /fixture/os/tests/test_wpe_recipe_inputs.py; python3 /fixture/os/tests/development_wpe_artifact_native.py' ;;
             *) echo 'Unknown native proof selection' >&2; exit 2 ;;
           esac

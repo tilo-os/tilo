@@ -171,12 +171,41 @@ pub struct DisplayOutputSnapshot {
     /// capability; this field explains the distinction without creating a
     /// decorative toggle.
     pub sink_hdr: bool,
-    pub hdr_unavailable_reason: Option<String>,
+    /// Why a sink that accepts HDR cannot be driven in HDR here. Typed so
+    /// Settings can explain it in the user's language.
+    pub hdr_unavailable_reason: Option<HdrUnavailable>,
     pub sink_vrr: bool,
-    pub vrr_unavailable_reason: Option<String>,
+    /// Why a sink that reports adaptive sync cannot use it here. Typed so
+    /// Settings can explain it in the user's language.
+    pub vrr_unavailable_reason: Option<AdaptiveSyncUnavailable>,
     /// Stable profile identifier (currently the canonical ICC path) to a
     /// user-facing label. Only profiles in this map may be selected.
     pub color_profile_labels: BTreeMap<String, String>,
+}
+
+/// Why an HDR-capable sink cannot be driven in HDR by the compositor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HdrUnavailable {
+    /// The kernel driver lacks a connector property HDR signalling needs:
+    /// `HDR_OUTPUT_METADATA`, a `BT2020_RGB` `Colorspace`, or a `max bpc`
+    /// of at least 10.
+    DriverUnsupported,
+    /// No 10-bit or half-float scanout buffer could be created or shown.
+    FormatUnsupported,
+    /// The driver refused the HDR signal or the mode change it needs.
+    DriverRejected,
+}
+
+/// Why an adaptive-sync-capable sink cannot have it enabled by the compositor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveSyncUnavailable {
+    /// The kernel driver offers no `VRR_ENABLED` property on any CRTC that
+    /// could drive this connector.
+    DriverUnsupported,
+    /// The driver refused to enable adaptive sync when it was requested.
+    DriverRejected,
 }
 
 /// Read-only state written atomically by the compositor in the private user
@@ -763,6 +792,13 @@ pub struct OutputConfig {
     pub mode: Option<OutputMode>,
     pub mirror_of: Option<String>,
     pub hdr: bool,
+    /// How bright ordinary (SDR) content is while this output runs in HDR,
+    /// in cd/m². 203 is the ITU BT.2408 reference white.
+    pub sdr_brightness_nits: u16,
+    /// Adaptive sync is allowed on this output. The compositor engages it
+    /// only while a fullscreen window is shown there (games, video) and
+    /// keeps the fixed refresh rate for the desktop, where uneven frame
+    /// times make many panels flicker. Inert on a sink that cannot do it.
     pub vrr: bool,
     pub color_profile: Option<String>,
 }
@@ -779,11 +815,18 @@ impl Default for OutputConfig {
             mode: None,
             mirror_of: None,
             hdr: false,
-            vrr: false,
+            sdr_brightness_nits: DEFAULT_SDR_BRIGHTNESS_NITS,
+            vrr: true,
             color_profile: None,
         }
     }
 }
+
+/// SDR content brightness on an HDR output unless the user picks another:
+/// the ITU BT.2408 reference white, where HDR video expects SDR white.
+pub const DEFAULT_SDR_BRIGHTNESS_NITS: u16 = 203;
+/// The SDR content brightness range Settings offers, cd/m².
+pub const SDR_BRIGHTNESS_NITS_RANGE: std::ops::RangeInclusive<u16> = 80..=480;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -801,7 +844,6 @@ pub enum DisplayConfigError {
     UnsupportedMode { output: String },
     InvalidScale { output: String },
     UnsupportedHdr { output: String },
-    UnsupportedVrr { output: String },
     UnsupportedColorProfile { output: String },
 }
 
@@ -822,7 +864,9 @@ impl DisplayConfig {
     /// Returns the specific [`DisplayConfigError`] variant naming the first
     /// rule an enabled, attached output's configuration violates — no
     /// enabled output, more than one primary, an unsupported mode, scale,
-    /// HDR, VRR or color profile, or an unresolved or cyclic mirror target.
+    /// HDR or color profile, or an unresolved or cyclic mirror target.
+    /// Allowing adaptive sync is never an error: it only engages where the
+    /// sink and driver can do it.
     pub fn validate_for(&self, attached: &[OutputDescriptor]) -> Result<(), DisplayConfigError> {
         let names: BTreeSet<&str> = attached.iter().map(|o| o.connector.as_str()).collect();
         let live: Vec<(&OutputDescriptor, &OutputConfig)> = attached
@@ -850,11 +894,6 @@ impl DisplayConfig {
             }
             if cfg.hdr && !desc.hdr {
                 return Err(DisplayConfigError::UnsupportedHdr {
-                    output: desc.connector.clone(),
-                });
-            }
-            if cfg.vrr && !desc.vrr {
-                return Err(DisplayConfigError::UnsupportedVrr {
                     output: desc.connector.clone(),
                 });
             }

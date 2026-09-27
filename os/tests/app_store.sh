@@ -346,8 +346,8 @@ fi
 # --- every media feature the image turns on has to exist ---------------------
 # The apps' engines sit behind cargo features that default off so that --shots,
 # the offline tests and CI need no GStreamer stack, no camera and no network.
-# os/Containerfile names them in APP_FEATURES so the image, and only the image,
-# compiles them in.
+# os/Containerfile names them in APP_FEATURES; the list must match the default
+# collection in dist/apps/app-collections.toml (what CI package-apps builds).
 #
 # A pair naming a feature no crate has is not a no-op and not a silent
 # mis-build: cargo refuses the entire invocation ("none of the selected packages
@@ -424,6 +424,29 @@ $(printf '%s\n' "$bogus" | sed 's/^/      /')
       cargo refuses the whole build for any one of these, after the builder stage
       has already installed its packages and compiled the workspace."
   fi
+fi
+
+# Thin apps must use the same feature set and package exclusions as CI's default
+# collection. Putting browser/wpe into the image thin graph unified ui/webview
+# into every tapp and added ~1.9 MB of .text versus package-apps (#1158).
+collection_features="$(python3 "$REPO/tools/apps/app_release.py" --collection default   | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["features"]))')"
+image_features="$(printf '%s' "$feat_line" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
+collection_sorted="$(printf '%s' "$collection_features" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
+if [ "$image_features" = "$collection_sorted" ]; then
+  ok "image APP_FEATURES match the default collection CI package-apps builds"
+else
+  bad "image APP_FEATURES diverge from dist/apps/app-collections.toml default collection
+      image:      $image_features
+      collection: $collection_sorted
+      a divergent graph is what made image thin apps ~1.9 MB of .text larger than CI"
+fi
+if grep -Eq 'THIN_EXCLUDES="browser"' "$CONTAINERFILE" \
+   && ! grep -Fq 'THIN_BROWSER_FEATURE=",browser/wpe"' "$CONTAINERFILE" \
+   && ! grep -Fq 'APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}"' "$CONTAINERFILE"; then
+  ok "image thin apps always exclude browser (separate WPE runtime), matching the collection"
+else
+  bad "image thin-apps step can still pull browser/wpe into the unified collection graph
+      which reintroduces the ~1.9 MB .text gap versus CI (#1158)"
 fi
 
 # --- nobody may re-enable ashpd's default backend ----------------------------

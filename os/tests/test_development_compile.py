@@ -58,8 +58,11 @@ class CompileBoundaries(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 repo = Path(temporary)
                 (repo / 'os').mkdir()
-                for name, filename in (('BASE_REF', 'base-snapshot.env'), ('RPMS_REF', 'rpms-snapshot.env')):
-                    (repo / 'os' / filename).write_text(name + '=' + WPE + '\n')
+                (repo / 'os' / 'base-snapshot.env').write_text('BASE_REF=' + WPE + '\n')
+                (repo / 'os' / 'dev').mkdir(parents=True, exist_ok=True)
+                resolve = repo / 'os/dev/resolve-rpm-snapshot.sh'
+                resolve.write_text('#!/bin/bash\nprintf \'%s\\n\' \'' + WPE + '\'\n')
+                resolve.chmod(0o755)
                 # No kernel-snapshot.env exists, reproducing the real missing ARM
                 # input without mocking the pin reader that previously hid it.
                 with patch.object(driver, 'REPO', repo):
@@ -457,7 +460,7 @@ class CompileBoundaries(unittest.TestCase):
             driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test', 'full-build')
         with self.subTest(phase="cache_rejects_missing_redirected_or_shell_configuration"):
             for field, value in (('SCCACHE_ENDPOINT', 'https://attacker.invalid'),
-                                 ('SCCACHE_BUCKET', 'wrong-bucket'), ('SCCACHE_REGION', ''),
+                                 ('SCCACHE_BUCKET', 'NOT_A_BUCKET'), ('SCCACHE_REGION', ''),
                                  ('SCCACHE_S3_KEY_PREFIX', 'prefix --secret=other'),
                                  ('SCCACHE_S3_KEY_PREFIX', '../escape')):
                 with self.subTest(field=field), self.assertRaises(ValueError):
@@ -467,7 +470,7 @@ class CompileBoundaries(unittest.TestCase):
                             {'cache_location': 's3, name: tilo-ci-sccache-125650147312-us-west-2, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
                              'stats': {'cache_write_errors': 1}}):
                 with self.assertRaises(ValueError):
-                    driver.cache_counters(json.dumps(payload), CACHE['SCCACHE_S3_KEY_PREFIX'])
+                    driver.cache_counters(json.dumps(payload), CACHE['SCCACHE_S3_KEY_PREFIX'], CACHE['SCCACHE_BUCKET'])
         with self.subTest(phase="probe_restarts_with_empty_local_caches_and_checks_env_dependency"):
             for stale_epoch in (False, True):
                 with self.subTest(stale_epoch=stale_epoch), tempfile.TemporaryDirectory() as temporary:

@@ -45,10 +45,7 @@ impl Name {
             bytes: [0; 41],
             len: 32 + suffix.len(),
         };
-        for (i, b) in pin.iter().enumerate() {
-            value.bytes[2 * i] = b"0123456789abcdef"[(b >> 4) as usize];
-            value.bytes[2 * i + 1] = b"0123456789abcdef"[(b & 15) as usize];
-        }
+        hex::encode_to_slice(pin, &mut value.bytes[..32]).expect("32 hex digits for 16 bytes");
         value.bytes[32..value.len].copy_from_slice(suffix);
         value
     }

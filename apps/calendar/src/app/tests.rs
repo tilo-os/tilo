@@ -4534,3 +4534,112 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
         );
     }
 }
+
+fn history_preview(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some("history-preview") {
+        return Some(node);
+    }
+    node.children.iter().find_map(history_preview)
+}
+
+fn restore_review(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some("standalone-history-restore-review") {
+        return Some(node);
+    }
+    node.children.iter().find_map(restore_review)
+}
+
+#[test]
+fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
+    let mut app = CalendarApp::new_empty_for_shots();
+    let mut state = ui::State::new();
+    let mut first = None;
+    for title in ["Alpha review", "Beta sync"] {
+        app.sync(&mut state.doc, &state.root);
+        app.apply_action(Action::NewEvent, &mut state.doc);
+        app.sync(&mut state.doc, &state.root);
+        let mut event = CalDoc::read_model(&state.doc)
+            .events
+            .into_iter()
+            .find(|event| event.title.is_empty())
+            .expect("the new event");
+        event.title = title.into();
+        CalDoc::update_event(&mut state.doc, &event);
+        app.sync(&mut state.doc, &state.root);
+        state.commit_action(None, None);
+        first.get_or_insert_with(|| state.doc.get_heads()[0].to_string());
+    }
+    assert_eq!(CalDoc::read_model(&state.doc).events.len(), 2);
+    let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));
+    // The launcher hands History the app's own root factory; a preview is a
+    // second, read-only instance of it.
+    harness.set_history_preview_root(|| Ok(Box::new(CalendarApp::new_empty_for_shots())));
+    harness.enable_document_history_chrome();
+    harness.click_named("standalone-history-open").unwrap();
+
+    let session = harness
+        .local_history_resources()
+        .unwrap()
+        .into_iter()
+        .find(|resource| resource.kind == "tilo.host.history.session")
+        .expect("an open History session");
+    let entry = first.unwrap();
+    harness
+        .invoke_local_history_action(
+            &tilo_actions::ActionAddress::new(session.id.as_str(), "select"),
+            Some(&format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "entries": [&entry[..32]] })
+            )),
+        )
+        .unwrap();
+    harness.relayout();
+    let changes = harness.state_mut().doc.get_changes(&[]).len();
+
+    // The selected version is shown by the calendar itself, beside the pane.
+    let inspection = harness.presentation_inspection();
+    let shown = history_preview(&inspection.root)
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|semantics| semantics.name.clone())
+        .expect("History previews the selected version");
+    assert!(shown.contains("Alpha review"), "{shown}");
+    assert!(
+        !shown.contains("Beta sync"),
+        "the preview is the past: {shown}"
+    );
+    assert_eq!(
+        CalDoc::read_model(&harness.state_mut().doc).events.len(),
+        2,
+        "previewing writes nothing"
+    );
+
+    harness.click_named("standalone-history-restore").unwrap();
+    let inspection = harness.presentation_inspection();
+    let confirm = restore_review(&inspection.root)
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|dialog| {
+            dialog
+                .children
+                .iter()
+                .filter_map(|child| child.action_target.clone())
+                .find(|target| target.ends_with(":primary"))
+        })
+        .expect("the review publishes its confirm action");
+    harness
+        .perform_semantic_named(
+            "standalone-history-restore-review",
+            Some(&confirm),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    harness.relayout();
+
+    let doc = &mut harness.state_mut().doc;
+    assert_eq!(
+        CalDoc::read_model(doc).events.len(),
+        1,
+        "the calendar is back at the version after its first event"
+    );
+    assert_eq!(doc.get_changes(&[]).len(), changes + 1);
+}

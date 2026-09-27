@@ -104,7 +104,7 @@ jobs:
 
             repository_metadata = load_metadata(ROOT)
             relay_text = (
-                ROOT / ".forgejo/workflows/tilo-relay.yaml"
+                ROOT / ".forgejo/workflows/release-relay.yml"
             ).read_text(encoding="utf-8")
             relay_inputs = {
                 ".cargo/**",
@@ -112,7 +112,7 @@ jobs:
                 "Cargo.lock",
                 "keys/cosign.pub",
                 "os/base-snapshot.env",
-                "os/rpms-snapshot.env",
+                "os/dev/rpm-snapshot-fingerprint.py",
                 "os/dev/verify-rpm-snapshot-package-set.sh",
             }
             for index, block in enumerate(workflow_path_blocks(relay_text), start=1):
@@ -122,7 +122,8 @@ jobs:
                     f"{sorted(relay_inputs - block)}",
                 )
             pairs = (
-                ("tilo-relay", ".forgejo/workflows/tilo-relay.yaml"),
+                ("tilo-relay", ".forgejo/workflows/release-relay.yml"),
+                ("fs", ".forgejo/workflows/release-relay.yml"),
                 ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
             )
             violations: list[str] = []
@@ -134,7 +135,7 @@ jobs:
                 )
             self.assertEqual(violations, [])
         with self.subTest(phase='relay catalog only changes do not build an unsigned image'):
-            source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
                 encoding="utf-8"
             )
             blocks = workflow_path_blocks(source)
@@ -154,6 +155,24 @@ jobs:
                     self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
             self.assertIn('    tags: ["v*"]', source)
             self.assertIn("\n  workflow_dispatch:\n", source)
+        with self.subTest(phase='relay image paths exclude test-only workspace edges'):
+            # The image Containerfile runs cargo build -p tilo-relay -p fs --bins.
+            # Dev-harness crates must not schedule that rebuild.
+            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
+                encoding="utf-8"
+            )
+            for block in workflow_path_blocks(source):
+                for path in (
+                    "apps/notes/**",
+                    "apps/chat/**",
+                    "crates/sdk/ui-core/**",
+                    "crates/browser/tilo-browser-runtime/**",
+                    "vendor/vello/**",
+                ):
+                    self.assertNotIn(path, block, path)
+                self.assertIn("crates/hosting/tilo-relay/**", block)
+                self.assertIn("crates/system/fs/**", block)
+                self.assertIn("vendor/genawaiter-proc-macro/**", block)
 
 
 if __name__ == "__main__":

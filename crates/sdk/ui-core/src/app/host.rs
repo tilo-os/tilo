@@ -222,7 +222,11 @@ fn run_layout_pass(
     use crate::widget::layout::{
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
-    let logical = crate::scale::logical_size((width, height), f64::from(scale_factor));
+    let (content_origin, logical) = app.layout.safe_area.content(crate::scale::logical_size(
+        (width, height),
+        f64::from(scale_factor),
+    ));
+    app.layout.content_origin = content_origin;
     if app.close_admission.dialog.is_some() {
         app.layout_close_dialog(logical);
         return Some((true, 0, 0));

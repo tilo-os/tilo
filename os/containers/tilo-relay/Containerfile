@@ -18,14 +18,14 @@
 #         -t registry.tilo.so/tilo/tilo-relay:latest .
 #
 # Publish via the existing forgejo CI workflow — see
-# `.forgejo/workflows/tilo-relay.yaml` (companion to the OS image job).
+# `.forgejo/workflows/release-relay.yml` (companion to the OS image job).
 # ============================================================================
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
 # Digest-pinned snapshot and base shared with the desktop + host bootc images.
-# RPMS_REF comes from os/rpms-snapshot.env and BASE_REF from
+# RPMS_REF comes from resolve-rpm-snapshot.sh and BASE_REF from
 # os/base-snapshot.env — see os/dev/build-image.sh and the
-# .forgejo/workflows/tilo-relay.yaml build. Declared before the first FROM so
+# .forgejo/workflows/release-relay.yml build. Declared before the first FROM so
 # both are global rather than scoped to the preceding stage.
 ARG BASE_REF
 ARG RPMS_REF

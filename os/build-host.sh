@@ -22,7 +22,9 @@ if [ -z "${BASE_REF:-}" ]; then
     echo "error: no BASE_REF — re-run the mirror-base workflow first" >&2
     exit 1
 fi
-[ -f "$SCRIPT_DIR/rpms-snapshot.env" ] && . "$SCRIPT_DIR/rpms-snapshot.env"
+if [ -z "${RPMS_REF:-}" ]; then
+  RPMS_REF="$("$SCRIPT_DIR/dev/resolve-rpm-snapshot.sh")"     || { echo "build-host: resolve-rpm-snapshot.sh failed" >&2; exit 1; }
+fi
 if [ -z "${RPMS_REF:-}" ]; then
     echo "error: no RPMS_REF — re-run the snapshot-rpms workflow (or ./os/dev/snapshot-rpms.sh) first" >&2
     exit 1

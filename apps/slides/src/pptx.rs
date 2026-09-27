@@ -347,7 +347,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     TextAlign::Justify => "just",
                     TextAlign::Left => "l",
                 };
-                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}">{}</a:rPr><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), drawing_color(&el.fill), xml(line))).collect::<String>();
+                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}">{}</a:rPr><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), drawing_color(&el.fill), quick_xml::escape::partial_escape(line))).collect::<String>();
                 s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
@@ -649,7 +649,7 @@ fn notes_slide_xml(notes: &str) -> String {
         .map(|line| {
             format!(
                 r#"<a:p><a:r><a:rPr lang="en-US"/><a:t>{}</a:t></a:r></a:p>"#,
-                xml(line)
+                quick_xml::escape::partial_escape(line)
             )
         })
         .collect::<String>();
@@ -781,11 +781,6 @@ fn slide_number(n: &str) -> usize {
 fn emu(v: f64) -> i64 {
     (v * EMU).round() as i64
 }
-fn xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
 fn image_ext(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("png")
@@ -871,7 +866,7 @@ const RELS_HEAD: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships 
 fn core_xml(title: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>{}</dc:title></cp:coreProperties>"#,
-        xml(title)
+        quick_xml::escape::partial_escape(title)
     )
 }
 const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>"#;

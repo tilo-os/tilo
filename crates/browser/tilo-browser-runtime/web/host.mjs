@@ -225,7 +225,7 @@ export async function mountDesktop(target,options={}) {
       const writes=JSON.parse(runtime.pending_writes(current));
       if(!writes.length)return;
       try{
-        if(config.peer!==undefined&&(runtime.peer_pending_batch_bytes||runtime.peer_pending_batch)){
+        if(config.peer!==undefined){
           const result=await commitPeerBatches({pending:()=>readPeerBatch(runtime,config.peer),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
           // The peer session's delivery transaction holds the capture; retry once it settles.
           if(result.busy){retryBusyPersist();return;}

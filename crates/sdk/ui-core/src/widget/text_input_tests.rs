@@ -439,6 +439,26 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
 }
 
 #[test]
+fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
+    // A tap leaves the anchor where the caret was; the soft keyboard then
+    // commits a word and, separately, the space after it.
+    let mut ti = TextInput::local();
+    ti.set_focus(true);
+    ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+    ti.selection_anchor = Some(0);
+    let mut doc = AutoCommit::new();
+    for text in ["Hello", " ", "world"] {
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit(text.into())),
+            mods(false, false),
+        ));
+    }
+    assert_eq!(ti.value(), "Hello world");
+}
+
+#[test]
 fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document() {
     // Case `ime_preedit_is_shaped_underlined_and_committed_atomically`.
     {

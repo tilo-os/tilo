@@ -8,7 +8,7 @@ workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
 development_workflow="$repo/.forgejo/workflows/development-rpms-arm64.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
-relay_workflow="$repo/.forgejo/workflows/tilo-relay.yaml"
+relay_workflow="$repo/.forgejo/workflows/release-relay.yml"
 build_script="$repo/os/dev/build-image.sh"
 asset_manifest="$repo/os/external-assets/github-assets.tsv"
 derive="$repo/os/dev/derive-rpm-package-set.py"
@@ -100,7 +100,7 @@ has "$development_workflow" 'os/Containerfile.rpms' \
 has "$development_workflow" 'production_signed' \
   'development RPM candidate receipt declares that it is not production-signed'
 if grep -Ev '^[[:space:]]*#' "$development_workflow" \
-  | grep -Eq 'cosign|promote-native-index|rpms-snapshot\.env|build-image\.yml/dispatches'; then
+  | grep -Eq 'cosign|promote-native-index|rpms-snapshot\.env|resolve-rpm-snapshot|build-image\.yml/dispatches'; then
   bad 'development RPM candidate neither signs nor promotes or dispatches production work'
 else
   ok 'development RPM candidate remains separate from production publication'
@@ -110,90 +110,52 @@ has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
 has "$workflow" 'runner: runner-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
+snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
+if printf '%s\n' "$snapshot_job" | grep -Fq 'Install and check native snapshot host tools' \
+  && printf '%s\n' "$snapshot_job" | grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' \
+  && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
+  ok 'native RPM snapshot installs and checks host tools before accessing the base'
+else
+  bad 'native RPM snapshot may access the base without its required host tools'
+fi
 has "$workflow" 'platforms: ${{ matrix.platform }}' \
   'snapshot explicitly selects each native OCI platform'
-has "$workflow" 'needs: snapshot' \
+has "$workflow" 'needs: [fingerprint, snapshot]' \
   'snapshot promotion waits for every native build'
-has "$workflow" 'needs: signing-preflight' \
+has "$workflow" 'needs: [fingerprint, signing-preflight]' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
-has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
-  'snapshot promotion refuses only a snapshot that is not newer than the pin on main'
-inputs_job="$(sed -n '/^  inputs:/,/^  signing-preflight:/p' "$workflow")"
-if grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --since-pin --head "$GITHUB_SHA"' <<<"$inputs_job" \
-   && ! grep -Fq 'fetch-depth: 0' <<<"$inputs_job" \
-   && grep -Fxq '      - os/rpms-snapshot.env' "$workflow"; then
-  ok 'snapshot refresh compares with the pinned snapshot source, so a refused publication loses no change'
+has "$workflow" 'python3 os/dev/rpm-snapshot-fingerprint.py' \
+  'snapshot workflow computes the package-set fingerprint'
+has "$workflow" './os/dev/resolve-rpm-snapshot.sh' \
+  'snapshot workflow resolves the fingerprint tag to a verified digest'
+if ! grep -Fq 'workflow_call:' "$workflow"; then
+  ok 'snapshot signing runs only in standalone workflows with OIDC'
 else
-  bad 'snapshot refresh compares only with the previous push and can miss a package change'
+  bad 'snapshot signing is exposed through a reusable workflow without OIDC'
 fi
-has "$workflow" 'driver = "vfs"' \
-  'snapshot promotion isolates Podman storage from the runner overlay'
-has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
-  'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
-# The kernel builds on its own signed buildroot and never reads this snapshot,
-# so the RPM pin lands in its own pull request and never waits for a kernel.
+has "$workflow" '--tag "$FINGERPRINT_TAG"' \
+  'snapshot promotion publishes the set-<fingerprint> tag'
+has "$workflow" 'needs: [fingerprint, signing-preflight]' \
+  'expensive native snapshot builds wait for fingerprint and signing preflight'
+if ! grep -Eq 'open-snapshot-pr\.py|reconcile-snapshot-pins\.py|rpms-snapshot\.env' "$workflow" \
+   && grep -Fq 'set-' "$workflow"; then
+  ok 'snapshot workflow publishes by fingerprint tag with no pin pull request'
+else
+  bad 'snapshot workflow still opens or reconciles a hand-kept pin'
+fi
 kernel_workflow="$repo/.forgejo/workflows/build-kernel.yml"
-promotion_step="$(sed -n '/- name: Propose the frozen snapshot pin through protected main/,$p' "$workflow")"
-if ! grep -Eq 'build-kernel\.yml|workflow_call|rpms_ref' <<<"$(sed -n '/^jobs:/,$p' "$workflow")" \
-   && ! grep -Eq '^  workflow_call:|RPMS_REF|rpms-snapshot\.env' "$kernel_workflow" \
-   && ! grep -Eq 'from=rpms|RPMS_REF' "$repo/os/kernel/Containerfile" \
-   && grep -Fq 'RPMS_INDEX_REF: ${{ steps.attest.outputs.ref }}' <<<"$promotion_step" \
-   && grep -Fq '"RPMS_SOURCE_REVISION=$GITHUB_SHA" > os/rpms-snapshot.env' <<<"$promotion_step" \
-   && grep -Fq 'rpms --rpms-ref "$ref" --source-revision "$GITHUB_SHA"' <<<"$promotion_step"; then
-  ok 'the RPM snapshot pin lands on its own, independent of the kernel'
+if ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|resolve-rpm-snapshot' "$kernel_workflow" \
+   && ! grep -Eq 'from=rpms|RPMS_REF' "$repo/os/kernel/Containerfile"; then
+  ok 'the kernel remains independent of the frozen RPM snapshot'
 else
-  bad 'the RPM snapshot pin still waits for, or is bundled with, a kernel rebuild'
+  bad 'the kernel still depends on the frozen RPM snapshot'
 fi
-if grep -Fq 'git checkout --detach FETCH_HEAD' <<<"$promotion_step" \
-   && ! grep -Fq 'git rebase' <<<"$promotion_step" \
-   && grep -Fq 'refusing to regress' "$kernel_workflow"; then
-  ok 'pin promotion applies its pins on the current main tip and never regresses a newer pin'
-else
-  bad 'pin promotion can publish pins built from stale inputs'
-fi
-# Inputs moving on main during a run must not starve RPM pin promotion: a pin
-# newer than main's is proposed, the next refresh is requested, and no open pin
-# PR is closed merely because a newer one exists; the reconcile closes only pins
-# main outdates and schedules the rest to merge on green, on every pin push.
-reconcile_job="$(awk '/^  reconcile-pins:/{on=1} on&&/^  [a-z-]+:$/&&!/reconcile-pins/{exit} on' "$workflow")"
-if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin' <<<"$promotion_step" \
-   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent || moved=true' <<<"$promotion_step" \
-   && ! grep -Fq -- '--supersede' <<<"$promotion_step" \
-   && grep -Fq 'python3 os/dev/reconcile-snapshot-pins.py' <<<"$promotion_step" \
-   && grep -Fq 'python3 os/dev/reconcile-snapshot-pins.py' <<<"$reconcile_job" \
-   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$reconcile_job" \
-   && grep -Fq 'actions/workflows/snapshot-rpms.yml/dispatches' <<<"$promotion_step"; then
-  ok 'RPM pin promotion converges while inputs keep moving on main'
-else
-  bad 'RPM pin promotion can be starved by a busy main'
-fi
-# Protected main refuses direct pushes; the pins land through a digest-named
-# automation branch. The job token pushes it but gets 404 from the
-# pull-request API, so RELEASE_TOKEN opens the PR (whose checks then run).
-if grep -Fq 'branch="automation/rpm-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
-   && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
-   && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
-   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$promotion_step" \
-   && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' "$workflow" "$kernel_workflow" \
-   && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow" "$kernel_workflow"; then
-  ok 'snapshot pins land through a RELEASE_TOKEN PR, never a direct push to main'
-else
-  bad 'snapshot pin promotion pushes to main or opens its PR without RELEASE_TOKEN'
-fi
-if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_step" \
-   && grep -Fq 'Forgejo refused the snapshot pin push to $branch' "$kernel_workflow" \
-   && ! grep -Fq 'branch races' "$kernel_workflow"; then
-  ok 'a refused snapshot pin push is reported as refused'
-else
-  bad 'a refused snapshot pin push can be misreported'
-fi
-# An OS build verifies only against a merged pin.
 if grep -Fq 'actions/workflows/build-image.yml/dispatches' "$workflow"; then
-  bad 'snapshot promotion dispatches an image build before its pin lands'
+  bad 'snapshot promotion dispatches an image build before resolve completes'
 else
-  ok 'snapshot promotion leaves image builds to the merged RPM pin'
+  ok 'snapshot promotion leaves image builds to their ensure-rpms dependency'
 fi
 has "$repo/os/dev/configure-cosign-kms.sh" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
@@ -235,8 +197,8 @@ if COSIGN_KEY_REF='awskms:///not-an-arn' \
 else
   ok 'malformed AWS KMS key references fail closed'
 fi
-if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$workflow" \
-   && grep -Fq 'needs: signing-preflight' "$workflow"; then
+if grep -Fq 'run: os/dev/require-cosign-authority.sh' "$workflow" \
+   && grep -Fq 'needs: [fingerprint, signing-preflight]' "$workflow"; then
   ok 'snapshot construction starts only after KMS authority matches the pinned public key'
 else
   bad 'snapshot construction can start before its signing authority is identity-bound'
@@ -247,23 +209,29 @@ has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenan
   'snapshot publishes signed SLSA provenance'
 has "$workflow" 'if type == "array" then .[] else . end' \
   'snapshot verification accepts current object and legacy array Cosign output'
-has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
-  'OS CI verifies exact RPM snapshot provenance'
-has "$image_workflow" './os/dev/derive-rpm-package-set.py --arch x86_64' \
-  'OS CI derives the explicit x86-64 RPM package set'
-has "$image_workflow" './os/dev/derive-rpm-package-set.py --arch aarch64' \
-  'OS CI derives the explicit ARM64 RPM package set'
-has "$image_workflow" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
-  'OS CI verifies architecture-specific RPM package-set provenance'
-skopeo_step_line=$(grep -Fn -- '- name: Ensure the signed OCI inspector is available' "$image_workflow" | cut -d: -f1)
-rpms_auth_line=$(grep -Fn -- '- name: Authenticate RPMS_REF (frozen package snapshot)' "$image_workflow" | cut -d: -f1)
-if [ -n "$skopeo_step_line" ] && [ -n "$rpms_auth_line" ] \
-   && [ "$skopeo_step_line" -lt "$rpms_auth_line" ] \
-   && grep -Fq 'command -v skopeo >/dev/null' "$image_workflow"; then
-  ok 'OS CI installs its OCI inspector before signed input verification'
-else
-  bad 'OS CI can verify signed OCI inputs before its inspector is available'
-fi
+resolve_script="$repo/os/dev/resolve-rpm-snapshot.sh"
+has "$resolve_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+  'fingerprint resolve verifies exact RPM snapshot provenance'
+has "$resolve_script" 'derive-rpm-package-set.py" --arch x86_64' \
+  'fingerprint resolve derives the explicit x86-64 RPM package set'
+has "$resolve_script" 'derive-rpm-package-set.py" --arch aarch64' \
+  'fingerprint resolve derives the explicit ARM64 RPM package set'
+has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
+  'fingerprint resolve verifies architecture-specific RPM package-set provenance'
+has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
+  'OS CI resolves RPMS_REF by fingerprint before building'
+for consumer in "$image_workflow" "$relay_workflow"; do
+  resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
+  if printf '%s\n' "$resolver_job" | grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' \
+    && printf '%s\n' "$resolver_job" | grep -Fq './os/dev/resolve-rpm-snapshot.sh' \
+    && printf '%s\n' "$resolver_job" | grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' \
+    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
+    && ! printf '%s\n' "$resolver_job" | grep -Fq 'enable-openid-connect: true'; then
+    ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
+  else
+    bad "$(basename "$consumer") may sign in a reusable job or accept an unverified RPM snapshot"
+  fi
+done
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
@@ -318,8 +286,8 @@ has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
 has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'production CI rejects a stale frozen package manifest before building'
-has "$image_workflow" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
-  'production CI accepts only the real digest-pinned RPM registry path'
+has "$resolve_script" 'registry.tilo.so/tilo/rpms@$digest' \
+  'fingerprint resolve returns a digest-pinned RPM registry path'
 has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
@@ -334,8 +302,8 @@ else
   ok 'obsolete DROP_RPMDB_WAL workaround is absent'
 fi
 
-python3 "$repo/os/tests/test_rpm_snapshot_inputs.py" \
-  && ok "semantic snapshot input gate preserves native and manual rebuilds" \
-  || bad "semantic snapshot input gate regression"
+python3 "$repo/os/tests/test_rpm_snapshot_fingerprint.py" \
+  && ok "fingerprint resolution preserves package-set addressing without a hand-kept pin" \
+  || bad "fingerprint resolution regression"
 
 exit "$fail"

@@ -45,8 +45,10 @@ use crate::continuation::{self, BuilderDomain};
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
-use ui::widget::BlockEditOp;
+use qdoc_rich_text::RichTextAction;
+use qdoc_rich_text::action::RegionKind;
 use ui::widget::marks::{Mark, MarkSpan};
+use ui::widget::{BlockContent, BlockKind};
 
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
@@ -234,9 +236,9 @@ impl PageData {
 ///
 /// The set is deliberately small: a create, a rename, a re-parent/reorder, and
 /// a single field edit are all one whole-page write ([`Self::UpsertPage`]); a
-/// delete removes a page and its whole subtree; body edits are a batch of
-/// UUID-addressed [`BlockEditOp`]s.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// delete removes a page and its whole subtree; a body edit is one
+/// [`RichTextAction`] on the page's rich text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NotesAction {
     /// Create or replace a page's metadata (title / parent / order). One variant
     /// covers create, rename, re-parent, and reorder — all are a metadata write.
@@ -257,26 +259,24 @@ pub enum NotesAction {
         source: String,
         pages: Vec<DuplicatePage>,
     },
-    /// Apply UUID-addressed rich-text changes to one page. This is the only
-    /// Notes path allowed to mutate collaborative block data: widgets emit a
-    /// semantic delta, and the action validates and applies it atomically.
-    ApplyBlockOps { page: String, ops: Vec<BlockEditOp> },
-    /// Add one content-addressed image and its referencing block edit in the
-    /// same replayable mutation. The digest is verified before either write.
+    /// One rich-text edit of a page's body. This is the only Notes path
+    /// allowed to change a body after it is written: the editor, the palette
+    /// and agents all edit through it.
+    EditBody { page: String, edit: RichTextAction },
+    /// Write a page's first content into its still-empty body: a page seeded
+    /// from Markdown. Refused once the body holds text.
+    WriteBody {
+        page: String,
+        blocks: Vec<PageBlock>,
+    },
+    /// Add one content-addressed image and the body edit referencing it in
+    /// the same replayable mutation. The digest is verified before either
+    /// write.
     AddImageAsset {
         page: String,
         digest: String,
         bytes: Vec<u8>,
-        op: BlockEditOp,
-    },
-    /// Replace the Notes-owned inline formatting and page-link marks on one
-    /// stable block. The ranges are UTF-8 byte offsets in the block text;
-    /// [`crate::doc::NotesDoc`] validates them and writes native Automerge
-    /// marks, so ordinary collaborative text splices keep their anchors.
-    SetBlockMarks {
-        page: String,
-        block_id: String,
-        marks: Vec<InlineMarkSpan>,
+        edit: RichTextAction,
     },
     /// Create or rename one independently keyed tag.
     UpsertTag(TagData),
@@ -297,14 +297,66 @@ pub enum NotesAction {
     /// content cannot leave behind a successful-looking empty page.
     ImportPage {
         page: PageData,
-        ops: Vec<BlockEditOp>,
-        marks: Vec<(String, Vec<InlineMarkSpan>)>,
+        blocks: Vec<PageBlock>,
         assets: Vec<(String, Vec<u8>)>,
     },
     /// Move images a notebook still carries inline into the device content
     /// store and keep only their references, so the notebook stops paying
     /// for image bytes in every replica and sync message. Idempotent.
     MoveAssetsToContentStore { digests: Vec<String> },
+    /// Bring every page stored in the first format to rich text, in place.
+    /// Dispatched when a notebook opens; a no-op once nothing is left.
+    UpgradeNotebook,
+}
+
+/// One block of a page, as an import carries it: the editor's kind (its
+/// stored spelling), text, marks, outline depth and code fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageBlock {
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub marks: Vec<InlineMarkSpan>,
+    #[serde(default)]
+    pub nesting: u8,
+    #[serde(default)]
+    pub code_group: Option<String>,
+}
+
+impl PageBlock {
+    pub fn of(block: &BlockContent) -> Self {
+        Self {
+            kind: block.kind.stored(),
+            text: block.text.clone(),
+            marks: block.marks.iter().map(InlineMarkSpan::from_ui).collect(),
+            nesting: block.nesting,
+            code_group: block.code_group.clone(),
+        }
+    }
+
+    /// The editor's block, when every part of it is valid.
+    fn content(&self) -> Option<BlockContent> {
+        let marks = self
+            .marks
+            .iter()
+            .map(InlineMarkSpan::to_ui)
+            .collect::<Option<Vec<_>>>()?;
+        if marks.iter().any(|span| {
+            span.range.start >= span.range.end
+                || !self.text.is_char_boundary(span.range.start)
+                || !self.text.is_char_boundary(span.range.end)
+                || span.range.end > self.text.len()
+        }) {
+            return None;
+        }
+        Some(BlockContent {
+            kind: BlockKind::from_stored(&self.kind)?,
+            marks,
+            nesting: self.nesting.min(crate::markdown::MAX_LIST_INDENT),
+            code_group: self.code_group.clone(),
+            ..BlockContent::paragraph("", self.text.clone())
+        })
+    }
 }
 
 fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> Result<(), String> {
@@ -362,6 +414,10 @@ pub enum InlineMark {
     ExternalLink {
         url: String,
     },
+    /// A reference to a participant, by id.
+    Mention {
+        id: String,
+    },
 }
 
 /// A half-open UTF-8 byte range with one inline mark.
@@ -387,6 +443,7 @@ impl InlineMarkSpan {
                 page: page.to_string(),
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
+            Mark::Mention(id) => InlineMark::Mention { id: id.clone() },
         };
         Self {
             start: span.range.start,
@@ -407,17 +464,17 @@ impl InlineMarkSpan {
             InlineMark::ExternalLink { url } => {
                 crate::markdown::safe_external_url(url).then(|| Mark::ExternalLink(url.clone()))?
             }
+            InlineMark::Mention { id } => Mark::Mention(id.clone()),
         };
         Some(MarkSpan::new(self.start..self.end, mark))
     }
 }
 
-/// Authored once before dispatch; replay never mints identities.
+/// Authored once before dispatch; replay never mints page identities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DuplicatePage {
     pub source: String,
     pub destination: String,
-    pub blocks: Vec<(String, String)>,
 }
 
 /// Build a complete deterministic copy mapping from the current source tree.
@@ -443,10 +500,10 @@ fn duplicate_subtree_from_workspace(
 // Projection captures only existing stable identities. Destination UUIDs are
 // authored once by the final admitted builder, never by resource discovery.
 fn duplicate_sources(
-    doc: &AutoCommit,
+    _doc: &AutoCommit,
     source: PageId,
     workspace: &crate::Workspace,
-) -> Result<Vec<(PageId, Vec<String>)>, String> {
+) -> Result<Vec<PageId>, String> {
     if workspace.get(source).is_none() {
         return Err("source note no longer exists".into());
     }
@@ -465,32 +522,17 @@ fn duplicate_sources(
     }
     let mut sources = subtree.into_iter().collect::<Vec<_>>();
     sources.sort();
-    Ok(sources
-        .into_iter()
-        .map(|page| {
-            (
-                page,
-                NotesDoc::page_block_snapshots(doc, page)
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect(),
-            )
-        })
-        .collect())
+    Ok(sources)
 }
 
-fn author_duplicate(source: PageId, sources: &[(PageId, Vec<String>)]) -> NotesAction {
+fn author_duplicate(source: PageId, sources: &[PageId]) -> NotesAction {
     NotesAction::DuplicateSubtree {
         source: source.to_string(),
         pages: sources
             .iter()
-            .map(|(page, blocks)| DuplicatePage {
+            .map(|page| DuplicatePage {
                 source: page.to_string(),
                 destination: Uuid::new_v4().to_string(),
-                blocks: blocks
-                    .iter()
-                    .map(|id| (id.clone(), Uuid::new_v4().to_string()))
-                    .collect(),
             })
             .collect(),
     }
@@ -566,6 +608,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.notebook",
             "Notes".into(),
         ),
+        NotesAction::UpgradeNotebook => (
+            "Upgrade notebook",
+            "notes.notebook".into(),
+            "notes.notebook",
+            "Notes".into(),
+        ),
         NotesAction::UpsertPage(page) => (
             "Update note",
             format!("notes.page:{}", page.id),
@@ -590,7 +638,7 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.page",
             "Note".to_string(),
         ),
-        NotesAction::ApplyBlockOps { page, .. } => (
+        NotesAction::EditBody { page, .. } | NotesAction::WriteBody { page, .. } => (
             "Edit note",
             format!("notes.page:{page}"),
             "notes.page",
@@ -601,12 +649,6 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             format!("notes.page:{page}"),
             "notes.page",
             "Note".to_string(),
-        ),
-        NotesAction::SetBlockMarks { page, block_id, .. } => (
-            "Format note",
-            format!("notes.block:{page}:{block_id}"),
-            "notes.block",
-            block_id.clone(),
         ),
         NotesAction::UpsertTag(tag) => (
             "Update tag",
@@ -657,59 +699,48 @@ fn rewrite_page_reference_labels(
     target: PageId,
     new_title: &str,
 ) -> Result<(), String> {
+    let chars = |text: &str, byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
     for page in NotesDoc::list_pages(doc) {
-        let texts = NotesDoc::page_block_snapshots(doc, page.id)
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        for (block_id, marks) in NotesDoc::page_block_marks(doc, page.id) {
-            let Some(text) = texts.get(&block_id) else {
-                continue;
-            };
-            let mut ranges = marks
+        for block in NotesDoc::page_blocks(doc, page.id) {
+            let mut ranges = block
+                .marks
                 .iter()
                 .filter_map(|span| {
-                    let (InlineMark::Link { page } | InlineMark::Transclusion { page }) =
-                        &span.mark
-                    else {
+                    let (Mark::Link(linked) | Mark::Transclusion(linked)) = &span.mark else {
                         return None;
                     };
-                    (page.parse::<PageId>().ok() == Some(target)).then_some((span.start, span.end))
+                    (*linked == target).then(|| (span.range.clone(), span.mark.clone()))
                 })
+                .filter(|(range, _)| block.text.get(range.clone()) != Some(new_title))
                 .collect::<Vec<_>>();
-            ranges.sort_unstable_by_key(|range| std::cmp::Reverse(range.0));
-            let mut updated_marks = marks;
-            let mut changed = false;
-            for (start, end) in ranges {
-                if text.get(start..end) == Some(new_title) {
-                    continue;
-                }
-                NotesDoc::apply_block_ops(
+            // Last first, so each edit leaves the earlier ranges where they are.
+            ranges.sort_unstable_by_key(|(range, _)| std::cmp::Reverse(range.start));
+            for (range, mark) in ranges {
+                let at = chars(&block.text, range.start);
+                let del = block
+                    .text
+                    .get(range.clone())
+                    .map_or(0, |old| old.chars().count());
+                NotesDoc::edit_page_body(
                     doc,
                     page.id,
-                    &[BlockEditOp::TextSplice {
-                        block_id: block_id.clone(),
-                        start,
-                        end,
-                        text: new_title.to_string(),
-                    }],
+                    &RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.id.clone(),
+                        at,
+                        del,
+                        ins: new_title.to_string(),
+                    },
                 )?;
-                changed = true;
-                let old_len = end.saturating_sub(start);
-                let new_len = new_title.len();
-                for span in &mut updated_marks {
-                    if span.start == start && span.end == end {
-                        span.end = start.saturating_add(new_len);
-                    } else if span.start >= end {
-                        span.start = span.start.saturating_sub(old_len).saturating_add(new_len);
-                        span.end = span.end.saturating_sub(old_len).saturating_add(new_len);
-                    } else if span.end >= end {
-                        span.end = span.end.saturating_sub(old_len).saturating_add(new_len);
-                    }
-                }
-            }
-            if changed {
-                updated_marks.retain(|span| span.start < span.end);
-                NotesDoc::set_block_marks(doc, page.id, &block_id, &updated_marks)?;
+                let NotesAction::EditBody { edit, .. } = set_mark_action(
+                    page.id,
+                    &block.id,
+                    at..at.saturating_add(new_title.chars().count()),
+                    &mark,
+                ) else {
+                    continue;
+                };
+                NotesDoc::edit_page_body(doc, page.id, &edit)?;
             }
         }
     }
@@ -725,8 +756,7 @@ impl Action for NotesAction {
         match self {
             NotesAction::ImportPage {
                 page,
-                ops,
-                marks,
+                blocks,
                 assets,
             } => {
                 let meta = page
@@ -746,18 +776,22 @@ impl Action for NotesAction {
                 for (digest, bytes) in assets {
                     crate::notebook::put_asset(doc, digest, bytes).map_err(ActionError::Refused)?;
                 }
+                let blocks = blocks
+                    .iter()
+                    .map(PageBlock::content)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| ActionError::Refused("an imported block is invalid".into()))?;
                 NotesDoc::upsert_page_meta(doc, &meta);
-                NotesDoc::apply_block_ops(doc, meta.id, ops).map_err(ActionError::Refused)?;
-                for (block_id, marks) in marks {
-                    NotesDoc::set_block_marks(doc, meta.id, block_id, marks)
-                        .map_err(ActionError::Refused)?;
-                }
+                NotesDoc::fill_page_body(doc, meta.id, &blocks).map_err(ActionError::Refused)?;
             }
             NotesAction::UpdatePageTree { before, after } => {
                 update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
             }
             NotesAction::MoveAssetsToContentStore { digests } => {
                 crate::notebook::move_inline_assets(doc, digests).map_err(ActionError::Refused)?;
+            }
+            NotesAction::UpgradeNotebook => {
+                NotesDoc::upgrade(doc).map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
@@ -838,37 +872,36 @@ impl Action for NotesAction {
                     }
                 }
             }
-            NotesAction::ApplyBlockOps { page, ops } => {
+            NotesAction::EditBody { page, edit } => {
                 let page = page
                     .parse::<PageId>()
                     .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
-                NotesDoc::apply_block_ops(doc, page, ops).map_err(ActionError::Refused)?;
+                NotesDoc::edit_page_body(doc, page, edit).map_err(ActionError::Refused)?;
+            }
+            NotesAction::WriteBody { page, blocks } => {
+                let page = page
+                    .parse::<PageId>()
+                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
+                let blocks = blocks
+                    .iter()
+                    .map(PageBlock::content)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| ActionError::Refused("a block is invalid".into()))?;
+                NotesDoc::fill_page_body(doc, page, &blocks).map_err(ActionError::Refused)?;
             }
             NotesAction::AddImageAsset {
                 page,
                 digest,
                 bytes,
-                op,
+                edit,
             } => {
                 crate::notebook::validate_asset_payload(digest, bytes)
                     .map_err(ActionError::Refused)?;
                 let page = page
                     .parse::<PageId>()
                     .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
-                NotesDoc::apply_block_ops(doc, page, std::slice::from_ref(op))
-                    .map_err(ActionError::Refused)?;
+                NotesDoc::edit_page_body(doc, page, edit).map_err(ActionError::Refused)?;
                 crate::notebook::put_asset(doc, digest, bytes).map_err(ActionError::Refused)?;
-            }
-            NotesAction::SetBlockMarks {
-                page,
-                block_id,
-                marks,
-            } => {
-                let page = page
-                    .parse::<PageId>()
-                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
-                NotesDoc::set_block_marks(doc, page, block_id, marks)
-                    .map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertTag(data) => {
                 if let Some(tag) = data.to_meta() {
@@ -980,37 +1013,55 @@ pub fn delete_page_action(id: PageId) -> NotesAction {
     NotesAction::DeletePage { id: id.to_string() }
 }
 
-/// Apply one semantic editor delta to a page. Block ids are carried in the
-/// payload instead of list indexes, so a stale action refuses rather than
-/// silently modifying a neighbour after concurrent insertion or reordering.
-pub fn apply_block_ops_action(page: PageId, ops: Vec<BlockEditOp>) -> NotesAction {
-    NotesAction::ApplyBlockOps {
+/// One rich-text edit of a page's body. Block ids and offsets are carried in
+/// the payload, so a stale edit refuses rather than silently changing a
+/// neighbour after a concurrent insert or reorder.
+pub fn edit_body_action(page: PageId, edit: RichTextAction) -> NotesAction {
+    NotesAction::EditBody {
         page: page.to_string(),
-        ops,
+        edit,
     }
 }
 
-pub fn add_image_asset_action(page: PageId, bytes: Vec<u8>, op: BlockEditOp) -> NotesAction {
+/// Mark the characters `range` of `block` with `mark`: a format, a page link.
+pub fn set_mark_action(
+    page: PageId,
+    block: &str,
+    range: std::ops::Range<usize>,
+    mark: &Mark,
+) -> NotesAction {
+    let (name, value) = tilo_rich_text::document_mark(mark);
+    edit_body_action(
+        page,
+        RichTextAction::SetMark {
+            region: RegionKind::Body,
+            spans: vec![qdoc_rich_text::action::Span {
+                block: block.to_owned(),
+                start: range.start,
+                end: range.end,
+            }],
+            name: name.to_owned(),
+            value: Some(value),
+            also_clear: Vec::new(),
+        },
+    )
+}
+
+/// Write a page's first content into its empty body.
+pub fn write_body_action(page: PageId, blocks: &[BlockContent]) -> NotesAction {
+    NotesAction::WriteBody {
+        page: page.to_string(),
+        blocks: blocks.iter().map(PageBlock::of).collect(),
+    }
+}
+
+pub fn add_image_asset_action(page: PageId, bytes: Vec<u8>, edit: RichTextAction) -> NotesAction {
     let digest = blake3::hash(&bytes).to_hex().to_string();
     NotesAction::AddImageAsset {
         page: page.to_string(),
         digest,
         bytes,
-        op,
-    }
-}
-
-/// Replace a block's Notes-owned inline formatting through the same action
-/// executor that owns its text and structure.
-pub fn set_block_marks_action(
-    page: PageId,
-    block_id: impl Into<String>,
-    marks: Vec<InlineMarkSpan>,
-) -> NotesAction {
-    NotesAction::SetBlockMarks {
-        page: page.to_string(),
-        block_id: block_id.into(),
-        marks,
+        edit,
     }
 }
 
@@ -1669,14 +1720,15 @@ fn block_resource_in_page(
                 "block text…",
                 ExecutionLocus::ClientLocal,
                 move |text: &str| {
-                    encode(&apply_block_ops_action(
+                    encode(&edit_body_action(
                         page,
-                        vec![BlockEditOp::TextSplice {
-                            block_id: block_id.clone(),
-                            start: 0,
-                            end: original.len(),
-                            text: text.to_string(),
-                        }],
+                        RichTextAction::SpliceText {
+                            region: RegionKind::Body,
+                            block: block_id.clone(),
+                            at: 0,
+                            del: original.chars().count(),
+                            ins: text.to_string(),
+                        },
                     ))
                 },
             )
@@ -1694,12 +1746,12 @@ fn block_resource_in_page(
             resource = resource.with_action(immediate_spec(
                 "move-up",
                 "Move block up",
-                &apply_block_ops_action(
+                &edit_body_action(
                     page,
-                    vec![BlockEditOp::Move {
-                        block_id: block.id.clone(),
+                    RichTextAction::MoveBlocks {
+                        blocks: vec![block.id.clone()],
                         after,
-                    }],
+                    },
                 ),
             ));
         }
@@ -1707,12 +1759,12 @@ fn block_resource_in_page(
             resource = resource.with_action(immediate_spec(
                 "move-down",
                 "Move block down",
-                &apply_block_ops_action(
+                &edit_body_action(
                     page,
-                    vec![BlockEditOp::Move {
-                        block_id: block.id.clone(),
+                    RichTextAction::MoveBlocks {
+                        blocks: vec![block.id.clone()],
                         after: Some(next.id.clone()),
-                    }],
+                    },
                 ),
             ));
         }
@@ -1720,11 +1772,11 @@ fn block_resource_in_page(
     resource = resource.with_action(immediate_spec(
         "delete",
         "Delete block",
-        &apply_block_ops_action(
+        &edit_body_action(
             page,
-            vec![BlockEditOp::Delete {
-                block_id: block.id.clone(),
-            }],
+            RichTextAction::RemoveBlocks {
+                blocks: vec![block.id.clone()],
+            },
         ),
     ));
     Some(resource)
@@ -2153,6 +2205,25 @@ mod tests {
         r
     }
 
+    fn block(kind: BlockKind, text: &str, marks: Vec<MarkSpan>) -> BlockContent {
+        BlockContent {
+            kind,
+            marks,
+            ..BlockContent::paragraph("", text)
+        }
+    }
+
+    /// Write `blocks` into `page`'s empty body through the action, and return
+    /// the ids the document gave them.
+    fn write_page(doc: &mut AutoCommit, page: PageId, blocks: &[BlockContent]) -> Vec<String> {
+        let action = write_body_action(page, blocks);
+        tilo_actions::apply_local(doc, &action, encode(&action)).unwrap();
+        NotesDoc::page_block_snapshots(doc, page)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn canonical_page_actions_validate_blocks_roll_back_and_run_file_jobs() {
@@ -2160,8 +2231,6 @@ mod tests {
             "phase canonical_actions_accept_every_editor_block_kind_and_reject_invalid_table_modes"
         );
         {
-            use automerge::ReadDoc;
-            use ui::widget::BlockKind;
             let mut doc = AutoCommit::new();
             crate::notebook::initialize_empty(&mut doc).unwrap();
             let mut workspace = Workspace::new();
@@ -2191,22 +2260,11 @@ mod tests {
                 BlockKind::Table { visual: true },
                 BlockKind::Divider,
             ];
-            let mut after = None;
-            let ops = kinds
+            let blocks = kinds
                 .iter()
-                .map(|kind| {
-                    let id = Uuid::new_v4().to_string();
-                    let op = BlockEditOp::Insert {
-                        block_id: id.clone(),
-                        after: after.clone(),
-                        kind: crate::markdown::block_kind_wire(kind),
-                        text: "Preserved content".into(),
-                    };
-                    after = Some(id);
-                    op
-                })
-                .collect();
-            let action = apply_block_ops_action(page, ops);
+                .map(|kind| block(kind.clone(), "Preserved content", Vec::new()))
+                .collect::<Vec<_>>();
+            let action = write_body_action(page, &blocks);
             let mut peer = doc.clone();
             let applied = tilo_actions::dispatch(
                 &mut doc,
@@ -2218,23 +2276,30 @@ mod tests {
             tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
             assert_eq!(doc.get_heads(), peer.get_heads());
             crate::notebook::validate(&doc).unwrap();
-            let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-            assert_eq!(doc.length(&list), kinds.len());
-            for (index, kind) in kinds.iter().enumerate() {
-                assert_eq!(
-                    NotesDoc::block_kind(&doc, &list, index),
-                    crate::markdown::block_kind_wire(kind)
-                );
-            }
+            let stored = NotesDoc::page_blocks(&doc, page);
+            assert_eq!(
+                stored
+                    .iter()
+                    .map(|block| block.kind.clone())
+                    .collect::<Vec<_>>(),
+                kinds
+            );
+            let mut other = Workspace::new();
+            let empty = other.create_page(None);
+            let action = upsert_page_action(other.get(empty).unwrap());
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
             for kind in ["table", "table:2", "table:true", "table:01", "table:1:0"] {
                 let before = doc.get_heads();
-                let action = apply_block_ops_action(
-                    page,
-                    vec![BlockEditOp::SetKind {
-                        block_id: after.clone().unwrap(),
+                let action = NotesAction::WriteBody {
+                    page: empty.to_string(),
+                    blocks: vec![PageBlock {
                         kind: kind.into(),
+                        text: "x".into(),
+                        marks: Vec::new(),
+                        nesting: 0,
+                        code_group: None,
                     }],
-                );
+                };
                 assert!(
                     tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err(),
                     "invalid kind accepted: {kind}"
@@ -2252,10 +2317,13 @@ mod tests {
             let before = doc.get_heads();
             let invalid = NotesAction::ImportPage {
                 page: meta.clone(),
-                ops: vec![BlockEditOp::Delete {
-                    block_id: "missing-block".into(),
+                blocks: vec![PageBlock {
+                    kind: "heading9".into(),
+                    text: "x".into(),
+                    marks: Vec::new(),
+                    nesting: 0,
+                    code_group: None,
                 }],
-                marks: vec![],
                 assets: vec![],
             };
             assert!(
@@ -2273,14 +2341,10 @@ mod tests {
                 "failed body must not leave phantom metadata"
             );
             let mut peer = doc.clone();
-            let (ops, marks) =
-                crate::MainPanel::seed_block_ops_with_marks("# Import\n\n**Rich content**", |_| {
-                    None
-                });
+            let blocks = crate::MainPanel::seed_blocks("# Import\n\n**Rich content**", |_| None);
             let valid = NotesAction::ImportPage {
                 page: meta,
-                ops,
-                marks,
+                blocks: blocks.iter().map(PageBlock::of).collect(),
                 assets: vec![],
             };
             let applied = tilo_actions::dispatch(
@@ -2408,29 +2472,16 @@ mod tests {
         eprintln!("phase canonical_links_publish_block_addressed_backlink_resources");
         {
             let (mut doc, _projects, source, target, _inbox) = seeded();
-            let block_id = Uuid::new_v4().to_string();
-            let insert = apply_block_ops_action(
+            let block_id = write_page(
+                &mut doc,
                 source,
-                vec![BlockEditOp::Insert {
-                    block_id: block_id.clone(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "See the launch plan for context".into(),
-                }],
-            );
-            tilo_actions::apply_local(&mut doc, &insert, encode(&insert)).unwrap();
-            let marks = set_block_marks_action(
-                source,
-                block_id.clone(),
-                vec![InlineMarkSpan {
-                    start: 8,
-                    end: 19,
-                    mark: InlineMark::Link {
-                        page: target.to_string(),
-                    },
-                }],
-            );
-            tilo_actions::apply_local(&mut doc, &marks, encode(&marks)).unwrap();
+                &[block(
+                    BlockKind::Paragraph,
+                    "See the launch plan for context",
+                    vec![MarkSpan::new(8..19, Mark::Link(target))],
+                )],
+            )
+            .remove(0);
 
             let backlinks = canonical_backlinks(&doc, &NotesDoc::list_pages(&doc), target);
             assert_eq!(backlinks.len(), 1);
@@ -2460,38 +2511,17 @@ mod tests {
                     },
                 );
             }
-            let block = Uuid::from_u128(3).to_string();
-            NotesDoc::apply_block_ops(
+            NotesDoc::fill_page_body(
                 &mut doc,
                 source,
-                &[BlockEditOp::Insert {
-                    block_id: block.clone(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "Old title + Old title".into(),
-                }],
-            )
-            .unwrap();
-            NotesDoc::set_block_marks(
-                &mut doc,
-                source,
-                &block,
-                &[
-                    InlineMarkSpan {
-                        start: 0,
-                        end: 9,
-                        mark: InlineMark::Link {
-                            page: target.to_string(),
-                        },
-                    },
-                    InlineMarkSpan {
-                        start: 12,
-                        end: 21,
-                        mark: InlineMark::Transclusion {
-                            page: target.to_string(),
-                        },
-                    },
-                ],
+                &[block(
+                    BlockKind::Paragraph,
+                    "Old title + Old title",
+                    vec![
+                        MarkSpan::new(0..9, Mark::Link(target)),
+                        MarkSpan::new(12..21, Mark::Transclusion(target)),
+                    ],
+                )],
             )
             .unwrap();
 
@@ -2610,14 +2640,9 @@ mod tests {
         }
         dispatch(
             &mut doc,
-            &apply_block_ops_action(
+            &write_body_action(
                 PROJECTS,
-                vec![BlockEditOp::Insert {
-                    block_id: Uuid::from_u128(0x6666).to_string(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "Kickoff agenda".into(),
-                }],
+                &[block(BlockKind::Paragraph, "Kickoff agenda", Vec::new())],
             ),
         );
         dispatch(&mut doc, &new_tag_action(URGENT, "urgent"));
@@ -2903,29 +2928,24 @@ mod tests {
             let mut first = seeded_doc;
             first.commit();
             let mut second = AutoCommit::load(&first.save()).unwrap();
-            let block = Uuid::new_v4().to_string();
-            let insert = apply_block_ops_action(
-                projects,
-                vec![BlockEditOp::Insert {
-                    block_id: block.clone(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "hé".into(),
-                }],
-            );
+            let insert =
+                write_body_action(projects, &[block(BlockKind::Paragraph, "hé", Vec::new())]);
             let envelope = tilo_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
             tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            let block = NotesDoc::page_block_snapshots(&first, projects)[0]
+                .0
+                .clone();
 
-            let splice = apply_block_ops_action(
+            let splice = edit_body_action(
                 projects,
-                vec![BlockEditOp::TextSplice {
-                    block_id: block.clone(),
-                    // Byte positions from the editor are converted to Automerge's
-                    // scalar indexes by NotesDoc, so this replaces one `é`.
-                    start: 1,
-                    end: 3,
-                    text: "x".into(),
-                }],
+                RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: block.clone(),
+                    // Offsets are characters, so this replaces the one `é`.
+                    at: 1,
+                    del: 1,
+                    ins: "x".into(),
+                },
             );
             let envelope = tilo_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
             tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
@@ -2937,14 +2957,15 @@ mod tests {
             assert_eq!(NotesDoc::page_block_snapshots(&second, projects)[0].1, "hx");
 
             let before = second.save();
-            let stale = apply_block_ops_action(
+            let stale = edit_body_action(
                 projects,
-                vec![BlockEditOp::TextSplice {
-                    block_id: block,
-                    start: 99,
-                    end: 99,
-                    text: "!".into(),
-                }],
+                RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block,
+                    at: 99,
+                    del: 0,
+                    ins: "!".into(),
+                },
             );
             let error = tilo_actions::apply_local(&mut second, &stale, encode(&stale))
                 .expect_err("a stale byte range must refuse, never clamp");
@@ -2955,17 +2976,12 @@ mod tests {
         eprintln!("phase block_resource_exposes_the_canonical_edit_action");
         {
             let (mut doc, projects, _a, _b, _inbox) = seeded();
-            let block = Uuid::new_v4().to_string();
-            let action = apply_block_ops_action(
+            let block = write_page(
+                &mut doc,
                 projects,
-                vec![BlockEditOp::Insert {
-                    block_id: block.clone(),
-                    after: None,
-                    kind: "paragraph".into(),
-                    text: "Original".into(),
-                }],
-            );
-            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+                &[block(BlockKind::Paragraph, "Original", Vec::new())],
+            )
+            .remove(0);
             let resource = block_resource(
                 projects,
                 &NoteBlockResource {
@@ -2983,14 +2999,15 @@ mod tests {
             let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
             assert_eq!(
                 decoded,
-                apply_block_ops_action(
+                edit_body_action(
                     projects,
-                    vec![BlockEditOp::TextSplice {
-                        block_id: block,
-                        start: 0,
-                        end: "Original".len(),
-                        text: "Rewritten".into(),
-                    }],
+                    RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block,
+                        at: 0,
+                        del: "Original".chars().count(),
+                        ins: "Rewritten".into(),
+                    },
                 ),
             );
         }
@@ -3028,12 +3045,12 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 serde_json::from_slice::<NotesAction>(&move_up.payload).unwrap(),
-                apply_block_ops_action(
+                edit_body_action(
                     page,
-                    vec![BlockEditOp::Move {
-                        block_id: "b".into(),
+                    RichTextAction::MoveBlocks {
+                        blocks: vec!["b".into()],
                         after: None,
-                    }]
+                    }
                 )
             );
         }
@@ -3292,14 +3309,17 @@ mod tests {
                 NotesAction::DeletePage { id } => {
                     panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
                 }
-                NotesAction::ApplyBlockOps { .. } => {
-                    panic!("new-child built the wrong action: ApplyBlockOps")
+                NotesAction::EditBody { .. } => {
+                    panic!("new-child built the wrong action: EditBody")
+                }
+                NotesAction::WriteBody { .. } => {
+                    panic!("new-child built the wrong action: WriteBody")
                 }
                 NotesAction::AddImageAsset { .. } => {
                     panic!("new-child built the wrong action: AddImageAsset")
                 }
-                NotesAction::SetBlockMarks { .. } => {
-                    panic!("new-child built the wrong action: SetBlockMarks")
+                NotesAction::UpgradeNotebook => {
+                    panic!("new-child built the wrong action: UpgradeNotebook")
                 }
                 NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
                 NotesAction::DeleteTag { .. } => {

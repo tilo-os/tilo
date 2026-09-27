@@ -642,6 +642,7 @@ fn generate_tpm_authority_key_command(
     generate_tpm_authority_key(&private, &public)
 }
 
+#[cfg(feature = "tls-fixture")]
 fn generate_tls_fixture_command(
     mut args: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), String> {
@@ -790,6 +791,7 @@ fn run() -> Result<(), String> {
         Some("generate-ed25519-key") => generate_ed25519_key_command(args),
         Some("generate-secure-boot-cert") => generate_secure_boot_cert_command(args),
         Some("generate-tpm-authority-key") => generate_tpm_authority_key_command(args),
+        #[cfg(feature = "tls-fixture")]
         Some("generate-tls-fixture") => generate_tls_fixture_command(args),
         Some("p256-public-key-sha256") => p256_public_key_sha256_command(args),
         Some("sign-rsa-sha256") => sign_rsa_sha256_command(args),

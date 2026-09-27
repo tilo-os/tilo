@@ -200,14 +200,7 @@ impl ImportApp {
     }
 
     fn try_for_shot(scenario: &str) -> Result<Self, String> {
-        // Screenshot fixtures are disposable and must not inherit the login
-        // user's protected home classification (CI commonly runs as root).
-        // macOS resolves its default temporary directory beneath /private,
-        // which the source guard correctly treats as an OS directory.
-        #[cfg(target_os = "macos")]
-        let temp = tempfile::tempdir_in("/Users/Shared").map_err(|error| error.to_string())?;
-        #[cfg(not(target_os = "macos"))]
-        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let temp = disposable_fixture_dir().map_err(|error| error.to_string())?;
         let base = temp
             .path()
             .canonicalize()
@@ -3091,6 +3084,22 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImportApp::new())
 }
 
+/// A fresh directory for disposable screenshot and test fixtures, in a place
+/// the source guard treats as user data.
+///
+/// Neither the login user's home (CI commonly runs as root, and `/root` is an
+/// OS directory) nor the configured temporary directory will do: `TMPDIR` can
+/// point anywhere, including below `/var`, and macOS resolves its default
+/// beneath `/private`. The guard rightly refuses both.
+fn disposable_fixture_dir() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "macos")]
+    return tempfile::tempdir_in("/Users/Shared");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return tempfile::tempdir_in("/tmp");
+    #[cfg(not(unix))]
+    return tempfile::tempdir();
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -3100,12 +3109,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
-        // A source under macOS's default /private/var temporary directory is
-        // rightly rejected by the protected-system-path guard.
-        #[cfg(target_os = "macos")]
-        let temp = tempfile::tempdir_in("/Users/Shared").unwrap();
-        #[cfg(not(target_os = "macos"))]
-        let temp = tempfile::tempdir().unwrap();
+        let temp = super::disposable_fixture_dir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("source");
         let destination_parent = base.join("destination-parent");

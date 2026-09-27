@@ -210,6 +210,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
             | CollabRequest::ClearContinuation { .. }
+            | CollabRequest::ReportHandoff { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }

@@ -40,6 +40,7 @@ dev-session = []
 dev-overrides = []
 
 [dependencies]
+fnv.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -112,6 +113,8 @@ thiserror.workspace = true
 # File URIs and percent-encoded URI parts.
 url.workspace = true
 percent-encoding.workspace = true
+# XML escaping for the recent-files bookmarks.
+quick-xml.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
@@ -135,7 +138,7 @@ qdoc = { path = "../../doc/qdoc" }
 tilo-content = { path = "../../system/content" }
 qdoc-codecs = { path = "../../doc/qdoc-codecs", default-features = false }
 tilo-resource = { path = "../../sdk/tilo-resource" }
-mime_guess = "2.0.5"
+mime_guess.workspace = true
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Kept outside `shell::shell::quick_settings::actions` so the
 # Settings app can call the same bindings without depending on the
@@ -220,17 +223,16 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The shared runtime daemon; `runtime_host::Session` supplies its services.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
-# The compositor-free runtime host serves its apps' document media from the
-# same content store and capability implementation as the filesystem daemon.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+# The app identity service: broker, registry, device fleet, provisioning.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
@@ -276,6 +278,8 @@ tar.workspace = true
 # writer, ICU tokenizer, and other extras we don't need for a
 # home-directory index.
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+# Tilo's search layer: the providers' retained indexes.
+tilo-search = { path = "../../sdk/search" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

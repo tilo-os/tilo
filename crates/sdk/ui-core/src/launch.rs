@@ -21,6 +21,30 @@ pub use shot_frame::{ShotFrame, ShotLayout};
 #[cfg(not(target_arch = "wasm32"))]
 pub use shot_frame::render_widget_png;
 
+#[cfg(all(target_os = "android", feature = "native"))]
+pub mod android;
+#[cfg(any(all(target_os = "android", feature = "native"), test))]
+mod android_env;
+
+/// Export the Android entry point for this binary's `main`.
+///
+/// On Android an app is a shared library that `TiloActivity` loads, not an
+/// executable, so there is no process `main`. Invoked once at the top level
+/// of an app's `main.rs`, this defines the `android_main` the activity calls,
+/// which prepares the process and runs that same `main`. On every other
+/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
+/// as a `cdylib` example.
+#[macro_export]
+macro_rules! android_main {
+    () => {
+        #[cfg(target_os = "android")]
+        #[unsafe(no_mangle)]
+        fn android_main(app: $crate::launch::android::AndroidApp) {
+            $crate::launch::android::run_main(app, main);
+        }
+    };
+}
+
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
@@ -723,6 +747,22 @@ impl LaunchSpec {
             },
             |factory| Ok(factory()),
         )
+    }
+
+    /// A fresh instance of the live root for History's read-only preview.
+    #[cfg(feature = "native")]
+    fn history_preview_root(
+        &self,
+        args: &LaunchArgs,
+    ) -> impl Fn() -> Result<Box<dyn Widget>, String> + 'static {
+        let live_root = self.live_root;
+        let live_root_with_args = self.live_root_with_args;
+        let args = args.clone();
+        move || match (live_root_with_args, live_root) {
+            (Some(factory), _) => factory(&args).map_err(|error| error.to_string()),
+            (None, Some(factory)) => Ok(factory()),
+            (None, None) => Err("launch specification has no live root".into()),
+        }
     }
 
     #[cfg(feature = "native")]
@@ -1817,12 +1857,20 @@ fn finalize_native_app_with_constructor(
     let root_history = root
         .history_registration()
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    // A second root may only be built where the spec builds it and the host,
+    // not the root, owns persistence: a preview must never open a store.
+    let preview_root = (spec.legacy_preparer.is_none()
+        && matches!(persistence, LegacyPersistencePolicy::Host))
+    .then(|| spec.history_preview_root(args));
     let mut app = crate::collaboration::native_initial::transfer_to_app(|| {
         construct(scope, state, root, domain)
     })
     .map_err(LaunchError::Operation)?
     .with_autosave(autosave)
     .with_legacy_persistence(persistence);
+    if let Some(preview_root) = preview_root {
+        app = app.with_history_preview_root(preview_root);
+    }
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }

@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 mod host;
 mod open_file;
-pub use host::{ApplicationHost, NativeProcessHost};
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
 pub type InstanceId = u64;

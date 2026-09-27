@@ -13,16 +13,10 @@ impl Name {
             bytes: [0; 107],
             len: 97 + suffix.len(),
         };
-        let hex = b"0123456789abcdef";
-        for (i, byte) in device.iter().enumerate() {
-            name.bytes[2 * i] = hex[(byte >> 4) as usize];
-            name.bytes[2 * i + 1] = hex[(byte & 15) as usize];
-        }
+        hex::encode_to_slice(device, &mut name.bytes[..64]).expect("64 hex digits for 32 bytes");
         name.bytes[64] = b'-';
-        for (i, byte) in delivery.iter().enumerate() {
-            name.bytes[65 + 2 * i] = hex[(byte >> 4) as usize];
-            name.bytes[66 + 2 * i] = hex[(byte & 15) as usize];
-        }
+        hex::encode_to_slice(delivery, &mut name.bytes[65..97])
+            .expect("32 hex digits for 16 bytes");
         name.bytes[97..name.len].copy_from_slice(suffix);
         name
     }

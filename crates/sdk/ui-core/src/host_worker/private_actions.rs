@@ -95,12 +95,16 @@ use atomic_file::bounded::{
 };
 use atomic_file::lease::FileLease;
 use atomic_file::{ExistingCommitError, PublicationError, PublicationState, StorageDirectory};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::ffi::OsStr;
 use std::io::{self, Read};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 type OwnerDirectory = StorageDirectory;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const FILE_NAME: &str = "private-actions-v1.bin";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const CHILD_NAME: &str = "private-actions-v1";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const LOCK_NAME: &str = "private-actions-v1.writer.lock";
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Cursor {
@@ -108,6 +112,13 @@ struct Cursor {
     sequence: u64,
     digest: [u8; 32],
 }
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only macOS and Linux have the bounded private store; elsewhere every open refuses"
+    )
+)]
 pub struct PrivateActionsFile {
     root: OwnerDirectory,
     directory: OwnerDirectory,
@@ -121,6 +132,13 @@ pub struct PrivateActionsFile {
     cursor: Option<Cursor>,
     cursor_identity: Option<atomic_file::FileIdentity>,
 }
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only macOS and Linux have the bounded private store; elsewhere every open refuses"
+    )
+)]
 pub struct PreparedPrivateWrite {
     capture: PrivateActionsCapture,
     encoded: Vec<u8>,
@@ -206,6 +224,13 @@ pub enum PrivateReadOutcome {
     Failed(FailedPrivateRead),
 }
 // Failure owns every admitted object; none can be extracted as a healthy file.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only macOS and Linux have the bounded private store; elsewhere every open refuses"
+    )
+)]
 pub struct FileOpenRefusal {
     error: Option<OpenError>,
     original: Option<StorageDirectory>,
@@ -258,6 +283,13 @@ impl PrivateActionsFile {
         scope: SenderScope,
         cache: &PortableStorage,
     ) -> Result<Self, FileOpenRefusal> {
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "linux")),
+            expect(
+                unused_mut,
+                reason = "only macOS and Linux have the bounded private store; elsewhere every open refuses"
+            )
+        )]
         let mut held = FileOpenRefusal {
             error: None,
             original: Some(directory),
@@ -499,7 +531,11 @@ impl PrivateActionsFile {
                     SenderStorageCode::Uncertain
                 })?;
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            return Err(SenderStorageCode::Capacity);
+            {
+                let _ = identity;
+                Err(SenderStorageCode::Capacity)
+            }
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             Ok(())
         })();
         if let Err(code) = result {

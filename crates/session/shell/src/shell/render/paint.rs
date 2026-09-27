@@ -24,6 +24,7 @@ use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use wgpu::util::TextureBlitter;
 
+use super::hdr_encode::HdrEncodePipeline;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbHistoryTransaction, XrgbTargetHistory,
@@ -1307,6 +1308,8 @@ pub struct VelloDrmBridge {
     context: RenderContext,
     target: RetainedGpuTarget,
     bgra_blitter: TextureBlitter,
+    /// SDR → PQ encode passes, one per HDR scanout format in use.
+    hdr_encoders: Vec<HdrEncodePipeline>,
     dev_id: usize,
 
     /// Readback buffer (padded to the wgpu row alignment requirement).
@@ -1386,6 +1389,7 @@ impl VelloDrmBridge {
             context,
             target,
             bgra_blitter,
+            hdr_encoders: Vec::new(),
             dev_id,
 
             readback_buf,
@@ -1419,7 +1423,8 @@ impl VelloDrmBridge {
         self.bump_xrgb_history_epoch();
     }
 
-    /// Import a compositor-owned linear XRGB dma-buf on this bridge's exact wgpu device.
+    /// Import a compositor-owned linear scanout dma-buf (`XRGB8888`, or `XBGR2101010` /
+    /// `ABGR16161616F` for HDR) on this bridge's exact wgpu device.
     ///
     /// Keeping import here prevents a target created by another device from reaching the render
     /// callback. Retain the returned alias while the scanout allocation remains alive.
@@ -1427,7 +1432,7 @@ impl VelloDrmBridge {
     /// # Errors
     ///
     /// Fails when the device cannot import the dma-buf as a render target.
-    pub fn import_bgra8_target(
+    pub fn import_scanout_target(
         &self,
         image: &ui::dmabuf_import::DmabufRef<'_>,
     ) -> Result<ui::dmabuf_import::ImportedRenderTarget, BridgeError> {
@@ -1435,26 +1440,46 @@ impl VelloDrmBridge {
             .map_err(|error| BridgeError::Import(error.to_string()))
     }
 
-    /// Render and blit into an imported direct-scanout target in one submission, then wait for
-    /// the existing completion marker before returning.
+    /// Render into an imported direct-scanout target in one submission, then wait for the
+    /// existing completion marker before returning. An SDR (`Bgra8Unorm`) target receives a
+    /// plain copy; an HDR target receives the PQ BT.2020 encode with SDR white at
+    /// `sdr_white_nits`.
     ///
     /// # Errors
     ///
     /// Fails when the target size does not match this bridge, rendering or
     /// submission fails, or the completion marker misses `deadline`.
-    pub fn paint_imported_bgra8_until(
+    pub fn paint_imported_until(
         &mut self,
         scene: &Scene,
         damage: SceneDamage<'_>,
         target: &ui::dmabuf_import::ImportedRenderTarget,
         deadline: Instant,
+        sdr_white_nits: f32,
     ) -> Result<GpuFrameStats, BridgeError> {
         self.last_phase_timing = None;
         if (target.width, target.height) != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
-                "imported BGRA target is {}x{}, expected {}x{}",
+                "imported scanout target is {}x{}, expected {}x{}",
                 target.width, target.height, self.target.size.0, self.target.size.1
             )));
+        }
+        let hdr = target.format != wgpu::TextureFormat::Bgra8Unorm;
+        if hdr
+            && !self
+                .hdr_encoders
+                .iter()
+                .any(|pipeline| pipeline.format() == target.format)
+        {
+            self.hdr_encoders
+                .push(HdrEncodePipeline::new(&self.target.device, target.format));
+        }
+        let encode = self
+            .hdr_encoders
+            .iter()
+            .find(|pipeline| hdr && pipeline.format() == target.format);
+        if let Some(pipeline) = encode {
+            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
         }
         let blitter = &self.bgra_blitter;
         let view = &target.view;
@@ -1464,7 +1489,10 @@ impl VelloDrmBridge {
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
             None,
-            |device, encoder, source| blitter.copy(device, encoder, source, view),
+            |device, encoder, source| match encode {
+                Some(pipeline) => pipeline.encode(device, encoder, source, view),
+                None => blitter.copy(device, encoder, source, view),
+            },
         )?;
         Ok(GpuFrameStats {
             revision: damage.revision,
@@ -3579,6 +3607,57 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
     physical_h: usize,
     transform: settings_store::hardware::OutputTransform,
 ) {
+    write_subrect_transformed(
+        source,
+        dst,
+        dst_pitch,
+        (physical_w, physical_h),
+        transform,
+        |dpix, spix| {
+            if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (dpix, spix) {
+                *db = *sb;
+                *dg = *sg;
+                *dr = *sr;
+                *dx = 0xFF;
+            }
+        },
+    );
+}
+
+/// [`swizzle_subrect_rgba_to_xrgb8888_transformed`] for an output driven in HDR: each sRGB
+/// pixel becomes one little-endian `XBGR2101010` word of PQ BT.2020 signal.
+pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
+    source: SubrectSource<'_>,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    physical_size: (usize, usize),
+    transform: settings_store::hardware::OutputTransform,
+    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+) {
+    write_subrect_transformed(
+        source,
+        dst,
+        dst_pitch,
+        physical_size,
+        transform,
+        |dpix, spix| {
+            if let [r, g, b, _] = *spix {
+                dpix.copy_from_slice(&encoder.encode_xbgr2101010([r, g, b]).to_le_bytes());
+            }
+        },
+    );
+}
+
+/// Walk one output's physical pixels, find the combined-scene source pixel under each through
+/// `transform`, and let `write` produce the 4-byte destination pixel from the RGBA source.
+fn write_subrect_transformed(
+    source: SubrectSource<'_>,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    (physical_w, physical_h): (usize, usize),
+    transform: settings_store::hardware::OutputTransform,
+    write: impl Fn(&mut [u8], &[u8]),
+) {
     let SubrectSource {
         src_rgba,
         src_w,
@@ -3643,12 +3722,7 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
             let Some(spix) = src_rgba.get(s..s.saturating_add(4)) else {
                 continue;
             };
-            if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (dpix, spix) {
-                *db = *sb;
-                *dg = *sg;
-                *dr = *sr;
-                *dx = 0xFF;
-            }
+            write(dpix, spix);
         }
     }
 }

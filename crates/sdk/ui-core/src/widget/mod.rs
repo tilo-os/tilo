@@ -740,6 +740,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget presents its document's History itself, so the
+    /// host must not add the shared standalone History control beside it —
+    /// one document gets one History surface.
+    fn provides_document_history(&self) -> bool {
+        self.children()
+            .into_iter()
+            .any(|child| child.provides_document_history())
+    }
+
     /// Framework lifecycle traversal, independent of visible presentation children.
     /// Borrowed surfaces and retained children cannot escape this callback.
     #[doc(hidden)]
@@ -2758,6 +2767,8 @@ pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
 };
+mod embedded;
+pub use embedded::Embedded;
 mod manual;
 pub use manual::{
     ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
@@ -2837,7 +2848,7 @@ pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
-    DocumentSelection, PresenceKeyFn, TransclusionPreview, legacy_block_id,
+    DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
 };
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;

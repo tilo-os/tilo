@@ -57,30 +57,6 @@ pub fn file_uri(path: &Path) -> String {
         .map_or_else(|()| path.to_string_lossy().into_owned(), String::from)
 }
 
-fn escape_attr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn unescape_attr(value: &str) -> String {
-    value
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
-}
-
 /// The value of attribute `name` in the start tag at the head of `element`.
 fn attribute(element: &str, name: &str) -> Option<String> {
     let tag_end = element.find('>')?;
@@ -91,7 +67,11 @@ fn attribute(element: &str, name: &str) -> Option<String> {
     let quote = rest.chars().next().filter(|q| *q == '"' || *q == '\'')?;
     let body = rest.get(1..)?;
     let end = body.find(quote)?;
-    Some(unescape_attr(body.get(..end)?))
+    let raw = body.get(..end)?;
+    Some(
+        quick_xml::escape::unescape(raw)
+            .map_or_else(|_| raw.to_owned(), std::borrow::Cow::into_owned),
+    )
 }
 
 /// Every `<bookmark>` element of an XBEL document, in order. Malformed
@@ -126,7 +106,11 @@ pub fn parse(document: &str) -> Vec<Bookmark> {
 /// Tilo's bookmark for `path`, opened at `now` (RFC 3339, UTC).
 pub fn bookmark(path: &Path, mime: &str, now: &str) -> Bookmark {
     let href = file_uri(path);
-    let (h, t, m) = (escape_attr(&href), escape_attr(now), escape_attr(mime));
+    let (h, t, m) = (
+        quick_xml::escape::escape(&href),
+        quick_xml::escape::escape(now),
+        quick_xml::escape::escape(mime),
+    );
     let xml = format!(
         "<bookmark href=\"{h}\" added=\"{t}\" modified=\"{t}\" visited=\"{t}\">\n    \
          <info>\n      <metadata owner=\"http://freedesktop.org\">\n        \

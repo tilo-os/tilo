@@ -1,13 +1,6 @@
-/** Preserve JS-owned byte arrays; legacy runtimes expose JSON number arrays. */
+/** Preserve JS-owned byte arrays from the typed batch export. */
 export function readPeerBatch(runtime,id){
- return runtime.peer_pending_batch_bytes?runtime.peer_pending_batch_bytes(id):JSON.parse(runtime.peer_pending_batch(id));
-}
-/** Local transaction failure rejects; publication failure retains its committed proof. */
-export async function commitPeerWrites({pending,commit,acknowledge,publish}){
-  let writes=pending();
-  while(writes.length){await commit(writes);for(const write of writes)acknowledge(write);writes=pending();}
-  try{await publish();return{localDurable:true,publicationError:null};}
-  catch(publicationError){return{localDurable:true,publicationError};}
+ return runtime.peer_pending_batch_bytes(id);
 }
 /** A capture refused because another batch for this peer is still settling. */
 export function storageBusy(error){return /^storage-pressure:/.test(String(error?.message??error));}

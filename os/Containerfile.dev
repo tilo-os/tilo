@@ -54,7 +54,7 @@
 ARG BASE_IMAGE=localhost/tilo:latest
 # The frozen RPM snapshot the production image was built from. Like
 # os/Containerfile, this has no default: os/dev/build-dev-image.sh and
-# .forgejo/workflows/dev-disk.yml pass RPMS_REF from os/rpms-snapshot.env, so a
+# .forgejo/workflows/dev-disk.yml pass a fingerprint-resolved RPMS_REF, so a
 # build of any commit installs what that commit's production builder installed.
 ARG RPMS_REF
 # Where the Rust toolchain comes from: a registry.tilo.so/tilo/tilo-builder index,

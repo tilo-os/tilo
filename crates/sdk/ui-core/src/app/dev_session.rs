@@ -1,9 +1,9 @@
 // Session handoff for `tilo-app dev`.
 //
-// A Rust edit replaces the process. The document, route, and caret are written
-// here before that process exits and read back on the next startup. The file
-// lives outside the app tree so the watcher does not treat the write as
-// another edit.
+// A rebuild reloads the windows this process already has. The document, route,
+// and caret are written here so a reload, or a later process if this one has
+// exited, can put them back. The file lives outside the app tree so the
+// watcher does not treat the write as another edit.
 
 use std::path::Path;
 #[cfg(feature = "native")]
@@ -101,10 +101,11 @@ static DEV_STOP_PIPE: AtomicI32 = AtomicI32::new(-1);
 static DEV_STOP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "native")]
-extern "C" fn request_dev_session_stop(_signal: libc::c_int) {
+extern "C" fn request_dev_session_stop(signal: libc::c_int) {
     let fd = DEV_STOP_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
-        let byte = [1u8];
+        // 1 stops the process. 2 reloads the open windows in place.
+        let byte = [if signal == libc::SIGUSR1 { 2 } else { 1 }];
         // SAFETY: `write` of one byte to a pipe opened for this handler is
         // async-signal-safe. The UI thread turns that byte into a normal event.
         unsafe {
@@ -113,9 +114,10 @@ extern "C" fn request_dev_session_stop(_signal: libc::c_int) {
     }
 }
 
-/// When `TILO_DEV_SESSION` is set, SIGTERM asks the UI thread to flush and exit
-/// instead of dying inside the frame. The dev loop sends that signal before it
-/// starts the rebuilt binary.
+/// When `TILO_DEV_SESSION` is set, SIGTERM asks the UI thread to flush and exit.
+/// SIGUSR1 asks it to reload the contents of the windows it already has. The
+/// dev loop uses that after a successful build so a new process, and therefore
+/// a new window, is not opened.
 #[cfg(feature = "native")]
 #[allow(
     clippy::disallowed_methods,
@@ -146,7 +148,12 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
                 if read <= 0 {
                     break;
                 }
-                if proxy.send_event(UserEvent::DevSessionStop).is_err() {
+                let event = if byte[0] == 2 {
+                    UserEvent::DevSessionReload
+                } else {
+                    UserEvent::DevSessionStop
+                };
+                if proxy.send_event(event).is_err() {
                     break;
                 }
             }
@@ -158,7 +165,52 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
             libc::SIGTERM,
             request_dev_session_stop as *const () as libc::sighandler_t,
         );
+        libc::signal(
+            libc::SIGUSR1,
+            request_dev_session_stop as *const () as libc::sighandler_t,
+        );
     }
+}
+
+/// Replace the baked catalogs with the `.ftl` files in `dir`.
+///
+/// Returns whether a catalog was installed. A missing directory leaves the
+/// translations this process already has.
+#[cfg(any(feature = "native", test))]
+pub(crate) fn reload_dev_locale_catalogs_from(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut owned = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ftl"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        owned.push((stem.to_owned(), text));
+    }
+    if owned.is_empty() {
+        return false;
+    }
+    let source = if owned.iter().any(|(stem, _)| stem == "en-US") {
+        "en-US"
+    } else {
+        owned[0].0.as_str()
+    };
+    let borrowed = owned
+        .iter()
+        .map(|(stem, text)| (stem.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    crate::i18n::I18nManager::install_system(source, &borrowed).is_ok()
 }
 
 #[cfg(feature = "native")]
@@ -226,6 +278,27 @@ impl crate::widget::Widget for DevCaretField {
     fn set_state(&mut self, state: &str) {
         self.caret = state.to_string();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn dev_reload_replaces_a_baked_translation_in_place() {
+    let directory = std::env::temp_dir().join(format!("tilo-dev-catalog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("en-US.ftl"), "document-heading = After\n").unwrap();
+    crate::i18n::I18nManager::install_system("en-US", &[("en-US", "document-heading = Before\n")])
+        .expect("baked catalog installs");
+    assert_eq!(
+        crate::i18n::I18nManager::lookup_plain("document-heading"),
+        "Before"
+    );
+    assert!(reload_dev_locale_catalogs_from(&directory));
+    assert_eq!(
+        crate::i18n::I18nManager::lookup_plain("document-heading"),
+        "After"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[cfg(test)]

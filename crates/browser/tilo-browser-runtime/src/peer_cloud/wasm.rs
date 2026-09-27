@@ -64,7 +64,7 @@ fn live(value: &Attempt) -> Result<(), JsValue> {
     }
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(bytes)
 }
 /// The delivery origin is the page origin; the signed descriptor and the
 /// host's onboarding verification bind it to the enrolled host certificate.

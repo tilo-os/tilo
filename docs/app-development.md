@@ -41,6 +41,58 @@ or test harness:
 tilo-app test -- --nocapture
 ```
 
+For scripts and agents, every command accepts `--json`. Stdout then carries
+exactly one JSON document: `{"ok": true, "command": …, "result": …}`, or
+`{"ok": false, "command": …, "error": …, "causes": […], "result": …}`. A
+command that ran but failed its verdict, such as `doctor`, `check` or
+`scenario run`, still reports what it found in `result`. Progress text and the
+output of Cargo, the app and other tools move to stderr, and nothing prompts:
+`new --json` needs a name and `add --json` needs an artifact subcommand. Usage
+errors are JSON too, with exit status 2.
+
+```bash
+tilo-app new reading-list --dry-run --json | jq -r '.result.files[]'
+tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
+```
+
+### Outside the Tilo repository
+
+An app does not have to live in this repository. Install the CLI from the
+repository and create the app anywhere:
+
+```bash
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+tilo-app new reading-list --id org.example.reading-list
+```
+
+Outside a checkout, the app depends on the SDK from
+`https://code.tilo.so/tilo/tilo.git`, pinned to the commit the CLI was built
+from. `--sdk-rev` selects another commit and `--sdk-git` another repository.
+If a checkout is nearby, such as the one the CLI was built in, `--ui-path`, or
+`TILO_UI_PATH`, the app builds against that checkout by relative path instead.
+
+A standalone app builds the code this repository tests:
+
+- `[patch.crates-io]` repeats each fork the SDK's dependency graph uses,
+  because Cargo does not apply the SDK workspace's patches to an app that
+  depends on it. The forks pinned in git come from their public repositories
+  at the revision the workspace pins.
+- `Cargo.lock` starts as this repository's lockfile, so the first build picks
+  the dependency versions CI tested rather than the newest ones. Cargo drops
+  the entries the app does not use.
+- `rust-toolchain.toml` pins Tilo's compiler. A thin app links the toolkit
+  library the OS ships, and Rust keeps that library's symbols stable only for
+  the compiler that built it.
+- `.cargo/config.toml` carries Tilo's target CPU floor and hardening flags,
+  and the profiles in `Cargo.toml` are Tilo's `dev`, `test`, `release` and
+  `thin-app` profiles.
+- A `.gitignore` for `target/`, and a git repository of its own when the app
+  is not created inside one already.
+
+Without `--id`, an app outside this repository is named `local.dev.<name>`.
+That name cannot be published. Choose an id in a namespace you control before
+you package the app.
+
 ## The Tilo-native contract
 
 Generated applications depend on `tilo-app` (normally under the concise Rust
@@ -513,10 +565,8 @@ cargo run -p tilo-app-cli --bin tilo-app -- doctor apps/reading-list
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
 resolves its `ui` dependency, validates `tilo-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
-lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
-generates its collaboration protocol while compiling; a missing compiler is
-reported with an install-or-development-container remedy before Cargo starts.
-It validates every serialized screen with the renderer's
+lifecycle seams. The SDK's Cap'n Proto bindings are checked in, so building an
+app never needs the `capnp` compiler. It validates every serialized screen with the renderer's
 lightweight graph schema, parses every Fluent catalog, reconciles the generated
 locale registry with files on disk, and checks saved headless scenarios with
 the exact wire grammar used by the runtime driver. It reports every problem in

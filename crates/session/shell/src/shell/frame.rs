@@ -1088,6 +1088,12 @@ impl FrameBuilder {
         } else {
             false
         };
+        // Windows being carried to another workspace advance each round;
+        // [`Self::next_wake_deadline`] brings a round back while one waits
+        // on something no input announces.
+        if self.chrome.borrow().window_transfers.is_pending() {
+            crate::shell::window_transfer::tick(&mut self.chrome.borrow_mut());
+        }
         if epoch == self.last_room_epoch && !decided {
             return false;
         }
@@ -1853,6 +1859,7 @@ impl FrameBuilder {
             self.osk_overlay
                 .as_ref()
                 .and_then(Widget::next_wake_deadline),
+            self.chrome.borrow().window_transfers.next_poll(),
         ]
         .into_iter()
         .flatten()

@@ -5,7 +5,8 @@
 //! The services are the host's: a desktop session and a standalone profile
 //! serve the same brokers. This crate owns the profile, the native endpoint,
 //! app attachment and the MCP protocol; it reaches the services only through
-//! [`RuntimeServices`].
+//! [`RuntimeServices`]. [`standalone::Standalone`] hosts them without the
+//! Tilo desktop, for the `tilo-runtime` executable.
 
 #![cfg_attr(
     test,
@@ -24,10 +25,19 @@ use std::{
     process::{Child, Command},
 };
 
+mod apps;
+pub mod cli;
 pub mod daemon;
 pub mod mcp;
 pub mod mcp_process;
+pub mod profile;
+pub mod standalone;
 pub mod unix;
+
+// Room admission decodes peer bytes in automerge worker processes started
+// from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 /// Socket names inside a profile, shared by the daemon that binds them and
 /// the launcher that attaches an app to them.

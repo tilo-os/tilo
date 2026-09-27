@@ -2,12 +2,14 @@
 //! Custody material stays inside the runtime; only the public signed request
 //! (challenges, allowed actions and the two root signatures) leaves it.
 use super::owner::CloudOwner;
-use tilo_user_identity::machine_mesh::{MeshChallenge, MeshRequest, sign_request};
+use tilo_user_identity::machine_mesh::{
+    BROKER_ACTIONS_SCOPE, MeshChallenge, MeshRequest, sign_request,
+};
 
 const MAX_MESH_JSON: usize = 20 * 1024;
 const MAX_LINK_ID: usize = 128;
-/// The only remote action a mesh grant carries today; hosts refuse others.
-const ALLOWED_ACTIONS: [&str; 1] = ["model_complete"];
+/// Broker actions the target may run for the source after ordinary permission checks.
+const ALLOWED_ACTIONS: [&str; 1] = [BROKER_ACTIONS_SCOPE];
 
 /// One side of a mesh approval: the selected machine and its owner custody.
 pub(crate) struct MeshSide<'a> {

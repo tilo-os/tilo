@@ -88,7 +88,10 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
             new_sha256=sha(git(repo, 'show', revision + ':' + name)))
     verify_cache_recipe(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
     verify_policy_placement(git(repo, 'show', revision + ':os/Containerfile'))
-    verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'], sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
+    verify_wpe_bridge(approval['wpe_bridge'],
+                     sha(git(repo, 'show', SOURCE + ':os/Containerfile.wpe')),
+                     sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')),
+                     sha(git(repo, 'show', revision + ':os/Containerfile.wpe')))
     result.update(approval=approval, approval_sha256=digest, assembly_source_revision=revision,
         assembly_epoch=int(git(repo, 'show', '-s', '--format=%ct', revision)), changes=changes,
         layer_epoch_anchor=CACHE_BASE, layer_epoch=int(git(repo, 'show', '-s', '--format=%ct', CACHE_BASE)))
@@ -199,8 +202,10 @@ def _verify_base(repo, revision, path, digest, native_receipt_sha256, reconstruc
         verify_rootfs(git(repo, 'show', SOURCE + ':os/Containerfile'), recipe)
         if policy:
             verify_policy_placement(recipe)
-        verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'],
-            sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
+        verify_wpe_bridge(approval['wpe_bridge'],
+            sha(git(repo, 'show', SOURCE + ':os/Containerfile.wpe')),
+            sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')),
+            sha(git(repo, 'show', revision + ':os/Containerfile.wpe')))
     return dict(schema=1, purpose='tilo-native-source-compatibility-verified', approval_sha256=digest,
         approval=approval, native_source_revision=SOURCE, assembly_source_revision=revision,
         native_epoch=int(git(repo, 'show', '-s', '--format=%ct', SOURCE)),
@@ -237,20 +242,25 @@ def verify_rootfs(old, new):
     require(directives(old) == directives(new), 'recipe stage directives changed')
 
 
-def verify_wpe_bridge(bridge, recipe, build_wpe_sha):
+def verify_wpe_bridge(bridge, wpe_recipe_sha, build_wpe_sha, assembly_wpe_recipe_sha):
+    """WPE adoption tracks only the isolated compile recipe, not the OS image.
+
+    Rootfs-only Containerfile edits must not rewrite adoption pins. When the WPE
+    recipe is unchanged, original and assembly receipts are identical.
+    """
     require(set(bridge) == {'original_receipt_json', 'original_receipt_sha256', 'assembly_receipt_json', 'assembly_receipt_sha256'}, 'WPE bridge schema differs')
+    require(wpe_recipe_sha == assembly_wpe_recipe_sha, 'WPE compile recipe changed during non-WPE source correction')
     receipts = []
     for prefix in ('original', 'assembly'):
         raw = bridge[prefix + '_receipt_json'].encode('utf-8')
         require(sha(raw) == bridge[prefix + '_receipt_sha256'], 'WPE bridge receipt bytes differ')
         receipts.append(json.loads(raw))
     old, new = receipts
-    require(old['audit']['compatible_recipes'] == {'os/Containerfile': recipe['old_sha256'], 'os/dev/build-wpe.sh': build_wpe_sha}, 'original WPE recipe identity differs')
-    expected = json.loads(json.dumps(old))
-    expected['audit']['compatible_recipes']['os/Containerfile'] = recipe['new_sha256']
-    expected['audit_sha256'] = new['audit_sha256']
-    require(re.fullmatch('[0-9a-f]{64}', new['audit_sha256']) and new == expected, 'WPE bridge changes more than consumer recipe/audit pin')
-    # The new audit is encoded canonically for an independently reproducible pin.
+    require(old['audit']['compatible_recipes'] == {
+        'os/Containerfile.wpe': wpe_recipe_sha, 'os/dev/build-wpe.sh': build_wpe_sha},
+        'original WPE recipe identity differs')
+    require(old == new, 'WPE adoption must stay identical when the WPE recipe is unchanged')
+    require(re.fullmatch('[0-9a-f]{64}', new['audit_sha256']), 'WPE audit hash required')
     require(new['audit_sha256'] == sha((json.dumps(new['audit'], sort_keys=True, separators=(',', ':')) + '\n').encode()), 'new WPE audit hash differs')
 
 

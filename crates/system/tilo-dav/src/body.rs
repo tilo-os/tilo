@@ -84,7 +84,11 @@ impl Namespaces {
     fn declarations(&self) -> String {
         let mut out = String::new();
         for (uri, prefix) in &self.0 {
-            let _ = write!(out, " xmlns:{prefix}=\"{}\"", xml_escape(uri));
+            let _ = write!(
+                out,
+                " xmlns:{prefix}=\"{}\"",
+                quick_xml::escape::escape(*uri)
+            );
         }
         out
     }
@@ -119,7 +123,7 @@ pub fn sync_collection_body(token: &str, props: &[PropName]) -> String {
         "{XML_DECL}<D:sync-collection{}><D:sync-token>{}</D:sync-token>\
 <D:sync-level>1</D:sync-level>{prop}</D:sync-collection>",
         ns.declarations(),
-        xml_escape(token)
+        quick_xml::escape::escape(token)
     )
 }
 
@@ -133,7 +137,7 @@ pub fn calendar_query_body(props: &[PropName], component: Option<&str>) -> Strin
         |component| {
             format!(
                 "<C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"{}\"/></C:comp-filter>",
-                xml_escape(component)
+                quick_xml::escape::escape(component)
             )
         },
     );
@@ -149,25 +153,9 @@ pub fn calendar_multiget_body(props: &[PropName], hrefs: &[&str]) -> String {
     let prop = ns.prop_element(props);
     let mut out = format!("{XML_DECL}<C:calendar-multiget{}>{prop}", ns.declarations());
     for href in hrefs {
-        let _ = write!(out, "<D:href>{}</D:href>", xml_escape(href));
+        let _ = write!(out, "<D:href>{}</D:href>", quick_xml::escape::escape(*href));
     }
     out.push_str("</C:calendar-multiget>");
-    out
-}
-
-/// Escape text for an XML element or attribute value.
-pub fn xml_escape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            other => out.push(other),
-        }
-    }
     out
 }
 

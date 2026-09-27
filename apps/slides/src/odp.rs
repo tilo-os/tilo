@@ -115,7 +115,7 @@ fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
     s.push('>');
     for slide in &deck.slides {
         s.push_str("<draw:page draw:name=\"");
-        s.push_str(&xml_attr(&slide.id));
+        s.push_str(&quick_xml::escape::escape(&slide.id));
         s.push_str("\" draw:master-page-name=\"Default\"");
         push_attr(&mut s, "qslides:layout", slide.layout.as_str());
         push_attr(&mut s, "qslides:background", slide.background.as_str());
@@ -179,7 +179,7 @@ fn push_element(
             s.push('>');
             if el.kind == ElementKind::Image {
                 s.push_str("<draw:image xlink:href=\"");
-                s.push_str(&xml_attr(exported_src.unwrap_or(&el.src)));
+                s.push_str(&quick_xml::escape::escape(exported_src.unwrap_or(&el.src)));
                 s.push_str("\" xlink:type=\"simple\"/>");
             } else {
                 s.push_str("<draw:text-box>");
@@ -188,7 +188,7 @@ fn push_element(
                 // so text can't ride in a `qslides:` attribute).
                 for line in el.text.split('\n') {
                     s.push_str("<text:p>");
-                    s.push_str(&xml_text(line));
+                    s.push_str(&quick_xml::escape::partial_escape(line));
                     s.push_str("</text:p>");
                 }
                 s.push_str("</draw:text-box>");
@@ -239,7 +239,7 @@ fn push_attr(s: &mut String, key: &str, value: &str) {
     s.push(' ');
     s.push_str(key);
     s.push_str("=\"");
-    s.push_str(&xml_attr(value));
+    s.push_str(&quick_xml::escape::escape(value));
     s.push('"');
 }
 
@@ -260,7 +260,7 @@ fn styles_xml() -> String {
 fn meta_xml(deck: &Deck) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.3"><office:meta><dc:title>{}</dc:title><meta:generator xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0">Tilo Slides</meta:generator></office:meta></office:document-meta>"#,
-        xml_text(&deck.title)
+        quick_xml::escape::partial_escape(&deck.title)
     )
 }
 
@@ -268,7 +268,7 @@ fn manifest_xml(pictures: &[BundledPicture]) -> String {
     let mut entries = String::new();
     for picture in pictures {
         entries.push_str("<manifest:file-entry manifest:full-path=\"");
-        entries.push_str(&xml_attr(&picture.href));
+        entries.push_str(&quick_xml::escape::escape(&picture.href));
         entries.push_str("\" manifest:media-type=\"");
         entries.push_str(picture.mime);
         entries.push_str("\"/>");
@@ -329,16 +329,6 @@ fn picture_format(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     } else {
         None
     }
-}
-
-fn xml_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn xml_attr(s: &str) -> String {
-    xml_text(s).replace('"', "&quot;")
 }
 
 // ===========================================================================

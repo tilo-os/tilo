@@ -10,7 +10,6 @@
 //! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
-use ui::search::SearchTokenizer as _;
 use uuid::Uuid;
 
 /// US-Letter page geometry, in PDF points.
@@ -479,7 +478,10 @@ pub struct Reply {
     /// in their parent comment's list.
     pub id: String,
     pub author: String,
+    /// The reply's plain text: what export, search and labels read.
     pub body: String,
+    /// The reply as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Reply {
@@ -495,11 +497,14 @@ pub struct Comment {
     pub anno_id: Option<String>,
     pub page: usize,
     pub author: String,
+    /// The comment's plain text: what export, search and labels read.
     pub body: String,
     /// Monotonic ordinal for stable sort (seed time / creation order).
     pub created: i64,
     pub resolved: bool,
     pub replies: Vec<Reply>,
+    /// The comment as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Comment {
@@ -835,7 +840,7 @@ pub(crate) fn search_text(
         let mut pairs = vec![(0, 0)];
         let mut normalized_end = 0;
         for (source_start, scalar) in text.char_indices() {
-            ui::search::UnicodeTokenizer.fold_char(scalar, &mut |folded| {
+            ui::search::fold_char(scalar, &mut |folded| {
                 normalized_end += folded.len_utf8();
             });
             pairs.push((normalized_end, source_start + scalar.len_utf8()));

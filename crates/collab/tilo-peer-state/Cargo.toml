@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+fnv.workspace = true
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 flate2.workspace = true
 automerge.workspace = true

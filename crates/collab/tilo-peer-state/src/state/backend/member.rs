@@ -81,10 +81,28 @@ fn current<'peer, S: Storage, P: Policy>(
         return Err(Error::RoomRevoked);
     }
     let person = key_text(&cert.user_public_key);
-    let role = policy
+    let mut role = policy
         .role(person.as_str(), now_secs(now))
         .ok_or(Error::NoMembership)?;
+    if cert.capabilities.foreign {
+        role =
+            collab_types::foreign_device::foreign_device_role(role, policy.caps(), now_secs(now));
+    }
     Ok((role, person, policy))
+}
+/// Adds the foreign-device restriction to the capabilities `cert`'s device is
+/// decided under; a native device's capabilities are left as they are.
+pub(in crate::state) fn restrict_foreign_device(
+    cert: &tilo_user_identity::DeviceCert,
+    person: &str,
+    caps: &mut Vec<CapOverride>,
+    now: SystemTime,
+) {
+    if cert.capabilities.foreign {
+        let restriction =
+            collab_types::foreign_device::foreign_device_restriction(person, caps, now_secs(now));
+        caps.push(restriction);
+    }
 }
 struct LegacyPolicy<'a> {
     data: &'a crate::cached_document::PolicyData,
@@ -143,7 +161,7 @@ pub(in crate::state) fn bounded(
     now: SystemTime,
     limits: PeerLimits,
 ) -> Result<PeerMember<'_>, BoundedPeerError> {
-    let (role, person, policy) = current(peer, &source, now, |room| {
+    let (role, person, mut policy) = current(peer, &source, now, |room| {
         policy::collect(&room.read(), &source, limits)
     })
     .map_err(|error| match error {
@@ -154,6 +172,8 @@ pub(in crate::state) fn bounded(
         }
         _ => BoundedPeerError::Invalid(BoundedPeerInvalid::Governance),
     })?;
+    let cert = policy.identity().device_cert.clone();
+    restrict_foreign_device(&cert, person.as_str(), policy.caps_mut(), now);
     Ok(PeerMember {
         role,
         person,

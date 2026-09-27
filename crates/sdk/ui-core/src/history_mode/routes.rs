@@ -38,7 +38,7 @@ pub(crate) fn merge_committed(
 ) -> Result<bool, RemoteApplyError> {
     if doc.pending_ops() != 0 {
         return Err(RemoteApplyError::Unavailable(
-            "Finish the current edit before receiving remote changes".into(),
+            crate::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
         ));
     }
     // Decode into a clone first so malformed incremental data cannot partly
@@ -109,7 +109,9 @@ impl PendingRemote {
             // may clear this new loss obligation when the queue drains.
             self.invalid_mutation_pending = false;
             self.recovery_snapshot_pending = false;
-            self.failure = Some("Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.".into());
+            self.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                "history-sync-queue-full",
+            ));
             return false;
         }
         self.bytes = self.bytes.saturating_add(size);
@@ -221,7 +223,9 @@ impl OwnerDocumentRoutes {
         if self.witness != witness || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
-                self.status = Some("Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.".into());
+                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                    "history-sync-owner-changed",
+                ));
             }
             self.owners.clear();
             self.retired.clear();
@@ -237,10 +241,14 @@ impl OwnerDocumentRoutes {
         // Hidden live subtrees retain their admitted collaboration owners.
         root.visit_framework_history(&mut |_, live| collect(live, &mut current));
         self.owners.retain_mut(|entry| {
-            entry.owners.retain(|owner| current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok());
+            entry.owners.retain(|owner| {
+                current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok()
+            });
             if entry.owners.is_empty() {
                 self.retired.insert(entry.route.clone());
-                self.status = Some("Document owner closed or changed. Reconnect before synchronizing its replacement.".into());
+                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                    "history-sync-owner-closed",
+                ));
             }
             !entry.owners.is_empty()
         });

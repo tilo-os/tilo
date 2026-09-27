@@ -2,8 +2,8 @@
 # Build the WPE WebKit stack (libwpe + wpebackend-fdo + wpewebkit) from
 # release tarballs. Tilo uses WPE WebKit as the engine behind the ui
 # toolkit's WebView widget; Fedora does not package WPE, so we build it —
-# with this script for development, and inside the OS image's
-# `wpe-builder` Containerfile stage.
+# with this script for development, and inside os/Containerfile.wpe's
+# `wpe-builder-1` stage.
 #
 # Usage:
 #   build-wpe.sh deps    install build dependencies (dnf, needs sudo)

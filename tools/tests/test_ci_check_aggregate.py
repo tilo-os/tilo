@@ -52,6 +52,7 @@ class CheckAggregateTests(unittest.TestCase):
                   event="pull_request",
                   suites_required="false", suites="skipped",
                   pins_required="false", pins="skipped",
+                  android_required="false", android="skipped",
                   test=None, check=None, clippy=None, check_required=None):
         if check_required is None:
             check_required = "true" if required == "true" else "false"
@@ -69,6 +70,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
                      "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
+                     "ANDROID_REQUIRED": android_required, "ANDROID_RESULT": android,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -96,6 +98,18 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertNotEqual(self.aggregate(pins="success", event="push", **pin_only)[0], 0)
             # A pin job that ran without being selected is invalid.
             self.assertNotEqual(self.aggregate(pins="success")[0], 0)
+        with self.subTest(phase='the android lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(android_required="true", android="success")[0], 0)
+            for android_required, android in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(android_required=android_required, android=android):
+                    self.assertNotEqual(self.aggregate(android_required=android_required,
+                                                       android=android)[0], 0)
         with self.subTest(phase='successful rust checks pass'):
             self.doCleanups()
             self.setUp()
@@ -262,13 +276,25 @@ class CheckAggregateTests(unittest.TestCase):
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
-                "needs: [builder, select, security, test, check, clippy, suites, pins]", checks)
-            for name in ("test", "check", "clippy"):
+                "needs: [builder, select, security, test, check, clippy, android, suites, pins]", checks)
+            for name in ("test", "check", "clippy", "android"):
                 self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
             self.assertIn("CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}", checks)
             select_job = section(self.workflow, "select", 2)
             self.assertIn("check_matrix: ${{ steps.plan.outputs.check_matrix }}", select_job)
             self.assertIn("check_required: ${{ steps.plan.outputs.check_required }}", select_job)
+            self.assertIn("ANDROID_REQUIRED: ${{ needs.select.outputs.android_required }}", checks)
+            self.assertIn("android_required: ${{ steps.plan.outputs.android_required }}", select_job)
+            self.assertIn("android_packages: ${{ steps.plan.outputs.android_packages }}", select_job)
+            android = section(self.workflow, "android", 2)
+            self.assertIn("if: needs.select.outputs.android_required == 'true'\n", android)
+            self.assertIn("needs: [builder, select]", android)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", android)
+            self.assertIn("bash tools/ci/install-android-ndk.sh", android)
+            for target in ("aarch64-linux-android", "x86_64-linux-android"):
+                self.assertIn(target, android)
+            self.assertIn("--features android --target \"$target\"", android)
+            self.assertIn("-- -D warnings", android)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)
@@ -313,8 +339,8 @@ class CheckAggregateTests(unittest.TestCase):
                 "      - name: Record an observable CI receipt without touching a branch\n", 1)
             self.assertLess(checks.index("id: aggregate"), checks.index("id: receipt-checkout"))
             self.assertIn("always() &&", checkout)
-            self.assertIn("(github.ref == 'refs/heads/main' ||\n"
-                          "           github.ref == 'refs/heads/codex/package-desktop-release')", checkout)
+            self.assertIn("github.ref == 'refs/heads/main'", checkout)
+            self.assertNotIn("codex/package-desktop-release", checkout)
             self.assertIn("token: ${{ secrets.REGISTRY_TOKEN }}", checkout)
             self.assertIn("fetch-depth: 0", checkout)
             self.assertIn("if: always() && steps.receipt-checkout.outcome == 'success'", receipt)

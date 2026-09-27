@@ -87,9 +87,6 @@ class WpeStageTests(unittest.TestCase):
         self.args = argparse.Namespace(architecture='x86_64', epoch='0',
             cache='registry.tilo.so/tilo/tilo-development-wpe-cache-x86_64',
             repo=Path('/private/source tree'), assets=Path('/private/source tree/assets'),
-            base='registry.tilo.so/tilo/fedora-bootc@sha256:' + '1' * 64,
-            rpms='registry.tilo.so/tilo/rpms@sha256:' + '2' * 64,
-            kernel='registry.tilo.so/tilo/tilo-kernel@sha256:' + '3' * 64,
             wpe='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64)
 
     def test_stage_inputs(self):
@@ -105,7 +102,18 @@ class WpeStageTests(unittest.TestCase):
             self.assertFalse(any('TRUST' in arg or 'GENERATION' in arg or 'revision' in arg for arg in argv))
             self.assertNotIn('--label', argv)
             self.assertNotIn('--secret', argv)
+            self.assertTrue(any(arg.endswith('os/Containerfile.wpe') for arg in argv))
+            self.assertFalse(any(arg.endswith('os/Containerfile') for arg in argv))
             self.assertNotIn('--build-arg TILO_WITH_BROWSER=0', argv)
+        restart_fixture(self)
+        with self.subTest(phase="isolated_recipe_omits_os_inputs_and_allows_uncached_build"):
+            argv = wpe.build_command(self.args, Path('/private/image.id'))
+            self.assertFalse(any(arg.startswith('BASE_REF=') or arg.startswith('RPMS_REF=')
+                                 or arg.startswith('KERNEL_RPMS_REF=') for arg in argv))
+            self.args.cache = None
+            argv = wpe.build_command(self.args, Path('/private/image.id'))
+            self.assertNotIn('--cache-from', argv)
+            self.assertNotIn('--cache-to', argv)
         restart_fixture(self)
         with self.subTest(phase="explicit_jobs_preserve_default_and_reject_invalid"):
             self.assertIn('WPE_BUILD_JOBS=2', wpe.build_command(self.args, Path('/iid')))
@@ -122,7 +130,7 @@ class WpeStageTests(unittest.TestCase):
                                  ('cache', 'registry.tilo.so/tilo/tilo-buildcache'),
                                  ('epoch', '01'), ('epoch', '-1'), ('epoch', '253402300800'),
                                  ('epoch', '$(id)'), ('wpe', self.args.wpe.split('@')[0] + ':latest'),
-                                 ('base', 'fedora:latest')]:
+                                 ('wpe', 'registry.tilo.so/tilo/fedora-bootc@sha256:' + '1' * 64)]:
                 old = getattr(self.args, field)
                 setattr(self.args, field, value)
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):

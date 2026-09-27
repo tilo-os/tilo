@@ -302,7 +302,60 @@ impl App {
         if let Err(error) = result {
             tracing::debug!(?error, "history input refused");
         }
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_changed(revision, open);
+    }
+
+    /// Let History preview a selected version with the app's own root: a
+    /// fresh read-only instance built by `factory`, never the live one.
+    #[must_use]
+    pub fn with_history_preview_root(
+        mut self,
+        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
+    ) -> Self {
+        self.document_history
+            .set_preview_root(std::rc::Rc::new(factory));
+        self
+    }
+
+    /// Build the preview root a selection asked for, inside this app's wake
+    /// scope like its live root, and hand it to the History host.
+    fn fulfil_history_preview(&mut self) {
+        if !self.document_history.has_preview_request() {
+            return;
+        }
+        let root = self.document_history.preview_root().and_then(|factory| {
+            let _scope = self.enter_wake_scope();
+            factory()
+                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
+                .ok()
+        });
+        self.with_history_host(|host, context| host.install_preview(root, context));
+    }
+
+    /// Write a restore the History pane confirmed into the live document,
+    /// through the same undo log as every other action, then persist it.
+    fn apply_confirmed_history_restore(&mut self) {
+        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
+            return;
+        };
+        let author = Some(self.local_author().clone());
+        let result = crate::standalone_history::apply_restore(&mut self.state, &confirmed, author);
+        if matches!(result, Ok(true)) {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            match self.persistence.records.as_mut() {
+                Some(set) => set.tick(&mut self.state.doc),
+                None => {
+                    if let Some(saver) = self.persistence.autosave.as_mut() {
+                        saver.request(&mut self.state.doc);
+                    }
+                }
+            }
+        }
+        let _ = self.with_history_host(StandaloneHistoryHost::refresh);
+        self.document_history.report_restore(&result);
     }
 
     #[cfg(feature = "native")]
@@ -497,7 +550,8 @@ impl App {
             chrome.into_iter().zip(
                 std::iter::once(layout.toolbar)
                     .chain(layout.search)
-                    .chain(layout.pane),
+                    .chain(layout.pane)
+                    .chain(layout.preview),
             ),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_ref()) {
@@ -518,7 +572,7 @@ impl App {
                 self.root_widget.as_mut(),
                 &self.layout.taffy,
                 root,
-                vello::kurbo::Point::ORIGIN,
+                self.layout.content_origin,
             );
             return;
         }
@@ -526,7 +580,7 @@ impl App {
             let origin = self.document_history.apply_layout(
                 layout,
                 &self.layout.taffy,
-                vello::kurbo::Point::ORIGIN,
+                self.layout.content_origin,
             );
             if layout.app_visible {
                 self.root_widget
@@ -534,7 +588,7 @@ impl App {
             }
         } else {
             self.root_widget
-                .apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
+                .apply_layout(&self.layout.taffy, root, self.layout.content_origin);
         }
     }
 
@@ -637,6 +691,23 @@ impl App {
                 &self.layout.taffy,
             );
         }
+        if !*handled
+            && !keyboard
+            && let Some(node) = layout.preview
+            && let Some(preview) = self.document_history.preview_mut()
+        {
+            preview.handle_event(
+                event,
+                scale,
+                &self.input.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                handled,
+                focus,
+                node,
+                &self.layout.taffy,
+            );
+        }
         if !layout.app_visible && !keyboard {
             *handled = true;
         }
@@ -708,6 +779,7 @@ impl App {
         let mut pending = vec![layout.toolbar];
         pending.extend(layout.search);
         pending.extend(layout.pane);
+        pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
             if next == node {
                 return true;
@@ -759,6 +831,7 @@ impl App {
         // surface and custody. The standalone adapter serves unregistered roots.
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+            || self.root_widget.provides_document_history()
         {
             return;
         }
@@ -773,7 +846,8 @@ impl App {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty |= open != self.document_history.is_open();
+            self.layout.structure_dirty |= open != self.document_history.is_open()
+                || self.document_history.take_structure_dirty();
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }
@@ -790,6 +864,8 @@ impl App {
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
         let result = self.with_history_host(|host, context| host.invoke_local(encoded, context));
+        self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_changed(revision, open);
         result.map_err(|error| format!("History is unavailable: {error:?}"))
     }
@@ -1155,6 +1231,9 @@ mod tests {
         let point = app
             .inspect_node(node, |widget| widget.get_rect().center())
             .unwrap();
+        native_click_at(app, point);
+    }
+    fn native_click_at(app: &mut App, point: vello::kurbo::Point) {
         let events = [
             winit::event::WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
@@ -1184,6 +1263,159 @@ mod tests {
                 app.finalize_handled_native_event(&event, false, history_handled);
             }
         }
+    }
+
+    fn title(app: &App) -> Option<String> {
+        use automerge::ReadDoc;
+        app.state
+            .doc
+            .get(ROOT, "title")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+    }
+
+    fn reopen(dir: &std::path::Path) -> App {
+        let store: std::rc::Rc<dyn durable_store::DurableStore> =
+            std::rc::Rc::new(app_state::FsStore::new(dir));
+        let (state, writer) = crate::persist::open_in(store, "so.tilo.history-restore").unwrap();
+        let mut app = App::new_with_controlled_inputs(
+            state,
+            Box::new(crate::widget::Button::new("document", "Document", None)),
+        )
+        .with_autosave(writer);
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1200);
+        app
+    }
+
+    fn confirm_restore(app: &mut App) {
+        let confirm = app
+            .document_history
+            .pane_mut()
+            .and_then(|pane| pane.review_dialog())
+            .expect("restore review is open")
+            .primary_rect()
+            .center();
+        native_click_at(app, confirm);
+        layout(app, 1200);
+    }
+
+    #[test]
+    fn native_history_restores_a_persisted_version_as_one_undoable_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut versions = Vec::new();
+        {
+            let store: std::rc::Rc<dyn durable_store::DurableStore> =
+                std::rc::Rc::new(app_state::FsStore::new(dir.path()));
+            let (mut state, mut writer) =
+                crate::persist::open_in(store, "so.tilo.history-restore").unwrap();
+            for value in ["v1", "v2", "v3"] {
+                state.doc.put(ROOT, "title", value).unwrap();
+                state.commit_action(None, None);
+                versions.push(crate::history_source::entry_id_from_hash(
+                    &state.doc.get_heads()[0].to_string(),
+                ));
+                writer.request(&mut state.doc);
+            }
+            writer.flush();
+        }
+
+        let mut app = reopen(dir.path());
+        assert_eq!(title(&app).as_deref(), Some("v3"));
+        native_click(&mut app, "standalone-history-open");
+        layout(&mut app, 1200);
+        app.select_document_history(&[versions[0]]).unwrap();
+        layout(&mut app, 1200);
+
+        // Restoring v1 appends one new change stamped with its action context.
+        let changes = app.state.doc.get_changes(&[]).len();
+        native_click(&mut app, "standalone-history-restore");
+        layout(&mut app, 1200);
+        confirm_restore(&mut app);
+        assert_eq!(title(&app).as_deref(), Some("v1"));
+        let all = app.state.doc.get_changes(&[]);
+        assert_eq!(all.len(), changes + 1, "restore appends exactly one change");
+        let context = all
+            .last()
+            .and_then(|change| change.message())
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .expect("restore carries its action context");
+        assert_eq!(
+            context.action_label,
+            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
+        );
+
+        // The autosaved document reopens at the restored version.
+        app.autosave().unwrap().flush();
+        assert_eq!(title(&reopen(dir.path())).as_deref(), Some("v1"));
+
+        // Ctrl+Z on an app-owned document is this call in the native runner.
+        let author = app.local_author().clone();
+        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert_eq!(title(&app).as_deref(), Some("v3"));
+
+        // A review that the live document outgrows is refused, unwritten.
+        layout(&mut app, 1200);
+        app.select_document_history(&[versions[0]]).unwrap();
+        layout(&mut app, 1200);
+        native_click(&mut app, "standalone-history-restore");
+        layout(&mut app, 1200);
+        app.state.doc.put(ROOT, "title", "concurrent").unwrap();
+        app.state.commit_action(None, None);
+        let changes = app.state.doc.get_changes(&[]).len();
+        confirm_restore(&mut app);
+        assert_eq!(title(&app).as_deref(), Some("concurrent"));
+        assert_eq!(app.state.doc.get_changes(&[]).len(), changes);
+        app.refresh_semantic_tree();
+        assert!(
+            app.semantic_tree()
+                .find_by_name(&crate::i18n::I18nManager::lookup_plain(
+                    "standalone-history-restore-stale"
+                ))
+                .is_some(),
+            "the refusal is announced"
+        );
+    }
+
+    #[test]
+    fn native_history_restore_requires_write() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("document", "Document", None)),
+        );
+        app.state.doc.put(ROOT, "title", "v1").unwrap();
+        app.state.commit_action(None, None);
+        app.state.doc.put(ROOT, "title", "v2").unwrap();
+        app.state.commit_action(None, None);
+        let app_id = crate::collaboration::local_app_id();
+        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
+            crate::permissions::Actor::agent("reader"),
+            vec![crate::permissions::CapOverride::grant(
+                crate::permissions::Subject::agent("reader"),
+                crate::permissions::Scope::App(app_id),
+                crate::permissions::Verb::Read,
+            )],
+        );
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1200);
+        app.open_document_history().unwrap();
+        layout(&mut app, 1200);
+        let first = app.document_history_snapshot().unwrap().unwrap().entries[0].id;
+        app.select_document_history(&[first]).unwrap();
+        layout(&mut app, 1200);
+        let changes = app.state.doc.get_changes(&[]).len();
+        native_click(&mut app, "standalone-history-restore");
+        layout(&mut app, 1200);
+        assert!(
+            app.document_history
+                .pane_mut()
+                .is_some_and(|pane| !pane.review_is_open()),
+            "a reader cannot open a restore review"
+        );
+        assert_eq!(title(&app).as_deref(), Some("v2"));
+        assert_eq!(app.state.doc.get_changes(&[]).len(), changes);
     }
 
     #[test]

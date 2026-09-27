@@ -62,6 +62,14 @@ pub struct Output {
     pub identity: OutputIdentity,
 }
 
+/// An output driven in HDR: the sink's EDID description and where SDR white
+/// sits, cd/m².
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputHdr {
+    pub display: crate::wayland::edid::HdrDisplayInfo,
+    pub sdr_white_nits: f32,
+}
+
 /// A presentation interval as the millihertz a `wl_output` mode carries.
 /// `None` for a zero interval, which has no rate.
 pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
@@ -722,6 +730,22 @@ pub trait Backend {
     /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
     /// for backends with no physical panel.
     fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
+    /// The output a fullscreen client is shown on, or `None`. Backends that
+    /// drive adaptive sync engage it there.
+    fn set_fullscreen_output(&mut self, _output: Option<OutputId>) {}
+
+    /// Adaptive sync is engaged on some output: pace frames by content
+    /// readiness rather than a fixed refresh deadline.
+    fn adaptive_sync_active(&self) -> bool {
+        false
+    }
+
+    /// The HDR signal an output is being driven with, or `None` for SDR.
+    /// Clients learn it through `wp_color_management_output_v1`.
+    fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
+        None
+    }
 
     /// Turn the built-in panel to `rotation` because the device was turned
     /// (`None` restores its configured transform). External monitors never

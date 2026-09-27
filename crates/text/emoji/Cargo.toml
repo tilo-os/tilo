@@ -13,6 +13,9 @@ description = "Tilo's emoji catalogue: Unicode groups, localised search, skin to
 [dependencies]
 miniz_oxide.workspace = true
 serde.workspace = true
+# Name and keyword search.
+tilo-search = { path = "../../sdk/search" }
+tracing.workspace = true
 
 [build-dependencies]
 miniz_oxide.workspace = true

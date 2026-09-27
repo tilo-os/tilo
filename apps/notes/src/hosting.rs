@@ -69,11 +69,42 @@ pub fn prepare_default(
     runner_inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let checkout = default_notebook();
+    // A window carried in from another workspace shows the notebook it
+    // brought, which the host opens by the instance's saved presentation.
+    if host
+        .saved_record(crate::definition(), instance_id)?
+        .is_some_and(|named| named != checkout)
+    {
+        return host.prepare_default(
+            crate::definition(),
+            instance_id,
+            checkout,
+            None,
+            runner_inputs,
+        );
+    }
+    prepare_default_notebook(host, instance_id, checkout, legacy_root, runner_inputs)
+}
+
+/// [`prepare_default`] for the room's own default notebook.
+#[allow(
+    clippy::result_large_err,
+    reason = "launch setup must preserve the recovery-bearing ComponentSetup error variant"
+)]
+fn prepare_default_notebook(
+    host: &mut ApplicationHost,
+    instance_id: u64,
+    checkout: RecordCheckout,
+    legacy_root: Option<&Path>,
+    runner_inputs: ComponentRunnerInputs,
+) -> Result<PreparedComponentInputs, LaunchError> {
     let saved = host.saved_view_for(crate::definition(), instance_id, &checkout)?;
     let records = host.records_for(crate::definition())?;
     let mut selected = None;
     match records.try_open_record(&checkout) {
-        Ok(_) => {}
+        // A retired notebook moved to another workspace: the host starts its
+        // successor here, and a moved notebook is never re-imported.
+        Ok(_) | Err(RecordOpenError::Retired) => {}
         Err(RecordOpenError::MissingRecord) => {
             if saved.is_some() {
                 return Err(LaunchError::Record(RecordOpenError::MissingRecord));

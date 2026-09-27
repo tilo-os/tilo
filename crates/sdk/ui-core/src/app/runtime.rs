@@ -18,6 +18,13 @@ use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// Retained layout and widget lookup state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "the safe area and content origin are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
@@ -29,8 +36,13 @@ pub(super) struct LayoutRuntime {
     pub(super) structure_dirty: bool,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// Last settled logical viewport; scale changes also require a solve.
+    /// Last settled logical content size (the window inside `safe_area`);
+    /// scale changes also require a solve.
     pub(super) last_layout_logical: Option<(f64, f64)>,
+    /// System chrome drawn over the window, which content stays clear of.
+    pub(super) safe_area: crate::scale::SafeArea,
+    /// Where the root is placed: the safe area's top-left corner.
+    pub(super) content_origin: vello::kurbo::Point,
 }
 
 impl LayoutRuntime {
@@ -43,6 +55,8 @@ impl LayoutRuntime {
             structure_dirty: false,
             last_frame_size: None,
             last_layout_logical: None,
+            safe_area: crate::scale::SafeArea::default(),
+            content_origin: vello::kurbo::Point::ORIGIN,
         }
     }
 }
@@ -249,6 +263,9 @@ pub(super) struct ContinuationRuntime {
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    /// The document this window shows has left its workspace, and the
+    /// window knows: it stopped editing and told its desktop once.
+    pub(super) retired: bool,
 }
 
 impl ContinuationRuntime {
@@ -258,6 +275,7 @@ impl ContinuationRuntime {
             pending_restore,
             pending_view: None,
             last_private_route: None,
+            retired: false,
         }
     }
 }

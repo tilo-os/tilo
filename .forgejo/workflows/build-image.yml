@@ -84,16 +84,6 @@ concurrency:
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   plan:
@@ -260,9 +250,48 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: os/dev/require-cosign-authority.sh
 
+  ensure-rpms:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
+    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # only its exact content fingerprint here; never fall back to a stale tag.
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install snapshot verification tools
+        run: |
+          set -euo pipefail
+          ./os/dev/install-cached-cosign.sh
+          missing=()
+          for tool in skopeo jq; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+            else
+              sudo -n dnf install -y "${missing[@]}"
+            fi
+          fi
+      - name: Resolve the exact signed RPM snapshot fingerprint
+        id: resolve
+        run: |
+          set -euo pipefail
+          ./os/dev/resolve-rpm-snapshot.sh || {
+            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
+            exit 1
+          }
+
   build-and-push:
-    needs: [plan, signing-preflight]
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    needs: [plan, signing-preflight, ensure-rpms]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') && needs.ensure-rpms.result == 'success' && needs.ensure-rpms.outputs.rpms_ref != '' }}
     strategy:
       # Each native lane validates and caches its own architecture. One lane
       # failing must not cancel the other's hours of build; promotion still
@@ -631,51 +660,12 @@ jobs:
       - name: Load BASE_REF (mirrored Fedora bootc base)
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
 
-      # Pin the frozen RPM repo the build installs from (cross-time reproducible).
-      # Only the RPMS_REF= line — $GITHUB_ENV has no comment syntax, so the file's
-      # leading `#` lines would corrupt the env (RPMS_REF ended up empty).
-      - name: Authenticate RPMS_REF (frozen package snapshot)
+      # Resolve the frozen RPM repo by package-set fingerprint. ensure-rpms
+      # creates the set-<fingerprint> tag when missing; resolve verifies it.
+      - name: Resolve RPMS_REF (frozen package snapshot)
         run: |
           set -euo pipefail
-          . os/rpms-snapshot.env
-          [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
-            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
-            exit 1
-          }
-          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
-          digest="${RPMS_REF##*@}"
-          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
-          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
-          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
-          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
-          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
-          provenance="$(cosign verify-attestation --key keys/cosign.pub \
-            --type slsaprovenance1 "$RPMS_REF")"
-          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
-            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
-            --arg package_amd64_sha256 "$package_amd64_sha256" \
-            --arg package_arm64_sha256 "$package_arm64_sha256" '
-              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(
-                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
-                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
-                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
-                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
-                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
-                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
-                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-                )
-            ' >/dev/null || {
-              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
-              exit 1
-            }
-          platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
-            '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
-          [ "$platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] || {
-            printf 'frozen RPM index has unexpected platforms: %s\n' "$platforms" >&2
-            exit 1
-          }
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
 
       # Branch/PR runs validate the OS integration boundary. Browser engine
@@ -1105,8 +1095,18 @@ jobs:
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then
-              echo "::error::runner compiler cache setting $name is missing"
-              exit 1
+              {
+                echo 'mode=off'
+                echo 'required=0'
+                echo 'bucket='
+                echo 'endpoint='
+                echo 'region=auto'
+                echo 'use_ssl=false'
+                echo 'prefix=tilo/image/v1'
+                echo 'secret-envs='
+              } >> "$GITHUB_OUTPUT"
+              echo "::notice::runner compiler cache is not configured; compiling without it"
+              exit 0
             fi
           done
           {
@@ -1148,78 +1148,46 @@ jobs:
             # when an image carrying it becomes reachable.
             type=raw,value=gen${{ env.TILO_GENERATION }},enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
 
-      # The WPE engine is the longest single compile and changes rarely. Export
-      # it on its own first, so a Rust or later failure in the same run cannot
-      # discard it. Same arguments as the steps below, so they reuse it.
+      # The WPE engine is the longest single compile and changes rarely. It
+      # compiles only from os/Containerfile.wpe; the image builds below take
+      # the completed stage, pinned by digest, as their wpe-builder context.
+      # Exporting it first also keeps a Rust or later failure in the same run
+      # from discarding it. The independent rebuild compiles it again without
+      # any cache.
       #
       # This and the next two builds import the registry layer cache. A cache
       # manifest can name a blob the registry lost, which surfaces only when a
       # step needs that layer's content. Their failures are therefore handled
-      # below: that one error rebuilds the image without imported cache, and
-      # every other error still fails the job.
+      # below: that one error rebuilds without imported cache, and every other
+      # error still fails the job.
       - name: Build and cache the browser engine stage
         id: wpe-stage
-        if: matrix.role != 'reproduce'
+        if: env.TILO_WITH_BROWSER == '1'
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        env:
-          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-          file: os/Containerfile
-          target: wpe-builder
+          file: os/Containerfile.wpe
+          target: wpe-builder-1
           push: false
+          outputs: type=oci,dest=/var/tmp/tilo-wpe,tar=false
           build-args: |
-            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
-            BASE_REF=${{ env.BASE_REF }}
-            RPMS_REF=${{ env.RPMS_REF }}
-            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            TILO_WINDOWS_ARCH=${{ matrix.arch }}
-            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
-            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
-            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
-            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
-            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
-            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
-            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
-            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
-            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
-            TILO_GENERATION=${{ env.TILO_GENERATION }}
-            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
-          # The runner injects this bucket-scoped credential from a
-          # least-privilege Kubernetes Secret. BuildKit exposes them only to
-          # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
-          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
-          # reproducible image digests.
           provenance: false
-          cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+          no-cache: ${{ matrix.role == 'reproduce' }}
+          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe,mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
 
-      # Build and export the compile stages (WPE engine and the Rust builder)
+      # Build and export the compile stages (the Rust builder and its inputs)
       # before anything else. A registry cache is only written when its build
       # succeeds, so a later rootfs, UKI or installation failure must not
       # discard hours of compilation. The arguments match the image build
       # exactly; the next step reuses these results from local BuildKit state.
       - name: Build and cache the compile stages
         id: compile-stages
-        if: steps.wpe-stage.outcome == 'success'
+        if: matrix.role != 'reproduce' && steps.wpe-stage.outcome != 'failure'
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1230,6 +1198,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
+            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           target: native-builder-payload
           push: false
@@ -1295,6 +1264,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
+            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           push: false
           outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar' || '' }}
@@ -1362,17 +1332,34 @@ jobs:
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
       - name: Recognize a missing registry cache blob
-        if: steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure'
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"
+
+      - name: Build the browser engine stage without the damaged layer cache
+        id: wpe-uncached
+        if: matrix.role != 'reproduce' && steps.wpe-stage.outcome == 'failure'
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile.wpe
+          target: wpe-builder-1
+          push: false
+          outputs: type=oci,dest=/var/tmp/tilo-wpe-uncached,tar=false
+          build-args: |
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+          provenance: false
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
 
       # The same image build without cache-from. Layers this builder already
       # holds are reused; the lazily imported ones are rebuilt. It writes every
       # cache tag, replacing the manifests that named the missing blob.
       - name: Build the Tilo image without the damaged layer cache
         id: build-uncached
-        if: steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure'
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1382,6 +1369,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
+            ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar' || '' }}
@@ -1422,7 +1410,6 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
 
@@ -1479,7 +1466,7 @@ jobs:
       # pays for the second uncached build; integration images for tilo-ci
       # and dev disks are never signed or published and skip it.
       - name: Independently rebuild the release candidate
-        if: matrix.role == 'reproduce'
+        if: matrix.role == 'reproduce' && steps.wpe-stage.outcome != 'failure'
         id: repro
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1490,6 +1477,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
+            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
@@ -1549,6 +1537,33 @@ jobs:
             -f "$context/Containerfile" -t 'registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
           echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
           [[ $manifest != failed ]]
+
+      # A failed digest gate previously left only two opaque manifest hashes:
+      # the independent archive disappears with its runner. Retain a tiny,
+      # source-bound list of layer/config digests from each lane, with no blob
+      # payload or environment values, so the first difference is actionable.
+      - name: Record OCI layer digests
+        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          role=primary
+          archive=/var/tmp/tilo-image.tar
+          if [[ '${{ matrix.role }}' == reproduce ]]; then
+            role=reproduce
+            archive=/var/tmp/tilo-image-repro.tar
+          fi
+          python3 os/scripts/oci-archive-layer-report.py "$archive" oci-layer-report.json \
+            --source '${{ github.sha }}' --run-id '${{ github.run_id }}' \
+            --arch '${{ matrix.arch }}' --role "$role"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        continue-on-error: true
+        with:
+          name: oci-layer-report-${{ matrix.arch }}-${{ matrix.role == 'reproduce' && 'reproduce' || 'primary' }}
+          path: oci-layer-report.json
+          if-no-files-found: warn
 
       # The publication lane: the uncached rebuild ran in parallel in the
       # reproduction lane of this run. Wait for its manifest digest.
@@ -1640,16 +1655,22 @@ jobs:
               qemu_packages='qemu-efi-aarch64 qemu-system-arm'
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-qemu openssh-client podman \
               jq qemu-system-gui qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux $qemu_packages
+            test -r /usr/lib/ipxe/qemu/efi-virtio.rom || {
+              echo '::error::ipxe-qemu did not provide efi-virtio.rom for QEMU disk boot'
+              exit 1
+            }
           elif command -v dnf >/dev/null; then
             if [[ '${{ matrix.arch }}' == x86_64 ]]; then
               qemu_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
             else
               qemu_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
             fi
-            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
+            # Fedora keeps QEMU's efi-virtio.rom in ipxe-roms-qemu, separate
+            # from the architecture-specific QEMU system/device packages.
+            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-roms-qemu \
               jq openssh-clients podman qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo slirp4netns socat sshpass \
               sudo systemd util-linux $qemu_packages
           else
@@ -1843,6 +1864,15 @@ jobs:
           ./os/dev/vm.sh keys tab ret
 
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
+          # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
+          # deadlines on the shipped script, independent of Containerfile
+          # assembly. Failure is visible here and does not undo the desktop
+          # readiness checks above; OpenH264 arrives via the opt-in codec pack.
+          if ./os/dev/vm.sh ssh /usr/libexec/tilo/airplay-encrypted-session-test.sh; then
+            echo '::notice::AirPlay encrypted-session acceptance passed'
+          else
+            echo '::error::AirPlay encrypted-session acceptance failed (separate from desktop readiness; see #57)'
+          fi
           ./os/dev/vm.sh ssh /usr/libexec/tilo/collaborative-files-image-contract.sh runtime
           # Drive the signed Settings and Files payloads as an independent
           # AT-SPI client. Per-app evidence comes from their installed manifest;
@@ -2214,7 +2244,7 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export TILO_RELEASE_CHILDREN_JSON="$child_dependencies"
           source <(grep '^BASE_REF=' os/base-snapshot.env)
-          source <(grep '^RPMS_REF=' os/rpms-snapshot.env)
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           . os/kernel-snapshot.env
           export BASE_REF RPMS_REF
           export TILO_KERNEL_REFS_JSON="$(jq -cn \

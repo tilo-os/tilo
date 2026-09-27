@@ -6,10 +6,6 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo format-provider router daemon. Runs sandboxed WebAssembly providers under wasmi and serves a Cap'n Proto RPC interface."
 
-[package.metadata.cargo-machete]
-# Invoked by build.rs to compile the Cap'n Proto schema.
-ignored = ["capnpc"]
-
 [dependencies]
 format-provider-abi = { path = "../format-provider-abi" }
 
@@ -30,14 +26,11 @@ capnp-rpc.workspace = true
 serde.workspace = true
 toml.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
-notify = { workspace = true, default-features = true }
+notify.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
-
-[build-dependencies]
-capnpc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

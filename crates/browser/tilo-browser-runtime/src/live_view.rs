@@ -131,22 +131,10 @@ pub(crate) fn decode_selection(anchor: &[u8], head: &[u8]) -> Option<(PresenceKe
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(DIGITS[usize::from(byte >> 4)] as char);
-        out.push(DIGITS[usize::from(byte & 15)] as char);
-    }
-    out
+    hex::encode(bytes)
 }
 pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
-        .collect()
+    hex::decode(text).ok()
 }
 
 /// Live record for a durable `(app, record)`, as the host forwards it.
@@ -830,10 +818,10 @@ mod tests {
     fn member_colors_match_the_overlay_port() {
         let palette = ui::presence::PEER_PALETTE;
         for (id, index) in [
-            ("dave", 23usize),
-            ("eve", 21),
-            ("a1b2c3d4", 21),
-            (&"7f00aa55".repeat(8), 13),
+            ("dave", 15usize),
+            ("eve", 13),
+            ("a1b2c3d4", 13),
+            (&"7f00aa55".repeat(8), 21),
         ] {
             assert_eq!(ui::presence::user_color(id), palette[index], "{id}");
         }

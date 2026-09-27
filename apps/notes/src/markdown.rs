@@ -590,6 +590,8 @@ fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
         Mark::Link(_) => ("[[", Some("]]"), 5),
         Mark::Transclusion(_) => ("![[", Some("]]"), 6),
         Mark::ExternalLink(_) => ("[", None, 7),
+        // Markdown has no mention syntax: the label is the text.
+        Mark::Mention(_) => ("", Some(""), 8),
     }
 }
 
@@ -1106,23 +1108,6 @@ pub(crate) fn expanded_rows(
         rows.push((kind, text.clone(), None, 0));
     }
     rows
-}
-
-pub(crate) fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Quote => "quote".into(),
-        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
-        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
-        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
-        BlockKind::Checklist { indent, done } => {
-            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
-        }
-        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
-        BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
-        BlockKind::Divider => "divider".into(),
-    }
 }
 
 /// Inverse of [`specs_to_blocks`] — convert the editor's block list
