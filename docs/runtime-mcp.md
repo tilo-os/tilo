@@ -78,6 +78,24 @@ activity tell concurrent agents on one machine apart. Sessions act with the
 profile actor's authority. The token authenticates the fronting proxy only; that
 proxy owns end-user authentication and must route each user to their machine.
 
+## Pixel fallback
+
+Beside a compositor, `TILO_RUNTIME_COMPUTER_CONTROL=/abs/path/to/control.sock`
+(the compositor's `TILO_TEST_CONTROL` socket) adds the canonical `computer` and
+`computer_batch` tools that hosted computer-use providers and model vendors
+share: `screenshot`, the click family, `mouse_move`, `left_click_drag`,
+`left_mouse_down`/`up`, `scroll`, `type`, `key` and `hold_key` (xdotool names
+such as `ctrl+s`), `wait`, `zoom` and `cursor_position`. They exist for
+windows that publish no typed action; tool descriptions steer models to the
+typed tools first.
+
+Each action returns its post-action screenshot (JPEG by default, `format: png`
+on request) and a text block with `frame_id`, `width` and `height`.
+Coordinates are pixels in the last screenshot's frame; screens larger than
+1280×800 are scaled down and coordinates scaled back. A batch returns frames
+only for `screenshot` steps and its last step unless `no_screenshot` says
+otherwise, and stops at the first failing step.
+
 ## Explicit manifest mode
 
 Choose a short absolute profile path and create an app manifest at an absolute

@@ -12,6 +12,8 @@ pub struct McpServer<H> {
     actor: String,
     /// The agent run every invocation of this connection is attributed to.
     run: Option<tilo_actions::ActionGroup>,
+    /// Pixel fallback, when the host runs beside a compositor.
+    computer: Option<std::sync::Arc<crate::computer::Computer>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -89,6 +91,49 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             room,
             actor,
             run: None,
+            computer: None,
+        }
+    }
+    /// Offer the canonical `computer` tools, driving `computer`.
+    #[must_use]
+    pub fn with_computer(
+        mut self,
+        computer: Option<std::sync::Arc<crate::computer::Computer>>,
+    ) -> Self {
+        self.computer = computer;
+        self
+    }
+    fn tools(&self) -> Vec<Value> {
+        let mut tools = tool_definitions();
+        if self.computer.is_some() {
+            tools.extend(crate::computer::tool_definitions());
+        }
+        tools
+    }
+    /// Run a `computer` or `computer_batch` call off the async runtime.
+    async fn computer(&self, name: &str, args: Value) -> Value {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Batch {
+            actions: Vec<crate::computer::Action>,
+        }
+        let Some(computer) = self.computer.clone() else {
+            return tool_result(Err("Unknown tool".into()));
+        };
+        let batch = name == "computer_batch";
+        let actions = if batch {
+            parse::<Batch>(args).map(|batch| batch.actions)
+        } else {
+            parse::<crate::computer::Action>(args).map(|action| vec![action])
+        };
+        let actions = match actions {
+            Ok(actions) => actions,
+            Err(error) => return tool_result(Err(error)),
+        };
+        match tokio::task::spawn_blocking(move || computer.run(&actions, batch)).await {
+            Ok(Ok(outcomes)) => crate::computer::content(&outcomes, batch),
+            Ok(Err(error)) => tool_result(Err(error)),
+            Err(error) => tool_result(Err(error.to_string())),
         }
     }
     /// Attribute every invocation of this connection to one agent run, so
@@ -165,7 +210,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 )
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools":tool_definitions()})),
+            "tools/list" => Ok(json!({"tools":self.tools()})),
             "tools/call" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -175,6 +220,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     arguments: Value,
                 }
                 match parse::<Call>(params) {
+                    Ok(call)
+                        if self.computer.is_some()
+                            && matches!(call.name.as_str(), "computer" | "computer_batch") =>
+                    {
+                        Ok(self.computer(&call.name, call.arguments).await)
+                    }
                     Ok(call)
                         if tool_definitions().iter().any(|definition| {
                             definition["name"].as_str() == Some(call.name.as_str())

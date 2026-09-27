@@ -628,6 +628,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
     let mut stages = StartupStages::open(profile)?;
     let session = S::start_reporting(profile, &mut |stage| stages.enter(stage))?;
     let host = session.action_host()?;
+    let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
@@ -652,6 +653,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
             session.room().to_owned(),
             session.actor().to_owned(),
             config.token.clone(),
+            computer.clone(),
         );
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
@@ -674,6 +676,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
         let room = session.room().to_owned();
         let actor = session.actor().to_owned();
         let status = status.clone();
+        let computer = computer.clone();
         let active = Arc::clone(&active);
         active.fetch_add(1, Ordering::Relaxed);
         let slot = ConnectionSlot(active);
@@ -681,9 +684,11 @@ pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
             .name("tilo-native-mcp".into())
             .spawn(move || {
                 let _slot = slot;
-                if let Err(error) =
-                    serve_connection(stream, McpServer::new(host, room, actor), &status)
-                {
+                if let Err(error) = serve_connection(
+                    stream,
+                    McpServer::new(host, room, actor).with_computer(computer),
+                    &status,
+                ) {
                     tracing::debug!(%error, "native runtime client disconnected");
                 }
             })?;

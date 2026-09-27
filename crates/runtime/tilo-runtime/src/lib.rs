@@ -27,6 +27,7 @@ use std::{
 
 mod apps;
 pub mod cli;
+pub mod computer;
 mod daemon;
 pub mod mcp;
 pub mod mcp_http;

@@ -125,6 +125,7 @@ fn endpoint(host: StubHost, token: Option<&str>) -> Arc<Endpoint<StubHost>> {
         "room".into(),
         "owner".into(),
         token.map(str::to_owned),
+        None,
     )
 }
 
