@@ -397,6 +397,19 @@ It is not a backend:
   says it was removed. A reporter's desktop never starts it, even though the
   reporter administers their own room. Filing uses the team's one connected
   forge account unless the agent is told another.
+- **One session per room.** Every team device keeps the agent running, so the
+  room's presence settles which session triages (`triage::lease`).
+  - **Claim:** a session that triages a room states
+    `triage-lease:<device>:<since>` as its presence status there and restates
+    it every few seconds. The same agent on another device is the same
+    participant, so presence hears these statuses as siblings.
+  - **New session:** it first watches the room. If it hears a live claim from
+    another device, it ends, and its desktop tries again later.
+  - **Ties:** otherwise it claims, and triages once the claim has stood. The
+    earliest live claim holds the room; the lowest device wins a tie, and a
+    session behind another claim ends.
+  - **Failover:** a claim that is not restated expires. The next session a
+    desktop starts then takes the room over.
 - **Nobody speaks through its Chat.** Chat's posting actions carry the
   participant tag (`ActionSpec::as_participant`). The broker delivers such an
   action only when the caller is the participant the app runs for, so a

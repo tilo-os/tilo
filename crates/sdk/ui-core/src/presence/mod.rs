@@ -446,6 +446,10 @@ pub enum RemotePresenceEffect {
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
 pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
 
+/// How many sibling statuses a session keeps (see
+/// [`PresenceCtx::sibling_statuses`]).
+const MAX_SIBLING_STATUSES: usize = 16;
+
 #[derive(Debug, Default, Clone)]
 pub struct PresenceCtx {
     pub here: HashMap<PresenceKey, Vec<UserId>>,
@@ -474,6 +478,11 @@ pub struct PresenceCtx {
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
+    /// Room statuses from other sessions of this same participant (the same
+    /// agent run from another device), by text, with when each was last
+    /// heard. They are never painted as someone else; a session that
+    /// coordinates with its siblings reads them. Bounded.
+    sibling_statuses: HashMap<String, std::time::SystemTime>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -1246,6 +1255,12 @@ impl PresenceCtx {
             if key.as_view().is_some() {
                 return RemotePresenceEffect::None;
             }
+            if let Status { text, .. } = &payload
+                && matches!(key, PresenceKey::Workspace { .. })
+            {
+                self.note_sibling_status(text);
+                return RemotePresenceEffect::None;
+            }
             return match payload {
                 // A Tab-keyed arrival moves a focus dot; only a scope
                 // arrival affects participant-level presence.
@@ -1448,6 +1463,45 @@ impl PresenceCtx {
         self.statuses.remove(&uid);
         self.remove_interactions_for_actor(user_id);
         self.remove_remote_cursor(user_id);
+    }
+
+    /// Keep what another session of this participant says, newest first,
+    /// dropping the oldest past [`MAX_SIBLING_STATUSES`].
+    fn note_sibling_status(&mut self, text: &str) {
+        if text.trim().is_empty() || text.chars().count() > crate::MAX_STATUS_CHARS {
+            return;
+        }
+        self.sibling_statuses
+            .insert(text.to_string(), crate::time::wall());
+        while self.sibling_statuses.len() > MAX_SIBLING_STATUSES {
+            let Some(oldest) = self
+                .sibling_statuses
+                .iter()
+                .min_by_key(|(_, heard)| **heard)
+                .map(|(text, _)| text.clone())
+            else {
+                break;
+            };
+            self.sibling_statuses.remove(&oldest);
+        }
+    }
+
+    /// Room statuses from other sessions of this same participant, with when
+    /// each was last heard: how one agent run from several devices hears
+    /// itself.
+    pub fn sibling_statuses(&self) -> impl Iterator<Item = (&str, std::time::SystemTime)> {
+        self.sibling_statuses
+            .iter()
+            .map(|(text, heard)| (text.as_str(), *heard))
+    }
+
+    /// Every room participant's status as last heard, with when it was
+    /// heard. A reader that treats a status as a lease applies its own age
+    /// limit to `updated_at`.
+    pub fn statuses(
+        &self,
+    ) -> impl Iterator<Item = (&UserId, &crate::live_collaboration::LiveStatus)> {
+        self.statuses.iter()
     }
 
     /// Current status for a room participant. Inferred statuses apply their

@@ -38,6 +38,14 @@ const ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x7a1a_9e00_0000_4c0d_9a11_0000_0
 const APP: &str = "so.tilo.chat";
 const AGENT: &str = shell::shell::workspace_settings::TRIAGE_AGENT;
 const FORGE_ACCOUNT: &str = "tilo-forge";
+/// The lease, timed for a test: a session claims within a fraction of a
+/// second and a vanished holder's claim expires in two.
+const FAST_LEASE: triage::lease::Timing = triage::lease::Timing {
+    ttl: Duration::from_secs(2),
+    renew: Duration::from_millis(300),
+    observe: Duration::from_millis(700),
+    settle: Duration::from_millis(400),
+};
 
 struct Person {
     root: SigningKey,
@@ -245,6 +253,34 @@ fn catalogue_revision(
 }
 
 fn invoke(
+    host: &BrokerActionHost,
+    person: &Person,
+    provider: &str,
+    resource: &str,
+    action: &str,
+    argument: InvokeArgument,
+    room: &mut Room,
+) -> Result<InvocationUpdate, String> {
+    // Other participants' Chats republish as they work, so a revision can go
+    // stale between listing and invoking; list again, as a caller would.
+    for _ in 0..5 {
+        match invoke_at_revision(
+            host,
+            person,
+            provider,
+            resource,
+            action,
+            argument.clone(),
+            room,
+        ) {
+            Err(error) if error.contains("changed since that revision") => {}
+            other => return other,
+        }
+    }
+    invoke_at_revision(host, person, provider, resource, action, argument, room)
+}
+
+fn invoke_at_revision(
     host: &BrokerActionHost,
     person: &Person,
     provider: &str,
@@ -497,6 +533,7 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
                     .open(APP, &ROOM.to_string())
                     .expect("the agent's record store"),
                 intents: triage::forge::Intents::at(dir.path().join("agent/intents.json")),
+                lease: FAST_LEASE,
             },
             Box::new(NoModel),
             forge,
@@ -833,6 +870,7 @@ fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
                     .open(APP, &ROOM.to_string())
                     .expect("the agent's record store"),
                 intents: triage::forge::Intents::in_memory(),
+                lease: FAST_LEASE,
             },
             Box::new(NoModel),
             Box::new(triage::forge::Unconnected),
@@ -879,5 +917,283 @@ fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
             .all(|m| m.author != me),
         "the agent wrote nothing into the conversation document"
     );
+    drop(handle);
+}
+
+/// Each device's triage session, restarted after it yields, as its
+/// desktop's triage runtime restarts it.
+struct TeamDevice {
+    person: Person,
+    agent: Option<Participant>,
+    ended: Option<Instant>,
+    records: std::path::PathBuf,
+}
+
+/// Two team devices both run the triage agent in the community room, the
+/// way each team desktop keeps it running. Their sessions settle on one
+/// holder through the room lease, so a report is answered once; when the
+/// holder's device goes away, the other device's next session takes over.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario across two team devices, read top to bottom"
+)]
+fn two_team_devices_run_one_triage_session_and_fail_over() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info,tilo_agent=trace"))
+        .with_test_writer()
+        .try_init();
+    let dir = tempfile::tempdir().expect("scratch");
+    let socket = dir.path().join("collab.sock");
+    let team = Person::new(81, 82, "team");
+    let reporter = Person::new(91, 92, "reporter");
+    let mut devices = vec![
+        TeamDevice {
+            person: Person::new(81, 83, "triage-a"),
+            agent: None,
+            ended: None,
+            records: dir.path().join("device-a"),
+        },
+        TeamDevice {
+            person: Person::new(81, 84, "triage-b"),
+            agent: None,
+            ended: None,
+            records: dir.path().join("device-b"),
+        },
+    ];
+
+    let mut workspace = Workspace::new(WorkspaceId(1), "Tilo Community");
+    workspace.room = RoomId::parse(&ROOM.to_string()).expect("room id");
+    workspace.channel_class = collab_types::ChannelClass::Public;
+    workspace.set_owner(team.principal());
+    workspace.grant_capability(collab_types::CapOverride::membership(
+        collab_types::Subject::person(reporter.principal()),
+        ROOM.to_string(),
+        collab_types::Verb::Comment,
+    ));
+    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
+        workspace.grant_capability(cap);
+    }
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.active = workspace.id;
+    tree.desktop.workspaces.push(workspace);
+    let handle = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        tree.shared(),
+        vec![
+            team.device.verifying_key().to_bytes(),
+            reporter.device.verifying_key().to_bytes(),
+            devices[0].person.device.verifying_key().to_bytes(),
+            devices[1].person.device.verifying_key().to_bytes(),
+        ],
+    )
+    .expect("bind the broker");
+    let host = BrokerActionHost::new(handle.app_action_broker().expect("typed broker"));
+    let mut room = Room {
+        editor: team.chat(&socket, &dir.path().join("team")),
+        author: reporter.chat(&socket, &dir.path().join("reporter")),
+        agent: None,
+        standing: Standing::Waiting,
+    };
+    room.until("the conversation", |room| {
+        may(&room.editor, ui::permissions::Verb::Write)
+            && chat::doc::ChatDoc::is_seeded(&room.editor.state_mut_for_test().doc)
+    });
+    let workspace_id = chat::doc::ChatDoc::list_workspaces(&room.editor.state_mut_for_test().doc)
+        .first()
+        .expect("a starter workspace")
+        .id
+        .clone();
+    let team_chat = own_chat(&host, &team, &mut room);
+    let reporter_chat = own_chat(&host, &reporter, &mut room);
+    let feedback = tilo_reference::FEEDBACK_CHANNEL;
+    for (resource, action) in [
+        (
+            format!("chat.workspace:{workspace_id}"),
+            "add-feedback-channel",
+        ),
+        (format!("chat.channel:{feedback}"), "mark-feedback"),
+    ] {
+        succeeded(
+            invoke(
+                &host,
+                &team,
+                &team_chat,
+                &resource,
+                action,
+                InvokeArgument::None,
+                &mut room,
+            ),
+            action,
+        );
+    }
+    room.until("the reporter's grant", |room| {
+        may(&room.author, ui::permissions::Verb::Comment)
+    });
+
+    let restart_after = Duration::from_millis(500);
+    let connect = |device: &TeamDevice| {
+        Participant::connect(
+            participant::Config {
+                room: ROOM,
+                name: AGENT.into(),
+                scope: triage::Scope::community(),
+                endpoint: Some(socket.clone()),
+                identity: Some(device.person.identity()),
+                records: ui::record::RecordOwners::new(device.records.clone())
+                    .open(APP, &ROOM.to_string())
+                    .expect("the device's record store"),
+                intents: triage::forge::Intents::in_memory(),
+                lease: FAST_LEASE,
+            },
+            Box::new(NoModel),
+            Box::new(triage::forge::Unconnected),
+        )
+        .expect("the agent joins")
+    };
+    // Both devices start at once.
+    for device in &mut devices {
+        device.agent = Some(connect(device));
+    }
+    let step = |room: &mut Room, devices: &mut [TeamDevice], online: &[bool; 2]| {
+        room.step();
+        for (device, online) in devices.iter_mut().zip(online) {
+            if !online {
+                device.agent = None;
+                continue;
+            }
+            match device.agent.as_mut().map(Participant::step) {
+                Some(Standing::Yielded | Standing::Revoked) => {
+                    device.agent = None;
+                    device.ended = Some(Instant::now());
+                }
+                Some(_) => {}
+                None => {
+                    if device
+                        .ended
+                        .is_none_or(|ended| ended.elapsed() >= restart_after)
+                    {
+                        device.agent = Some(connect(device));
+                    }
+                }
+            }
+        }
+    };
+    let holders = |devices: &[TeamDevice]| {
+        devices
+            .iter()
+            .enumerate()
+            .filter(|(_, device)| {
+                device
+                    .agent
+                    .as_ref()
+                    .is_some_and(Participant::claimed_lease)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>()
+    };
+    let replies = |room: &Room, report: &str| {
+        let me = participant::participant_id(AGENT);
+        room.editor
+            .root_widget_for_test()
+            .joined_records()
+            .map_or(0, |joined| {
+                joined
+                    .joined()
+                    .iter()
+                    .filter(|checkout| {
+                        checkout.kind.as_str() == chat::comments::MESSAGE_KIND
+                            && joined
+                                .read(&checkout.id, chat::comments::message_of)
+                                .flatten()
+                                .is_some_and(|m| {
+                                    m.author == me && m.parent.as_deref() == Some(report)
+                                })
+                    })
+                    .count()
+            })
+    };
+
+    // One holder settles.
+    let both = [true, true];
+    let started = Instant::now();
+    loop {
+        step(&mut room, &mut devices, &both);
+        if holders(&devices).len() == 1 && started.elapsed() > FAST_LEASE.ttl {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no single holder: {:?}",
+            holders(&devices)
+        );
+    }
+    let holder = holders(&devices)[0];
+
+    // A report is answered once.
+    succeeded(
+        invoke(
+            &host,
+            &reporter,
+            &reporter_chat,
+            &format!("chat.channel:{feedback}"),
+            "remark",
+            remark(
+                "Send does nothing when the To field ends with a comma",
+                "m_first",
+            ),
+            &mut room,
+        ),
+        "posting the first report",
+    );
+    let started = Instant::now();
+    while replies(&room, "m_first") == 0 {
+        step(&mut room, &mut devices, &both);
+        assert!(started.elapsed() < Duration::from_secs(30), "no answer");
+    }
+    let settle = Instant::now();
+    while settle.elapsed() < Duration::from_secs(3) {
+        step(&mut room, &mut devices, &both);
+    }
+    assert_eq!(replies(&room, "m_first"), 1, "answered by one session only");
+    assert_eq!(holders(&devices), vec![holder], "the holder kept the room");
+
+    // The holder's device goes away; the other device takes over.
+    let mut online = [true, true];
+    online[holder] = false;
+    let other = 1 - holder;
+    let started = Instant::now();
+    loop {
+        step(&mut room, &mut devices, &online);
+        if holders(&devices) == vec![other] {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "no failover");
+    }
+    succeeded(
+        invoke(
+            &host,
+            &reporter,
+            &reporter_chat,
+            &format!("chat.channel:{feedback}"),
+            "remark",
+            remark("The sidebar font is blurry at 150% scale", "m_second"),
+            &mut room,
+        ),
+        "posting the second report",
+    );
+    let started = Instant::now();
+    while replies(&room, "m_second") == 0 {
+        step(&mut room, &mut devices, &online);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no answer after failover"
+        );
+    }
+    let settle = Instant::now();
+    while settle.elapsed() < Duration::from_secs(2) {
+        step(&mut room, &mut devices, &online);
+    }
+    assert_eq!(replies(&room, "m_second"), 1);
     drop(handle);
 }

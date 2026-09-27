@@ -2503,6 +2503,8 @@ pub fn recording_delegates_switch_rect(row: Rect) -> Rect {
     )
 }
 
+// The compact switch face a settings row carries; the shared Toggle widget
+// has no smaller size token, and these rows are drawn, not laid out.
 const RECORDING_SWITCH_WIDTH: f64 = 38.0;
 const RECORDING_SWITCH_HEIGHT: f64 = 22.0;
 

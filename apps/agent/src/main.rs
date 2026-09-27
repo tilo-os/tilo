@@ -147,6 +147,7 @@ fn triage(cli: &Cli, place: TriageIn) -> anyhow::Result<()> {
             identity: None,
             records,
             intents: triage::forge::Intents::for_room(&cli.workspace.to_string()),
+            lease: triage::lease::Timing::default(),
         },
         think,
         forge,

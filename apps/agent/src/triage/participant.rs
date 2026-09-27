@@ -22,6 +22,7 @@ use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
 use ui::permissions::Verb;
 
 use super::forge::{self, FiledIssue, Forge, Intents};
+use super::lease;
 use super::think::Think;
 use super::{ISSUE_KIND, Move, Scope, Triage};
 
@@ -52,6 +53,8 @@ pub struct Config {
     pub records: ui::record::RecordStore,
     /// The filings it set out to make and has not seen answered.
     pub intents: Intents,
+    /// How the one-session-per-room lease is timed.
+    pub lease: lease::Timing,
 }
 
 /// Where the agent stands after a step.
@@ -63,6 +66,12 @@ pub enum Standing {
     Working,
     /// It was admitted and no longer is. It does nothing more.
     Revoked,
+    /// Admitted, and waiting to learn whether it holds the room's lease.
+    Standby,
+    /// Another device's session holds the room. It does nothing more; its
+    /// desktop tries again later, and takes the room over once that
+    /// session's claim expires.
+    Yielded,
 }
 
 /// The agent's participant id in Chat.
@@ -81,6 +90,9 @@ pub struct Participant {
     busy: HashMap<String, (Instant, Duration)>,
     intents: Intents,
     admitted: bool,
+    lease_timing: lease::Timing,
+    /// The session's side of the room's lease, once it knows its device.
+    lease: Option<lease::Lease>,
 }
 
 impl Participant {
@@ -144,6 +156,8 @@ impl Participant {
             busy: HashMap::new(),
             intents: cfg.intents,
             admitted: false,
+            lease_timing: cfg.lease,
+            lease: None,
         })
     }
 
@@ -174,6 +188,14 @@ impl Participant {
             return Standing::Waiting;
         }
         self.admitted = true;
+        match self.hold_lease() {
+            lease::Verdict::Hold => {}
+            lease::Verdict::Wait => return Standing::Standby,
+            lease::Verdict::Yield => {
+                tracing::info!(room = %self.triage.room, "triage: another device's session holds this room; ending");
+                return Standing::Yielded;
+            }
+        }
         for (address, reason) in self.hand.take_refused() {
             tracing::warn!(%address.resource, %address.action, %reason, "triage: Chat refused a request");
         }
@@ -196,16 +218,67 @@ impl Participant {
         Standing::Working
     }
 
-    /// Triage until the agent is removed from the room.
+    /// Triage until the agent is removed from the room, or another device's
+    /// session holds it.
     pub fn run(&mut self) {
         loop {
             match self.step() {
-                Standing::Revoked => return,
-                Standing::Waiting | Standing::Working => {
+                Standing::Revoked | Standing::Yielded => return,
+                Standing::Waiting | Standing::Standby | Standing::Working => {
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }
         }
+    }
+
+    /// Read the claims in the room's presence, decide, and restate this
+    /// session's claim when it is due.
+    fn hold_lease(&mut self) -> lease::Verdict {
+        let now = Instant::now();
+        let wall = std::time::SystemTime::now();
+        let lease = self.lease.get_or_insert_with(|| {
+            let device = self
+                .app
+                .collaboration_device()
+                .map_or_else(|| uuid::Uuid::new_v4().simple().to_string(), hex::encode);
+            lease::Lease::new(&device, self.lease_timing, now)
+        });
+        // The same agent run from another team device is the same
+        // participant, so its claims arrive as this participant's siblings.
+        let presence = self.app.presence_ctx();
+        let heard: Vec<(lease::Claim, Duration)> = presence
+            .statuses()
+            .map(|(_, status)| (status.text.as_str(), status.updated_at))
+            .chain(presence.sibling_statuses())
+            .filter_map(|(text, heard)| {
+                let claim = lease::Claim::parse(text)?;
+                Some((claim, wall.duration_since(heard).unwrap_or_default()))
+            })
+            .collect();
+        let verdict = lease.decide(&heard, now, lease::unix_ms(wall));
+        tracing::trace!(heard = heard.len(), ?verdict, "triage: lease");
+        if verdict != lease::Verdict::Yield
+            && let Some(text) = lease.due(now)
+        {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: self.triage.room.clone(),
+            };
+            self.app.broadcast_status(
+                key,
+                Some(&ui::LiveStatus {
+                    text,
+                    origin: ui::StatusOrigin::Manual,
+                    updated_at: wall,
+                }),
+            );
+        }
+        verdict
+    }
+
+    /// Whether this session has claimed its room's lease.
+    #[must_use]
+    pub fn claimed_lease(&self) -> bool {
+        self.lease.as_ref().is_some_and(lease::Lease::claimed)
     }
 
     fn perform(&mut self, next: Move) {

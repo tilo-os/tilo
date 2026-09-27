@@ -60,6 +60,12 @@ impl App {
     pub fn presence_ctx(&self) -> &PresenceCtx {
         &self.presence_ctx
     }
+
+    /// The device key this app's collaboration signs with, once its
+    /// connection has its identity: which device a participant runs on.
+    pub fn collaboration_device(&self) -> Option<[u8; 32]> {
+        self.collaboration.manager.document_author()
+    }
     pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx {
         &mut self.presence_ctx
     }
