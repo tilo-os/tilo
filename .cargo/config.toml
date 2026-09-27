@@ -84,33 +84,3 @@ incremental = true
 
 [profile.release]
 incremental = false
-
-# The `[patch.crates-io]` forks live in private repositories on
-# code.tilo.so, which CI jobs, image builds and remote builders cannot
-# fetch. Cargo reads the pinned revisions from `vendor/git` instead, while
-# Cargo.toml and Cargo.lock keep naming the fork and revision. After changing
-# a fork revision, add the new revision here and refresh `vendor/git` with
-# `tools/vendor-git-forks.sh`. If a fork's URL changes, Cargo can only
-# re-resolve its lock entries with the matching `[source]` entry removed, so
-# run the `cargo update` first and restore the entry afterwards.
-[source.fork-accesskit]
-git = "ssh://git@code.tilo.so/tilo/accesskit.git"
-rev = "a76088c4c36c03de8109ded02bd42a305fb1d569"
-replace-with = "git-forks"
-
-[source.fork-atspi]
-git = "ssh://git@code.tilo.so/tilo/atspi.git"
-rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
-replace-with = "git-forks"
-
-[source.fork-rustypipe]
-git = "ssh://git@code.tilo.so/tilo/rustypipe.git"
-rev = "aeb292fb23856c335ee3423745ed98ae0e683760"
-replace-with = "git-forks"
-
-[source.git-forks]
-directory = "vendor/git"
-
-# Fetching a new fork revision goes through the git CLI, so SSH keys apply.
-[net]
-git-fetch-with-cli = true

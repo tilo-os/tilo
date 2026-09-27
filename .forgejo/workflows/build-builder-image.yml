@@ -25,7 +25,6 @@ on:
       - "crates/system/atomic-file/**"
       - "crates/dev/test-env/**"
       - "crates/workspace-hack/**"
-      - "vendor/git/rustypipe-0.11.4/**"
       - "vendor/wayland-backend/**"
       - "tools/ci/check-build-env.sh"
       - "tools/ci/install-android-ndk.sh"
