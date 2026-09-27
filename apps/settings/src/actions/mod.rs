@@ -54,7 +54,10 @@ use tilo_actions::{
 };
 
 use crate::categories::Category;
-use crate::prefs::{AppearancePrefs, SystemPrefs};
+use crate::prefs::SystemPrefs;
+
+mod portable;
+pub use portable::{PORTABLE_PREFERENCES, PortablePrefType, PortablePreference};
 
 /// Registry `type_id` for every settings action.
 pub const SETTINGS_ACTION_TYPE: &str = "settings.action";
@@ -988,10 +991,6 @@ fn input_choice_spec(
     .with_contract(local_operation_contract(&["device-local", "input"]))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the allow-list is a deliberately auditable stale-action boundary"
-)]
 fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), ActionError> {
     let text =
         || matches!(value, SettingValue::Text(text) if !text.is_empty() && text.len() <= 1024);
@@ -1013,73 +1012,24 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
                     _ => false,
                 }
         });
-    let allowed = match key {
-        "appearance.theme"
-        | "appearance.schedule"
-        | "appearance.sunrise"
-        | "appearance.sunset"
-        | "appearance.wallpaper_scope"
-        | "appearance.wallpaper_target"
-        | "appearance.text_size"
-        | "appearance.ui_scale"
-        | "region.currency"
-        | "region.date_format"
-        | "region.time_format"
-        | "region.measurement"
-        | "region.number_style"
-        | "region.first_day"
-        | "a11y.text_size"
-        | "a11y.cursor_size"
-        | "a11y.color_filter"
-        | "a11y.magnifier"
-        | "a11y.magnifier_view"
-        | "a11y.switch_keys"
-        | "a11y.bounce_delay"
-        | "a11y.switch_scan"
-        | "a11y.reader_rate"
-        | "a11y.reader_voice" => text(),
-        "appearance.high_contrast"
-        | "appearance.reduce_motion"
-        | "a11y.high_contrast"
-        | "a11y.reduce_motion"
-        | "a11y.large_cursor"
-        | "a11y.sticky_keys"
-        | "a11y.slow_keys"
-        | "a11y.bounce_keys"
-        | "a11y.bounce_keys_alert"
-        | "a11y.mouse_keys"
-        | "a11y.on_screen_keyboard"
-        | "a11y.visual_alerts"
-        | "a11y.screen_reader"
-        | "a11y.cursor_crosshair"
-        | "a11y.thick_text_caret"
-        | "a11y.switch_control"
-        | "shortcuts.vim_mode"
-        | "notifications.do_not_disturb"
-        | "notifications.show_banners"
-        | "notifications.show_previews"
-        | "notifications.play_sounds"
-        | "notifications.show_on_lock_screen"
-        | "notifications.show_badges"
-        | "notifications.focus.enabled"
-        | "text.check_spelling"
-        | "text.auto_correct" => boolean(),
-        "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
-            text()
+    let allowed = if let Some(pref_type) = portable::portable_pref_type(key) {
+        match pref_type {
+            PortablePrefType::Bool => boolean(),
+            PortablePrefType::Text => text(),
         }
-        // Shortcut keys are an intentionally closed catalogue.  The old
-        // prefix rule let a delayed/stale action create arbitrary
-        // `shortcuts.*` scalars that the compositor neither knew nor applied.
-        // The same catalogue drives the recorder rows and resource actions.
-        key if crate::panes::keyboard_shortcuts::is_durable_key(key) && !presentation_key => {
-            text() || (key == "shortcuts.vim_mode" && boolean())
-        }
-        key if key.starts_with("default_apps.") && !presentation_key => text(),
-        _ if valid_notification_app_key => true,
+    } else if crate::panes::keyboard_shortcuts::is_durable_key(key) && !presentation_key {
+        // Shortcut chords beyond vim-mode are a closed catalogue published as
+        // dynamic rows rather than static table entries.
+        text() || (key == "shortcuts.vim_mode" && boolean())
+    } else if key.starts_with("default_apps.") && !presentation_key {
+        text()
+    } else if valid_notification_app_key {
+        true
+    } else {
         // Trust, service and residency policy is deliberately absent: those
         // settings use typed device-local effect operations and must never
         // enter the replayable SettingsAction namespace.
-        _ => false,
+        false
     };
     allowed.then_some(()).ok_or_else(|| {
         ActionError::Refused(format!(
@@ -1151,7 +1101,7 @@ pub fn set_text_action(key: impl Into<String>, value: impl Into<String>) -> Sett
 // Resource tree
 // ===========================================================================
 
-fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
+pub(super) fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
     // The label always describes what the action *does*, so it reads right in
     // the palette next to its section.
     let label = if on_now {
@@ -1174,7 +1124,7 @@ fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
 /// operation above, this is used when a retained switch must emit the exact
 /// value it presents. That keeps keyboard and pointer activation on the same
 /// typed action door as agents and Ctrl+K, without a replicated UI draft.
-fn bool_set_spec(id: &str, label: &str, key: &'static str) -> ActionSpec {
+pub(super) fn bool_set_spec(id: &str, label: &str, key: &'static str) -> ActionSpec {
     ActionSpec::typed(
         id,
         label,
@@ -1366,7 +1316,7 @@ fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> Encoded
     })
 }
 
-fn choice_prompt_spec(
+pub(super) fn choice_prompt_spec(
     id: &str,
     label: &str,
     key: impl Into<String>,
@@ -1730,112 +1680,13 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
     reason = "the ordered resource declaration mirrors the Notifications hierarchy"
 )]
 fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
     let mut sec = Resource::new(
         "settings.section:notifications",
         "settings.section",
         "Notifications",
     );
-    sec = sec.with_action(bool_flip_spec(
-        "dnd",
-        panes::notifications::DND_KEY,
-        b(
-            panes::notifications::DND_KEY,
-            d.notifications.do_not_disturb,
-        ),
-        "Do Not Disturb",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "banners",
-        panes::notifications::BANNERS_KEY,
-        b(
-            panes::notifications::BANNERS_KEY,
-            d.notifications.show_banners,
-        ),
-        "notification banners",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "previews",
-        panes::notifications::PREVIEWS_KEY,
-        b(
-            panes::notifications::PREVIEWS_KEY,
-            d.notifications.show_previews,
-        ),
-        "message previews",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "sounds",
-        panes::notifications::SOUNDS_KEY,
-        b(
-            panes::notifications::SOUNDS_KEY,
-            d.notifications.play_sounds,
-        ),
-        "notification sounds",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "lock_screen",
-        panes::notifications::LOCK_SCREEN_KEY,
-        b(
-            panes::notifications::LOCK_SCREEN_KEY,
-            d.notifications.show_on_lock_screen,
-        ),
-        "lock-screen notifications",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "badges",
-        panes::notifications::BADGES_KEY,
-        b(
-            panes::notifications::BADGES_KEY,
-            d.notifications.show_badges,
-        ),
-        "notification badges",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "focus-enabled",
-        panes::notifications::FOCUS_ENABLED_KEY,
-        b(
-            panes::notifications::FOCUS_ENABLED_KEY,
-            d.notifications.focus.enabled,
-        ),
-        "scheduled quiet hours",
-    ));
-    for (id, label, key, options, fallback) in [
-        (
-            "focus-start",
-            "Set focus start time",
-            panes::notifications::FOCUS_START_KEY,
-            &[
-                "18:00", "20:00", "22:00", "23:00", "00:00", "06:00", "07:00", "08:00", "09:00",
-            ][..],
-            "22:00",
-        ),
-        (
-            "focus-end",
-            "Set focus end time",
-            panes::notifications::FOCUS_END_KEY,
-            &[
-                "18:00", "20:00", "22:00", "23:00", "00:00", "06:00", "07:00", "08:00", "09:00",
-            ][..],
-            "07:00",
-        ),
-        (
-            "focus-days",
-            "Set focus days",
-            panes::notifications::FOCUS_DAYS_KEY,
-            &["Every day", "Weekdays", "Weekends"][..],
-            "Every day",
-        ),
-    ] {
-        sec = sec.with_action(choice_prompt_spec(
-            id,
-            label,
-            key,
-            "Choose a focus schedule value",
-            options,
-            read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| fallback.into()),
-        ));
-    }
+    sec = portable::attach_portable_preferences(sec, Category::Notifications, doc, d);
+    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
     for (app_id, app_name) in
         crate::panes::notifications::resource_notification_apps(&d.notifications)
             .into_iter()
@@ -1884,101 +1735,12 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
 }
 
 fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
-    let s = |key: &str, default: &str| {
-        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| default.to_string())
-    };
-    let mut sec = Resource::new(
+    let sec = Resource::new(
         "settings.section:appearance",
         "settings.section",
         "Appearance",
     );
-    let cur_theme = s(panes::appearance::THEME_KEY, &d.appearance.theme);
-    sec = sec.with_action(choice_prompt_spec(
-        "theme",
-        "Set theme",
-        panes::appearance::THEME_KEY,
-        "Dark, Light, Dracula, Nord, Gruvbox, Solarized",
-        AppearancePrefs::THEMES,
-        cur_theme,
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "high_contrast",
-        panes::appearance::HIGH_CONTRAST_KEY,
-        b(
-            panes::appearance::HIGH_CONTRAST_KEY,
-            d.appearance.high_contrast,
-        ),
-        "high contrast",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "reduce_motion",
-        panes::appearance::REDUCE_MOTION_KEY,
-        b(
-            panes::appearance::REDUCE_MOTION_KEY,
-            d.appearance.reduce_motion,
-        ),
-        "reduced motion",
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "text_size",
-        "Set text size",
-        panes::appearance::TEXT_SIZE_KEY,
-        "Small, Default, Large, Larger",
-        &["Small", "Default", "Large", "Larger"],
-        s(
-            panes::appearance::TEXT_SIZE_KEY,
-            panes::appearance::text_size_label(d.appearance.text_scale),
-        ),
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "ui_scale",
-        "Set UI scale",
-        panes::appearance::UI_SCALE_KEY,
-        "90%, 100%, 110%, 125%, 150%",
-        &["90%", "100%", "110%", "125%", "150%"],
-        s(panes::appearance::UI_SCALE_KEY, "100%"),
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "schedule",
-        "Set day and night schedule",
-        panes::appearance::SCHEDULE_KEY,
-        "Sunset to sunrise, Custom times",
-        &panes::appearance::SCHEDULE_LABELS,
-        s(
-            panes::appearance::SCHEDULE_KEY,
-            panes::appearance::schedule_label(&d.appearance.schedule),
-        ),
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "sunrise",
-        "Set when the day starts",
-        panes::appearance::SUNRISE_KEY,
-        "HH:MM, in half hours",
-        &panes::appearance::TIMES,
-        s(panes::appearance::SUNRISE_KEY, &d.appearance.sunrise),
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "sunset",
-        "Set when the night starts",
-        panes::appearance::SUNSET_KEY,
-        "HH:MM, in half hours",
-        &panes::appearance::TIMES,
-        s(panes::appearance::SUNSET_KEY, &d.appearance.sunset),
-    ));
-    sec = sec.with_action(choice_prompt_spec(
-        "wallpaper_scope",
-        "Set which workspaces a new wallpaper covers",
-        panes::appearance::WALLPAPER_SCOPE_KEY,
-        "This workspace, Every workspace",
-        &panes::appearance::WALLPAPER_SCOPE_LABELS,
-        s(
-            panes::appearance::WALLPAPER_SCOPE_KEY,
-            panes::appearance::scope_label(&d.appearance.wallpaper_scope),
-        ),
-    ));
-    sec
+    portable::attach_portable_preferences(sec, Category::Appearance, doc, d)
 }
 
 #[allow(
@@ -3478,7 +3240,6 @@ pub fn display_output_choice_binding(
     reason = "the ordered resource declaration mirrors the Input hierarchy"
 )]
 fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
     let mut sec = Resource::new(
         pane_resource_id(Category::MouseKeyboard),
         "settings.section",
@@ -3659,25 +3420,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     ));
     // Text assistance is portable user text preference rather than a hardware
     // command, and therefore intentionally remains in SettingsAction.
-    for (id, key, label) in [
-        (
-            "spell-checking",
-            panes::mouse_keyboard::CHECK_SPELLING_KEY,
-            "spell checking while typing",
-        ),
-        (
-            "auto-correct",
-            panes::mouse_keyboard::AUTO_CORRECT_KEY,
-            "automatic spelling correction",
-        ),
-    ] {
-        sec = sec.with_action(bool_flip_spec(
-            id,
-            key,
-            read_bool(doc, &ROOT, key).unwrap_or(true),
-            label,
-        ));
-    }
+    sec = portable::attach_portable_preferences(sec, Category::MouseKeyboard, doc, d);
     // Input-source edits are device-local commands: they mutate the local
     // compositor roster rather than a portable setting.  Keep each installed
     // source bounded and addressable, matching the rows in the pane.
@@ -4180,216 +3923,12 @@ pub fn power_charge_binding(
     reason = "the ordered declaration mirrors the visible Accessibility pane and keeps every resource action auditable in one place"
 )]
 fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let s = |key: &str, default: &str| {
-        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| default.to_string())
-    };
-    let mut sec = Resource::new(
+    let sec = Resource::new(
         "settings.section:accessibility",
         "settings.section",
         "Accessibility",
     );
-    for (id, key, label) in [
-        (
-            "high-contrast",
-            panes::accessibility::HIGH_CONTRAST_KEY,
-            "Set high contrast",
-        ),
-        (
-            "reduce-motion",
-            panes::accessibility::REDUCE_MOTION_KEY,
-            "Set reduced motion",
-        ),
-        (
-            "large-cursor",
-            panes::accessibility::LARGE_CURSOR_KEY,
-            "Set large cursor",
-        ),
-        (
-            "sticky-keys",
-            panes::accessibility::STICKY_KEYS_KEY,
-            "Set sticky keys",
-        ),
-        (
-            "slow-keys",
-            panes::accessibility::SLOW_KEYS_KEY,
-            "Set slow keys",
-        ),
-        (
-            "bounce-keys",
-            panes::accessibility::BOUNCE_KEYS_KEY,
-            "Set bounce keys",
-        ),
-        (
-            "bounce-keys-alert",
-            panes::accessibility::BOUNCE_ALERT_KEY,
-            "Set bounce keys alert",
-        ),
-        (
-            "mouse-keys",
-            panes::accessibility::MOUSE_KEYS_KEY,
-            "Set mouse keys",
-        ),
-        (
-            "visual-alerts",
-            panes::accessibility::VISUAL_ALERTS_KEY,
-            "Set visual alerts",
-        ),
-        (
-            "pointer-crosshair",
-            panes::accessibility::CURSOR_CROSSHAIR_KEY,
-            "Set pointer crosshair",
-        ),
-        (
-            "thick-text-caret",
-            panes::accessibility::THICK_CARET_KEY,
-            "Set thicker text cursor",
-        ),
-        (
-            "switch-control",
-            panes::accessibility::SWITCH_CONTROL_KEY,
-            "Set switch control",
-        ),
-    ] {
-        sec = sec.with_action(bool_set_spec(id, label, key));
-    }
-    if panes::accessibility::osk_service_available() {
-        sec = sec.with_action(bool_set_spec(
-            "on-screen-keyboard",
-            "Set on-screen keyboard",
-            panes::accessibility::OSK_KEY,
-        ));
-    }
-    if panes::accessibility::screen_reader_available() {
-        sec = sec.with_action(bool_set_spec(
-            "screen-reader",
-            "Set screen reader",
-            panes::accessibility::SCREEN_READER_KEY,
-        ));
-    }
-    for (id, label, key, placeholder, options, fallback) in [
-        (
-            "text-size",
-            "Set text size",
-            panes::accessibility::TEXT_SIZE_KEY,
-            "Small, Default, Large, Larger",
-            &["Small", "Default", "Large", "Larger"][..],
-            crate::panes::appearance::text_size_label(d.appearance.text_scale),
-        ),
-        (
-            "cursor-size",
-            "Set cursor size",
-            panes::accessibility::CURSOR_SIZE_KEY,
-            "Default, Large, Larger, Largest",
-            &["Default", "Large", "Larger", "Largest"][..],
-            crate::prefs::AccessibilityPrefs::cursor_size_label(d.accessibility.cursor_size),
-        ),
-        (
-            "colour-filter",
-            "Set colour filter",
-            panes::accessibility::COLOR_FILTER_KEY,
-            "Off, Greyscale, Protanopia, Deuteranopia, Tritanopia",
-            &[
-                "Off",
-                "Greyscale",
-                "Protanopia",
-                "Deuteranopia",
-                "Tritanopia",
-            ][..],
-            d.accessibility.color_filter.label(),
-        ),
-        (
-            "magnifier",
-            "Set magnifier zoom",
-            panes::accessibility::MAGNIFIER_KEY,
-            "Off, 2×, 3×, 4×, 5×, 6×",
-            &settings_store::magnifier::ZOOM_LABELS[..],
-            settings_store::magnifier::zoom_label(d.accessibility.magnifier_zoom),
-        ),
-        (
-            "magnifier-view",
-            "Set magnifier view",
-            panes::accessibility::MAGNIFIER_VIEW_KEY,
-            "Lens, Full screen",
-            &["Lens", "Full screen"][..],
-            d.accessibility.magnifier_view.label(),
-        ),
-        (
-            "bounce-delay",
-            "Set bounce keys delay",
-            panes::accessibility::BOUNCE_DELAY_KEY,
-            "100 ms, 200 ms, 300 ms, 500 ms, 800 ms",
-            &["100 ms", "200 ms", "300 ms", "500 ms", "800 ms"][..],
-            crate::prefs::AccessibilityPrefs::bounce_delay_label(
-                d.accessibility.bounce_keys_delay_ms,
-            ),
-        ),
-        (
-            "switch-keys",
-            "Set switch keys",
-            panes::accessibility::SWITCH_KEYS_KEY,
-            "Tab / Enter, Space / Enter",
-            &["Tab / Enter", "Space / Enter"][..],
-            d.accessibility.switch_key_pair.label(),
-        ),
-        (
-            "switch-scan",
-            "Set automatic switch scan",
-            panes::accessibility::SWITCH_SCAN_KEY,
-            "Manual, 1 second, 2 seconds, 3 seconds",
-            &["Manual", "1 second", "2 seconds", "3 seconds"][..],
-            match d.accessibility.switch_scan_ms {
-                1000 => "1 second",
-                2000 => "2 seconds",
-                3000 => "3 seconds",
-                _ => "Manual",
-            },
-        ),
-    ] {
-        sec = sec.with_action(choice_prompt_spec(
-            id,
-            label,
-            key,
-            placeholder,
-            options,
-            s(key, fallback),
-        ));
-    }
-    if panes::accessibility::screen_reader_available() {
-        for (id, label, key, placeholder, options, fallback) in [
-            (
-                "speech-rate",
-                "Set screen-reader speech rate",
-                panes::accessibility::READER_RATE_KEY,
-                "Slow, Default, Fast, Very fast",
-                &["Slow", "Default", "Fast", "Very fast"][..],
-                match d.accessibility.screen_reader_rate {
-                    0..=75 => "Slow",
-                    76..=115 => "Default",
-                    116..=160 => "Fast",
-                    _ => "Very fast",
-                },
-            ),
-            (
-                "speech-voice",
-                "Set screen-reader voice",
-                panes::accessibility::READER_VOICE_KEY,
-                "Default, Male, Female",
-                &["Default", "Male", "Female"][..],
-                d.accessibility.screen_reader_voice.label(),
-            ),
-        ] {
-            sec = sec.with_action(choice_prompt_spec(
-                id,
-                label,
-                key,
-                placeholder,
-                options,
-                s(key, fallback),
-            ));
-        }
-    }
-    sec
+    portable::attach_portable_preferences(sec, Category::Accessibility, doc, d)
 }
 
 /// Bind an Accessibility switch to the value-carrying action exported by the
@@ -5295,85 +4834,13 @@ pub fn agent_provider_binding(
 /// Region and time are deliberately represented as individual named actions,
 /// not an "advanced" catch-all, so a person or an assistive agent can find a
 /// setting from the same hierarchy shown in the sidebar.
-fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    const CURRENCY_OPTIONS: &[&str] = &[
-        "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "INR",
-    ];
-    const DATE_OPTIONS: &[&str] = &[
-        "ISO (2023-03-15)",
-        "US (03/15/2023)",
-        "European (15/03/2023)",
-        "Long (15 Mar 2023)",
-    ];
-    const TIME_OPTIONS: &[&str] = &["24-hour (14:05)", "12-hour (2:05 PM)"];
-    const MEASUREMENT_OPTIONS: &[&str] = &["Metric (°C, km, kg)", "Imperial (°F, mi, lb)"];
-    const NUMBER_OPTIONS: &[&str] = &["1,234,567.89", "1.234.567,89"];
-    const FIRST_DAY_OPTIONS: &[&str] = &["Monday", "Sunday", "Saturday"];
-    let current = |key: &str, fallback: &str| {
-        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| fallback.into())
-    };
-    let mut section = Resource::new(
+fn region_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    let section = Resource::new(
         pane_resource_id(Category::RegionFormats),
         "settings.section",
         "Region & Formats",
     );
-    for (id, label, key, options, fallback) in [
-        (
-            "currency",
-            "Set currency",
-            panes::region::CURRENCY_KEY,
-            CURRENCY_OPTIONS,
-            "USD",
-        ),
-        (
-            "date",
-            "Set date format",
-            panes::region::DATE_KEY,
-            DATE_OPTIONS,
-            "ISO",
-        ),
-        (
-            "time",
-            "Set time format",
-            panes::region::TIME_KEY,
-            TIME_OPTIONS,
-            "24-hour (14:05)",
-        ),
-        (
-            "measurement",
-            "Set measurement units",
-            panes::region::MEASUREMENT_KEY,
-            MEASUREMENT_OPTIONS,
-            "Metric (°C, km, kg)",
-        ),
-        (
-            "number",
-            "Set number format",
-            panes::region::NUMBER_STYLE_KEY,
-            NUMBER_OPTIONS,
-            "1,234,567.89",
-        ),
-        (
-            "first-day",
-            "Set first day of week",
-            panes::region::FIRST_DAY_KEY,
-            FIRST_DAY_OPTIONS,
-            "Monday",
-        ),
-    ] {
-        // The action-spec closure requires static choices; all entries above
-        // are literals and receive a static promotion here.
-        section = section.with_action(choice_prompt_spec(
-            id,
-            label,
-            key,
-            label,
-            options,
-            current(key, fallback),
-        ));
-    }
-    section
+    portable::attach_portable_preferences(section, Category::RegionFormats, doc, d)
 }
 
 fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
@@ -5520,18 +4987,18 @@ pub fn time_date_text_binding(action_id: &str) -> Option<tilo_actions::ActionBin
 }
 
 fn shortcuts_section(doc: &AutoCommit) -> Resource {
-    let b = |key: &str, fallback| read_bool(doc, &ROOT, key).unwrap_or(fallback);
+    let prefs = SystemPrefs::load();
     let mut section = Resource::new(
         pane_resource_id(Category::KeyboardShortcuts),
         "settings.section",
         "Keyboard Shortcuts",
     );
-    section = section.with_action(bool_flip_spec(
-        "vim-mode",
-        "shortcuts.vim_mode",
-        b("shortcuts.vim_mode", false),
-        "Vim-style desktop navigation",
-    ));
+    section = portable::attach_portable_preferences(
+        section,
+        Category::KeyboardShortcuts,
+        doc,
+        &prefs,
+    );
     for (key, shortcut_label) in crate::panes::keyboard_shortcuts::resource_entries() {
         // Resource action ids are stable, readable derivatives of their
         // durable key rather than a hand-maintained subset of the recorder
@@ -6224,6 +5691,70 @@ mod tests {
                 review.contract.execution,
                 ExecutionMode::Immediate
             ));
+        }
+    }
+
+    /// Static portable preferences are declared once in the table and published by section.
+    #[test]
+    fn portable_preference_table_covers_static_section_actions() {
+        let resources = provide_resources(&AutoCommit::new());
+        for section in [
+            Category::Notifications,
+            Category::Appearance,
+            Category::Accessibility,
+            Category::RegionFormats,
+            Category::MouseKeyboard,
+            Category::KeyboardShortcuts,
+        ] {
+            let resource = find(&resources, &pane_resource_id(section));
+            let ids: std::collections::HashSet<&str> = resource
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for action_id in portable::published_action_ids(section) {
+                assert!(
+                    ids.contains(action_id),
+                    "table action {action_id} missing from {} resource tree",
+                    section.label()
+                );
+            }
+        }
+        // Every static table key accepts its declared type and refuses the other.
+        for pref in PORTABLE_PREFERENCES {
+            let mut doc = AutoCommit::new();
+            let (ok, bad) = match pref.pref_type() {
+                PortablePrefType::Bool => (
+                    SettingValue::Bool(true),
+                    SettingValue::Text("nope".into()),
+                ),
+                PortablePrefType::Text => (
+                    SettingValue::Text("value".into()),
+                    SettingValue::Bool(true),
+                ),
+            };
+            assert!(
+                SettingsAction::SetSetting {
+                    key: pref.key.into(),
+                    value: ok,
+                }
+                .apply(&mut doc)
+                .is_ok(),
+                "table key {} should accept its type",
+                pref.key
+            );
+            assert!(
+                matches!(
+                    SettingsAction::SetSetting {
+                        key: pref.key.into(),
+                        value: bad,
+                    }
+                    .apply(&mut AutoCommit::new()),
+                    Err(ActionError::Refused(_))
+                ),
+                "table key {} should refuse the wrong type",
+                pref.key
+            );
         }
     }
 
