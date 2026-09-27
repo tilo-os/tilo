@@ -245,6 +245,53 @@ pub fn read(
     Ok(doc)
 }
 
+/// A live record of `package` in `room` by its id alone, whatever its kind:
+/// what another device asks for when all it knows is the id.
+///
+/// # Errors
+/// A missing, retired, foreign-room or malformed record, or storage failure.
+pub fn read_by_id(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+    id: &RecordId,
+) -> Result<AutoCommit, TransferError> {
+    let doc = decode(store, &key(package, room, id)?)?;
+    let checkout = identity(&doc)
+        .filter(|found| &found.id == id)
+        .ok_or(RecordOpenError::IdentityMismatch)?;
+    validate_identity(&doc, &checkout, room)?;
+    Ok(doc)
+}
+
+/// Verify `bytes` another device sent as record `id` of `room`, and keep it
+/// here: installed when new, merged when this device already holds it. The
+/// bytes are only trusted as far as they prove to be that live record.
+///
+/// # Errors
+/// Bytes that are not a live record `id` scoped to `room`, or storage failure.
+pub fn adopt_fetched(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+    id: &RecordId,
+    bytes: &[u8],
+) -> Result<RecordCheckout, TransferError> {
+    let label = std::path::PathBuf::from(format!("fetched {id}"));
+    let (mut doc, _) = app_state::decode_canonical(bytes, false, &label)?;
+    let checkout = identity(&doc)
+        .filter(|found| &found.id == id)
+        .ok_or(RecordOpenError::IdentityMismatch)?;
+    validate_identity(&doc, &checkout, room)?;
+    match install(store, package, room, &mut doc) {
+        Err(TransferError::Open(RecordOpenError::AlreadyExists)) => {
+            catch_up(store, package, room, &checkout, &doc)?;
+            Ok(checkout)
+        }
+        other => other,
+    }
+}
+
 /// [`read`] as of `heads`: what the document held before its app stamped
 /// it retired, which is everything a move still has to bring along.
 ///
@@ -608,6 +655,53 @@ mod tests {
             body(&retired).as_deref(),
             Some("first draft, last words"),
             "the retirement is one more change, not an erasure"
+        );
+    }
+
+    #[test]
+    fn a_record_from_another_device_is_kept_only_as_the_live_record_it_claims_to_be() {
+        let holder_dir = tempfile::tempdir().unwrap();
+        let holder = store(holder_dir.path());
+        let (checkout, writer) = seeded(holder_dir.path());
+        drop(writer);
+        let bytes = read_by_id(&holder, PACKAGE, FROM, &checkout.id)
+            .unwrap()
+            .save();
+
+        let here_dir = tempfile::tempdir().unwrap();
+        let here = store(here_dir.path());
+        assert!(
+            adopt_fetched(&here, PACKAGE, FROM, &RecordId::minted(), &bytes).is_err(),
+            "bytes offered as another record are refused"
+        );
+        assert!(
+            adopt_fetched(&here, PACKAGE, TO, &checkout.id, &bytes).is_err(),
+            "a record of one room is never kept as another room's"
+        );
+        assert!(adopt_fetched(&here, PACKAGE, FROM, &checkout.id, b"not a document").is_err());
+        let kept = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
+        assert_eq!(kept, checkout);
+        assert_eq!(
+            adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap(),
+            checkout,
+            "holding it already merges rather than refuses"
+        );
+        let doc = read_by_id(&here, PACKAGE, FROM, &checkout.id).unwrap();
+        assert_eq!(body(&doc).as_deref(), Some("first draft"));
+
+        let mut retired = doc.clone();
+        stamp_retired(&mut retired, &moved()).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(
+            adopt_fetched(
+                &store(elsewhere.path()),
+                PACKAGE,
+                FROM,
+                &checkout.id,
+                &retired.save()
+            )
+            .is_err(),
+            "a record that left its room is never brought back to life"
         );
     }
 
