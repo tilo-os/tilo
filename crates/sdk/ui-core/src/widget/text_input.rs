@@ -3126,6 +3126,7 @@ impl TextInput {
                 let _ = state.splice_text(obj_id, char_idx, 0, s);
             }
             self.cursor_pos = self.cursor_pos.saturating_add(s.len());
+            self.selection_anchor = None;
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
