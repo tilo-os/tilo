@@ -796,6 +796,10 @@ mod tests {
     #[test]
     #[ignore = "helper process for seccomp_filters_are_enforced_by_the_kernel"]
     #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::exit,
+        reason = "the parent test distinguishes seccomp setup and pthread failures by helper-process exit status"
+    )]
     fn thread_creation_probe_in_clean_process() {
         if std::env::var_os("TILO_SECCOMP_THREAD_PROBE").is_none() {
             return;
