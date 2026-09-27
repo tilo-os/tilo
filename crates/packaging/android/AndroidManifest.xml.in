@@ -10,6 +10,17 @@
     <uses-feature android:name="android.hardware.vulkan.version"
         android:version="0x401000" android:required="true" />
 
+    <!-- Notifications (TiloNotifications); a runtime permission from API 33. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- TextToSpeech binds the engine by this action, which API 30's package
+         visibility hides unless it is queried. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:label="@LABEL@"
         android:hasCode="true"
@@ -36,5 +47,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- "Open with": serves only descriptors the app shared, read-only, to the app granted
+             the one URI. -->
+        <provider
+            android:name="so.tilo.android.TiloFileProvider"
+            android:authorities="@PACKAGE@.tilo.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
