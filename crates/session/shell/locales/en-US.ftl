@@ -1145,11 +1145,6 @@ portal-capture-default-camera = Default camera
 portal-capture-primary-display = Primary display
 portal-capture-system-audio = System audio
 
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
-
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
 speaker-role-left = left speaker
 speaker-role-right = right speaker

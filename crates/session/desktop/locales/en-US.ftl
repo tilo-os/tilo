@@ -858,3 +858,8 @@ window-switcher-app-title = Switch windows of this app
 window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
 window-switcher-untitled = Untitled window
 window-switcher-caption-paged = { $title } ({ $position } of { $count })
+
+# Workspace wheel
+a11y-shell-wheel = Workspace wheel
+a11y-shell-wheel-switch = Switch to { $workspace }
+a11y-shell-wheel-add = Add a workspace

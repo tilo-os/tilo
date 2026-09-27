@@ -882,3 +882,8 @@ window-switcher-app-title = Fenster dieser App wechseln
 window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
 window-switcher-untitled = Unbenanntes Fenster
 window-switcher-caption-paged = { $title } ({ $position } von { $count })
+
+# Workspace wheel
+a11y-shell-wheel = Arbeitsbereichsrad
+a11y-shell-wheel-switch = Zu { $workspace } wechseln
+a11y-shell-wheel-add = Arbeitsbereich hinzufügen

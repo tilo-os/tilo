@@ -108,7 +108,6 @@ use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCo
 use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::search::ResourceKindText as _;
-use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::{TabMenuAction, build_tab_context_menu};
 pub use tilo_desktop::collaborators::RosterRow;
@@ -118,6 +117,7 @@ use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
     CenterLayout, CenterOutcome, NotificationCenter, NotificationStack,
 };
+use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
@@ -1153,7 +1153,7 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 /// 28, off the 4/8/12/16/24/32 scale, until 2026-09-17 (S1-21).
 const WHEEL_TO_STRIP_GAP_PX: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const _: () = assert!(
-    WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+    WHEEL_TO_STRIP_GAP_PX > tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
     "the wheel gutter must hold the disc's rim shadow with wallpaper to spare"
 );
 
