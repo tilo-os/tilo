@@ -170,7 +170,8 @@ pub(crate) struct Fields {
     pub key: Field,
     pub segment: Field,
     pub grams: [Field; INDEXED_WEIGHTS.len()],
-    pub words: [Field; INDEXED_WEIGHTS.len()],
+    /// Words of title fields, for typo matching.
+    pub title_words: Field,
     pub body_grams: Field,
     pub body_words: Field,
 }
@@ -189,14 +190,9 @@ fn schema() -> (Schema, Fields) {
     );
     let key = builder.add_u64_field(KEY_FIELD, INDEXED | FAST);
     let segment = builder.add_u64_field(SEGMENT_FIELD, INDEXED | FAST);
-    let slot_fields =
-        |builder: &mut tantivy::schema::SchemaBuilder, prefix: &str, options: &TextOptions| {
-            std::array::from_fn(|slot| {
-                builder.add_text_field(&format!("{prefix}{slot}"), options.clone())
-            })
-        };
-    let gram_fields = slot_fields(&mut builder, "grams", &grams);
-    let word_fields = slot_fields(&mut builder, "words", &words);
+    let gram_fields =
+        std::array::from_fn(|slot| builder.add_text_field(&format!("grams{slot}"), grams.clone()));
+    let title_words = builder.add_text_field("title_words", words.clone());
     let body_grams = builder.add_text_field("body_grams", grams);
     let body_words = builder.add_text_field("body_words", words);
     (
@@ -205,7 +201,7 @@ fn schema() -> (Schema, Fields) {
             key,
             segment,
             grams: gram_fields,
-            words: word_fields,
+            title_words,
             body_grams,
             body_words,
         },
@@ -412,11 +408,8 @@ impl SearchIndex {
                 record.add_text(*grams, text);
             }
             // Only title words are matched by typo.
-            if slot == 0
-                && self.matching.typos
-                && let Some(words) = fields.words.first()
-            {
-                record.add_text(*words, text);
+            if slot == 0 && self.matching.typos {
+                record.add_text(fields.title_words, text);
             }
         }
         if let Some(body) = &document.body {

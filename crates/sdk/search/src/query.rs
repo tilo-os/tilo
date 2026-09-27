@@ -343,7 +343,7 @@ fn record_parts<'a>(
             FUZZY_RANK,
             Part::Built(Box::new(move || {
                 let query_words = words(text);
-                let title_words = *fields.words.first()?;
+                let title_words = fields.title_words;
                 let last = query_words.len().checked_sub(1)?;
                 Some(all_of(
                     query_words
