@@ -5,13 +5,11 @@ use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex, fold};
 use crate::{Catalogue, Emoji};
 
 /// Every emoji's name and keywords, keyed by catalogue position. Each word
-/// of a query must match the name or a keyword; a name match ranks above a
-/// keyword match, and a prefix above a word, above a substring.
+/// of a query must match the name or a keyword, or a name word with a typo;
+/// a name match ranks above a keyword match, and a prefix above a word,
+/// above a substring.
 pub(crate) fn index(emoji: &[Emoji]) -> SearchIndex {
-    let mut index = SearchIndex::new(Matching {
-        spanning: true,
-        typos: false,
-    });
+    let mut index = SearchIndex::new(Matching::LOOSE);
     index.replace_all(emoji.iter().enumerate().map(|(at, emoji)| {
         emoji.keywords().fold(
             Document::new(at as u64).field(emoji.name(), FieldWeight::TITLE),

@@ -1806,7 +1806,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::DesktopWindowsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueFromDeviceProvider,
+            crate::shell::search::providers::ContinueFromDeviceProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
@@ -1823,7 +1823,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NativeApplicationsProvider,
+            crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
@@ -6884,7 +6884,7 @@ impl ShellOverlayHost {
     /// Refreshes the palette's rows by fanning the query out to every
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
-    /// and tantivy open (kept off the `OverlayHost` constructor on purpose).
+    /// and content index open (kept off the `OverlayHost` constructor on purpose).
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {

@@ -1,28 +1,35 @@
-//! Plans a typed query as tantivy queries, one per rank.
+//! Compiles a typed query into one tantivy query that finds and ranks.
 //!
 //! Each field and [`MatchTier`] is one gram phrase: the query as a
-//! substring, after a word-start marker, after the value-start marker, or
-//! between the value markers. A hit's rank is the best `tier × weight` it
-//! matches, so the plan lists one [`Stage`] per rank, best first; the index
-//! walks them in order and stops once a page is full. Hits of one rank come
-//! in index order. Multi-word queries spread over fields and typos in a
-//! title are further, lower stages. Body text is last and ordered by BM25.
+//! substring, after a word-start marker, between word markers, after the
+//! value-start marker, or between the value markers. A record document
+//! scores [`FIELD_BASE`] plus its rank, the best tier of its fields, through
+//! a `DisjunctionMaxQuery` of `ConstScoreQuery`s. Body text matches below
+//! [`FIELD_BASE`], ordered by BM25 over its words.
 
-use tantivy::Term;
 use tantivy::query::{
-    BooleanQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, PhraseQuery, Query, TermQuery,
+    BooleanQuery, BoostQuery, ConstScoreQuery, DisjunctionMaxQuery, FuzzyTermQuery, Occur,
+    PhrasePrefixQuery, PhraseQuery, Query, TermQuery,
 };
 use tantivy::schema::{Field, IndexRecordOption};
+use tantivy::{Score, Term};
 
 use crate::index::{Fields, RECORD_SEGMENT};
-use crate::tokenizer::{GRAM_WIDTH, VALUE_END, VALUE_START, WORD_START, marked, words};
-use crate::weight::{FUZZY_RANK, INDEXED_WEIGHTS, MatchTier, SPANNING_RANK};
+use crate::tokenizer::{GRAM_WIDTH, VALUE_END, VALUE_START, WORD_END, WORD_START, marked, words};
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
+
+/// Score of a record whose fields match at rank 0; body-only matches score
+/// below it.
+pub(crate) const FIELD_BASE: Score = 1000.0;
+
+/// Scale applied to body BM25, keeping it well below one rank step.
+const BM25_SCALE: Score = 0.001;
 
 /// Shortest word matched with one typo, and with two.
 const ONE_TYPO_SCALARS: usize = 5;
 const TWO_TYPOS_SCALARS: usize = 9;
 
-pub(crate) type BoxQuery = Box<dyn Query>;
+type BoxQuery = Box<dyn Query>;
 
 /// A query matching `sequence` as consecutive scalars of a gram field.
 fn sequence_query(field: Field, sequence: &[char]) -> Option<BoxQuery> {
@@ -35,12 +42,12 @@ fn sequence_query(field: Field, sequence: &[char]) -> Option<BoxQuery> {
     };
     match sequence.len() {
         0 => None,
-        length if length < GRAM_WIDTH => {
-            // Every indexed scalar starts a full gram, so a short sequence
-            // is the prefix of the gram at its position.
-            let prefix = Term::from_field_text(field, &sequence.iter().collect::<String>());
-            Some(prefix_query(prefix))
-        }
+        // Every indexed scalar starts a full gram, so a short sequence is
+        // the prefix of the gram at its position.
+        length if length < GRAM_WIDTH => Some(prefix_query(Term::from_field_text(
+            field,
+            &sequence.iter().collect::<String>(),
+        ))),
         GRAM_WIDTH => Some(Box::new(TermQuery::new(gram(0)?, IndexRecordOption::Basic))),
         length => {
             // Abutting grams, the last one overlapping, cover the sequence.
@@ -66,29 +73,29 @@ fn prefix_query(prefix: Term) -> BoxQuery {
     Box::new(query)
 }
 
-/// The marked sequence a tier looks for.
+/// The marked sequence a field tier looks for, if the query can match it.
 fn tier_sequence(tier: MatchTier, query: &[char]) -> Option<Vec<char>> {
-    let starts_word = query.first().is_some_and(|first| first.is_alphanumeric());
-    let mut sequence = Vec::with_capacity(query.len().saturating_add(3));
-    match tier {
-        MatchTier::Contains => {}
-        MatchTier::WordPrefix => {
-            if !starts_word {
-                return None;
-            }
-            sequence.push(WORD_START);
-        }
-        MatchTier::Prefix | MatchTier::Exact => {
-            sequence.push(VALUE_START);
-            if starts_word {
-                sequence.push(WORD_START);
-            }
-        }
+    let is_word = |scalar: Option<&char>| scalar.is_some_and(|scalar| scalar.is_alphanumeric());
+    let starts_word = is_word(query.first());
+    let ends_word = is_word(query.last());
+    let (value_start, word_start, word_end, value_end) = match tier {
+        MatchTier::Contains => (false, false, false, false),
+        MatchTier::WordPrefix => (false, true, false, false),
+        MatchTier::Word => (false, true, true, false),
+        MatchTier::Prefix => (true, starts_word, false, false),
+        MatchTier::PrefixWord => (true, starts_word, true, false),
+        MatchTier::Exact => (true, starts_word, ends_word, true),
+        MatchTier::Spanning | MatchTier::Typo => return None,
+    };
+    if (word_start && !starts_word) || (word_end && !ends_word) {
+        return None;
     }
+    let mut sequence = Vec::with_capacity(query.len().saturating_add(4));
+    sequence.extend(value_start.then_some(VALUE_START));
+    sequence.extend(word_start.then_some(WORD_START));
     sequence.extend_from_slice(query);
-    if tier == MatchTier::Exact {
-        sequence.push(VALUE_END);
-    }
+    sequence.extend(word_end.then_some(WORD_END));
+    sequence.extend(value_end.then_some(VALUE_END));
     Some(sequence)
 }
 
@@ -112,6 +119,15 @@ fn all_of(queries: Vec<BoxQuery>) -> BoxQuery {
             .map(|query| (Occur::Must, query))
             .collect(),
     ))
+}
+
+fn constant(query: BoxQuery, rank: i32) -> BoxQuery {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "ranks are small integers, exact in f32"
+    )]
+    let score = FIELD_BASE + rank as Score;
+    Box::new(ConstScoreQuery::new(query, score))
 }
 
 /// A title word within typing distance of `word`; the last word typed may
@@ -144,11 +160,11 @@ pub(crate) struct Used {
 /// substring match.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Matching {
-    /// Every whitespace-separated word of the query occurs in some field,
-    /// though no field holds the whole query: [`SPANNING_RANK`].
+    /// [`MatchTier::Spanning`]: every whitespace-separated word of the query
+    /// occurs in some field.
     pub spanning: bool,
-    /// Every word of the query matches a title word within a small edit
-    /// distance, the last one as a prefix: [`FUZZY_RANK`].
+    /// [`MatchTier::Typo`]: every word of the query matches a title word
+    /// within a small edit distance, the last one as a prefix.
     pub typos: bool,
 }
 
@@ -160,87 +176,92 @@ impl Matching {
     };
 }
 
-/// One way to match at a stage's rank, built only if the stage is reached.
-enum Part<'a> {
-    /// A marked sequence in a gram field.
-    Sequence(Field, Vec<char>),
-    Built(Box<dyn Fn() -> Option<BoxQuery> + 'a>),
-}
-
-/// Records matching at one rank.
-pub(crate) struct Stage<'a> {
-    pub rank: i32,
-    parts: Vec<Part<'a>>,
-}
-
-impl Stage<'_> {
-    /// The stage as one tantivy query, or `None` when nothing can match.
-    pub fn query(&self) -> Option<BoxQuery> {
-        any_of(
-            self.parts
-                .iter()
-                .filter_map(|part| match part {
-                    Part::Sequence(field, sequence) => sequence_query(*field, sequence),
-                    Part::Built(build) => build(),
-                })
-                .collect(),
-        )
-    }
-}
-
-/// How to find and order the hits of one query.
-pub(crate) struct Plan<'a> {
-    /// Field matches, best rank first.
-    pub stages: Vec<Stage<'a>>,
-    /// Body matches, after every field match.
-    pub body: Option<BoxQuery>,
-    /// BM25 over the body's words, to order body matches.
-    pub body_order: Option<BoxQuery>,
-}
-
-/// The plan for typed `text`. An empty query browses every record.
-pub(crate) fn plan<'a>(
-    fields: &'a Fields,
+/// The query for typed `text`, or `None` when nothing can match. An empty
+/// query browses every record.
+pub(crate) fn compile(
+    fields: &Fields,
     used: Used,
     matching: Matching,
-    text: &'a str,
-) -> Plan<'a> {
+    ranks: Ranks,
+    text: &str,
+) -> Option<BoxQuery> {
     let query = marked(text, false);
     if query.is_empty() {
-        let records = fields.segment;
-        return Plan {
-            stages: vec![Stage {
-                rank: 0,
-                parts: vec![Part::Built(Box::new(move || {
-                    Some(Box::new(TermQuery::new(
-                        Term::from_field_u64(records, RECORD_SEGMENT),
-                        IndexRecordOption::Basic,
-                    )))
-                }))],
-            }],
-            body: None,
-            body_order: None,
-        };
+        return Some(constant(
+            Box::new(TermQuery::new(
+                Term::from_field_u64(fields.segment, RECORD_SEGMENT),
+                IndexRecordOption::Basic,
+            )),
+            0,
+        ));
     }
-    let mut ranked = record_parts(fields, used, matching, text, &query);
-    ranked.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
-    let mut stages: Vec<Stage<'a>> = Vec::new();
-    for (rank, part) in ranked {
-        match stages.last_mut() {
-            Some(stage) if stage.rank == rank => stage.parts.push(part),
-            _ => stages.push(Stage {
-                rank,
-                parts: vec![part],
-            }),
+    let slots: Vec<usize> = used
+        .slots
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, used)| used.then_some(slot))
+        .collect();
+    let mut ranked = Vec::new();
+    for &slot in &slots {
+        let (Some(field), Some(weight)) = (fields.grams.get(slot), INDEXED_WEIGHTS.get(slot))
+        else {
+            continue;
+        };
+        for tier in MatchTier::FIELD {
+            let Some(rank) = ranks(tier, *weight) else {
+                continue;
+            };
+            if let Some(found) =
+                tier_sequence(tier, &query).and_then(|sequence| sequence_query(*field, &sequence))
+            {
+                ranked.push(constant(found, rank));
+            }
         }
     }
-    let body = used
-        .body
-        .then(|| sequence_query(fields.body_grams, &query))
-        .flatten();
-    let body_order = body.as_ref().and_then(|_| {
-        any_of(
-            words(text)
+    let chunks: Vec<&str> = text.split_whitespace().collect();
+    if matching.spanning
+        && chunks.len() > 1
+        && let Some(rank) = ranks(MatchTier::Spanning, FieldWeight::UNRANKED)
+    {
+        let every: Option<Vec<BoxQuery>> = chunks
+            .iter()
+            .map(|chunk| {
+                let chunk = marked(chunk, false);
+                any_of(
+                    slots
+                        .iter()
+                        .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &chunk))
+                        .collect(),
+                )
+            })
+            .collect();
+        if let Some(every) = every {
+            ranked.push(constant(all_of(every), rank));
+        }
+    }
+    let query_words = words(text);
+    if matching.typos
+        && used.slots.first().copied().unwrap_or(false)
+        && let Some(rank) = ranks(MatchTier::Typo, FieldWeight::TITLE)
+        && let Some(last) = query_words.len().checked_sub(1)
+    {
+        let every = query_words
+            .iter()
+            .enumerate()
+            .map(|(at, word)| fuzzy_word(fields.title_words, word, at == last))
+            .collect();
+        ranked.push(constant(all_of(every), rank));
+    }
+    let mut parts = Vec::new();
+    if !ranked.is_empty() {
+        parts.push(Box::new(DisjunctionMaxQuery::new(ranked)) as BoxQuery);
+    }
+    if used.body
+        && let Some(found) = sequence_query(fields.body_grams, &query)
+    {
+        let found: BoxQuery = Box::new(ConstScoreQuery::new(found, 0.0));
+        let order = any_of(
+            query_words
                 .iter()
                 .map(|word| -> BoxQuery {
                     Box::new(TermQuery::new(
@@ -249,87 +270,17 @@ pub(crate) fn plan<'a>(
                     ))
                 })
                 .collect(),
-        )
-    });
-    Plan {
-        stages,
-        body,
-        body_order,
+        );
+        parts.push(match order {
+            Some(order) => Box::new(BooleanQuery::new(vec![
+                (Occur::Must, found),
+                (
+                    Occur::Should,
+                    Box::new(BoostQuery::new(order, BM25_SCALE)) as BoxQuery,
+                ),
+            ])),
+            None => found,
+        });
     }
-}
-
-fn record_parts<'a>(
-    fields: &'a Fields,
-    used: Used,
-    matching: Matching,
-    text: &'a str,
-    query: &[char],
-) -> Vec<(i32, Part<'a>)> {
-    let slots: Vec<usize> = used
-        .slots
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, used)| used.then_some(slot))
-        .collect();
-    let mut parts = Vec::new();
-    for &slot in &slots {
-        let (Some(field), Some(weight)) = (fields.grams.get(slot), INDEXED_WEIGHTS.get(slot))
-        else {
-            continue;
-        };
-        let tiers: &[MatchTier] = if weight.percent() == 0 {
-            &[MatchTier::Contains]
-        } else {
-            &MatchTier::ALL
-        };
-        for &tier in tiers {
-            if let Some(sequence) = tier_sequence(tier, query) {
-                parts.push((tier.rank_in(*weight), Part::Sequence(*field, sequence)));
-            }
-        }
-    }
-
-    // Every word of a multi-word query somewhere in the fields.
-    if matching.spanning && text.split_whitespace().nth(1).is_some() {
-        parts.push((
-            SPANNING_RANK,
-            Part::Built(Box::new(move || {
-                let every: Option<Vec<BoxQuery>> = text
-                    .split_whitespace()
-                    .map(|chunk| {
-                        let chunk = marked(chunk, false);
-                        any_of(
-                            slots
-                                .iter()
-                                .filter_map(|slot| {
-                                    sequence_query(*fields.grams.get(*slot)?, &chunk)
-                                })
-                                .collect(),
-                        )
-                    })
-                    .collect();
-                Some(all_of(every?))
-            })),
-        ));
-    }
-
-    // A typo in the title's words.
-    if matching.typos && used.slots.first().copied().unwrap_or(false) {
-        parts.push((
-            FUZZY_RANK,
-            Part::Built(Box::new(move || {
-                let query_words = words(text);
-                let title_words = fields.title_words;
-                let last = query_words.len().checked_sub(1)?;
-                Some(all_of(
-                    query_words
-                        .iter()
-                        .enumerate()
-                        .map(|(at, word)| fuzzy_word(title_words, word, at == last))
-                        .collect(),
-                ))
-            })),
-        ));
-    }
-    parts
+    any_of(parts)
 }

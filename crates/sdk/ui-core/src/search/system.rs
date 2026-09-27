@@ -244,40 +244,41 @@ pub fn scope_allows(
 /// an exact name.
 pub const PACKAGE_ID_WEIGHT: super::FieldWeight = super::FieldWeight::new(88);
 
-/// The shared ranker over an app's fields, on the 0–100 provider scale. The
-/// package id in full, or its last segment, identifies exactly one app and
-/// weighs as its name — `hex-editor` typed for `so.tilo.hex-editor` is the
-/// app's identity and must outrank an incidental substring. Category ranks
-/// below the id because it's a bucket, not an identity. Multi-word queries
-/// may span fields, so `office spreadsheet` can find an app whose category
-/// and description carry one word each. An empty needle matches everything
-/// at `0`, so an empty palette lists installed apps.
-pub fn application_match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-    description: Option<&str>,
-) -> Option<i32> {
-    use super::{FieldWeight, MatchTier, RankField};
+/// An app's searchable fields. The package id in full, or its last
+/// segment, identifies exactly one app and weighs as its name —
+/// `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and
+/// must outrank an incidental substring. Category ranks below the id
+/// because it's a bucket, not an identity.
+#[must_use]
+pub fn application_fields<'a>(
+    name: &'a str,
+    package_id: &'a str,
+    category: Option<&'a str>,
+    description: Option<&'a str>,
+) -> [(&'a str, super::FieldWeight); 5] {
+    use super::FieldWeight;
     let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
-    let rank = super::field_rank(
-        needle,
-        &[
-            RankField::new(name, FieldWeight::TITLE),
-            RankField::new(last_segment, FieldWeight::TITLE),
-            RankField::new(package_id, PACKAGE_ID_WEIGHT),
-            RankField::new(category.unwrap_or_default(), FieldWeight::METADATA),
-            RankField::new(description.unwrap_or_default(), FieldWeight::BODY),
-        ],
-    )?;
-    let perfect = MatchTier::Prefix.rank_in(FieldWeight::TITLE);
-    Some(
-        rank.clamp(0, perfect)
-            .saturating_mul(100)
-            .checked_div(perfect)
-            .unwrap_or(100),
-    )
+    [
+        (name, FieldWeight::TITLE),
+        (last_segment, FieldWeight::TITLE),
+        (package_id, PACKAGE_ID_WEIGHT),
+        (category.unwrap_or_default(), FieldWeight::METADATA),
+        (description.unwrap_or_default(), FieldWeight::BODY),
+    ]
+}
+
+/// A field rank on the 0–100 provider scale. A title prefix is already a
+/// perfect hit for a provider — it is what a person types to launch or
+/// open something — so the scale tops out there; merging still separates
+/// an exact title from a prefix.
+#[must_use]
+pub fn provider_score(rank: i32) -> i32 {
+    // A full-weight field ranks a tier at its whole percentage.
+    let perfect = super::MatchTier::Prefix.percent();
+    rank.clamp(0, perfect)
+        .saturating_mul(100)
+        .checked_div(perfect)
+        .unwrap_or(100)
 }
 
 #[allow(

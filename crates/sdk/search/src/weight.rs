@@ -20,36 +20,72 @@ pub const SPANNING_RANK: i32 = 11;
 pub const FUZZY_RANK: i32 = 10;
 
 /// How strongly a query matched one field; later variants are stronger.
+///
+/// A word is a run of letters or of digits: `report2026-final` has the
+/// words `report`, `2026` and `final`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MatchTier {
+    /// Every word of the query matches a title word within a small edit
+    /// distance ([`Matching::typos`](crate::Matching::typos)).
+    Typo,
+    /// Every word of the query occurs in some field, though no field holds
+    /// the whole query ([`Matching::spanning`](crate::Matching::spanning)).
+    Spanning,
     /// The query occurs inside the field, not at a word start.
     Contains,
     /// Some later word of the field starts with the query.
     WordPrefix,
+    /// The query is some later whole word (or words) of the field.
+    Word,
     /// The field starts with the query.
     Prefix,
+    /// The field starts with the query, which ends at a word end.
+    PrefixWord,
     /// The field is the query.
     Exact,
 }
 
+/// The rank a tier earns in a field of some weight; `None` skips the tier.
+/// An index ranks with [`MatchTier::rank_in`] unless given its own table.
+pub type Ranks = fn(MatchTier, FieldWeight) -> Option<i32>;
+
 impl MatchTier {
-    pub(crate) const ALL: [Self; 4] = [Self::Contains, Self::WordPrefix, Self::Prefix, Self::Exact];
+    /// The tiers found in one field, weakest first.
+    pub(crate) const FIELD: [Self; 6] = [
+        Self::Contains,
+        Self::WordPrefix,
+        Self::Word,
+        Self::Prefix,
+        Self::PrefixWord,
+        Self::Exact,
+    ];
 
     /// The tier's share of a full-weight field, in percent.
     #[must_use]
     pub const fn percent(self) -> i32 {
         match self {
             Self::Exact => 100,
+            Self::PrefixWord => 94,
             Self::Prefix => 88,
+            Self::Word => 80,
             Self::WordPrefix => 72,
             Self::Contains => 60,
+            Self::Spanning => SPANNING_RANK,
+            Self::Typo => FUZZY_RANK,
         }
     }
 
-    /// The rank this tier earns in a field of `weight`.
+    /// The default rank of this tier in a field of `weight`. Unranked fields
+    /// only match by substring, at rank 0; the loose tiers rank the same in
+    /// every field.
     #[must_use]
-    pub fn rank_in(self, weight: FieldWeight) -> i32 {
-        self.percent().saturating_mul(i32::from(weight.percent())) / 100
+    pub fn rank_in(self, weight: FieldWeight) -> Option<i32> {
+        match self {
+            Self::Spanning | Self::Typo => Some(self.percent()),
+            Self::Contains if weight.percent() == 0 => Some(0),
+            _ if weight.percent() == 0 => None,
+            _ => Some(self.percent().saturating_mul(i32::from(weight.percent())) / 100),
+        }
     }
 }
 
@@ -131,8 +167,12 @@ mod tests {
 
     #[test]
     fn tiers_scale_with_weight() {
-        assert_eq!(MatchTier::Exact.rank_in(FieldWeight::TITLE), MAX_FIELD_RANK);
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), 12);
-        assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), 0);
+        assert_eq!(
+            MatchTier::Exact.rank_in(FieldWeight::TITLE),
+            Some(MAX_FIELD_RANK)
+        );
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), Some(12));
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::UNRANKED), Some(0));
+        assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), None);
     }
 }

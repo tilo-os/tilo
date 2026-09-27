@@ -1,7 +1,7 @@
 //! Files provider — searches the home directory for files and directories.
 //!
-//! Two backends: an in-memory walk of `~` for name/fuzzy queries, and a
-//! persistent tantivy index (see [`super::super::files_index`]) over file
+//! Two backends: an in-memory index of the names under `~`, and a
+//! persistent content index (see [`super::super::files_index`]) over file
 //! contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
 //! background. Neither starts at session construction — the first palette
 //! query (or an explicit [`FilesProvider::rescan`]) opens the index and
@@ -9,10 +9,9 @@
 //! routes a hit through [`crate::shell::doc_open`], which resolves the
 //! extension to the installed package that opens it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -22,6 +21,7 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -56,156 +56,66 @@ const SKIP_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
 const MAX_RESULTS: usize = 40;
-/// At most one modest retained ranked-query plan survives across palette
-/// edits. Positions are `usize`s, so this caps the cache below 1 MiB on
-/// 64-bit builds instead of retaining one corpus-sized vector per keystroke.
-const RANKED_QUERY_CACHE_MAX_POSITIONS: usize = 131_072;
-/// A publication gets a never-reused revision before it reaches the tiny
-/// snapshot-swap lock. A global sequence is intentionally conservative:
-/// another provider's rescan can make a cursor stale, never incorrectly
-/// current, while avoiding a mutable field inside an otherwise immutable
-/// `NameIndex` publication.
+/// A publication gets a never-reused revision, so a cursor from before a
+/// rescan is stale rather than read against a different corpus.
 static NEXT_NAME_INDEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// In-memory index, populated by a background walker and refreshed only via
-/// manual `rescan` (no inotify yet).
+/// The walked names, searchable. Built by the background walker and
+/// refreshed only via manual `rescan` (no inotify yet); readers clone the
+/// outer `Arc`.
 #[derive(Default)]
 struct NameIndex {
-    entries: Arc<Vec<NameEntry>>,
-    exact_leaf: HashMap<String, Arc<Vec<usize>>>,
-    exact_stem: HashMap<String, Arc<Vec<usize>>>,
-    leaf_prefix: HashMap<String, Arc<Vec<usize>>>,
-    leaf_grams: HashMap<String, Arc<Vec<usize>>>,
-    path_trigrams: HashMap<String, Arc<Vec<usize>>>,
-    /// Bumped on every walker replace; the narrowing cache keys on it so a
-    /// re-scan invalidates stale candidate indices.
+    /// Keyed by position in [`SearchIndex`]. Sorted shallow paths first,
+    /// then by path, so equally scored hits come in that order.
+    entries: Vec<NameEntry>,
+    index: SearchIndex,
     generation: u64,
 }
 
 impl NameIndex {
-    /// Build an immutable publication off the compositor path.  Readers only
-    /// clone its outer `Arc`; a rescan never holds their short publication
-    /// lock while allocating postings or sorting short-query buckets.
-    fn from_entries(entries: Vec<NameEntry>, generation: u64) -> Self {
-        let entries = Arc::new(entries);
-        let mut exact_leaf: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut exact_stem: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut leaf_prefix: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut leaf_grams: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut path_trigrams: HashMap<String, Vec<usize>> = HashMap::new();
-        for (position, entry) in entries.iter().enumerate() {
-            exact_leaf
-                .entry(entry.facts.leaf.to_string())
-                .or_default()
-                .push(position);
-            let stem_len = usize::from(entry.facts.stem_len);
-            if let Some(stem) = entry.facts.leaf.get(..stem_len) {
-                exact_stem
-                    .entry(stem.to_string())
-                    .or_default()
-                    .push(position);
-            }
-            for end in entry.facts.leaf.char_indices().map(|(at, _)| at).skip(1) {
-                if end <= 64
-                    && let Some(prefix) = entry.facts.leaf.get(..end)
-                {
-                    leaf_prefix
-                        .entry(prefix.to_string())
-                        .or_default()
-                        .push(position);
-                }
-            }
-            if entry.facts.leaf.len() <= 64 {
-                leaf_prefix
-                    .entry(entry.facts.leaf.to_string())
-                    .or_default()
-                    .push(position);
-            }
-            for gram in search_grams(&entry.facts.leaf) {
-                leaf_grams.entry(gram).or_default().push(position);
-            }
-            for gram in search_grams(&entry.facts.lower) {
-                if gram.chars().count() == 3 {
-                    path_trigrams.entry(gram).or_default().push(position);
-                }
-            }
+    fn from_entries(mut entries: Vec<NameEntry>, generation: u64) -> Self {
+        entries.sort_by(|a, b| {
+            path_depth(&a.facts.lower)
+                .cmp(&path_depth(&b.facts.lower))
+                .then_with(|| a.facts.lower.cmp(&b.facts.lower))
+        });
+        let mut index = SearchIndex::new(Matching {
+            spanning: false,
+            typos: true,
+        })
+        .with_ranks(name_rank);
+        index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+            let facts = &entry.facts;
+            let parents = facts.lower.rsplit_once('/').map_or("", |(head, _)| head);
+            parents
+                .split('/')
+                .fold(
+                    Document::new(at as u64)
+                        .field(facts.leaf.as_ref(), LEAF)
+                        .field(
+                            facts
+                                .leaf
+                                .get(..usize::from(facts.stem_len))
+                                .unwrap_or_default(),
+                            STEM,
+                        )
+                        .field(facts.lower.as_str(), PATH),
+                    |document, component| document.field(component, PARENT),
+                )
+                .signals(
+                    facts.recency.saturating_sub(facts.penalty),
+                    u32::from(facts.stem_len),
+                )
+        }));
+        if let Err(error) = index.commit() {
+            tracing::error!(%error, "could not index home directory names");
         }
-        // A one/two-character request intentionally means exact/prefix/
-        // contiguous *leaf* matching, never a vague subsequence across a
-        // whole path. Pre-rank those retained postings now, off the UI
-        // thread, with the same score/tie rules as a query. A huge `a` or
-        // `th` bucket therefore still gives the globally best first page.
-        let sort_short_postings = |needle: &str, positions: &mut Vec<usize>| {
-            positions.sort_by(|left, right| {
-                let rank = |position: &usize| {
-                    entries
-                        .get(*position)
-                        .map_or((i32::MIN, usize::MAX, ""), |entry| {
-                            (
-                                name_score(needle, &entry.facts).unwrap_or(i32::MIN),
-                                path_depth(&entry.facts.lower),
-                                entry.facts.lower.as_str(),
-                            )
-                        })
-                };
-                let left = rank(left);
-                let right = rank(right);
-                right
-                    .0
-                    .cmp(&left.0)
-                    .then_with(|| left.1.cmp(&right.1))
-                    .then_with(|| left.2.cmp(right.2))
-            });
-        };
-        for (gram, positions) in &mut leaf_grams {
-            if gram.chars().count() <= 2 {
-                sort_short_postings(gram, positions);
-            }
-        }
-        for (prefix, positions) in &mut leaf_prefix {
-            if prefix.chars().count() <= 2 {
-                sort_short_postings(prefix, positions);
-            }
-        }
-        let shared = |postings: HashMap<String, Vec<usize>>| {
-            postings
-                .into_iter()
-                .map(|(key, positions)| (key, Arc::new(positions)))
-                .collect()
-        };
         Self {
             entries,
-            exact_leaf: shared(exact_leaf),
-            exact_stem: shared(exact_stem),
-            leaf_prefix: shared(leaf_prefix),
-            leaf_grams: shared(leaf_grams),
-            path_trigrams: shared(path_trigrams),
+            index,
             generation,
         }
     }
-}
-
-/// Retained 1/2/3-character leaf postings.  Long needles select their
-/// rarest trigram; short input has explicit character/bigram buckets instead
-/// of falling back to a corpus scan.  The final score still validates the
-/// whole needle, so a posting is an accelerator, never a false result.
-fn search_grams(value: &str) -> Vec<String> {
-    let boundaries = value
-        .char_indices()
-        .map(|(at, _)| at)
-        .chain(std::iter::once(value.len()))
-        .collect::<Vec<_>>();
-    let mut out = Vec::new();
-    for width in 1_usize..=3 {
-        for window in boundaries.windows(width.saturating_add(1)) {
-            if let [start, end] = window
-                && let Some(gram) = value.get(*start..*end)
-            {
-                out.push(gram.to_string());
-            }
-        }
-    }
-    out
 }
 
 #[derive(Clone)]
@@ -219,176 +129,32 @@ struct NameEntry {
 pub struct FilesProvider {
     home: PathBuf,
     /// A tiny publication lock protects only swapping/cloning the immutable
-    /// index `Arc`; no query copies the corpus or holds it through ranking.
+    /// index `Arc`; no query holds it while searching.
     name_index: Arc<Mutex<Arc<NameIndex>>>,
     /// Opened on first [`Self::ensure_ready`]. `None` means open failed.
     tantivy: OnceLock<Option<crate::shell::search::files_index::FilesIndex>>,
-    /// Set once the home walk has been kicked and tantivy open attempted.
+    /// Set once the home walk has been kicked and the content index opened.
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
-    /// Entries examined by the most recent query — the per-keystroke cost,
-    /// and what the narrowing test asserts on (unlike wall-clock time).
-    last_scanned: AtomicUsize,
-    ranked_queries: Mutex<RankedQueryCache>,
-    ranked_query_epoch: AtomicU64,
-    rank: OnceLock<RankWorker>,
-}
-
-struct RankedQuery {
-    generation: u64,
-    needle: String,
-    positions: Arc<Vec<usize>>,
-}
-
-struct PendingRankedQuery {
-    generation: u64,
-    needle: String,
-    receiver: mpsc::Receiver<RankedQuery>,
-    cancelled: Arc<AtomicBool>,
-}
-
-struct RankRequest {
-    generation: u64,
-    needle: String,
-    entries: Arc<Vec<NameEntry>>,
-    candidates: Arc<Vec<usize>>,
-    cancelled: Arc<AtomicBool>,
-    sender: mpsc::SyncSender<RankedQuery>,
-}
-
-#[derive(Default)]
-struct RankedQueryCache {
-    ready: Vec<RankedQuery>,
-    pending: Option<PendingRankedQuery>,
-}
-
-struct RankWorker {
-    mailbox: Arc<Mutex<Option<RankRequest>>>,
-    notify: mpsc::SyncSender<()>,
-    #[cfg(test)]
-    active: Arc<AtomicUsize>,
-    #[cfg(test)]
-    peak: Arc<AtomicUsize>,
 }
 
 impl FilesProvider {
-    fn rank_worker() -> RankWorker {
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files search rank worker");
-        // A single coalescing worker is deliberately shared by every
-        // keystroke.  The one-slot mailbox retains only the newest request;
-        // a cancelled current rank checks at small chunks and then picks it
-        // up.  This prevents rapid typing from creating a thread/corpus-plan
-        // pile-up while keeping the compositor entirely non-blocking.
-        let mailbox = Arc::new(Mutex::new(None::<RankRequest>));
-        let (notify, wake) = mpsc::sync_channel(1);
-        let worker_mailbox = Arc::clone(&mailbox);
-        #[cfg(test)]
-        let active = Arc::new(AtomicUsize::new(0));
-        #[cfg(test)]
-        let peak = Arc::new(AtomicUsize::new(0));
-        #[cfg(test)]
-        let worker_active = Arc::clone(&active);
-        #[cfg(test)]
-        let worker_peak = Arc::clone(&peak);
-        let spawned = thread::Builder::new()
-            .name("tilo-search-files-rank".into())
-            .spawn(move || {
-                while wake.recv().is_ok() {
-                    let request = worker_mailbox.lock().ok().and_then(|mut slot| slot.take());
-                    let Some(request) = request else {
-                        continue;
-                    };
-                    #[cfg(test)]
-                    {
-                        #[allow(
-                            clippy::arithmetic_side_effects,
-                            reason = "the sole rank worker increments from zero once per dequeued request and decrements before it receives another"
-                        )]
-                        let current = worker_active.fetch_add(1, Ordering::Relaxed) + 1;
-                        worker_peak.fetch_max(current, Ordering::Relaxed);
-                    }
-                    let mut positions = Vec::new();
-                    for (ordinal, position) in request.candidates.iter().copied().enumerate() {
-                        if ordinal.is_multiple_of(512) && request.cancelled.load(Ordering::Relaxed)
-                        {
-                            break;
-                        }
-                        let Some(entry) = request.entries.get(position) else {
-                            continue;
-                        };
-                        if let Some(score) = name_score(&request.needle, &entry.facts) {
-                            positions.push((score, path_depth(&entry.facts.lower), position));
-                        }
-                    }
-                    if !request.cancelled.load(Ordering::Relaxed) {
-                        positions.sort_by(|left, right| {
-                            right
-                                .0
-                                .cmp(&left.0)
-                                .then_with(|| left.1.cmp(&right.1))
-                                .then_with(|| {
-                                    request.entries.get(left.2).map(|entry| &entry.facts.lower).cmp(
-                                        &request.entries.get(right.2).map(|entry| &entry.facts.lower),
-                                    )
-                                })
-                        });
-                        let positions = Arc::new(
-                            positions
-                                .into_iter()
-                                .map(|(_, _, position)| position)
-                                .collect::<Vec<_>>(),
-                        );
-                        let _ = request.sender.send(RankedQuery {
-                            generation: request.generation,
-                            needle: request.needle,
-                            positions,
-                        });
-                    }
-                    #[cfg(test)]
-                    worker_active.fetch_sub(1, Ordering::Relaxed);
-                }
-            });
-        if spawned.is_err() {
-            // A disconnected wake channel makes the synchronous caller
-            // expose a bounded pending state instead of falling back to a
-            // corpus scan. This is exceptionally rare but remains safe.
-        }
-        RankWorker {
-            mailbox,
-            notify,
-            #[cfg(test)]
-            active,
-            #[cfg(test)]
-            peak,
-        }
-    }
-
-    /// Cheap construction: no home walk, no tantivy open, no rank worker.
-    /// [`Self::ensure_ready`] runs those on the first query or [`Self::rescan`].
     pub fn new() -> Self {
         let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let name_index: Arc<Mutex<Arc<NameIndex>>> =
-            Arc::new(Mutex::new(Arc::new(NameIndex::default())));
         Self {
             home,
-            name_index,
+            name_index: Arc::new(Mutex::new(Arc::new(NameIndex::default()))),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
-            last_scanned: AtomicUsize::new(0),
-            ranked_queries: Mutex::new(RankedQueryCache::default()),
-            ranked_query_epoch: AtomicU64::new(0),
-            rank: OnceLock::new(),
         }
     }
 
     /// Open the content index and kick the background name walk once.
-    /// Users who query before the walk finishes get only the tantivy content index.
+    /// Users who query before the walk finishes get only the content index.
     fn ensure_ready(&self) {
         self.ready.get_or_init(|| {
             #[cfg(test)]
             crate::shell::test_support::ambient_start("Files search constructor");
-            let _ = self.rank.get_or_init(Self::rank_worker);
             let name_index = Arc::clone(&self.name_index);
             let home = self.home.clone();
             thread::Builder::new()
@@ -399,10 +165,6 @@ impl FilesProvider {
                 crate::shell::search::files_index::FilesIndex::open_or_create(&self.home).ok(),
             );
         });
-    }
-
-    fn rank_worker_handles(&self) -> &RankWorker {
-        self.rank.get_or_init(Self::rank_worker)
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
@@ -418,10 +180,12 @@ impl FilesProvider {
             .ok();
     }
 
-    /// Content hits from tantivy, appended to `out` and deduped against
-    /// `seen` name hits so a file matching both only shows once (the
-    /// higher score wins). Split out of [`SearchProvider::query`] to stay
-    /// under clippy's line budget.
+    fn published(&self) -> Option<Arc<NameIndex>> {
+        self.name_index.lock().ok().map(|index| Arc::clone(&index))
+    }
+
+    /// Content hits, appended to `out` and deduped against
+    /// `seen` name hits so a file matching both only shows once.
     fn push_content_hits(
         &self,
         needle: &str,
@@ -431,18 +195,14 @@ impl FilesProvider {
         let Some(idx) = self.tantivy.get().and_then(Option::as_ref) else {
             return;
         };
-        let content_hits = idx.query(needle, MAX_RESULTS);
-        for hit in content_hits {
+        for hit in idx.query(needle, MAX_RESULTS) {
             if seen.contains(&hit.path) {
                 continue;
             }
             if out.len() >= MAX_RESULTS {
                 break;
             }
-            let display = hit.path.strip_prefix(&self.home).map_or_else(
-                |_| hit.path.display().to_string(),
-                |p| format!("~/{}", p.display()),
-            );
+            let display = display_path(&self.home, &hit.path);
             let entry = NameEntry {
                 path: hit.path.clone(),
                 facts: NameFacts::new(&display, None),
@@ -455,135 +215,8 @@ impl FilesProvider {
         }
     }
 
-    /// Return a globally score-sorted retained query plan, or start its
-    /// off-thread construction.  The compositor never walks a broad posting
-    /// list synchronously: a pending plan is explicitly empty rather than a
-    /// misleading traversal-order partial answer.  Completion bumps
-    /// `ranked_query_epoch`, which makes an open palette refresh itself.
-    fn ranked_query_positions(
-        &self,
-        generation: u64,
-        needle: &str,
-        entries: Arc<Vec<NameEntry>>,
-        candidates: Arc<Vec<usize>>,
-    ) -> Option<Arc<Vec<usize>>> {
-        let Ok(mut cache) = self.ranked_queries.lock() else {
-            return None;
-        };
-        let received =
-            cache
-                .pending
-                .as_mut()
-                .and_then(|pending| match pending.receiver.try_recv() {
-                    Ok(ready) => Some(Ok(ready)),
-                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                });
-        if let Some(received) = received {
-            match received {
-                Ok(ready) => {
-                    cache.ready.retain(|query| {
-                        query.generation != ready.generation || query.needle != ready.needle
-                    });
-                    cache.ready.push(ready);
-                    while cache
-                        .ready
-                        .iter()
-                        .map(|query| query.positions.len())
-                        .sum::<usize>()
-                        > RANKED_QUERY_CACHE_MAX_POSITIONS
-                    {
-                        cache.ready.remove(0);
-                    }
-                    cache.pending = None;
-                    self.ranked_query_epoch.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(()) => cache.pending = None,
-            }
-        }
-        if let Some(query) = cache
-            .ready
-            .iter()
-            .find(|query| query.generation == generation && query.needle == needle)
-        {
-            return Some(Arc::clone(&query.positions));
-        }
-        let already_building = cache
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.generation == generation && pending.needle == needle);
-        if already_building {
-            return None;
-        }
-        if let Some(previous) = cache.pending.take() {
-            previous.cancelled.store(true, Ordering::Relaxed);
-        }
-        let needle = needle.to_string();
-        let (sender, result_rx) = mpsc::sync_channel(1);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let request = RankRequest {
-            generation,
-            needle: needle.clone(),
-            entries,
-            candidates,
-            cancelled: Arc::clone(&cancelled),
-            sender,
-        };
-        let rank = self.rank_worker_handles();
-        if let Ok(mut mailbox) = rank.mailbox.lock() {
-            *mailbox = Some(request);
-            // A full wake slot means the single worker is either active or
-            // already scheduled; in both cases it will take this newest
-            // mailbox value next. Never create another worker for a key.
-            let _ = rank.notify.try_send(());
-            cache.pending = Some(PendingRankedQuery {
-                generation,
-                needle,
-                receiver: result_rx,
-                cancelled,
-            });
-        }
-        None
-    }
-
-    fn sorted_positions(needle: &str, entries: &[NameEntry]) -> Arc<Vec<usize>> {
-        let mut positions = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(position, entry)| {
-                name_score(needle, &entry.facts)
-                    .map(|score| (score, path_depth(&entry.facts.lower), position))
-            })
-            .collect::<Vec<_>>();
-        positions.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then_with(|| left.1.cmp(&right.1))
-                .then_with(|| {
-                    entries
-                        .get(left.2)
-                        .map(|entry| &entry.facts.lower)
-                        .cmp(&entries.get(right.2).map(|entry| &entry.facts.lower))
-                })
-        });
-        Arc::new(
-            positions
-                .into_iter()
-                .map(|(_, _, position)| position)
-                .collect(),
-        )
-    }
-
-    /// A page cursor is deliberately only an index generation and a scan
-    /// offset.  It never embeds paths (which would leak names across a later
-    /// permission/mount change) nor a giant match list.  A page inspects at
-    /// most `budget.max_work` retained entries; `last_scanned` is kept as
-    /// instrumentation and regression protection for the palette path.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded paging operation keeps cursor validation, ranked-plan selection, and result accounting consistent"
-    )]
+    /// One page of name hits, best first, continuing after the hits a
+    /// cursor has already consumed.
     fn page_name_hits(
         &self,
         ctx: &SearchContext<'_>,
@@ -598,15 +231,10 @@ impl FilesProvider {
         if !want_file && !want_folder {
             return SearchPage::exhausted("not-wanted", Vec::new());
         }
-        let Ok(index) = self.name_index.lock() else {
+        let Some(index) = self.published() else {
             return SearchPage::exhausted("unavailable", Vec::new());
         };
-        let entries = Arc::clone(&index.entries);
-        let generation = index.generation;
-        let mut revision = format!(
-            "{generation}:{}",
-            self.ranked_query_epoch.load(Ordering::Relaxed)
-        );
+        let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
         let offset = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
@@ -619,118 +247,30 @@ impl FilesProvider {
             },
             None => 0,
         };
-        let needle_chars = needle.chars().count();
-        let gram_width = needle_chars.min(3);
-        let all_grams = search_grams(&needle);
-        let rarest_gram = (1..=gram_width).rev().find_map(|width| {
-            all_grams
-                .iter()
-                .filter(|gram| gram.chars().count() == width)
-                .filter_map(|gram| index.leaf_grams.get(gram))
-                .min_by_key(|positions| positions.len())
-                .cloned()
-        });
-        let rarest_path_trigram = all_grams
-            .iter()
-            .filter(|gram| gram.chars().count() == 3)
-            .filter_map(|gram| index.path_trigrams.get(gram))
-            .min_by_key(|positions| positions.len())
-            .cloned();
-        let needs_ranked_plan = needle_chars > 2 && entries.len() > budget.max_work;
-        let ranked_candidates = match (rarest_gram.as_ref(), rarest_path_trigram.as_ref()) {
-            (Some(leaf), Some(path)) if leaf.len() <= path.len() => Some(leaf.clone()),
-            (Some(_) | None, Some(path)) => Some(path.clone()),
-            (Some(leaf), None) => Some(leaf.clone()),
-            (None, None) => None,
-        };
-        // Exact postings remain a retained accelerator/consistency check,
-        // but cannot by themselves be the page source: a globally ranked
-        // result set must still include weaker prefix/path matches after an
-        // exact leaf hit.
-        let exact_hit_count = index
-            .exact_leaf
-            .get(&needle)
-            .or_else(|| index.exact_stem.get(&needle))
-            .map_or(0, |positions| positions.len());
-        debug_assert!(exact_hit_count <= entries.len());
-        if needs_ranked_plan && ranked_candidates.is_none() {
-            // Large-corpus fuzzy subsequence search would require a full
-            // candidate walk for every keypress.  Keep it intentionally out
-            // of this mode rather than claiming an incomplete page is a
-            // search result; contiguous leaf/path discovery remains indexed.
-            return SearchPage::exhausted(revision, Vec::new());
-        }
-        let short_positions = (needle_chars <= 2)
-            .then(|| index.leaf_prefix.get(&needle).cloned().or(rarest_gram))
-            .flatten();
-        drop(index);
-        let source_positions = if needle_chars <= 2 {
-            short_positions
-        } else if needs_ranked_plan {
-            ranked_candidates.and_then(|candidates| {
-                self.ranked_query_positions(generation, &needle, Arc::clone(&entries), candidates)
-            })
-        } else {
-            Some(Self::sorted_positions(&needle, &entries))
-        };
-        // Polling a completed retained plan can advance the ranking epoch in
-        // this call. Mint its first cursor against that new revision, not the
-        // pre-poll revision which would be stale before the next page.
-        revision = format!(
-            "{generation}:{}",
-            self.ranked_query_epoch.load(Ordering::Relaxed)
+        let needle_len = needle.len();
+        let found = index.index.search_scored(
+            &needle,
+            Page {
+                offset,
+                limit: budget.max_work,
+            },
+            move |signals| name_score(needle_len, signals),
         );
-        if needle_chars <= 2 && source_positions.is_none() {
-            // Short input has intentionally narrow, truthfully-ranked leaf
-            // semantics. Falling through to a path/fuzzy corpus sweep would
-            // make the displayed first page look exhaustive when it cannot
-            // be under the work budget.
-            return SearchPage::exhausted(revision, Vec::new());
-        }
-        // Broad queries do not display a traversal-order approximation while
-        // their ranked retained plan is building. The epoch above changes on
-        // completion, causing the open palette to retry automatically.
-        if needs_ranked_plan && source_positions.is_none() {
-            return SearchPage {
-                revision,
-                results: Vec::new(),
-                next_cursor: None,
-                exhausted: false,
-                stale_cursor: false,
-                budget_exhausted: true,
-            };
-        }
-        let source_len = source_positions
-            .as_ref()
-            .map_or(entries.len(), |positions| positions.len());
-        if offset > source_len {
-            return SearchPage::stale(revision);
-        }
-        let end = offset.saturating_add(budget.max_work).min(source_len);
-        self.last_scanned
-            .store(end.saturating_sub(offset), Ordering::Relaxed);
         let mut bytes = 0usize;
         let mut results = Vec::new();
-        let mut next = end;
+        let mut consumed = 0usize;
         let mut stopped_for_budget = false;
-        for source_position in offset..end {
-            let position = source_positions
-                .as_ref()
-                .and_then(|positions| positions.get(source_position).copied())
-                .unwrap_or(source_position);
-            let Some(entry) = entries.get(position) else {
+        for hit in &found.hits {
+            let Some(entry) = usize::try_from(hit.key)
+                .ok()
+                .and_then(|at| index.entries.get(at))
+            else {
+                consumed = consumed.saturating_add(1);
                 continue;
             };
             if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
+                consumed = consumed.saturating_add(1);
                 continue;
-            }
-            let Some(score) = name_score(&needle, &entry.facts) else {
-                continue;
-            };
-            if results.len() >= budget.max_results {
-                next = source_position;
-                stopped_for_budget = true;
-                break;
             }
             // Budget what the palette receives, including both labels and
             // the opaque path id, before cloning any row into the UI.
@@ -742,15 +282,18 @@ impl FilesProvider {
                 .saturating_add(entry.display.len())
                 .saturating_add(file_title(&entry.path).len())
                 .saturating_add(96);
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                next = source_position;
+            if results.len() >= budget.max_results
+                || bytes.saturating_add(row_bytes) > budget.max_bytes
+            {
                 stopped_for_budget = true;
                 break;
             }
             bytes = bytes.saturating_add(row_bytes);
-            results.push(make_result(entry, score, None));
+            consumed = consumed.saturating_add(1);
+            results.push(make_result(entry, hit.score, None));
         }
-        let exhausted = !stopped_for_budget && end == source_len;
+        let exhausted = !stopped_for_budget && !found.more;
+        let next = offset.saturating_add(consumed);
         SearchPage {
             revision: revision.clone(),
             results,
@@ -760,7 +303,7 @@ impl FilesProvider {
             }),
             exhausted,
             stale_cursor: false,
-            budget_exhausted: stopped_for_budget || !exhausted,
+            budget_exhausted: !exhausted,
         }
     }
 }
@@ -790,9 +333,6 @@ impl SearchProvider for FilesProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        // Compatibility callers get exactly one bounded first page.  They
-        // never trigger the former synchronous corpus sweep; broad results
-        // may be temporarily empty while the retained plan is being ranked.
         self.query_page(
             ctx,
             None,
@@ -806,15 +346,9 @@ impl SearchProvider for FilesProvider {
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
-        self.name_index.lock().map_or_else(
-            |_| "unavailable".into(),
-            |index| {
-                format!(
-                    "{}:{}",
-                    index.generation,
-                    self.ranked_query_epoch.load(Ordering::Relaxed)
-                )
-            },
+        self.published().map_or_else(
+            || "unavailable".into(),
+            |index| index.generation.to_string(),
         )
     }
 
@@ -825,9 +359,9 @@ impl SearchProvider for FilesProvider {
         budget: SearchBudget,
     ) -> SearchPage {
         self.ensure_ready();
-        // Name lookup owns all continuation pages.  Tantivy already has its
-        // own retained inverted index and returns a bounded top-K; append it
-        // only to the first page so scrolling never repeats content rows.
+        // Name lookup owns all continuation pages.  The content index
+        // returns a bounded top-K; append it only to the first page so
+        // scrolling never repeats content rows.
         let mut page = self.page_name_hits(&ctx, cursor, budget);
         if cursor.is_some() || page.stale_cursor || !ctx.wanted.contains(&ResourceKind::File) {
             return page;
@@ -899,6 +433,13 @@ const CONTENT_SCORE_MAX: i32 = 40;
 // provenance/depth penalties. Penalties are ranking signals, never
 // filters — the floor is 1, so anything that matches is still findable.
 
+/// The indexed fields of a name, as weights of the shared index: the
+/// filename, its stem, each parent directory, and the whole path.
+const LEAF: FieldWeight = FieldWeight::TITLE;
+const STEM: FieldWeight = FieldWeight::new(90);
+const PARENT: FieldWeight = FieldWeight::IDENTITY;
+const PATH: FieldWeight = FieldWeight::METADATA;
+
 /// Structural tiers, strongest first. The needle either matched the leaf
 /// (the filename) or, failing that, somewhere up the path.
 const STRUCT_EXACT_LEAF: i32 = 88;
@@ -921,14 +462,32 @@ const STRUCT_PATH_COMPONENT: i32 = 36;
 const STRUCT_PATH_TOKEN_PREFIX: i32 = 32;
 /// The needle appears somewhere in the path but at no word boundary.
 const STRUCT_PATH_SUBSTRING: i32 = 28;
-/// The needle's characters appear in order in the leaf, with gaps.
+/// The needle is a filename word with a typo.
 const STRUCT_FUZZY: i32 = 12;
+
+/// Each field's structural tiers, for the shared index.
+fn name_rank(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
+    use MatchTier::{Contains, Exact, Prefix, PrefixWord, Typo, Word, WordPrefix};
+    match (weight, tier) {
+        (_, Typo) => Some(STRUCT_FUZZY),
+        (LEAF, Exact) => Some(STRUCT_EXACT_LEAF),
+        (LEAF, PrefixWord) => Some(STRUCT_FIRST_TOKEN),
+        (LEAF, Word) => Some(STRUCT_TOKEN),
+        (LEAF, Prefix) => Some(STRUCT_FIRST_TOKEN_PREFIX),
+        (LEAF, WordPrefix) => Some(STRUCT_TOKEN_PREFIX),
+        (LEAF, Contains) => Some(STRUCT_IN_TOKEN),
+        (STEM, Exact) => Some(STRUCT_EXACT_STEM),
+        (PARENT, Exact) => Some(STRUCT_PATH_COMPONENT),
+        (PARENT, PrefixWord | Prefix | Word | WordPrefix) => Some(STRUCT_PATH_TOKEN_PREFIX),
+        (PATH, Contains) => Some(STRUCT_PATH_SUBSTRING),
+        _ => None,
+    }
+}
 
 /// Weight of the match-length ratio (needle length over stem length).
 const RATIO_WEIGHT: i32 = 16;
 /// Weight of the freshest recency band.
 const RECENCY_MAX: i32 = 16;
-
 /// Deductions for content shipped *with* software rather than written by
 /// the person searching.
 const PENALTY_ASSET_EXT: i32 = 18;
@@ -999,17 +558,14 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
         )
 }
 
-/// Everything a path's score depends on besides the needle. Precomputed by
-/// the walker — a keystroke re-scores tens of thousands of entries and must
-/// never tokenise or `stat` a file.
+/// Everything a path's score depends on besides the needle, computed by the
+/// walker so a keystroke never `stat`s a file.
 #[derive(Clone)]
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
     /// The final component of [`Self::lower`].
     leaf: Box<str>,
-    /// Word ranges within [`Self::leaf`].
-    tokens: Box<[(u16, u16)]>,
     /// Leaf length minus a recognised extension; equals leaf length when there is none.
     stem_len: u16,
     /// Provenance + depth deductions, summed once since both depend only on the path.
@@ -1018,19 +574,14 @@ pub(crate) struct NameFacts {
 }
 
 impl NameFacts {
-    /// `display` keeps its original case — camelCase is a word boundary and
-    /// lowercasing destroys it.
     pub(crate) fn new(display: &str, modified: Option<SystemTime>) -> Self {
         let lower = display.to_lowercase();
         let leaf_lower = leaf_of(&lower).to_string();
-        let leaf_orig = leaf_of(display);
         let stem_len = stem_len(&leaf_lower);
-        let tokens = tokenize(leaf_orig, &leaf_lower);
         let penalty =
             vendor_penalty(&lower, &leaf_lower, stem_len).saturating_add(depth_penalty(&lower));
         Self {
             leaf: leaf_lower.into_boxed_str(),
-            tokens: tokens.into_boxed_slice(),
             stem_len: u16::try_from(stem_len).unwrap_or(u16::MAX),
             penalty,
             recency: recency_score(modified),
@@ -1080,79 +631,6 @@ fn extension_of(leaf_lower: &str, stem_len: usize) -> Option<&str> {
         .flatten()
 }
 
-/// Split a filename into words (byte ranges into the lowercased form).
-/// Breaks on `-`, `_`, `.`, space and camelCase.
-fn tokenize(leaf_orig: &str, leaf_lower: &str) -> Vec<(u16, u16)> {
-    if leaf_lower.is_empty() || leaf_lower.len() > u16::MAX as usize {
-        return Vec::new();
-    }
-    let camel_ok = leaf_orig.len() == leaf_lower.len();
-    let orig = leaf_orig.as_bytes();
-    let bytes = leaf_lower.as_bytes();
-    let mut out: Vec<(u16, u16)> = Vec::new();
-    let mut start: Option<usize> = None;
-    for i in 0..=bytes.len() {
-        let sep = i == bytes.len()
-            || bytes
-                .get(i)
-                .is_some_and(|&b| matches!(b, b'-' | b'_' | b'.' | b' '));
-        if sep {
-            if let Some(s) = start.take() {
-                out.push((
-                    u16::try_from(s).unwrap_or(u16::MAX),
-                    u16::try_from(i).unwrap_or(u16::MAX),
-                ));
-            }
-            continue;
-        }
-        if start.is_none() {
-            start = Some(i);
-            continue;
-        }
-        // Mid-run camelCase/letter-digit boundary: close and reopen at `i`.
-        if camel_ok && is_word_boundary(orig, i) {
-            // `start` is always `Some` here — the `if start.is_none()` arm
-            // above always `continue`s — but a stray `None` just means one
-            // fewer token boundary rather than a panic.
-            if let Some(s) = start.replace(i) {
-                out.push((
-                    u16::try_from(s).unwrap_or(u16::MAX),
-                    u16::try_from(i).unwrap_or(u16::MAX),
-                ));
-            }
-        }
-    }
-    out
-}
-
-/// Is `i` a camelCase (or letter↔digit) word start inside a run?
-fn is_word_boundary(b: &[u8], i: usize) -> bool {
-    if i == 0 || i >= b.len() {
-        return false;
-    }
-    let Some(prev_idx) = i.checked_sub(1) else {
-        return false;
-    };
-    let (Some(&prev), Some(&cur)) = (b.get(prev_idx), b.get(i)) else {
-        return false;
-    };
-    // `openTtd` — lower/digit then upper.
-    if cur.is_ascii_uppercase() && (prev.is_ascii_lowercase() || prev.is_ascii_digit()) {
-        return true;
-    }
-    // `HTTPServer` — the last capital of a run that starts a new word.
-    if cur.is_ascii_uppercase()
-        && prev.is_ascii_uppercase()
-        && b.get(i.saturating_add(1))
-            .is_some_and(u8::is_ascii_lowercase)
-    {
-        return true;
-    }
-    // `report2026` / `2026report` — letter/digit transition.
-    (cur.is_ascii_digit() && prev.is_ascii_alphabetic())
-        || (cur.is_ascii_alphabetic() && prev.is_ascii_digit())
-}
-
 /// Deduction for content that ships with software. Bounded by
 /// [`PENALTY_MAX`]; a match never disappears, it only sinks.
 fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
@@ -1195,109 +673,26 @@ fn recency_score(modified: Option<SystemTime>) -> i32 {
     }
 }
 
-/// Score `facts` against an already-lowercased needle, or `None` if it does
-/// not match. Monotone in the needle, which is what makes the narrowing
-/// cache sound.
-fn name_score(needle_lower: &str, facts: &NameFacts) -> Option<i32> {
-    if needle_lower.is_empty() {
-        return None;
-    }
-    let (structural, denom) = structural_match(needle_lower, facts)?;
+/// The score of a name hit: its structural tier, how much of the stem
+/// the needle covers, recency and penalties, floored at 1 (a penalised
+/// match is a bad answer, not a hidden one) and capped at [`MAX_SCORE`].
+fn name_score(needle_len: usize, signals: Signals) -> i32 {
+    let structural = signals.rank.unwrap_or(0);
+    let stem_len = usize::try_from(signals.length).unwrap_or(usize::MAX);
     // Clamped at 1.0: "more than all of it" is still just all of it.
-    let needle_len = u16::try_from(needle_lower.len()).unwrap_or(u16::MAX);
-    let denom_len = u16::try_from(denom.max(needle_lower.len())).unwrap_or(u16::MAX);
+    let needle_len = u16::try_from(needle_len).unwrap_or(u16::MAX);
+    let denom_len = u16::try_from(stem_len.max(usize::from(needle_len))).unwrap_or(u16::MAX);
     let ratio = (f32::from(needle_len) / f32::from(denom_len.max(1))).min(1.0);
     let ratio_weight = f32::from(u16::try_from(RATIO_WEIGHT).unwrap_or(u16::MAX));
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "ratio_bonus = round(ratio_weight * ratio) is mathematically bounded to \
-                  0..=RATIO_WEIGHT (16), well inside i32"
+        reason = "ratio_bonus = round(ratio_weight * ratio) is bounded to 0..=RATIO_WEIGHT"
     )]
     let ratio_bonus = (ratio_weight * ratio).round() as i32;
-    let score = structural
+    structural
         .saturating_add(ratio_bonus)
-        .saturating_add(facts.recency)
-        .saturating_sub(facts.penalty);
-    // Floored at 1, not 0: a penalised match is a bad answer, not a hidden one.
-    Some(score.clamp(1, MAX_SCORE))
-}
-
-/// Which structural tier the needle earned, and the length the match
-/// ratio should be measured against.
-fn structural_match(needle: &str, facts: &NameFacts) -> Option<(i32, usize)> {
-    let leaf: &str = &facts.leaf;
-    let stem_len = facts.stem_len as usize;
-    // One substring scan decides whether any filename tier can apply —
-    // the check that lets most of the index out cheaply.
-    if leaf.contains(needle) {
-        if leaf == needle {
-            return Some((STRUCT_EXACT_LEAF, stem_len));
-        }
-        if stem_len == needle.len() && leaf.get(..stem_len) == Some(needle) {
-            return Some((STRUCT_EXACT_STEM, stem_len));
-        }
-        return Some((leaf_tier(needle, leaf, stem_len, &facts.tokens), stem_len));
-    }
-    if facts.lower.contains(needle) {
-        return Some(path_tier(needle, &facts.lower));
-    }
-    // Last resort: the characters in order, anywhere in the filename.
-    // `ntes` → `notes.md`.
-    ui::search::fuzzy_score(needle, leaf)
-        .is_some()
-        .then_some((STRUCT_FUZZY, stem_len))
-}
-
-/// Best word-boundary tier over every occurrence of `needle` in `leaf`:
-/// `note` in `my-note-notes.md` lands mid-name once and on a whole word
-/// once, and the better reading is the one that counts.
-fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -> i32 {
-    let mut best = STRUCT_IN_TOKEN;
-    for (at, _) in leaf.match_indices(needle) {
-        let end = at.saturating_add(needle.len());
-        let starts_word = at == 0 || tokens.iter().any(|&(s, _)| s as usize == at);
-        if !starts_word {
-            continue;
-        }
-        let ends_word =
-            end == leaf.len() || end == stem_len || tokens.iter().any(|&(_, e)| e as usize == end);
-        let tier = match (at == 0, ends_word) {
-            (true, true) => STRUCT_FIRST_TOKEN,
-            (false, true) => STRUCT_TOKEN,
-            (true, false) => STRUCT_FIRST_TOKEN_PREFIX,
-            (false, false) => STRUCT_TOKEN_PREFIX,
-        };
-        best = best.max(tier);
-        if best == STRUCT_FIRST_TOKEN {
-            break;
-        }
-    }
-    best
-}
-
-/// Tier for a match that missed the filename but landed up the path.
-/// Reached only once the path is known to contain the needle.
-fn path_tier(needle: &str, lower_path: &str) -> (i32, usize) {
-    let parent = lower_path.rsplit_once('/').map_or("", |(head, _)| head);
-    let mut best = (STRUCT_PATH_SUBSTRING, lower_path.len());
-    for comp in parent.split('/') {
-        if comp == needle {
-            return (STRUCT_PATH_COMPONENT, comp.len());
-        }
-        if !comp.contains(needle) {
-            continue;
-        }
-        let tokens = tokenize(comp, comp);
-        let starts_word = comp.starts_with(needle)
-            || tokens.iter().any(|&(s, _)| {
-                comp.get(s as usize..)
-                    .is_some_and(|t| t.starts_with(needle))
-            });
-        if starts_word && best.0 < STRUCT_PATH_TOKEN_PREFIX {
-            best = (STRUCT_PATH_TOKEN_PREFIX, comp.len());
-        }
-    }
-    best
+        .saturating_add(signals.boost)
+        .clamp(1, MAX_SCORE)
 }
 
 /// Number of path components — the tiebreak between two equal-score matches.
@@ -1455,18 +850,35 @@ mod tests {
             .is_some_and(|e| e.eq_ignore_ascii_case(ext))
     }
 
-    /// Facts for a path with no mtime; `aged_facts` covers the recency signal.
-    fn facts(display: &str) -> NameFacts {
-        NameFacts::new(display, None)
+    /// The score of `needle` against one indexed path with no mtime, or
+    /// `None` when it does not match.
+    fn score_of(needle: &str, display: &str) -> Option<i32> {
+        aged_score_of(needle, display, None)
     }
 
-    /// Facts for a path last modified `days` ago.
-    fn aged_facts(display: &str, days: u64) -> NameFacts {
-        let secs = days.saturating_mul(86_400).saturating_add(3_600);
-        NameFacts::new(
-            display,
-            SystemTime::now().checked_sub(Duration::from_secs(secs)),
-        )
+    /// [`score_of`] for a path last modified `days` ago.
+    fn aged_score_of(needle: &str, display: &str, days: Option<u64>) -> Option<i32> {
+        let modified = days.and_then(|days| {
+            let secs = days.saturating_mul(86_400).saturating_add(3_600);
+            SystemTime::now().checked_sub(Duration::from_secs(secs))
+        });
+        let entry = NameEntry {
+            path: PathBuf::from(display.replace('~', "/home/tester")),
+            facts: NameFacts::new(display, modified),
+            display: display.to_string(),
+            is_dir: false,
+        };
+        let index = NameIndex::from_entries(vec![entry], 1);
+        let needle = needle.to_lowercase();
+        let needle_len = needle.len();
+        index
+            .index
+            .search_scored(&needle, Page::first(1), move |signals| {
+                name_score(needle_len, signals)
+            })
+            .hits
+            .first()
+            .map(|hit| hit.score)
     }
 
     #[test]
@@ -1474,26 +886,24 @@ mod tests {
         // Phase `name_score_prefers_the_leaf_over_the_path`.
         {
             assert_eq!(
-                name_score("todo", &facts("~/notes/todo.md")),
+                score_of("todo", "~/notes/todo.md"),
                 Some(STRUCT_EXACT_STEM + RATIO_WEIGHT)
             );
             assert_eq!(
-                name_score("todo", &facts("~/notes/day-todo-list.md")),
+                score_of("todo", "~/notes/day-todo-list.md"),
                 Some(STRUCT_TOKEN + 5)
             );
-            assert_eq!(
-                name_score("todo", &facts("~/todo/notes.md")),
-                Some(STRUCT_PATH_COMPONENT + RATIO_WEIGHT)
-            );
-            assert_eq!(name_score("xzq", &facts("~/notes/todo.md")), None);
+            let path_only = score_of("todo", "~/todo/notes.md").unwrap();
+            assert!(path_only > STRUCT_PATH_COMPONENT && path_only < STRUCT_TOKEN);
+            assert_eq!(score_of("xzq", "~/notes/todo.md"), None);
         }
 
         // Phase `a_whole_word_beats_the_start_of_a_longer_word`.
         {
-            let whole = name_score("open", &facts("~/a/open.txt")).unwrap();
-            let prefix = name_score("open", &facts("~/a/opening-notes.md")).unwrap();
-            let inside = name_score("open", &facts("~/a/reopen.md")).unwrap();
-            let other_word = name_score("open", &facts("~/a/xdg-open")).unwrap();
+            let whole = score_of("open", "~/a/open.txt").unwrap();
+            let prefix = score_of("open", "~/a/opening-notes.md").unwrap();
+            let inside = score_of("open", "~/a/reopen.md").unwrap();
+            let other_word = score_of("open", "~/a/xdg-open").unwrap();
             assert!(
                 whole > prefix && prefix > inside,
                 "expected open.txt > opening-notes.md > reopen.md, got \
@@ -1509,8 +919,8 @@ mod tests {
 
         // Phase `an_exact_filename_match_clearly_wins`.
         {
-            let exact = name_score("open", &facts("~/a/open.md")).unwrap();
-            let long = name_score("open", &facts("~/a/opentelemetry-collector-config.md")).unwrap();
+            let exact = score_of("open", "~/a/open.md").unwrap();
+            let long = score_of("open", "~/a/opentelemetry-collector-config.md").unwrap();
             assert!(
                 exact >= long + 30,
                 "an exact name match ({exact}) must clearly beat four characters \
@@ -1532,7 +942,7 @@ mod tests {
         // The registry divides by this; outgrowing it silently takes over the palette.
         {
             assert_eq!(
-                name_score("open", &aged_facts("~/open", 0)),
+                aged_score_of("open", "~/open", Some(0)),
                 Some(MAX_SCORE),
                 "an exact filename match touched today must land exactly on the \
                  declared ceiling"
@@ -1550,7 +960,7 @@ mod tests {
             ] {
                 for needle in ["o", "open", "open.md", "opn", "openopenopen"] {
                     for days in [0u64, 5, 400] {
-                        if let Some(s) = name_score(needle, &aged_facts(display, days)) {
+                        if let Some(s) = aged_score_of(needle, display, Some(days)) {
                             assert!(
                                 (1..=MAX_SCORE).contains(&s),
                                 "{needle:?} on {display:?} at {days}d scored {s}, \
@@ -1638,8 +1048,8 @@ mod tests {
 
         // Phase `vendored_content_sinks_but_stays_findable`.
         {
-            let mine = name_score("parser", &facts("~/proj/src/parser.rs")).unwrap();
-            let theirs = name_score("parser", &facts("~/proj/vendor/pkg/parser.rs")).unwrap();
+            let mine = score_of("parser", "~/proj/src/parser.rs").unwrap();
+            let theirs = score_of("parser", "~/proj/vendor/pkg/parser.rs").unwrap();
             assert!(
                 mine > theirs,
                 "the user's own parser.rs ({mine}) must outrank the vendored copy \
@@ -1666,10 +1076,10 @@ mod tests {
         {
             assert_eq!(depth_penalty("~/report.md"), 0);
             assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
-            let shallow = name_score("open", &facts("~/Dokumente/opening.md")).unwrap();
-            let buried = name_score(
+            let shallow = score_of("open", "~/Dokumente/opening.md").unwrap();
+            let buried = score_of(
                 "open",
-                &facts("~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg"),
+                "~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg",
             )
             .unwrap();
             assert!(
@@ -1704,33 +1114,22 @@ mod tests {
     }
 
     #[test]
-    fn tokenizer_and_fuzzy_matcher_split_and_match_as_documented() {
-        // Phase `tokenize_splits_on_separators_and_camel_case`.
+    fn filename_words_match_whole_and_with_typos() {
+        // Phase `letters_and_digits_are_separate_words`.
         {
-            let words = |s: &str| {
-                let lower = s.to_lowercase();
-                tokenize(s, &lower)
-                    .into_iter()
-                    .map(|(a, b)| {
-                        lower
-                            .get(a as usize..b as usize)
-                            .unwrap_or_default()
-                            .to_string()
-                    })
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(words("OpenTTD-Sans.ttf"), ["open", "ttd", "sans", "ttf"]);
-            assert_eq!(words("my_notes file.md"), ["my", "notes", "file", "md"]);
-            assert_eq!(words("HTTPServerLog"), ["http", "server", "log"]);
-            assert_eq!(words("report2026final"), ["report", "2026", "final"]);
-            assert_eq!(words("openapi.yaml"), ["openapi", "yaml"]);
+            let whole = score_of("2026", "~/a/report2026final.md").unwrap();
+            let inside = score_of("026", "~/a/report2026final.md").unwrap();
+            assert!(whole > inside, "{whole} / {inside}");
         }
 
-        // Phase `a_scattered_leaf_subsequence_still_matches`.
+        // Phase `a_typo_in_a_filename_still_matches`.
         {
-            assert!(name_score("ntes", &facts("~/a/notes")).is_some());
-            assert!(name_score("tdo", &facts("~/a/todo.md")).is_some());
-            assert!(name_score("xz", &facts("~/a/notes")).is_none());
+            assert!(score_of("noets", "~/a/notes").is_some());
+            assert!(
+                score_of("todp", "~/a/todo.md").is_none(),
+                "short words need no typo match"
+            );
+            assert!(score_of("xz", "~/a/notes").is_none());
         }
     }
 
@@ -1738,8 +1137,8 @@ mod tests {
     fn recency_breaks_name_ties_from_the_index_but_never_outvotes_the_name() {
         // Phase `recency_separates_two_files_with_the_same_name`.
         {
-            let fresh = name_score("report", &aged_facts("~/a/report.md", 0)).unwrap();
-            let stale = name_score("report", &aged_facts("~/b/report.md", 900)).unwrap();
+            let fresh = aged_score_of("report", "~/a/report.md", Some(0)).unwrap();
+            let stale = aged_score_of("report", "~/b/report.md", Some(900)).unwrap();
             assert!(
                 fresh > stale,
                 "the file touched today ({fresh}) must outrank the one from three \
@@ -1750,12 +1149,10 @@ mod tests {
         // Phase `recency_cannot_outvote_what_the_name_says`.
         // A freshly unpacked archive cannot displace an exact old match.
         {
-            let old_exact = name_score("notes", &aged_facts("~/a/notes.md", 900)).unwrap();
-            let new_weak = name_score(
-                "notes",
-                &aged_facts("~/b/my-meeting-notes-and-agenda-draft.md", 0),
-            )
-            .unwrap();
+            let old_exact = aged_score_of("notes", "~/a/notes.md", Some(900)).unwrap();
+            let new_weak =
+                aged_score_of("notes", "~/b/my-meeting-notes-and-agenda-draft.md", Some(0))
+                    .unwrap();
             assert!(
                 old_exact > new_weak,
                 "a three-year-old notes.md ({old_exact}) must still beat a \
@@ -1768,8 +1165,8 @@ mod tests {
         {
             let ghost = "~/definitely/not/on/this/disk/report.md";
             assert!(!Path::new("/home/tester/definitely").exists());
-            let fresh = name_score("report", &aged_facts(ghost, 0)).unwrap();
-            let none = name_score("report", &facts(ghost)).unwrap();
+            let fresh = aged_score_of("report", ghost, Some(0)).unwrap();
+            let none = score_of("report", ghost).unwrap();
             assert_eq!(
                 fresh - none,
                 RECENCY_MAX,
@@ -1915,8 +1312,6 @@ mod tests {
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
         let home = PathBuf::from("/home/tester");
-        let rank = OnceLock::new();
-        let _ = rank.set(FilesProvider::rank_worker());
         let ready = OnceLock::new();
         let _ = ready.set(());
         let tantivy = OnceLock::new();
@@ -1926,10 +1321,6 @@ mod tests {
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
             tantivy,
             ready,
-            last_scanned: AtomicUsize::new(0),
-            ranked_queries: Mutex::new(RankedQueryCache::default()),
-            ranked_query_epoch: AtomicU64::new(0),
-            rank,
         }
     }
 
@@ -1940,10 +1331,6 @@ mod tests {
         assert!(
             provider.ready.get().is_none(),
             "home walk and tantivy must wait for the first query"
-        );
-        assert!(
-            provider.rank.get().is_none(),
-            "rank worker must wait for first use"
         );
         assert_eq!(guard.attempts(), 0);
         drop(guard);
@@ -1972,147 +1359,11 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
-    fn eventually_page(mut query: impl FnMut() -> SearchPage) -> SearchPage {
-        // A hang guard, not a latency budget: the work bounds are asserted
-        // on inspected entries, which a loaded machine cannot perturb.
-        let deadline = tilo_test_env::hang_deadline();
-        while std::time::Instant::now() < deadline {
-            let page = query();
-            if !page.results.is_empty() || page.exhausted || page.stale_cursor {
-                return page;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        panic!("retained ranked query did not finish");
-    }
-
     /// Candidates ahead of the late hit in the corpus tests. Every work
     /// ceiling asserted there is two orders of magnitude smaller, so a
     /// linear scan would still exceed it by far; the 100k case itself is
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn narrowing_reuses_the_last_sweep_until_a_reindex() {
-        // Phase `typing_a_word_narrows_instead_of_re_sweeping`.
-        // Compatibility queries use the same retained, bounded page path as
-        // the palette; no character may revive the former corpus sweep.
-        {
-            let paths: Vec<String> = (0..MAX_ENTRIES)
-                .map(|i| format!("~/Development/project-{i}/{}.rs", WORDS[i % WORDS.len()]))
-                .collect();
-            let entries: Vec<(&str, bool)> = paths.iter().map(|s| (s.as_str(), false)).collect();
-            let p = provider_with_index(entries);
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-
-            let word = "component";
-            let mut scanned = Vec::new();
-            for end in 1..=word.len() {
-                let prefix = word.get(..end).unwrap_or_default();
-                p.query(ctx_for(prefix, &[ResourceKind::File], &st, &doc));
-                scanned.push(p.last_scanned.load(Ordering::Relaxed));
-            }
-
-            for (i, w) in scanned.iter().enumerate() {
-                assert!(
-                    *w <= SearchBudget::PALETTE.max_work,
-                    "character {i} examined {w} rows; compatibility must remain \
-                     within the page work ceiling: {scanned:?}"
-                );
-            }
-        }
-
-        // Phase `narrowing_returns_what_a_cold_query_would`.
-        // Extending a needle must return what a cold query for it would.
-        {
-            let p = provider_with_index(vec![
-                ("~/notes/todo.md", false),
-                ("~/todo/notes.md", false),
-                ("~/Development/day-todo-list.md", false),
-                ("~/tmp/tdo.md", false),
-                ("~/unrelated/readme.md", false),
-            ]);
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let kinds = [ResourceKind::File, ResourceKind::Folder];
-
-            for prefix in ["t", "to", "tod", "todo"] {
-                let mut warm = Vec::new();
-                for end in 1..=prefix.len() {
-                    let sub = prefix.get(..end).unwrap_or_default();
-                    warm = p.query(ctx_for(sub, &kinds, &st, &doc));
-                }
-                let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));
-
-                let ids = |v: &[SearchResult]| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
-                assert_eq!(
-                    ids(&warm),
-                    ids(&cold),
-                    "typing into {prefix:?} produced a different result set than \
-                     querying it outright"
-                );
-            }
-        }
-
-        // Phase `a_reindex_invalidates_the_narrowing_cache`.
-        {
-            let p = provider_with_index(vec![("~/alpha.md", false), ("~/alpha-two.md", false)]);
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            assert_eq!(
-                p.query(ctx_for("alpha", &[ResourceKind::File], &st, &doc))
-                    .len(),
-                2
-            );
-
-            {
-                let mut guard = p.name_index.lock().unwrap();
-                let generation = guard.generation.wrapping_add(1);
-                *guard = Arc::new(NameIndex::from_entries(
-                    vec![NameEntry {
-                        path: PathBuf::from("/home/tester/alphabet.md"),
-                        display: "~/alphabet.md".into(),
-                        facts: NameFacts::new("~/alphabet.md", None),
-                        is_dir: false,
-                    }],
-                    generation,
-                ));
-            }
-            let out = p.query(ctx_for("alphab", &[ResourceKind::File], &st, &doc));
-            assert_eq!(
-                out.len(),
-                1,
-                "the post-rescan entry must be found, not looked up through \
-                 stale indices: {out:?}"
-            );
-            assert_eq!(out[0].title, "alphabet.md");
-        }
-    }
-
-    const WORDS: &[&str] = &[
-        "component",
-        "compose",
-        "common",
-        "config",
-        "codec",
-        "buffer",
-        "render",
-        "layout",
-        "widget",
-        "theme",
-        "search",
-        "palette",
-        "index",
-        "walker",
-    ];
 
     #[test]
     #[allow(
@@ -2147,14 +1398,11 @@ mod tests {
                 max_bytes: 8_192,
                 max_work: 113,
             };
-            let first = eventually_page(|| {
-                p.query_page(
-                    ctx_for("target-needle", &[ResourceKind::File], &st, &doc),
-                    None,
-                    budget,
-                )
-            });
-            assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
+            let first = p.query_page(
+                ctx_for("target-needle", &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            );
             assert!(first.results.len() <= 17);
             assert_eq!(
                 first.results.first().map(|row| row.title.as_str()),
@@ -2183,13 +1431,11 @@ mod tests {
                 max_bytes: 8_192,
                 max_work: 113,
             };
-            let first = eventually_page(|| {
-                p.query_page(
-                    ctx_for("needle", &[ResourceKind::File], &st, &doc),
-                    None,
-                    budget,
-                )
-            });
+            let first = p.query_page(
+                ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            );
             let mut cursor = first.next_cursor;
             // 200 pages of 17 stay short of the corpus, so the last one is late
             // but not the end.
@@ -2200,7 +1446,6 @@ mod tests {
                     budget,
                 );
                 assert!(!page.stale_cursor);
-                assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
                 cursor = page.next_cursor;
             }
             assert!(cursor.is_some(), "fixture must reach a genuine late page");
@@ -2213,24 +1458,19 @@ mod tests {
             let chrome = empty_chrome();
             let st = chrome.borrow();
             let doc = automerge::AutoCommit::new();
-            let page = eventually_page(|| {
-                p.query_page(
-                    ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
-                    None,
-                    SearchBudget {
-                        max_results: 1,
-                        max_bytes: 8_192,
-                        max_work: 1,
-                    },
-                )
-            });
+            let page = p.query_page(
+                ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: 8_192,
+                    max_work: 1,
+                },
+            );
             let cursor = page.next_cursor.expect("a continuation page");
             {
                 let mut publication = p.name_index.lock().unwrap();
-                *publication = Arc::new(NameIndex::from_entries(
-                    publication.entries.as_ref().clone(),
-                    2,
-                ));
+                *publication = Arc::new(NameIndex::from_entries(publication.entries.clone(), 2));
             }
             let stale = p.query_page(
                 ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
@@ -2274,243 +1514,5 @@ mod tests {
                 huge.rsplit('/').next().unwrap().len()
             );
         }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn late_queries_use_retained_postings_and_preranked_buckets() {
-        // Phase `late_leaf_prefix_outranks_thousands_of_path_substrings`.
-        {
-            let mut paths = (0..LARGE_CORPUS)
-                .map(|i| format!("~/report/archive/item-{i:06}.md"))
-                .collect::<Vec<_>>();
-            paths.push("~/later/report-final.md".into());
-            let entries = paths.iter().map(|path| NameEntry {
-                path: PathBuf::from(path.replace('~', "/home/tester")),
-                display: path.clone(),
-                facts: NameFacts::new(path, None),
-                is_dir: false,
-            });
-            let p = provider_from_entries(entries.collect());
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let page = eventually_page(|| {
-                p.query_page(
-                    ctx_for("report", &[ResourceKind::File], &st, &doc),
-                    None,
-                    SearchBudget {
-                        max_results: 8,
-                        max_bytes: 8_192,
-                        max_work: 32,
-                    },
-                )
-            });
-            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-            assert_eq!(page.results[0].title, "report-final.md");
-        }
-
-        // Phase `late_leaf_substring_uses_retained_trigram_postings`.
-        {
-            let mut paths = (0..LARGE_CORPUS)
-                .map(|i| format!("~/lunar/archive/item-{i:06}.md"))
-                .collect::<Vec<_>>();
-            paths.push("~/later/monthlylunarlog.md".into());
-            let entries = paths.iter().map(|path| NameEntry {
-                path: PathBuf::from(path.replace('~', "/home/tester")),
-                display: path.clone(),
-                facts: NameFacts::new(path, None),
-                is_dir: false,
-            });
-            let p = provider_from_entries(entries.collect());
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let page = eventually_page(|| {
-                p.query_page(
-                    ctx_for("lunar", &[ResourceKind::File], &st, &doc),
-                    None,
-                    SearchBudget {
-                        max_results: 8,
-                        max_bytes: 8_192,
-                        max_work: 32,
-                    },
-                )
-            });
-            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-            assert_eq!(page.results[0].title, "monthlylunarlog.md");
-        }
-
-        // Phase `late_fuzzy_hit_uses_a_retained_character_bucket`.
-        {
-            let mut paths = (0..LARGE_CORPUS)
-                .map(|i| format!("~/archive/item-{i:06}.md"))
-                .collect::<Vec<_>>();
-            paths.push("~/later/monthlylunarlog.md".into());
-            let entries = paths.iter().map(|path| NameEntry {
-                path: PathBuf::from(path.replace('~', "/home/tester")),
-                display: path.clone(),
-                facts: NameFacts::new(path, None),
-                is_dir: false,
-            });
-            let p = provider_from_entries(entries.collect());
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let page = eventually_page(|| {
-                p.query_page(
-                    ctx_for("mnlr", &[ResourceKind::File], &st, &doc),
-                    None,
-                    SearchBudget {
-                        max_results: 8,
-                        max_bytes: 8_192,
-                        max_work: 32,
-                    },
-                )
-            });
-            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-            assert_eq!(page.results[0].title, "monthlylunarlog.md");
-        }
-
-        // Phase `one_character_bucket_is_preranked_before_the_palette_opens`.
-        {
-            let mut paths = (0..LARGE_CORPUS)
-                .map(|i| format!("~/archive/another-item-{i:06}.md"))
-                .collect::<Vec<_>>();
-            paths.push("~/later/zreport.md".into());
-            let entries = paths.iter().map(|path| NameEntry {
-                path: PathBuf::from(path.replace('~', "/home/tester")),
-                display: path.clone(),
-                facts: NameFacts::new(path, None),
-                is_dir: false,
-            });
-            let p = provider_from_entries(entries.collect());
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let page = p.query_page(
-                ctx_for("r", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 8,
-                    max_bytes: 8_192,
-                    max_work: 32,
-                },
-            );
-            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 32);
-            assert_eq!(page.results[0].title, "zreport.md");
-        }
-
-        // Phase `path_substring_uses_a_retained_path_trigram_without_a_corpus_copy`.
-        {
-            let mut paths = (0..LARGE_CORPUS)
-                .map(|i| format!("~/very-long-project-{i:06}/unrelated.md"))
-                .collect::<Vec<_>>();
-            paths.push("~/later/ordinary.md".into());
-            let entries = paths.iter().map(|path| NameEntry {
-                path: PathBuf::from(path.replace('~', "/home/tester")),
-                display: path.clone(),
-                facts: NameFacts::new(path, None),
-                is_dir: false,
-            });
-            let p = provider_from_entries(entries.collect());
-            let chrome = empty_chrome();
-            let st = chrome.borrow();
-            let doc = automerge::AutoCommit::new();
-            let page = eventually_page(|| {
-                p.query_page(
-                    ctx_for("project-0039", &[ResourceKind::File], &st, &doc),
-                    None,
-                    SearchBudget {
-                        max_results: 8,
-                        max_bytes: 8_192,
-                        max_work: 32,
-                    },
-                )
-            });
-            assert!(
-                page.results
-                    .iter()
-                    .all(|row| row.id.contains("project-0039"))
-            );
-            assert!(p.last_scanned.load(Ordering::Relaxed) <= 32);
-        }
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the concurrent-search regression retains its shared state guards until stale-plan assertions complete"
-    )]
-    #[test]
-    fn rapid_broad_edits_keep_one_worker_and_never_publish_a_stale_plan() {
-        let mut paths = (0..100_000)
-            .map(|i| format!("~/archive/{i:06}-needlestick.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/needlestick-current.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let budget = SearchBudget {
-            max_results: 8,
-            max_bytes: 8_192,
-            max_work: 32,
-        };
-
-        // Each call only takes retained posting handles. The rank worker may
-        // do candidate work off-thread, but no keypress copies/scans the
-        // 100k-entry corpus on the compositor path.
-        for needle in ["need", "needs", "needles", "needlestic", "needlestick"] {
-            let page = p.query_page(
-                ctx_for(needle, &[ResourceKind::File], &st, &doc),
-                None,
-                budget,
-            );
-            assert!(page.results.is_empty());
-            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 0);
-            assert!(
-                p.rank
-                    .get()
-                    .expect("rank worker")
-                    .active
-                    .load(Ordering::Relaxed)
-                    <= 1
-            );
-        }
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("needlestick", &[ResourceKind::File], &st, &doc),
-                None,
-                budget,
-            )
-        });
-        assert_eq!(page.results[0].title, "needlestick-current.md");
-        assert_eq!(
-            p.rank
-                .get()
-                .expect("rank worker")
-                .peak
-                .load(Ordering::Relaxed),
-            1
-        );
-        let cache = p.ranked_queries.lock().unwrap();
-        assert!(cache.ready.iter().all(|plan| plan.needle == "needlestick"));
-        assert!(
-            cache
-                .ready
-                .iter()
-                .map(|plan| plan.positions.len())
-                .sum::<usize>()
-                <= RANKED_QUERY_CACHE_MAX_POSITIONS
-        );
     }
 }
