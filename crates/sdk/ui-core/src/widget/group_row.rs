@@ -2091,7 +2091,7 @@ impl GroupRow {
     }
 
     /// `insert_at` is a pre-removal gap index; converted here to the
-    /// post-removal landing slot so `WorkspaceTree::reorder_group_within_strip`
+    /// post-removal landing slot so the desktop's `ReorderGroup` command
     /// reproduces the same order. On a partitioned strip `lane` is the
     /// lane the gap is in; a group landing in another lane moves to it even
     /// when its index stays the same (the last group of one display dropped

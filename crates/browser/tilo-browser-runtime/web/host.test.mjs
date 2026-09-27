@@ -24,6 +24,23 @@ test('simultaneous mounts retain independent lifetime and terminal shutdown', ()
   assert.equal(mounts.current(second), false);
   assert.throws(() => mounts.begin({}), /shutdown/);
 });
+test('an ordinary app reopens its own room record while a package-primary app never names one', () => {
+  const room = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const key = (pkg, record, workspace = room) => ({key: JSON.stringify({type: 'record', package: pkg, record, workspace})});
+  const entries = [
+    {key: JSON.stringify({type: 'view', package: 'so.tilo.ebook', workspace: room})},
+    key('so.tilo.ebook', 'rec:other-room', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+    key('so.tilo.word-processor', 'rec:writer'),
+    key('so.tilo.ebook', 'rec:books'),
+    key('so.tilo.chat', ''),
+  ];
+  const ordinary = id => ({id, title: id, scope: 'ordinary'});
+  assert.equal(hostCore.reopenedRecord(entries, ordinary('so.tilo.ebook'), room), 'rec:books');
+  assert.equal(hostCore.reopenedRecord(entries, ordinary('so.tilo.word-processor'), room), 'rec:writer');
+  assert.equal(hostCore.reopenedRecord(entries, ordinary('so.tilo.notes'), room), undefined);
+  assert.equal(hostCore.reopenedRecord(entries, {id: 'so.tilo.chat', title: 'Chat', scope: 'package-primary'}, room), undefined);
+  assert.equal(hostCore.reopenedRecord(entries, undefined, room), undefined, 'the canonical desktop has no application record');
+});
 test('resize keeps logical geometry stable at DPR2 and suspends zero canvas', () => {
   assert.deepEqual(physicalViewport(600, 400, 2), {width:1200,height:800,dpr:2,suspended:false});
   assert.equal(physicalViewport(0,400,2).suspended, true);

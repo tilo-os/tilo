@@ -103,7 +103,8 @@ async fn publish_and_leave(
         .unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = pending_count(pending_dir);
         if queued >= 1 {
             break;

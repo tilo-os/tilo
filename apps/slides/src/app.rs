@@ -11972,6 +11972,7 @@ mod history_reconcile_tests {
 #[cfg(test)]
 mod history_interruption_tests {
     use super::*;
+
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         let heads = doc.get_heads();
         let plan = ui::history_mode::restore::prepare_content_restore(

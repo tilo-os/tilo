@@ -2997,6 +2997,7 @@ mod search_screen_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use taffy::prelude::*;
+
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::widget::Widget;

@@ -12,6 +12,7 @@ use crate::dpi::{LogicalSize, PhysicalSize};
 use super::super::backend;
 use super::canvas::Style;
 use super::media_query_handle::MediaQueryListHandle;
+use super::resize_size;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -235,6 +236,7 @@ impl ResizeScaleInternal {
                 .to_physical(backend::scale_factor(&self.window));
         }
 
+        let rect = entry.content_rect();
         let entry: ResizeObserverSize =
             entry.device_pixel_content_box_size().get(0).unchecked_into();
 
@@ -262,11 +264,17 @@ impl ResizeScaleInternal {
             },
         };
 
-        if horizontal {
-            PhysicalSize::new(entry.inline_size() as u32, entry.block_size() as u32)
+        let device = if horizontal {
+            (entry.inline_size(), entry.block_size())
         } else {
-            PhysicalSize::new(entry.block_size() as u32, entry.inline_size() as u32)
-        }
+            (entry.block_size(), entry.inline_size())
+        };
+        let (width, height) = resize_size::physical_size(
+            device,
+            (rect.width(), rect.height()),
+            backend::scale_factor(&self.window),
+        );
+        PhysicalSize::new(width, height)
     }
 }
 

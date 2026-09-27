@@ -6,26 +6,11 @@ use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::{Category, Channel, Message, User, Workspace};
 
-/// Search group heading for conversations (text and voice channels).
-pub fn channel_kind() -> String {
-    crate::i18n::t("chat-search-kind-conversations")
-}
-/// Search group heading for messages.
-pub fn message_kind() -> String {
-    crate::i18n::t("chat-search-kind-messages")
-}
-/// Search group heading for people; also the label of the palette's people root.
-pub fn person_kind() -> String {
-    crate::i18n::t("chat-search-kind-people")
-}
-/// Search group heading for workspaces.
-pub fn workspace_kind() -> String {
-    crate::i18n::t("chat-search-kind-workspaces")
-}
-/// Search group heading for channel categories.
-pub fn category_kind() -> String {
-    crate::i18n::t("chat-search-kind-categories")
-}
+pub const CHANNEL_KIND: &str = "Conversations";
+pub const MESSAGE_KIND: &str = "Messages";
+pub const PERSON_KIND: &str = "People";
+pub const WORKSPACE_KIND: &str = "Workspaces";
+pub const CATEGORY_KIND: &str = "Categories";
 
 pub struct ChatSearchProvider {
     /// Complete, paged index over the durable chat namespace.  This is never a
@@ -81,11 +66,11 @@ impl ChatSearchProvider {
     fn index_complete_snapshot(&self) {
         for workspace in &self.workspaces {
             let result = SearchResult::for_action(
-                workspace_kind(),
+                WORKSPACE_KIND,
                 workspace.name.clone(),
                 Self::workspace_address(&workspace.id),
             )
-            .with_subtitle(crate::i18n::t("chat-action-workspace"));
+            .with_subtitle("Workspace");
             self.upsert(
                 format!("chat.workspace:{}", workspace.id),
                 &workspace.name,
@@ -95,12 +80,12 @@ impl ChatSearchProvider {
         for channel in &self.channels {
             let workspace = self.workspace_name(&channel.workspace);
             let subtitle = if channel.topic.trim().is_empty() {
-                workspace.clone()
+                workspace.to_string()
             } else {
                 format!("{workspace} · {}", channel.topic)
             };
             let result = SearchResult::for_action(
-                channel_kind(),
+                CHANNEL_KIND,
                 format!("{}{}", channel.kind.glyph(), channel.name),
                 Self::channel_address(&channel.id),
             )
@@ -114,13 +99,13 @@ impl ChatSearchProvider {
         }
         for category in &self.categories {
             let workspace = self.workspace_name(&category.workspace);
-            let state = crate::i18n::t(if category.collapsed {
-                "chat-search-category-collapsed"
+            let state = if category.collapsed {
+                "collapsed"
             } else {
-                "chat-search-category-expanded"
-            });
+                "expanded"
+            };
             let result = SearchResult::for_action(
-                category_kind(),
+                CATEGORY_KIND,
                 category.name.clone(),
                 Self::category_address(&category.id),
             )
@@ -144,12 +129,12 @@ impl ChatSearchProvider {
                 .as_ref()
                 .map(super::model::Attachment::name);
             let title = if message.text.trim().is_empty() {
-                attachment.map_or_else(|| crate::i18n::t("chat-action-attachment"), str::to_owned)
+                attachment.unwrap_or("Attachment").to_string()
             } else {
                 message.text.trim().chars().take(96).collect()
             };
             let result =
-                SearchResult::for_action(message_kind(), title, Self::message_address(&message.id))
+                SearchResult::for_action(MESSAGE_KIND, title, Self::message_address(&message.id))
                     .with_subtitle(format!(
                         "{author} · {}{} · {}",
                         channel.kind.glyph(),
@@ -165,15 +150,11 @@ impl ChatSearchProvider {
         }
         for user in &self.users {
             let result = SearchResult::for_action(
-                person_kind(),
+                PERSON_KIND,
                 user.name.clone(),
                 Self::person_address(&user.id),
             )
-            .with_subtitle(crate::i18n::t(if user.is_agent {
-                "chat-search-subtitle-agent"
-            } else {
-                "chat-search-subtitle-person"
-            }));
+            .with_subtitle(if user.is_agent { "Agent" } else { "Person" });
             self.upsert(
                 format!("chat.person:{}", user.id),
                 format!("{} {}", user.name, user.id),
@@ -190,11 +171,11 @@ impl ChatSearchProvider {
         let _ = self.catalog.upsert(resource_id, searchable_text, result);
     }
 
-    fn workspace_name(&self, id: &str) -> String {
-        self.workspaces.iter().find(|ws| ws.id == id).map_or_else(
-            || crate::i18n::t("chat-action-workspace"),
-            |ws| ws.name.clone(),
-        )
+    fn workspace_name(&self, id: &str) -> &str {
+        self.workspaces
+            .iter()
+            .find(|ws| ws.id == id)
+            .map_or("Workspace", |ws| ws.name.as_str())
     }
     fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|channel| channel.id == id)
@@ -234,7 +215,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    &crate::i18n::t("chat-action-open-workspace"),
+                    "Open workspace",
                     &crate::actions::ChatOperation::OpenWorkspace {
                         workspace: id.to_string(),
                     },
@@ -251,7 +232,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    &crate::i18n::t("chat-action-open-conversation"),
+                    "Open conversation",
                     &crate::actions::ChatOperation::OpenChannel {
                         workspace: channel.workspace.clone(),
                         channel: id.to_string(),
@@ -269,7 +250,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    &crate::i18n::t("chat-action-open-category"),
+                    "Open category",
                     &crate::actions::ChatOperation::OpenCategory {
                         workspace: category.workspace.clone(),
                         category: id.to_string(),
@@ -287,7 +268,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
-                    &crate::i18n::t("chat-action-open-person"),
+                    "Open person",
                     &crate::actions::ChatOperation::OpenPerson {
                         user: id.to_string(),
                     },
@@ -309,7 +290,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
         }
         let open = tilo_actions::ActionSpec::operation(
             "open",
-            crate::i18n::t("chat-action-reveal-message"),
+            "Reveal message",
             tilo_actions::OperationKind::View,
             crate::actions::CHAT_OPERATION_TYPE,
             &crate::actions::ChatOperation::RevealMessage {
@@ -428,14 +409,14 @@ mod tests {
                 provider
                     .search(&message.text)
                     .iter()
-                    .any(|hit| hit.kind == message_kind() && hit.action_address().is_some())
+                    .any(|hit| hit.kind == MESSAGE_KIND && hit.action_address().is_some())
             );
             let person = app.search_users.first().unwrap();
             assert!(
                 provider
                     .search(&person.name)
                     .iter()
-                    .any(|hit| hit.kind == person_kind() && hit.action_address().is_some())
+                    .any(|hit| hit.kind == PERSON_KIND && hit.action_address().is_some())
             );
         }
         // Phase: every_search_kind_resolves_its_canonical_open_resource.
@@ -444,11 +425,11 @@ mod tests {
             let providers = app.search_providers();
             let provider = &providers[0];
             for kind in [
-                workspace_kind(),
-                channel_kind(),
-                category_kind(),
-                person_kind(),
-                message_kind(),
+                WORKSPACE_KIND,
+                CHANNEL_KIND,
+                CATEGORY_KIND,
+                PERSON_KIND,
+                MESSAGE_KIND,
             ] {
                 let hit = provider
                     .search("")
@@ -534,7 +515,7 @@ mod tests {
             let person_hit = provider
                 .search(&person.name)
                 .into_iter()
-                .find(|hit| hit.kind == person_kind())
+                .find(|hit| hit.kind == PERSON_KIND)
                 .unwrap();
             let encoded =
                 tilo_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)

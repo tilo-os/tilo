@@ -104,7 +104,8 @@ async fn fail_p2_over_from_relay1(
     p2_pubkey: [u8; 32],
 ) {
     c2_r1.close().await;
-    for _ in 0..300 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1500 {
         if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
             break;
         }

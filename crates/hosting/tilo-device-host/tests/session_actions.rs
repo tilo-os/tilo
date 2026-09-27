@@ -10,6 +10,7 @@ use std::{
 use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 struct Host(std::process::Child);
 impl Drop for Host {
     fn drop(&mut self) {

@@ -7,6 +7,10 @@
 //! and a ring or strip scrolls, zooms, resizes the brush or steps the volume
 //! or brightness ([`dial_events`]).
 //!
+//! A focused tablet-aware app may say what each control does in its current
+//! mode (`set_feedback`); the pad map ([`State::tablet_pad_map`]) shows
+//! those labels, and Tilo's own mapping where there are none.
+//!
 //! Smithay's tablet manager knows pens only, so the pad side of the protocol
 //! lives here. Each pad is announced to a client with a `zwp_tablet_v2` of
 //! its own (named after the pad device, as libinput reports it separately
@@ -14,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use settings_store::hardware::{KeyChord, PadDial, PadDialAction};
+use settings_store::hardware::{KeyChord, PadDial, PadDialAction, TabletConfig};
 use smithay::reexports::wayland_protocols::wp::tablet::zv2::server::{
     zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
     zwp_tablet_pad_ring_v2::{self, ZwpTabletPadRingV2},
@@ -28,13 +32,17 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
-use crate::compositor::backend::{BackendEvent, PadAction, PadDescription, PadEvent};
+use crate::compositor::backend::{BackendEvent, PadAction, PadDescription, PadEvent, PadGroup};
 use crate::compositor::state::State;
+use crate::shell::pad_map::{PadControl, PadMap, PadMapAction, PadMapEntry};
 
 /// Steps of a mapped action in one full turn of a ring: one every 15°.
 pub const RING_STEPS_PER_TURN: u32 = 24;
 /// How far along a strip (of `0.0..=1.0`) a finger slides for one step.
 pub const STRIP_STEP: f64 = 0.1;
+
+/// The longest control label an app may give, in characters.
+const FEEDBACK_MAX_CHARS: usize = 64;
 
 /// evdev codes a volume or brightness step presses; the shell's media-key
 /// handling steps the level and shows it.
@@ -70,6 +78,80 @@ struct PadInstance {
     groups: Vec<ZwpTabletPadGroupV2>,
     rings: HashMap<u32, ZwpTabletPadRingV2>,
     strips: HashMap<u32, ZwpTabletPadStripV2>,
+    /// The serial of the last `enter`, which feedback for a control in no
+    /// group names.
+    enter_serial: u32,
+    /// The serial of each group's last `mode_switch`, which feedback for
+    /// its controls must name.
+    group_serials: Vec<u32>,
+    /// What the app says each control does in its group's current mode.
+    feedback: HashMap<PadControl, String>,
+}
+
+impl PadInstance {
+    /// Forget the app's labels for the controls of `group`, or all of them.
+    fn forget_feedback(&mut self, groups: &[PadGroup], group: Option<usize>) {
+        match group.and_then(|index| groups.get(index)) {
+            Some(group) => self
+                .feedback
+                .retain(|control, _| !group_has(group, *control)),
+            None => self.feedback.clear(),
+        }
+    }
+}
+
+fn group_has(group: &PadGroup, control: PadControl) -> bool {
+    match control {
+        PadControl::Button(button) => group.buttons.contains(&button),
+        PadControl::Ring(ring) => group.rings.contains(&ring),
+        PadControl::Strip(strip) => group.strips.contains(&strip),
+    }
+}
+
+impl TabletPads {
+    /// Keep an app's label for the control `find` picks out of one of its
+    /// pad objects, if `serial` is that control group's latest.
+    fn record_feedback(
+        &mut self,
+        serial: u32,
+        description: &str,
+        find: impl Fn(&PadInstance) -> Option<PadControl>,
+    ) {
+        for pad in self.pads.values_mut() {
+            for instance in &mut pad.instances {
+                let Some(control) = find(instance) else {
+                    continue;
+                };
+                let expected = pad
+                    .description
+                    .groups
+                    .iter()
+                    .position(|group| group_has(group, control))
+                    .map_or(Some(instance.enter_serial), |group| {
+                        instance.group_serials.get(group).copied()
+                    });
+                let in_range = match control {
+                    PadControl::Button(button) => button < pad.description.buttons,
+                    PadControl::Ring(_) | PadControl::Strip(_) => true,
+                };
+                if expected != Some(serial) || !in_range {
+                    return;
+                }
+                let label: String = description
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(FEEDBACK_MAX_CHARS)
+                    .collect();
+                let label = label.trim();
+                if label.is_empty() {
+                    instance.feedback.remove(&control);
+                } else {
+                    instance.feedback.insert(control, label.to_string());
+                }
+                return;
+            }
+        }
+    }
 }
 
 impl State {
@@ -142,15 +224,54 @@ impl State {
         {
             *slot = mode;
         }
+        let serial = u32::from(self.next_serial());
+        let Some((focused, entered)) =
+            self.move_tablet_pad_focus(&event.pad, target, event.time_msec, serial)
+        else {
+            return false;
+        };
+        let Some(pad) = self.tablet_clients.pads.pads.get_mut(&event.pad) else {
+            return false;
+        };
+        let Some(instance) = focused.and_then(|index| pad.instances.get_mut(index)) else {
+            return false;
+        };
+        send_pad_action(
+            instance,
+            &pad.description.groups,
+            event.action,
+            event.time_msec,
+            serial,
+            entered,
+        );
+        true
+    }
+
+    /// Point pad `key`'s focus at `target` (a surface id), the surface
+    /// keyboard focus is on when it takes tablet input, before a map of the
+    /// pad is shown: an app learns the pad is there, and can label its
+    /// controls, before any of them is touched. `time` is the input
+    /// device's clock.
+    pub fn focus_tablet_pad(&mut self, key: &str, target: Option<u64>, time: u32) {
+        let serial = u32::from(self.next_serial());
+        let _ = self.move_tablet_pad_focus(key, target, time, serial);
+    }
+
+    /// Point pad `key` at `target` (a surface id), leaving the surface it
+    /// was on. Returns the focused instance, if any, and whether it just
+    /// entered; `None` when no such pad is attached.
+    fn move_tablet_pad_focus(
+        &mut self,
+        key: &str,
+        target: Option<u64>,
+        time: u32,
+        serial: u32,
+    ) -> Option<(Option<usize>, bool)> {
         let surface = target.and_then(|id| self.client_input.surface(id).cloned());
         if surface.is_some() {
             self.announce_tablet_pads();
         }
-        let serial = u32::from(self.next_serial());
-        let Some(pad) = self.tablet_clients.pads.pads.get_mut(&event.pad) else {
-            return false;
-        };
-        let time = event.time_msec;
+        let pad = self.tablet_clients.pads.pads.get_mut(key)?;
         let focused = surface.as_ref().and_then(|surface| {
             pad.instances.iter().position(|instance| {
                 instance.pad.is_alive() && instance.pad.id().same_client_as(&surface.id())
@@ -167,36 +288,154 @@ impl State {
         };
         let mut entered = false;
         if !unchanged {
-            if let Some((pad_id, old)) = pad.focus.take()
-                && old.is_alive()
-                && let Some(instance) = pad.instances.iter().find(|i| i.pad.id() == pad_id)
-            {
-                instance.pad.leave(serial, &old);
-            }
+            leave_pad(pad, serial);
             if let Some((index, new)) = wanted
-                && let Some(instance) = pad.instances.get(index)
+                && let Some(instance) = pad.instances.get_mut(index)
             {
                 instance.pad.enter(serial, &instance.tablet, &new);
+                instance.enter_serial = serial;
+                instance.feedback.clear();
                 // A client learns each group's mode on entry.
-                for (group, mode) in instance.groups.iter().zip(&pad.modes) {
+                for ((group, mode), group_serial) in instance
+                    .groups
+                    .iter()
+                    .zip(&pad.modes)
+                    .zip(instance.group_serials.iter_mut())
+                {
                     group.mode_switch(time, serial, *mode);
+                    *group_serial = serial;
                 }
                 pad.focus = Some((instance.pad.id(), new));
                 entered = true;
             }
         }
-        let Some(instance) = focused.and_then(|index| pad.instances.get(index)) else {
-            return false;
+        Some((focused, entered))
+    }
+
+    /// Pads follow the keyboard: when keyboard focus leaves the surface a
+    /// pad entered, that app hears `leave` now rather than at the pad's
+    /// next touch, so it stops showing pad state it no longer gets.
+    pub(crate) fn tablet_pads_follow_keyboard(&mut self, focus: Option<&WlSurface>) {
+        let stale = |pad: &Pad| {
+            pad.focus
+                .as_ref()
+                .is_some_and(|(_, entered)| focus.is_none_or(|focus| focus.id() != entered.id()))
         };
-        send_pad_action(instance, event.action, time, serial, entered);
-        true
+        if !self.tablet_clients.pads.pads.values().any(stale) {
+            return;
+        }
+        let serial = u32::from(self.next_serial());
+        for pad in self.tablet_clients.pads.pads.values_mut() {
+            if stale(pad) {
+                leave_pad(pad, serial);
+            }
+        }
+    }
+
+    /// What every control of pad `key` does right now, with `config` its
+    /// saved settings: the label the focused tablet-aware app gave it, or
+    /// else Tilo's mapping. `None` when no such pad is attached.
+    pub fn tablet_pad_map(&self, key: &str, config: &TabletConfig) -> Option<PadMap> {
+        let pad = self.tablet_clients.pads.pads.get(key)?;
+        let description = &pad.description;
+        let feedback = pad.focus.as_ref().and_then(|(pad_id, _)| {
+            pad.instances
+                .iter()
+                .find(|instance| instance.pad.id() == *pad_id)
+                .map(|instance| &instance.feedback)
+        });
+        let app_label = |control| feedback.and_then(|labels| labels.get(&control)).cloned();
+        let app_focused = feedback.is_some();
+        let mode_of = |control| {
+            description
+                .groups
+                .iter()
+                .position(|group| group_has(group, control))
+                .and_then(|group| pad.modes.get(group))
+                .copied()
+                .unwrap_or(0)
+        };
+        let mut entries = Vec::new();
+        for button in 0..description.buttons {
+            let control = PadControl::Button(button);
+            let mode_group = description
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(_, group)| group.mode_buttons.contains(&button));
+            // A mapped shortcut and the map button never reach the app, so
+            // they come first; then the app's label; then what the button
+            // does on its own.
+            let action = if config.pad_map_button == Some(button) {
+                PadMapAction::ShowsMap
+            } else if let Some(shortcut) = config.pad_buttons.get(&button) {
+                PadMapAction::Shortcut(*shortcut)
+            } else if let Some(label) = app_label(control) {
+                PadMapAction::App(label)
+            } else if let Some((index, group)) = mode_group {
+                PadMapAction::ModeSwitch {
+                    mode: pad.modes.get(index).copied().unwrap_or(0),
+                    modes: group.modes.max(1),
+                }
+            } else if app_focused {
+                PadMapAction::AppDecides
+            } else {
+                PadMapAction::Nothing
+            };
+            entries.push(PadMapEntry { control, action });
+        }
+        let dials = |pick: fn(&PadGroup) -> &[u32]| {
+            let mut all: Vec<u32> = description
+                .groups
+                .iter()
+                .flat_map(|group| pick(group).iter().copied())
+                .collect();
+            all.sort_unstable();
+            all.dedup();
+            all
+        };
+        let rings = dials(|group| &group.rings)
+            .into_iter()
+            .map(|ring| (PadControl::Ring(ring), PadDial::Ring(ring)));
+        let strips = dials(|group| &group.strips)
+            .into_iter()
+            .map(|strip| (PadControl::Strip(strip), PadDial::Strip(strip)));
+        for (control, dial) in rings.chain(strips) {
+            let action = if let Some(label) = app_label(control) {
+                PadMapAction::App(label)
+            } else if app_focused {
+                PadMapAction::AppDecides
+            } else {
+                PadMapAction::Dial(config.dial_action(dial, mode_of(control)))
+            };
+            entries.push(PadMapEntry { control, action });
+        }
+        Some(PadMap {
+            name: description.device.name.clone(),
+            layout: description.layout.clone(),
+            entries,
+        })
+    }
+}
+
+/// Send `leave` to the surface pad focus is on, if any, and forget what that
+/// app said about the controls.
+fn leave_pad(pad: &mut Pad, serial: u32) {
+    if let Some((pad_id, old)) = pad.focus.take()
+        && let Some(instance) = pad.instances.iter_mut().find(|i| i.pad.id() == pad_id)
+    {
+        if old.is_alive() && instance.pad.is_alive() {
+            instance.pad.leave(serial, &old);
+        }
+        instance.feedback.clear();
     }
 }
 
 /// Send `action` to the pad instance holding focus. `entered` means the pad
 /// just entered, which already told the client every group's mode.
 fn send_pad_action(
-    instance: &PadInstance,
+    instance: &mut PadInstance,
+    groups: &[PadGroup],
     action: PadAction,
     time: u32,
     serial: u32,
@@ -245,12 +484,14 @@ fn send_pad_action(
             }
         }
         PadAction::ModeSwitch { group, mode, .. } => {
-            if !entered
-                && let Some(object) = usize::try_from(group)
-                    .ok()
-                    .and_then(|group| instance.groups.get(group))
-            {
+            let index = usize::try_from(group).ok();
+            if !entered && let Some(object) = index.and_then(|group| instance.groups.get(group)) {
                 object.mode_switch(time, serial, mode);
+                if let Some(slot) = index.and_then(|group| instance.group_serials.get_mut(group)) {
+                    *slot = serial;
+                }
+                // The app labels the controls afresh for the new mode.
+                instance.forget_feedback(groups, index);
             }
         }
     }
@@ -335,6 +576,7 @@ fn announce(
         groups.push(group);
     }
     pad.done();
+    let group_serials = vec![0; groups.len()];
     Some(PadInstance {
         seat: seat.id(),
         tablet,
@@ -342,6 +584,9 @@ fn announce(
         groups,
         rings,
         strips,
+        enter_serial: 0,
+        group_serials,
+        feedback: HashMap::new(),
     })
 }
 
@@ -371,9 +616,8 @@ fn strip_units(position: f64) -> u32 {
     units
 }
 
-/// Pad objects take no requests the compositor acts on: feedback strings
-/// are for on-screen help it does not draw, and `destroy` is handled by the
-/// protocol layer.
+/// The tablet and group objects take no requests the compositor acts on;
+/// `destroy` is handled by the protocol layer.
 macro_rules! inert_pad_object {
     ($interface:ty, $request:ty) => {
         impl Dispatch<$interface, PadObject> for State {
@@ -392,10 +636,94 @@ macro_rules! inert_pad_object {
 }
 
 inert_pad_object!(ZwpTabletV2, zwp_tablet_v2::Request);
-inert_pad_object!(ZwpTabletPadV2, zwp_tablet_pad_v2::Request);
 inert_pad_object!(ZwpTabletPadGroupV2, zwp_tablet_pad_group_v2::Request);
-inert_pad_object!(ZwpTabletPadRingV2, zwp_tablet_pad_ring_v2::Request);
-inert_pad_object!(ZwpTabletPadStripV2, zwp_tablet_pad_strip_v2::Request);
+
+/// A button's `set_feedback`: what the app does with it in the current
+/// mode, for the pad map.
+impl Dispatch<ZwpTabletPadV2, PadObject> for State {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &ZwpTabletPadV2,
+        request: zwp_tablet_pad_v2::Request,
+        _data: &PadObject,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let zwp_tablet_pad_v2::Request::SetFeedback {
+            button,
+            description,
+            serial,
+        } = request
+        {
+            let id = resource.id();
+            state
+                .tablet_clients
+                .pads
+                .record_feedback(serial, &description, |instance| {
+                    (instance.pad.id() == id).then_some(PadControl::Button(button))
+                });
+        }
+    }
+}
+
+/// A ring's `set_feedback`, like a button's.
+impl Dispatch<ZwpTabletPadRingV2, PadObject> for State {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &ZwpTabletPadRingV2,
+        request: zwp_tablet_pad_ring_v2::Request,
+        _data: &PadObject,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let zwp_tablet_pad_ring_v2::Request::SetFeedback {
+            description,
+            serial,
+        } = request
+        {
+            let id = resource.id();
+            state
+                .tablet_clients
+                .pads
+                .record_feedback(serial, &description, |instance| {
+                    instance.rings.iter().find_map(|(index, ring)| {
+                        (ring.id() == id).then_some(PadControl::Ring(*index))
+                    })
+                });
+        }
+    }
+}
+
+/// A strip's `set_feedback`, like a button's.
+impl Dispatch<ZwpTabletPadStripV2, PadObject> for State {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &ZwpTabletPadStripV2,
+        request: zwp_tablet_pad_strip_v2::Request,
+        _data: &PadObject,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let zwp_tablet_pad_strip_v2::Request::SetFeedback {
+            description,
+            serial,
+        } = request
+        {
+            let id = resource.id();
+            state
+                .tablet_clients
+                .pads
+                .record_feedback(serial, &description, |instance| {
+                    instance.strips.iter().find_map(|(index, strip)| {
+                        (strip.id() == id).then_some(PadControl::Strip(*index))
+                    })
+                });
+        }
+    }
+}
 
 /// Turns a ring's angle or a strip's position into whole steps, per pad and
 /// control, carrying the remainder so slow turns still add up.

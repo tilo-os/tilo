@@ -1364,7 +1364,6 @@ search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
-search-provider-desktop-windows = Fenster auf dem Desktop
 search-provider-files = Dateien
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
@@ -1375,8 +1374,6 @@ search-badge-session = Sitzung
 search-badge-quick-action = Schnellaktion
 search-badge-shortcut = Kurzbefehl
 search-badge-tray = Statusbereich
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 
 # Suche: Wiedergabesteuerung eines laufenden Players
 search-media-pause = { $player } pausieren
@@ -1428,16 +1425,6 @@ search-tray-entry-on = { $item }: { $entry } (an)
 search-tray-entry-off = { $item }: { $entry } (aus)
 
 # Suche: Fenster auf dem Desktop
-search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
-search-window-group-untitled = Fenstergruppe { $group }
-search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
-search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
 
 # Suche: Shell-Aktionen als Palettenzeilen
 search-action-shortcut-help-toggle = Desktop-Hilfe anzeigen
@@ -2383,6 +2370,20 @@ shortcut-trigger-failed = Der Kurzbefehl wurde nicht ausgeführt
 osd-keys-captured = Die App empfängt alle Tasten · { $chord } stellt die Tastenkürzel wieder her
 osd-keys-released = Tastenkürzel wiederhergestellt
 osd-pad-mode = Tablett-Modus { $mode } von { $modes }
+pad-map-hint = Wird angezeigt, solange die Taste gedrückt ist
+pad-map-button = Taste { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Streifen { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Nächster Modus (jetzt { $mode } von { $modes })
+pad-map-shows-map = Zeigt diese Übersicht
+pad-map-app-decides = Legt die App fest
+pad-map-nothing = Tut nichts
+pad-map-dial-scroll = Blättern
+pad-map-dial-zoom = Zoomen
+pad-map-dial-brush-size = Pinselgröße
+pad-map-dial-volume = Lautstärke
+pad-map-dial-brightness = Helligkeit
 workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen

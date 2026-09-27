@@ -13,7 +13,6 @@ description = "Tilo's emoji catalogue: Unicode groups, localised search, skin to
 [dependencies]
 miniz_oxide.workspace = true
 serde.workspace = true
-workspace-hack = { version = "0.1" }
 
 [build-dependencies]
 miniz_oxide.workspace = true
@@ -23,3 +22,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

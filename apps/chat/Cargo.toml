@@ -69,13 +69,11 @@ iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync"] }
 # Length-prefixed media frames on the call stream.
 wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 
 [lints]
 workspace = true
@@ -88,6 +86,8 @@ media = { path = "../../crates/media/core", default-features = false }
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # The browser runtime embeds this app in wasm32, where the toolkit is the
 # portable build: no native desktop runner, no broker transport, no portal.

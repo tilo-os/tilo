@@ -84,6 +84,22 @@ impl Client {
     async fn get(&self, target: &str) -> (reqwest::StatusCode, Vec<u8>) {
         self.send(reqwest::Method::GET, target, Vec::new()).await
     }
+    /// [`Self::post`], retried while the service answers its retryable 503
+    /// (the Store lock stayed contended past the deferral bound, as on a
+    /// loaded runner), exactly as a delivery client retries. Any other status
+    /// is returned; the bound only catches a service that never recovers.
+    async fn post_retrying(&self, target: &str, body: Vec<u8>) -> (reqwest::StatusCode, Vec<u8>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let (status, reply) = self.post(target, body.clone()).await;
+            if status != reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || tokio::time::Instant::now() >= deadline
+            {
+                return (status, reply);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 fn peer(root: &Path) -> tilo_peer_state::StatePeer {
@@ -380,26 +396,43 @@ async fn started(
     tokio::task::JoinHandle<anyhow::Result<()>>,
     String,
 ) {
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = {
-        let (config, ready) = (config.to_owned(), ready.to_owned());
-        tokio::spawn(async move {
-            crate::https_owner::serve::serve_broker_only_until(&config, &ready, async {
-                let _ = stopped.await;
+    let mut attempt = 0;
+    let (stop, server) = loop {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = {
+            let (config, ready) = (config.to_owned(), ready.to_owned());
+            tokio::spawn(async move {
+                crate::https_owner::serve::serve_broker_only_until(&config, &ready, async {
+                    let _ = stopped.await;
+                })
+                .await
             })
-            .await
-        })
-    };
-    let deadline = tilo_test_env::hang_deadline();
-    while !ready.exists() {
+        };
+        let deadline = tilo_test_env::hang_deadline();
+        while !ready.exists() && !server.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server never published its Ready record"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if !server.is_finished() || ready.exists() {
+            break (stop, server);
+        }
+        // The fixture's free address was taken by another test process
+        // before the service bound it: assign another and start again.
+        let error = format!("{:#}", server.await.unwrap().unwrap_err());
         assert!(
-            !server.is_finished(),
-            "server stopped before Ready: {:?}",
-            server.await
+            attempt < 8 && error.contains("Address already in use"),
+            "server stopped before Ready: {error}"
         );
-        assert!(std::time::Instant::now() < deadline, "Ready not published");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        attempt += 1;
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        crate::https_owner::serve::tests::assign_free_origin(Path::new(
+            json["transport_config"].as_str().unwrap(),
+        ));
+    };
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(ready).unwrap()).unwrap();
     assert_eq!(record["capabilities"], PRODUCT_DATA_V1);
     (stop, server, record["origin"].as_str().unwrap().to_owned())

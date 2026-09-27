@@ -40,8 +40,8 @@
 use automerge::{AutoCommit, ReadDoc};
 use std::collections::BTreeSet;
 use tilo_desktop_model::commands::{
-    BoundCommand, DesktopCommand, OpenContext, TabPlacement, apply_command, namespace_counter,
-    open_app_placement,
+    BoundCommand, DesktopCommand, OpenContext, TabPlacement, apply_command, apply_in_room,
+    namespace_counter, open_app_placement,
 };
 use tilo_desktop_model::{AppKind, DesktopTree, TileContent, mint_in_namespace, peer_salt_of};
 use web_time::{Duration, Instant};
@@ -190,8 +190,9 @@ fn workspace_mut<'a>(
 }
 
 fn apply(tree: &mut DesktopTree, room: &str, command: &DesktopCommand) -> Result<(), String> {
-    apply_command(
-        workspace_mut(tree, room)?,
+    apply_in_room(
+        tree,
+        room,
         command,
         &mut || Err("speculative command cannot mint identities".into()),
         &mut |_, _| Err("speculative command cannot create records".into()),

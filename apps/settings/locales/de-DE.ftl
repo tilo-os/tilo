@@ -89,6 +89,7 @@ input-pen-button-disabled = Nichts tun
 input-pad-title = Tasten von { $name }
 input-pad-button = Taste { $number }
 input-pad-button-none = Nichts tun
+input-pad-button-show-map = Tastenbelegung anzeigen
 input-pad-no-buttons = Dieses Pad meldet keine Tasten
 input-pad-mode-button-description = Schaltet Ringe, Streifen und Tasten in den nächsten Modus
 input-pad-ring = Ring { $number }

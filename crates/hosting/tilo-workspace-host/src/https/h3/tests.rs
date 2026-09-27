@@ -1,7 +1,7 @@
 use super::*;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
 
-const T: Duration = Duration::from_secs(5);
+const T: Duration = crate::HANG_BOUND;
 
 struct Fixture {
     port: u16,

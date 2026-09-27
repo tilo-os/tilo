@@ -504,6 +504,12 @@ pub(in crate::https_owner) async fn serve_broker_only_until(
     served
 }
 /// Upper bound for the agent owner to stop during shutdown.
+#[cfg(not(test))]
 pub(crate) const AGENT_STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(6);
+/// Tests run many actual runtimes at once on a shared runner, where joining
+/// the owner's worker threads alone can take longer than production's bound;
+/// they check a clean stop, not its latency.
+#[cfg(test)]
+pub(crate) const AGENT_STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 #[cfg(test)]
 pub(in crate::https_owner) mod tests;

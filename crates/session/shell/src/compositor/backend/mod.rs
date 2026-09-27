@@ -370,6 +370,14 @@ pub enum BackendEvent {
     TabletPadRemoved(String),
     /// A pad button, ring, strip or mode switch.
     TabletPad(PadEvent),
+    /// A pad's mode button, or the button its settings pick for the map,
+    /// went down (`shown`, with the pad's saved settings) or came up.
+    TabletPadMap {
+        pad: String,
+        shown: Option<Box<settings_store::hardware::TabletConfig>>,
+        /// Milliseconds, the input device's clock.
+        time_msec: u32,
+    },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
@@ -513,12 +521,16 @@ pub struct PadDescription {
     pub device: TabletDevice,
     pub buttons: u32,
     pub groups: Vec<PadGroup>,
+    /// Where the controls sit on the pad, when libwacom knows the model.
+    pub layout: Option<crate::compositor::pad_layout::PadLayout>,
 }
 
 /// One mode group of a pad: the controls that switch mode together.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PadGroup {
     pub buttons: Vec<u32>,
+    /// The buttons that switch this group's mode.
+    pub mode_buttons: Vec<u32>,
     pub rings: Vec<u32>,
     pub strips: Vec<u32>,
     pub modes: u32,
