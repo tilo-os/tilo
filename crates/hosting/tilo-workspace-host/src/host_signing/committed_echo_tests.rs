@@ -2,7 +2,6 @@
 //! break the mounted native worker's scoped republication of merged history.
 use super::*;
 use crate::action_host::scoped_fixture::ScopedAppFixture;
-use std::time::Duration;
 
 fn worker_value(fixture: &mut ScopedAppFixture, field: &str) -> Option<String> {
     use ui::automerge::ReadDoc;
@@ -19,7 +18,7 @@ fn worker_value(fixture: &mut ScopedAppFixture, field: &str) -> Option<String> {
 }
 
 async fn settle(fixture: &mut ScopedAppFixture, field: &str, value: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     // Keep pumping after the merge so the worker's scoped republication of the
     // merged history reaches the actual native signing door.
     let mut after_merge = 0;
@@ -32,7 +31,7 @@ async fn settle(fixture: &mut ScopedAppFixture, field: &str, value: &str) {
             after_merge += 1;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "mounted worker never merged the browser upload"
         );
     }
