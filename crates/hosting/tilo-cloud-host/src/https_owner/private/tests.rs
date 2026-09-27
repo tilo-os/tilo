@@ -74,11 +74,6 @@ use tilo_delivery_protocol::delivery_v3::{
 };
 use tilo_delivery_protocol::peer_actions::ActionMessage;
 use uuid::Uuid;
-
-/// A request deadline no loaded runner reaches before the test finishes.
-fn far_deadline() -> Instant {
-    Instant::from_std(tilo_test_env::hang_deadline())
-}
 // Genuine proofs use the production authority on the actual Store turn.
 // Descriptor/boot installation remains outside this component fixture.
 fn crypto_context<R>(
@@ -419,12 +414,10 @@ impl HttpFixture {
                 .await
                 .unwrap()
         });
-        let request = tilo_test_env::within(
-            "the carrier to queue the HTTP request",
-            self.receiver.recv(),
-        )
-        .await
-        .unwrap();
+        let request = tokio::time::timeout(tilo_test_env::hang_bound(), self.receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
         (request, task)
     }
     async fn finish(self) {
@@ -609,7 +602,11 @@ fn cloud_private_same_uuid_status_does_not_refresh_older_ready_event_fence() {
     let action = action(&source, &session, invocation);
     let host = action.room;
     let mut initial = admitted(&source, &mut session, &action, false, |proof, turn| {
-        service.submit(proof, turn, far_deadline())
+        service.submit(
+            proof,
+            turn,
+            Instant::now() + std::time::Duration::from_secs(5),
+        )
     })
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -648,7 +645,11 @@ fn cloud_private_same_uuid_status_does_not_refresh_older_ready_event_fence() {
     service.pump().unwrap();
     policy(dir.path(), cap(true));
     let mut fresh = admitted(&source, &mut session, &action, false, |proof, turn| {
-        service.submit(proof, turn, far_deadline())
+        service.submit(
+            proof,
+            turn,
+            Instant::now() + std::time::Duration::from_secs(5),
+        )
     })
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -757,7 +758,6 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
     // A debug-build owner read under heavy parallel test load can miss its
     // 5 s request deadline; that is retried with a fresh original request.
     // Every custody assertion below applies to the attempt that completed.
-    let give_up = tilo_test_env::hang_deadline();
     let mut attempts = 0;
     let (request, client, mut pending, incoming, returned) = loop {
         attempts += 1;
@@ -796,7 +796,7 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
             .await
         {
             Ok(reply) => break (request, client, pending, incoming, reply),
-            Err(error) if std::time::Instant::now() < give_up && error.contains("deadline") => {
+            Err(error) if attempts < 3 && error.contains("deadline") => {
                 eprintln!("owner read attempt {attempts} missed its deadline; retrying");
                 drop(incoming);
                 drop(pending);
@@ -865,7 +865,7 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
     );
     // Client Bytes are a network copy, not the server backing; backing clone/
     // slice custody is separately tested in the transport crate itself.
-    tilo_test_env::within("the response to release its queue slot", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             match queue.submit_certified(evidence.clone(), deadline) {
                 Ok(pending) => {
@@ -877,7 +877,8 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
             }
         }
     })
-    .await;
+    .await
+    .unwrap();
     drop(held);
     service.close();
     http.finish().await;
@@ -926,7 +927,11 @@ async fn cloud_private_committed_status_change_streams_to_the_watching_session()
     let action = action(&source, &session, invocation);
     let host = action.room;
     let mut initial = admitted(&source, &mut session, &action, false, |proof, turn| {
-        service.submit(proof, turn, far_deadline())
+        service.submit(
+            proof,
+            turn,
+            Instant::now() + std::time::Duration::from_secs(5),
+        )
     })
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -991,19 +996,17 @@ async fn cloud_private_committed_status_change_streams_to_the_watching_session()
         .committed
         .store(true, std::sync::atomic::Ordering::SeqCst);
     commits.send_modify(|n| *n += 1);
-    let notification = tilo_test_env::within(
-        "the published transition to reach the watching carrier",
-        async {
-            loop {
-                service.pump().unwrap();
-                if let Ok(incoming) = receiver.try_recv() {
-                    break incoming;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let notification = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            service.pump().unwrap();
+            if let Ok(incoming) = receiver.try_recv() {
+                break incoming;
             }
-        },
-    )
-    .await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("published transition reaches the watching carrier");
     assert_eq!(notification.poll, Some(invocation));
     let ActionMessage::Observation {
         update: Some(update),
@@ -1064,27 +1067,24 @@ async fn cloud_private_actual_agent_owner_observes_the_evidence_invocation_only(
     let invocation = tilo_actions::InvocationId(id);
     let action = action(&source, &session, invocation);
     let _pending = admitted(&source, &mut session, &action, false, |proof, turn| {
-        service.submit(proof, turn, far_deadline())
+        service.submit(
+            proof,
+            turn,
+            Instant::from_std(tilo_test_env::hang_deadline()),
+        )
     })
     .unwrap();
     let evidence = receiver.try_recv().unwrap().evidence.unwrap();
-    // A freshly started runtime may still refuse this read-only observation;
-    // retry it until the hang bound.
-    let give_up = far_deadline();
-    let observed = loop {
-        let deadline = far_deadline();
-        match commands
-            .observe_certified(evidence.clone(), invocation, deadline)
-            .await
-        {
-            Ok(observed) => break observed.expect("reserved agent invocation"),
-            Err(error) if Instant::now() < give_up => {
-                eprintln!("observation retry: {error}");
-            }
-            Err(error) => panic!("actual owner observation failed: {error}"),
-        }
-    };
-    let deadline = far_deadline();
+    let observed = commands
+        .observe_certified(
+            evidence.clone(),
+            invocation,
+            Instant::from_std(tilo_test_env::hang_deadline()),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("actual owner observation failed: {error}"))
+        .expect("reserved agent invocation");
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
     assert!(matches!(
         observed,
         ActionMessage::Observation { invocation: observed, .. } if observed == invocation

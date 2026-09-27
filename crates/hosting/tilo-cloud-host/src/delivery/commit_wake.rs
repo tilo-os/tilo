@@ -53,8 +53,9 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
         committed();
-        let waited = tilo_test_env::within("the subscriber to be woken by the commit", waiter)
+        let waited = tokio::time::timeout(tilo_test_env::hang_bound(), waiter)
             .await
+            .expect("woken by the commit")
             .unwrap();
         assert!(waited < Duration::from_secs(1));
     }
@@ -63,6 +64,8 @@ mod tests {
     async fn a_commit_while_busy_is_kept_until_the_next_wait() {
         let mut wake = CommitWake::subscribe();
         committed();
-        tilo_test_env::within("the commit made before waiting", wake.changed()).await;
+        tokio::time::timeout(tilo_test_env::hang_bound(), wake.changed())
+            .await
+            .expect("a commit made before waiting is not lost");
     }
 }
