@@ -1085,17 +1085,9 @@ pub fn sync_pointer_constraint(
             let rect = {
                 let chrome = fb.chrome();
                 let tree = chrome.tree();
-                foreign_tiles(&tree, fb.host())
-                    .into_iter()
-                    .find(|hit| hit.surface_id == surface_id)
-                    .map(|hit| hit.rect)
+                foreign_tile_for_surface(&tree, fb.host(), surface_id).map(|hit| hit.rect)
             }
-            .or_else(|| {
-                fb.floating_surface_rects()
-                    .into_iter()
-                    .find(|(id, _)| *id == surface_id)
-                    .map(|(_, rect)| rect)
-            })?;
+            .or_else(|| fb.floating_surface_rect(surface_id))?;
             Some(crate::compositor::pointer_lock::GrantTarget {
                 surface_id,
                 rect: (rect.x0, rect.y0, rect.x1, rect.y1),
@@ -1225,14 +1217,19 @@ fn route_cursor_moved(
     // on release, which is the protocol boundary used by the shell drop pump.
     let point = vello::kurbo::Point::new(position.x, position.y);
     fb.host_mut().note_pointer(point);
-    let shell_content_target =
-        state.selection.dnd_active && fb.host().has_content_drop_target(point);
+    // Resolve placement once: `has_content_drop_target` was the same walk
+    // as `content_drop_placement`, so a drag over chrome paid for it twice
+    // on every motion event.
+    let shell_drop_placement = state
+        .selection
+        .dnd_active
+        .then(|| fb.host().content_drop_placement(point))
+        .flatten();
+    let shell_content_target = shell_drop_placement.is_some();
     if state.selection.dnd_active {
         fb.host_mut()
             .set_content_drop_hover(shell_content_target.then_some(point));
-        state.selection.shell_drop_placement = shell_content_target
-            .then(|| fb.host().content_drop_placement(point))
-            .flatten();
+        state.selection.shell_drop_placement = shell_drop_placement;
         state.client_input.content_drop_hover_active = shell_content_target;
     }
     let hit = if shell_content_target {
