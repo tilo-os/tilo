@@ -93,7 +93,7 @@ unknown-git = "deny"
 # in `[patch.crates-io]` may come from git; any other git dependency appearing
 # is something to look at.
 allow-git = [
-    "ssh://git@code.tilo.so/tilo/accesskit.git",
-    "ssh://git@code.tilo.so/tilo/atspi.git",
-    "ssh://git@code.tilo.so/tilo/rustypipe.git",
+    "https://code.tilo.so/tilo/accesskit.git",
+    "https://code.tilo.so/tilo/atspi.git",
+    "https://code.tilo.so/tilo/rustypipe.git",
 ]
