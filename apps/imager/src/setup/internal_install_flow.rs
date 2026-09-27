@@ -1420,7 +1420,7 @@ pub(super) mod tests {
     }
 
     fn wait_state(install: &mut InternalInstall, done: impl Fn(&RunState) -> bool) {
-        let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while !done(install.run_state()) {
             install.poll();
             assert!(std::time::Instant::now() < deadline, "run did not finish");
