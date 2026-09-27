@@ -45,12 +45,10 @@ pub type Passphrase = Zeroizing<Vec<u8>>;
 ///
 /// # Errors
 ///
-/// Returns an error if `/dev/urandom` cannot be opened or read.
+/// Returns an error if the operating system's random source fails.
 pub fn new_passphrase() -> Result<Passphrase> {
-    use std::io::Read;
-    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
     let mut bytes = [0u8; 32];
-    f.read_exact(&mut bytes).context("reading /dev/urandom")?;
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
     Ok(Zeroizing::new(hex::encode(bytes).into_bytes()))
 }
 
