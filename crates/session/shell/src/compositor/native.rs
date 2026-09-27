@@ -9810,17 +9810,13 @@ mod tests {
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
         // Phase `consumed_shell_input_is_a_redraw_edge`.
-        {
-            let mut session_changed = false;
-            session_changed |= true;
-            assert!(
-                NativeRedrawReasons {
-                    session: session_changed,
-                    ..NativeRedrawReasons::default()
-                }
-                .content_changed(false)
-            );
-        }
+        assert!(
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false)
+        );
         // Phase `client_routed_pointer_motion_still_redraws_the_compositor_cursor`.
         assert!(
             NativeRedrawReasons {
