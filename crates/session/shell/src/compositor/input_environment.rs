@@ -24,6 +24,8 @@ pub struct InputEnvironment {
     /// read outside libinput and announce no device, so using one is what
     /// makes it available.
     controller: Option<ControllerFamily>,
+    typed_since_touch: bool,
+    tablet_mode: bool,
 }
 
 impl InputEnvironment {
@@ -48,6 +50,11 @@ impl InputEnvironment {
     pub fn note_used(&mut self, modality: InputModality) -> bool {
         let changed = self.last_used != Some(modality);
         self.last_used = Some(modality);
+        match modality {
+            InputModality::Keyboard => self.typed_since_touch = true,
+            InputModality::Touch => self.typed_since_touch = false,
+            InputModality::Pointer | InputModality::Controller => {}
+        }
         changed
     }
 
@@ -56,6 +63,24 @@ impl InputEnvironment {
         let changed = self.controller != Some(family);
         self.controller = Some(family);
         self.note_used(InputModality::Controller) || changed
+    }
+
+    /// Whether a physical key was pressed after the most recent touch (or
+    /// before any touch). Pointer use in between does not reset it.
+    pub fn typed_since_touch(&self) -> bool {
+        self.typed_since_touch
+    }
+
+    /// Record a convertible's tablet-mode switch. Returns whether it changed.
+    pub fn set_tablet_mode(&mut self, on: bool) -> bool {
+        let changed = self.tablet_mode != on;
+        self.tablet_mode = on;
+        changed
+    }
+
+    /// Whether a convertible reports that its keyboard is folded away.
+    pub fn tablet_mode(&self) -> bool {
+        self.tablet_mode
     }
 
     /// The modality of the most recent physical input, if any arrived yet.
@@ -187,6 +212,20 @@ mod tests {
         assert_eq!(env.preferred_hint_modality(), InputModality::Keyboard);
         assert!(env.available.contains(InputDevice::Controller));
         assert_eq!(env.controller, Some(ControllerFamily::PlayStation));
+    }
+
+    #[test]
+    fn typing_is_remembered_across_pointer_use_until_the_next_touch() {
+        let mut input = InputEnvironment::default();
+        assert!(!input.typed_since_touch());
+        input.note_used(InputModality::Keyboard);
+        input.note_used(InputModality::Pointer);
+        assert!(input.typed_since_touch());
+        input.note_used(InputModality::Touch);
+        assert!(!input.typed_since_touch());
+        assert!(input.set_tablet_mode(true));
+        assert!(!input.set_tablet_mode(true));
+        assert!(input.tablet_mode());
     }
 
     #[test]

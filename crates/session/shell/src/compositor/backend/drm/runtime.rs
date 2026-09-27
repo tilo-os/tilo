@@ -2344,8 +2344,22 @@ impl DrmDispatchState {
                 self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_tablet_event(&event);
             }
-            // Switches (lid, tablet mode) are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered. Tablet pads are read from their own context (`PadInput`), since this backend drops their events.
-            _ => {}
+            // Only the tablet-mode switch matters here. Other switches (the
+            // lid) are handled elsewhere or not at all; unlike the tools above
+            // they were never advertised to clients, so dropping them promises
+            // nothing undelivered.
+            InputEvent::SwitchToggle { event } => {
+                use smithay::backend::input::{Switch, SwitchState, SwitchToggleEvent};
+                if SwitchToggleEvent::switch(&event) == Some(Switch::TabletMode) {
+                    self.push(BackendEvent::TabletMode(matches!(
+                        SwitchToggleEvent::state(&event),
+                        SwitchState::On
+                    )));
+                }
+            }
+            // Tablet pads are read from their own context (`PadInput`), since
+            // this backend drops their events.
+            InputEvent::Special(_) => {}
         }
     }
 
