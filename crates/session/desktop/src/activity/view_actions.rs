@@ -79,7 +79,10 @@ pub fn workspace_view_descriptors(
         .iter()
         .map(|workspace| WorkspaceViewDescriptor {
             id: format!("workspace.select.{}", workspace.id.0),
-            label: format!("Switch to {}", workspace.name),
+            label: crate::i18n::t_args(
+                "desktop-view-switch-workspace",
+                &[("workspace", workspace.name.as_str().into())],
+            ),
             request: WorkspaceViewRequest::Select {
                 workspace: workspace.id,
             },
@@ -89,23 +92,23 @@ pub fn workspace_view_descriptors(
         for (id, label, view) in [
             (
                 "room.activity.open",
-                "Review workspace activity",
+                crate::i18n::t("desktop-view-review-activity"),
                 ActivityView::CatchUp,
             ),
             (
                 "room.activity.explore",
-                "Explore workspace activity",
+                crate::i18n::t("desktop-view-explore-activity"),
                 ActivityView::Explore,
             ),
             (
                 "room.activity.replay",
-                "Replay workspace activity",
+                crate::i18n::t("desktop-view-replay-activity"),
                 ActivityView::Replay,
             ),
         ] {
             result.push(WorkspaceViewDescriptor {
                 id: id.into(),
-                label: label.into(),
+                label,
                 request: WorkspaceViewRequest::OpenActivity {
                     workspace: workspace.id,
                     view,
