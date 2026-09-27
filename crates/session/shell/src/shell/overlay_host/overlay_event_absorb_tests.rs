@@ -807,11 +807,11 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             let chip = &kinds_group.children[i + 1];
             assert_eq!(
                 chip.name.as_deref(),
-                Some(format!("Filter: {}", kind.label()).as_str())
+                Some(format!("Filter: {}", kind.localized_label()).as_str())
             );
             assert_ne!(
                 chip.name.as_deref(),
-                Some(kind.label()),
+                Some(kind.localized_label().as_str()),
                 "a chip must not publish the bare kind label — a window title may share it"
             );
             assert_eq!(chip.state.checked, Some(false));
@@ -1178,11 +1178,11 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             .iter()
             .zip(&h.host.search_chip_rects)
         {
-            let (w, height) = tr.measure(kind.label(), size, None);
+            let (w, height) = tr.measure(&kind.localized_label(), size, None);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
                 "{} needs readable width: {:?}",
-                kind.label(),
+                kind.localized_label(),
                 rect
             );
             assert!(
@@ -1236,7 +1236,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             painted.extend(
                 kinds
                     .iter()
-                    .map(|k| k.label().to_string())
+                    .map(crate::shell::search::ResourceKindText::localized_label)
                     .zip(rects.iter().copied()),
             );
             for (label, r) in &painted {

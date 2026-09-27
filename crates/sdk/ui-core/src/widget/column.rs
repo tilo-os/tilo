@@ -5,7 +5,6 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
-use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -245,6 +244,12 @@ impl Column {
 }
 
 impl Widget for Column {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn has_action_control_bindings(&self) -> bool {
         let mut found = false;
         self.for_each_child(&mut |child| {
@@ -534,10 +539,6 @@ impl Widget for Column {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
     }
 
     fn is_focused(&self) -> bool {

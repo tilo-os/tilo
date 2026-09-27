@@ -1170,7 +1170,7 @@ impl ImageEditorApp {
 }
 impl Widget for ImageEditorApp {
     fn sync(&mut self, state: &mut AutoCommit, _: &ObjId) {
-        ProjectDoc::seed(state);
+        ProjectDoc::open_shared(state);
         self.project = ProjectDoc::read(state);
         if self.indexed_project != self.project {
             self.search.refresh(&self.project);

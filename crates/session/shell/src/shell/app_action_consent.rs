@@ -6,7 +6,7 @@
 //! no grant for, the broker asks the person who admitted its connection —
 //! on a sheet only the compositor draws — instead of refusing silently. The
 //! answer becomes an ordinary capability (`Principal::App` subject,
-//! `Scope::Action`, the chosen [`Expiry`]) in the workspace's records,
+//! `Scope::Action`, the chosen `Expiry`) in the workspace's records,
 //! granted by that person. Nobody present means nobody to ask: the request
 //! is refused without a sheet.
 
@@ -16,68 +16,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::oneshot;
 
 use crate::shell::portal_dialog::PortalDialogQueue;
-use crate::shell::state::Expiry;
+pub use tilo_action_broker::app_actions::{
+    AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+};
 
-/// What the person is asked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppActionConsentRequest {
-    /// Names this one question; the sheet's handle.
-    pub handle: String,
-    /// The workspace the grant would be recorded in.
-    pub room: String,
-    /// Who admitted the asking application's connection, and would grant.
-    pub person: String,
-    /// The application asking.
-    pub app_id: String,
-    /// The application whose action it wants to use.
-    pub target_app: String,
-    /// The action's id within `target_app`, as a grant scopes it.
-    pub action: String,
-    /// The action as its publisher labels it.
-    pub action_label: String,
-    pub risk: tilo_actions::RiskLevel,
-    /// Whether each use still asks for confirmation, whatever is granted.
-    pub needs_confirmation: bool,
-}
-
-/// The person's answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppActionConsent {
-    /// This one call.
-    Once,
-    /// Until this session ends.
-    Session,
-    /// In this workspace until revoked.
-    Always,
-    Deny,
-}
-
-impl AppActionConsent {
-    /// The allowing answers, in the order the sheet offers them: the
-    /// narrowest first, and selected by default.
-    pub const ALLOWING: [Self; 3] = [Self::Once, Self::Session, Self::Always];
-
-    #[must_use]
-    pub fn label(self) -> String {
-        crate::shell::i18n::t(match self {
-            Self::Once => "portal-grant-once",
-            Self::Session => "portal-grant-session",
-            Self::Always => "portal-grant-always",
-            Self::Deny => "portal-grant-deny",
-        })
-    }
-
-    /// How long the grant this answer records lives; `None` records
-    /// nothing.
-    #[must_use]
-    pub const fn expiry(self) -> Option<Expiry> {
-        match self {
-            Self::Once => Some(Expiry::AfterUse),
-            Self::Session => Some(Expiry::EndOfSession),
-            Self::Always => Some(Expiry::Never),
-            Self::Deny => None,
-        }
-    }
+/// How an answer reads on the sheet, in the session's language.
+#[must_use]
+pub fn consent_label(answer: AppActionConsent) -> String {
+    crate::shell::i18n::t(match answer {
+        AppActionConsent::Once => "portal-grant-once",
+        AppActionConsent::Session => "portal-grant-session",
+        AppActionConsent::Always => "portal-grant-always",
+        AppActionConsent::Deny => "portal-grant-deny",
+    })
 }
 
 /// How a risk level reads on the sheet.
@@ -90,13 +41,6 @@ pub fn risk_label(risk: tilo_actions::RiskLevel) -> String {
         tilo_actions::RiskLevel::Privileged => "portal-risk-privileged",
         tilo_actions::RiskLevel::Sensitive => "portal-risk-sensitive",
     })
-}
-
-/// Whoever can answer for the person using an application.
-pub trait AppActionConsentPrompter: Send + Sync {
-    /// Put `request` to the person. `None` when nobody is there to answer,
-    /// which refuses the request without asking.
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>>;
 }
 
 /// Whether the person a request names is there to answer it.
@@ -172,18 +116,6 @@ mod tests {
             risk: tilo_actions::RiskLevel::Low,
             needs_confirmation: false,
         }
-    }
-
-    #[test]
-    fn each_answer_records_the_matching_lifetime() {
-        assert_eq!(AppActionConsent::Once.expiry(), Some(Expiry::AfterUse));
-        assert_eq!(
-            AppActionConsent::Session.expiry(),
-            Some(Expiry::EndOfSession)
-        );
-        assert_eq!(AppActionConsent::Always.expiry(), Some(Expiry::Never));
-        assert_eq!(AppActionConsent::Deny.expiry(), None);
-        assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
     }
 
     #[test]

@@ -191,6 +191,10 @@ REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 # of structural cost. Only shard balancing uses these numbers.
 TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
+# A package without a recorded time (new since the last refresh) is assumed to
+# test for about as long as the upper quartile of recorded packages, so a new
+# service suite does not ride along as free weight on an already full shard.
+UNRECORDED_TEST_SECONDS = 20
 # Test jobs are sharded on their own, by recorded test time: one test job per
 # this many recorded seconds, so a large tested set runs its suites on several
 # runners instead of queueing them on one. Each test job links only its own
@@ -209,6 +213,13 @@ def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
             for name, value in data.items()):
         raise ValueError(f"{path} must map package names to whole seconds")
     return data
+
+
+def expected_test_seconds(name: str, test_seconds: dict[str, int] | None) -> int:
+    """Recorded seconds, the unrecorded default when timings exist, else zero."""
+    if not test_seconds:
+        return 0
+    return test_seconds.get(name, UNRECORDED_TEST_SECONDS)
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -454,7 +465,8 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int,
     test_seconds = test_seconds or {}
 
     def weight(name: str) -> int:
-        return package_cost(packages[name]) + TEST_SECOND_WEIGHT * test_seconds.get(name, 0)
+        return (package_cost(packages[name])
+                + TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds))
 
     shards = [{"names": [], "cost": 0, "weight": 0}
               for _ in range(max(1, min(shard_count, len(names))))]
@@ -485,7 +497,7 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
 
 
 def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> int:
-    total = sum(test_seconds.get(name, 0) for name in names)
+    total = sum(expected_test_seconds(name, test_seconds) for name in names)
     time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
     return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
 

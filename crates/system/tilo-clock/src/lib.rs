@@ -13,7 +13,13 @@
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+// The browser has no process clock: std's readings panic on
+// wasm32-unknown-unknown, so the page's clock stands in for it there.
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn since_epoch() -> Option<Duration> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok()

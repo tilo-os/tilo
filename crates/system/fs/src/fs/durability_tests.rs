@@ -187,11 +187,16 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn more_fsyncs_than_the_version_bound_lose_nothing() {
+    const VERSION_BOUND: usize = 64;
     let fixture = Fixture::new().await;
+    fixture
+        .publisher
+        .repository()
+        .set_max_record_versions(VERSION_BOUND);
     let fs = fixture.mount(true);
     let (ino, fh) = create_open(&fs, "app.sqlite");
     let record_id = fs.ns().record_id_for(ino).unwrap();
-    let syncs = crate::record_repository::MAX_RECORD_VERSIONS + 100;
+    let syncs = VERSION_BOUND + 100;
     let mut expected = vec![0_u8; 4096];
     fs.write_buffer(ino, 0, &expected).unwrap();
     for i in 0..syncs {

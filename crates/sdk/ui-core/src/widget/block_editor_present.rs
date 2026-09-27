@@ -275,23 +275,23 @@ impl BlockEditor {
         }
     }
 
-    /// Address blocks in presence by the owning model's ids rather than by
-    /// position, so a collaborator's caret lands in the same paragraph
-    /// however the two screens lay the document out.
+    /// Address blocks in presence by the owning model's keys (a resource
+    /// selection, say) rather than the editor's own, so a collaborator's
+    /// caret lands in the same paragraph of the same resource.
     pub fn set_presence_key(&mut self, key: PresenceKeyFn) {
         self.presence_key = Some(key);
     }
 
-    /// The presence key of block `index`.
-    pub(super) fn presence_key_of(&self, index: usize) -> PresenceKey {
-        match (&self.presence_key, self.blocks.get(index)) {
-            (Some(key), Some(block)) => key(&block.id),
-            _ => super::block_presence_key(index),
+    /// The presence key of the block with id `block`.
+    pub(super) fn presence_key_for(&self, block: &str) -> PresenceKey {
+        match &self.presence_key {
+            Some(key) => key(block),
+            None => super::block_presence_key(block),
         }
     }
 
-    /// Whether presence is keyed by block id.
-    pub(super) fn presence_keyed_by_id(&self) -> bool {
+    /// Whether presence is keyed by the owning model's keys.
+    pub(super) fn presence_keyed_by_model(&self) -> bool {
         self.presence_key.is_some()
     }
 }

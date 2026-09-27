@@ -513,7 +513,6 @@ pub(super) fn device_fabric_pane_rows(
 pub(super) fn speaker_group_summary(
     group: &crate::shell::speaker_group_runtime::SpeakerGroupView,
 ) -> String {
-    use std::fmt::Write as _;
     let total = group.members.len();
     let ready = group.ready_members();
     let waiting = group
@@ -523,14 +522,16 @@ pub(super) fn speaker_group_summary(
             member.state == crate::shell::speaker_group::SpeakerMemberState::AwaitingConsent
         })
         .count();
-    let mut summary = format!(
-        "{ready} of {total} speaker{} ready",
-        if total == 1 { "" } else { "s" }
-    );
+    let counts: [(&str, ui::i18n::ArgValue); 3] = [
+        ("ready", ready.into()),
+        ("total", total.into()),
+        ("waiting", waiting.into()),
+    ];
     if waiting > 0 {
-        let _ = write!(summary, " · {waiting} waiting for approval");
+        crate::shell::i18n::t_args("speaker-group-summary-waiting", &counts)
+    } else {
+        crate::shell::i18n::t_args("speaker-group-summary", &counts[..2])
     }
-    summary
 }
 
 /// "Right speaker" from "right speaker".
@@ -541,55 +542,68 @@ pub(super) fn sentence_case(text: &str) -> String {
     })
 }
 
-pub(super) fn remote_capture_kind_label(
+/// The catalogue key naming a remote input ("camera"), as the `$input` of a
+/// sentence.
+pub(super) const fn remote_capture_kind_key(
     kind: crate::shell::remote_capture::device::RemoteCaptureKind,
 ) -> &'static str {
     match kind {
-        crate::shell::remote_capture::device::RemoteCaptureKind::Camera => "camera",
-        crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => "microphone",
-        crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => "scanner",
+        crate::shell::remote_capture::device::RemoteCaptureKind::Camera => "remote-input-camera",
+        crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => {
+            "remote-input-microphone"
+        }
+        crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
+            "remote-input-scanner"
+        }
     }
 }
 
-pub(super) fn display_mirror_failure_label(
+/// The catalogue key of the reason, as the `$reason` of a sentence.
+pub(super) const fn display_mirror_failure_key(
     failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
 ) -> &'static str {
     use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
     match failure {
-        DisplayMirrorFailure::Denied => "declined on the target",
-        DisplayMirrorFailure::PeerOffline => "certified peer went offline",
-        DisplayMirrorFailure::TimedOut => "session timed out",
-        DisplayMirrorFailure::Transport => "private video route failed",
-        DisplayMirrorFailure::Policy => "display continuity was disabled",
+        DisplayMirrorFailure::Denied => "mirror-failure-denied",
+        DisplayMirrorFailure::PeerOffline => "mirror-failure-peer-offline",
+        DisplayMirrorFailure::TimedOut => "mirror-failure-timed-out",
+        DisplayMirrorFailure::Transport => "mirror-failure-transport",
+        DisplayMirrorFailure::Policy => "mirror-failure-policy",
     }
 }
 
-pub(super) fn media_handoff_failure_label(
+/// The catalogue key of the reason, as the `$reason` of a sentence.
+pub(super) const fn media_handoff_failure_key(
     failure: crate::shell::device_fabric::MediaHandoffFailure,
 ) -> &'static str {
     use crate::shell::device_fabric::MediaHandoffFailure;
     match failure {
-        MediaHandoffFailure::DestinationUnavailable => "destination unavailable",
-        MediaHandoffFailure::UnsupportedOutput => "destination cannot play this media",
-        MediaHandoffFailure::InvalidWorkspace => "workspace is unavailable there",
-        MediaHandoffFailure::OpenFailed => "destination could not open it",
-        MediaHandoffFailure::TimedOut => "destination did not respond",
-        MediaHandoffFailure::Cancelled => "cancelled",
+        MediaHandoffFailure::DestinationUnavailable => {
+            "media-handoff-failure-destination-unavailable"
+        }
+        MediaHandoffFailure::UnsupportedOutput => "media-handoff-failure-unsupported-output",
+        MediaHandoffFailure::InvalidWorkspace => "media-handoff-failure-invalid-workspace",
+        MediaHandoffFailure::OpenFailed => "media-handoff-failure-open-failed",
+        MediaHandoffFailure::TimedOut => "media-handoff-failure-timed-out",
+        MediaHandoffFailure::Cancelled => "media-handoff-failure-cancelled",
     }
 }
 
-pub(super) fn bluetooth_handoff_failure_label(
+/// The catalogue key of the reason, as the `$reason` of a sentence.
+pub(super) const fn bluetooth_handoff_failure_key(
     failure: crate::shell::device_fabric_runtime::BluetoothHandoffFailure,
 ) -> &'static str {
     use crate::shell::device_fabric_runtime::BluetoothHandoffFailure;
     match failure {
-        BluetoothHandoffFailure::InspectTarget => "target inspection failed",
-        BluetoothHandoffFailure::TargetUnavailable => "target unavailable or declined",
-        BluetoothHandoffFailure::DisconnectSource => "source could not release accessory",
-        BluetoothHandoffFailure::PairTarget => "target pairing failed",
-        BluetoothHandoffFailure::ConnectTarget => "target connection failed",
-        BluetoothHandoffFailure::Send => "certified route was interrupted",
-        BluetoothHandoffFailure::TimedOut => "transaction timed out",
-        BluetoothHandoffFailure::Rollback => "source rollback failed",
+        BluetoothHandoffFailure::InspectTarget => "bluetooth-handoff-failure-inspect-target",
+        BluetoothHandoffFailure::TargetUnavailable => {
+            "bluetooth-handoff-failure-target-unavailable"
+        }
+        BluetoothHandoffFailure::DisconnectSource => "bluetooth-handoff-failure-disconnect-source",
+        BluetoothHandoffFailure::PairTarget => "bluetooth-handoff-failure-pair-target",
+        BluetoothHandoffFailure::ConnectTarget => "bluetooth-handoff-failure-connect-target",
+        BluetoothHandoffFailure::Send => "bluetooth-handoff-failure-send",
+        BluetoothHandoffFailure::TimedOut => "bluetooth-handoff-failure-timed-out",
+        BluetoothHandoffFailure::Rollback => "bluetooth-handoff-failure-rollback",
     }
 }

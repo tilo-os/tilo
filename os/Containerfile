@@ -1143,7 +1143,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     sane-backends-drivers-scanners \
     tesseract \
     tesseract-langpack-eng \
-    libcanberra-gtk3 \
     sound-theme-freedesktop \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -1159,7 +1158,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # on AMD). Cisco's openh264 GStreamer plugin is deliberately NOT baked in:
 # Cisco's patent licence covers only binaries the user downloads from Cisco.
 # It arrives with the opt-in additional-codecs pack, downloaded on the device.
+#
+# -bad-free's gtkwaylandsink plugin makes GTK 3 a hard dependency (see
+# os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
+# desktop-portal backend supplement GTK 3; Tilo plays event sounds with pw-play
+# and serves its own portal backend, so the transactions that could pull them
+# in exclude them, and the toolkit gate fails the build if one still arrives.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     gstreamer1 \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
@@ -1271,15 +1278,22 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
 # Documents/Downloads/… folders host apps expect. `geoclue2` is the service
 # xdg-desktop-portal's Location portal asks; without it every request fails.
-# Fcitx5 is the composing input method the compositor starts when a Pinyin,
-# Mozc or Hangul input source is active; it reaches apps through
-# input-method-v2 on a private display, so neither its toolkit IM modules nor
-# its Qt configuration tool (the session writes its configuration) are wanted.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+# Fcitx5 is the composing input method the compositor starts when a Rime
+# (Simplified Chinese Pinyin), Anthy or Hangul input source is active; it
+# reaches apps through input-method-v2 on a private display, so neither its
+# toolkit IM modules nor its Qt configuration tool (the session writes its
+# configuration) are wanted. These engines link no UI toolkit; Chinese Addons'
+# Pinyin would bring Qt6 and QtWebEngine for its dictionary tools. Rime's
+# shared configuration makes Simplified Chinese Pinyin its only schema.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=os/usr/share/rime-data/default.custom.yaml,target=/run/tilo-rime-default.custom.yaml,ro \
+    dnf install -y --setopt=reposdir=/repo \
     --exclude=fcitx5-configtool \
     --exclude=fcitx5-gtk \
     --exclude=fcitx5-qt \
     --exclude=fcitx5-qt-module \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
@@ -1287,10 +1301,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     xdg-user-dirs \
     geoclue2 \
     fcitx5 \
-    fcitx5-chinese-addons \
-    fcitx5-mozc \
+    fcitx5-rime \
+    fcitx5-anthy \
     fcitx5-hangul \
-    && dnf clean all && ${FINALIZE_RPMDB}
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && install -D -m 0644 /run/tilo-rime-default.custom.yaml /usr/share/rime-data/default.custom.yaml
 
 # ---------------------------------------------------------------------------
 # OS infrastructure (C2-C8)
@@ -1531,6 +1546,7 @@ COPY os/usr/share/plymouth/themes/tilo/ /usr/share/plymouth/themes/tilo/
 COPY \
     os/dev/make-plymouth-assets.py \
     os/scripts/verify-runtime-crypto-packages.sh \
+    os/scripts/verify-no-ui-toolkits.sh \
     /usr/local/bin/
 
 # Splash rendering needs Pillow once. The frozen snapshot already carries it
@@ -1605,16 +1621,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-rpm-snapshot-package[x86_64]: wine
 # tilo-rpm-snapshot-package[x86_64]: wine-dxvk
 # tilo-rpm-snapshot-package[aarch64]: edk2-aarch64
-# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
+# Native FEX executable dependencies and host graphics/audio thunks.
 # tilo-rpm-snapshot-package[aarch64]: glibc
 # tilo-rpm-snapshot-package[aarch64]: libgcc
 # tilo-rpm-snapshot-package[aarch64]: libstdc++
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-glx
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-opengl
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-egl
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
 # tilo-rpm-snapshot-package[aarch64]: alsa-lib
 # tilo-rpm-snapshot-package[aarch64]: libdrm
 # tilo-rpm-snapshot-package[aarch64]: libwayland-client
@@ -1622,18 +1635,41 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 ARG TILO_WINDOWS_ARCH
 # wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
 # uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
+# QEMU is the core emulator plus the SPICE and virtio display modules the
+# appliance's domain uses, and libvirt the KVM daemon set without the
+# `qemu-kvm`/`libvirt-daemon-kvm` metapackages: those add QEMU's GTK and SDL
+# front ends and network block drivers no Tilo path opens.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
       x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
-      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl alsa-lib libdrm libwayland-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
     --exclude=dosbox-staging \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     $windows_packages \
-    qemu-kvm \
+    qemu-kvm-core \
+    qemu-ui-spice-core \
+    qemu-char-spice \
+    qemu-audio-spice \
+    qemu-device-display-virtio-gpu \
+    qemu-device-display-virtio-gpu-pci \
+    qemu-device-display-virtio-vga \
     libvirt-client \
-    libvirt-daemon-kvm \
+    libvirt-daemon-common \
+    libvirt-daemon-driver-interface \
+    libvirt-daemon-driver-network \
+    libvirt-daemon-driver-nodedev \
+    libvirt-daemon-driver-nwfilter \
+    libvirt-daemon-driver-qemu \
+    libvirt-daemon-driver-secret \
+    libvirt-daemon-driver-storage \
+    libvirt-daemon-lock \
+    libvirt-daemon-log \
+    libvirt-daemon-plugin-lockd \
+    libvirt-daemon-proxy \
     libvirt-daemon-config-nwfilter \
     swtpm \
     swtpm-tools \
@@ -2698,10 +2734,9 @@ RUN case "${TILO_GENERATION}" in \
 # carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
 # ICE and SRTP companions are unusable here and likewise serve no Tilo path.
 # libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
-# libraries for distro consumers but remove that unused TLS integration. Qt's ARM compatibility frontend is also
-# offline and does not need its optional OpenSSL TLS backend. Rust-native code
-# owns network security, while foundational distro consumers use the built-in
-# provider. The Shoutcast library has no remaining consumer after its plugin is
+# libraries for distro consumers but remove that unused TLS integration.
+# Rust-native code owns network security, while foundational distro consumers
+# use the built-in provider. The Shoutcast library has no remaining consumer after its plugin is
 # removed, so delete its payload and package metadata too. The aggregate
 # GStreamer bundle retains a dependency on libshout for the deleted plugin;
 # `--nodeps` is therefore intentional and bounded by the absence audit below.
@@ -2710,7 +2745,12 @@ RUN case "${TILO_GENERATION}" in \
 # Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
 # that backend the same way; the forbidden-package gate below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
-RUN find /usr/lib /usr/lib64 \
+# Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
+# does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
+# warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
+# recreated on first boot rather than baked into the image.
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+    find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
          -o -name 'libevent_openssl.so*' \
@@ -2719,8 +2759,7 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
          -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
          -o -path '*/gstreamer-1.0/libgstnice.so' \
-         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
     && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib \
@@ -2734,11 +2773,12 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
          -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
          -o -path '*/gstreamer-1.0/libgstnice.so' \
-         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
-    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && bash /usr/local/bin/verify-no-ui-toolkits.sh \
+    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+    && python3 /run/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 
 # ---------------------------------------------------------------------------

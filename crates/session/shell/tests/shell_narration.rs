@@ -163,6 +163,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
 
     press(&mut host, &taffy, node, NamedKey::Tab);
     narrator.observe(&host.chrome_narration_snapshot());
+    drop(host);
     let spoken = speaker.take();
     assert!(
         spoken

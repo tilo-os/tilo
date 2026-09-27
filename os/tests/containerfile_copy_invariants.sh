@@ -47,13 +47,14 @@ containerfile="$repo/os/Containerfile"
 # rule and its i2c-dev modules-load snippet, which let the session set external
 # monitors' brightness, are deliberate additions. So are the cloud account
 # service, tilo-fs-cloud.service, and its vault credential helper at
-# /usr/libexec/tilo-account-credential. Sorting
+# /usr/libexec/tilo-account-credential. The finished-rootfs UI toolkit gate is
+# a deliberate addition. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=ccd9c8b923e151682f0edae0d58b635bcd7fdb29dca48a1e040455b2cbe235c8
+expected_contract=caa2cd6012daa352753ef99d1e3f94d80aa1e340fb1478bce9b3ef661bac8259
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

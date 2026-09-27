@@ -14,6 +14,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
@@ -443,3 +447,9 @@ fn _suppress_unused() {
     let _ = Duration::from_secs(1);
     let _: VecDeque<u8> = VecDeque::new();
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

@@ -126,6 +126,10 @@ pub mod offscreen {
     ///
     /// Returns an error if the output directory cannot be created, or if a
     /// scene named in `scenes` fails its own setup.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run_scenes(
         scenes: &[String],
         dir: &Path,
@@ -391,6 +395,10 @@ pub mod window {
     /// `OpenPalette` will not be visible on the live binary's first
     /// frame; a pre-rolled `SwitchWorkspace(1)` will. Useful for
     /// scripted "open the live binary on workspace 2 with these tabs".
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run(pre_roll: Option<&Scenario>) {
         if let Some(scenario) = pre_roll {
             println!("shots: window-mode pre-roll scenario '{}'", scenario.name);
@@ -466,6 +474,7 @@ mod tests {
         let mut driver = ShellDriver::new((128, 96));
         let summary =
             recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
+        drop(driver);
 
         let bytes = fs::read(&tmp).expect("read recorded file");
         assert!(bytes.len() > 8, "recording mode produced an empty file");
@@ -500,6 +509,10 @@ mod tests {
     /// clicking into Notes and typing lands in that tab's own record,
     /// instead of every in-process tile painting "Document unavailable".
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
+    )]
     fn booted_notes_tab_has_its_document_and_takes_typing() {
         use shell::shell::notes_app::BODY_KEY;
         use shell::shell::state::TileContent;

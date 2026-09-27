@@ -370,7 +370,7 @@ impl DiffMergeApp {
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Diff", "Diff", action),
+            tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", action),
         );
         self.merge.acknowledge_content(doc);
     }
@@ -1892,7 +1892,8 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             tilo_actions::ActionInput::Immediate(e) => e.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.

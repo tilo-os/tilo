@@ -947,8 +947,8 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
     !needle.is_empty() && identities.iter().any(|i| i.eq_ignore_ascii_case(needle))
 }
 
-/// The window identities a Tilo package id implies: the id itself, and
-/// its trailing component (`so.tilo.hello` ↔ `hello`).
+/// The window identities a Tilo package id implies: the id itself plus its
+/// trailing component (`so.tilo.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
     let mut out = vec![package_id.to_string()];
     if let Some(last) = package_id.rsplit('.').next()
@@ -1675,7 +1675,7 @@ pub fn build_launch_command(
 /// later continuation capture can attach metadata to this exact tab.
 #[allow(
     clippy::too_many_arguments,
-    reason = "launch authority and durable tab identity are explicit boundary inputs"
+    reason = "The launch command binds the installed app, sandbox endpoints and exact durable tab route together."
 )]
 pub fn build_launch_command_for_tab(
     app: &InstalledApp,
@@ -2153,9 +2153,11 @@ fn launch_with_context(
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
-    let app = installed_apps()?
-        .into_iter()
+    let apps = installed_apps()?;
+    let app = apps
+        .iter()
         .find(|a| a.package_id == package_id)
+        .cloned()
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: package_id.to_string(),
         })?;
@@ -2218,6 +2220,10 @@ enum LaunchContext<'a> {
     Raw(String),
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
+)]
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
@@ -2238,6 +2244,10 @@ fn execute_installed(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
+)]
 fn execute_installed_inner(
     app: InstalledApp,
     room: RoomId,
@@ -3288,6 +3298,28 @@ pub fn wayland_socket_display() -> OsString {
         std::path::PathBuf::into_os_string,
     )
 }
+
+/// Package processes require the Linux execution authority.
+///
+/// # Errors
+/// Always fails on hosts without that authority, before spawning any worker.
+#[cfg(all(not(test), not(target_os = "linux")))]
+pub fn spawn_launch(
+    _package_id: String,
+    _display_name: String,
+    _command: LaunchCommand,
+) -> Result<(), String> {
+    Err(LaunchError::ProviderUnavailable {
+        provider: "Linux package execution",
+    }
+    .to_string())
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
@@ -4877,6 +4909,11 @@ mod tests {
             );
             let (_, start_time) = proc_stat(pid).expect("launcher process stat");
             assert_eq!(
+                consume_trusted_service_launch(pid, start_time, "so.tilo.agent", "room-1"),
+                None,
+                "another app id must deny without transferring the record"
+            );
+            assert_eq!(
                 consume_trusted_service_launch(pid, start_time, "so.tilo.windows", "wrong-room"),
                 None,
                 "a mismatch must deny without transferring the record"
@@ -5071,20 +5108,4 @@ mod tests {
         governance_projection_is_atomic_bounded_and_owner_only();
         files_launch_receives_only_the_staged_projection_path();
     }
-}
-
-/// Package processes require the Linux execution authority.
-///
-/// # Errors
-/// Always fails on hosts without that authority, before spawning any worker.
-#[cfg(all(not(test), not(target_os = "linux")))]
-pub fn spawn_launch(
-    _package_id: String,
-    _display_name: String,
-    _command: LaunchCommand,
-) -> Result<(), String> {
-    Err(LaunchError::ProviderUnavailable {
-        provider: "Linux package execution",
-    }
-    .to_string())
 }

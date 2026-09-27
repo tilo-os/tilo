@@ -1017,10 +1017,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
             PortablePrefType::Bool => boolean(),
             PortablePrefType::Text => text(),
         }
-    } else if crate::panes::keyboard_shortcuts::is_durable_key(key) && !presentation_key {
-        // Shortcut chords beyond vim-mode are a closed catalogue published as
-        // dynamic rows rather than static table entries.
-        text() || (key == "shortcuts.vim_mode" && boolean())
     } else if key.starts_with("default_apps.") && !presentation_key {
         text()
     } else if valid_notification_app_key {
@@ -1029,6 +1025,8 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         // Trust, service and residency policy is deliberately absent: those
         // settings use typed device-local effect operations and must never
         // enter the replayable SettingsAction namespace.
+        // Keyboard shortcut chords are likewise absent: the shell's
+        // `keyboard-shortcuts` resource is their one write path.
         false
     };
     allowed.then_some(()).ok_or_else(|| {
@@ -4995,32 +4993,9 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
     );
     section =
         portable::attach_portable_preferences(section, Category::KeyboardShortcuts, doc, &prefs);
-    for (key, shortcut_label) in crate::panes::keyboard_shortcuts::resource_entries() {
-        // Resource action ids are stable, readable derivatives of their
-        // durable key rather than a hand-maintained subset of the recorder
-        // table. Dots become dashes to stay within the action-id vocabulary.
-        let id = key
-            .strip_prefix("shortcuts.")
-            .unwrap_or(&key)
-            .replace('_', "-");
-        let label = format!("Set {shortcut_label} shortcut");
-        section = section.with_action(
-            ActionSpec::typed(
-                id,
-                label,
-                "e.g. Super+K",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required("choice", ParamType::Text, "Shortcut")],
-                move |args| {
-                    encode(&set_text_action(
-                        key.clone(),
-                        args.text("choice").unwrap_or_default(),
-                    ))
-                },
-            )
-            .with_contract(setting_contract()),
-        );
-    }
+    // Chords are changed through the shell's `keyboard-shortcuts` resource,
+    // the one write path every caller shares; this section keeps only the
+    // Vim navigation preference.
     section
 }
 
@@ -5569,6 +5544,7 @@ mod tests {
                 set_bool_action("appearance.high_contrast.edit", true),
                 set_text_action("settings.select.appearance", "true"),
                 set_text_action("shortcuts.no-longer-supported", "Super+Shift+K"),
+                set_text_action("shortcuts.search", "Super+J"),
                 set_text_action("unknown.preference", "value"),
             ] {
                 assert!(matches!(
@@ -5863,7 +5839,7 @@ mod tests {
             );
         }
 
-        // Case `every_visible_shortcut_has_a_canonical_resource_action`.
+        // Case `the_shortcuts_section_offers_only_vim_mode`.
         {
             let shortcuts = find(&resources, &pane_resource_id(Category::KeyboardShortcuts));
             let action_ids: std::collections::HashSet<&str> = shortcuts
@@ -5876,23 +5852,11 @@ mod tests {
                 "missing canonical Vim navigation action"
             );
 
-            for (key, label) in crate::panes::keyboard_shortcuts::resource_entries() {
-                let id = key
-                    .strip_prefix("shortcuts.")
-                    .unwrap_or(&key)
-                    .replace('_', "-");
-                assert!(
-                    action_ids.contains(id.as_str()),
-                    "missing canonical shortcut action for {label} ({key})"
-                );
-                let action = shortcuts
-                    .actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .expect("action was just found");
-                assert_eq!(action.kind, OperationKind::Document);
-                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            }
+            assert_eq!(
+                action_ids,
+                std::collections::HashSet::from([OPEN_PANE_ACTION, "vim-mode"]),
+                "chords are rebound only through the shell's keyboard-shortcuts resource"
+            );
         }
 
         // Case `accessibility_controls_bind_to_their_exported_typed_actions`.

@@ -35,8 +35,6 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -521,7 +519,6 @@ pub fn path_to_uri(path: &Path) -> String {
 /// rust-analyzer lowercases them; normalize both directions so diagnostics
 /// and definition locations use the same keys as the editor's documents.
 fn normalize_document_uri(uri: &str) -> String {
-    #[cfg(windows)]
     if let Some(path) = uri.strip_prefix("file:///") {
         let bytes = path.as_bytes();
         if let (Some(drive), Some(b':'), Some(b'/')) = (bytes.first(), bytes.get(1), bytes.get(2))
@@ -584,12 +581,8 @@ impl LspClient {
         let root_uri = path_to_uri(root);
 
         let mut command = Command::new(&prog);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // Language servers communicate over pipes, not a console window.
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        // Language servers communicate over pipes, not a console window.
+        bounded_command::without_console_window(&mut command);
         command
             .args(&args)
             // Run the server *in* the project, so anything it resolves
@@ -602,8 +595,7 @@ impl LspClient {
         // Language servers routinely start indexers and compiler helpers.
         // Own the complete tree so closing a project cannot strand those
         // descendants in the user's session.
-        #[cfg(unix)]
-        command.process_group(0);
+        bounded_command::own_process_tree(&mut command);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 format!("{prog} not found on PATH — install it for live diagnostics")
@@ -934,17 +926,8 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Ok(pid) = i32::try_from(self.child.id())
-            && let Some(group) = pid.checked_neg()
-        {
-            // SAFETY: `start` placed the child in its own pid-named process
-            // group, so the negative pid targets only this LSP process tree.
-            unsafe { libc::kill(group, libc::SIGKILL) };
-        }
-        // Also kill the direct child for non-Unix platforms and as a fallback
-        // if process-group signalling failed, then always reap it.
-        let _ = self.child.kill();
+        // `start` made the server the owner of its process tree.
+        bounded_command::kill_tree(&mut self.child);
         let _ = self.child.wait();
     }
 }

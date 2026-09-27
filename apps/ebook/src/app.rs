@@ -3732,7 +3732,7 @@ impl BooksApp {
             doc,
             crate::actions::EBOOK_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Ebook", "Ebook", action),
+            tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
     }
 
@@ -5059,6 +5059,10 @@ impl Widget for BooksApp {
                         0_u8.hash(&mut action_hasher);
                         encoded.type_id.hash(&mut action_hasher);
                         encoded.payload.hash(&mut action_hasher);
+                    }
+                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
+                        2_u8.hash(&mut action_hasher);
+                        type_id.hash(&mut action_hasher);
                     }
                     tilo_actions::ActionInput::Prompted {
                         prompt,

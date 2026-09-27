@@ -1,11 +1,11 @@
 //! Editable compositor shortcuts. The rows are the desktop's keyboard
 //! shortcut catalogue ([`settings_store::keyboard_shortcuts`]), the same one
 //! the shell publishes on the action door and the shortcut guide shows. The
-//! Settings CRDT is only the form model; accepted bindings are validated and
-//! atomically persisted through the shared typed contract the compositor
-//! consumes.
+//! Settings CRDT is only the form model and never a replayable setting;
+//! accepted bindings are validated and atomically persisted through the
+//! shared typed contract the compositor consumes.
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
 use crate::i18n::t;
 use crate::widgets::{card, rows, setting_row};
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -38,28 +38,12 @@ fn rebindable() -> impl Iterator<Item = ShortcutAction> {
         .filter(|action| action.rebindable())
 }
 
-/// The stable durable-key catalogue shared by the visible recorder rows and
-/// the Settings resource tree, with what each shortcut is called. Both come
-/// from the shortcut catalogue, so neither Ctrl+K nor an agent can see a
-/// partial surface when the desktop gains a shortcut.
-pub(crate) fn resource_entries() -> Vec<(String, String)> {
-    rebindable()
-        .map(|action| (durable_key(action), t(&action.label_key())))
-        .collect()
-}
-
 /// Every shortcut the page lists, with its name, in page order — what a pen
 /// or pad button can be set to run.
 pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
     rebindable()
         .map(|action| (action, t(&action.label_key())))
         .collect()
-}
-
-/// Whether `key` names one of this pane's durable shortcut preferences.
-/// Presentation drafts/errors intentionally do not pass this boundary.
-pub(crate) fn is_durable_key(key: &str) -> bool {
-    key == VIM_MODE || rebindable().any(|action| durable_key(action) == key)
 }
 
 fn chords_text(chords: &[KeyChord]) -> String {
@@ -180,7 +164,7 @@ impl ShortcutPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
     }
 }
@@ -249,7 +233,7 @@ impl Widget for ShortcutPane {
                 });
                 if valid.is_ok() && self.config.save().is_ok() {
                     self.last_text.insert(action, draft.clone());
-                    self.dispatch(state, &set_text_action(key, draft));
+                    let _ = state.put(root, key, draft);
                     let _ = state.put(root, format!("{key}.error"), false);
                 } else {
                     let _ = state.put(root, draft_key(key), value);
@@ -266,7 +250,7 @@ impl Widget for ShortcutPane {
                 self.last_text.insert(action, value);
                 let _ = state.put(root, format!("{key}.error"), false);
             } else if let Some(previous) = self.last_text.get(&action).cloned() {
-                self.dispatch(state, &set_text_action(key, previous.clone()));
+                let _ = state.put(root, key, previous.clone());
                 let _ = state.put(root, draft_key(key), previous.clone());
                 let _ = state.put(root, format!("{key}.error"), true);
             }
@@ -413,7 +397,7 @@ mod tests {
 
         // Case `rows_are_the_shortcut_catalogue`.
         {
-            let listed: Vec<String> = resource_entries().into_iter().map(|(key, _)| key).collect();
+            let listed: Vec<String> = rebindable().map(durable_key).collect();
             assert!(listed.contains(&QUICK_SETTINGS.to_string()));
             assert!(
                 !listed.contains(&"shortcuts.lock".to_string()),

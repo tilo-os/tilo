@@ -770,17 +770,21 @@ fn palette_frame(app: &mut App) {
     assert_eq!(app.text_renderer.text_scale(), 1.5);
 }
 fn activate_palette_action(app: &mut App, action: &str) {
-    app.refresh_semantic_tree();
-    let target = app
-        .accessibility
-        .semantic_tree
-        .bound_actions_for_test()
-        .into_iter()
-        .find(|(_, target)| {
-            target.address.instance_id == 11 && target.address.address.action == action
-        })
-        .unwrap()
-        .1;
+    // This font/lifecycle fixture chooses the same mounted owner directly;
+    // an open modal deliberately does not publish background actions.
+    let resources = crate::bound_dispatch::discover_bound_resources(
+        app.root_widget.as_ref(),
+        &app.state.doc,
+        None,
+    )
+    .unwrap();
+    let target = crate::bound_dispatch::select_bound_target(
+        &resources,
+        &tilo_actions::ActionAddress::new("probe:shared", action),
+        Some(11),
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         app.actions
             .action_palette

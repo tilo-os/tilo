@@ -68,7 +68,13 @@ pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 /// Returns an error if `room` is not a valid UUID string.
 pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     let room = uuid::Uuid::parse_str(room)?;
-    let hash = blake3::derive_key("tilo-room-transport-v1", room.to_string().as_bytes());
+    // Encode on the stack: bounded delivery paths derive this id under a
+    // native allowance that funds no heap allocation.
+    let mut canonical = [0u8; 36];
+    let hash = blake3::derive_key(
+        "tilo-room-transport-v1",
+        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
+    );
     let mut first8 = [0u8; 8];
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
@@ -84,4 +90,37 @@ pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     if id == 0 { 1 } else { id }
+}
+
+/// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
+pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
+    room_workspace_id(room).is_ok_and(|id| id == workspace)
+}
+
+/// Only the shard derived from this authenticated identity is private.
+pub fn personal_continuity_workspace_id_matches(
+    user_public_key: &[u8; 32],
+    workspace: u64,
+) -> bool {
+    workspace == personal_continuity_workspace_id(user_public_key)
+}
+
+#[cfg(test)]
+mod binding_tests {
+    #[test]
+    fn bindings_are_scoped_to_exact_room_and_root_identity() {
+        let room = "11111111-1111-4111-8111-111111111111";
+        let other = "22222222-2222-4222-8222-222222222222";
+        let id = super::room_workspace_id(room).unwrap();
+        assert!(super::room_workspace_id_matches(room, id));
+        assert!(!super::room_workspace_id_matches(other, id));
+        assert!(!super::room_workspace_id_matches("invalid", id));
+        let id = super::personal_continuity_workspace_id(&[7; 32]);
+        assert!(super::personal_continuity_workspace_id_matches(
+            &[7; 32], id
+        ));
+        assert!(!super::personal_continuity_workspace_id_matches(
+            &[8; 32], id
+        ));
+    }
 }

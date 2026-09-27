@@ -83,10 +83,22 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         .expect("photos route connects");
         thread::sleep(Duration::from_millis(100));
 
-        sender.send_to_route(
-            RouteSpec::app("photos", Uuid::nil()),
-            CollabRequest::document_incremental(b"photo-edit".to_vec()),
-        );
+        // A route refuses documents until it is joined and its document mode is
+        // resolved; the refused attempt starts that join.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while sender
+            .try_send_to_route(
+                RouteSpec::app("photos", Uuid::nil()),
+                CollabRequest::document_incremental(b"photo-edit".to_vec()),
+            )
+            .is_err()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "photos route never became publishable"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         thread::sleep(Duration::from_millis(100));
 
         assert!(photos.poll().iter().any(|event| matches!(

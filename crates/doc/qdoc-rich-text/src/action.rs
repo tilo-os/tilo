@@ -97,7 +97,7 @@ pub enum AttrVal {
 }
 
 /// One non-empty selection expressed as stable block ids and character offsets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectionTarget {
     pub start_block: String,
     pub start: usize,
@@ -347,10 +347,22 @@ pub enum RichTextAction {
         adopt_first_style: bool,
     },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
-    /// The action-level way to add a line: Enter is a live-edit path, not an
-    /// action, so a headless participant (an agent, a script) had no way to
-    /// append a paragraph with the same ops the app produces.
+    /// Enter itself is [`Self::SplitBlock`] (published as `new-paragraph`);
+    /// this inserts a whole paragraph after a named block in one envelope.
     InsertParagraph { after: String, text: String },
+    /// Append `text` as a new paragraph at the end of the body. The target is
+    /// resolved from the document at apply time (not captured in the payload),
+    /// so a catalogue captured before other appends still lands at the end.
+    /// An empty trailing `paragraph` (a fresh document's only line) is filled
+    /// instead of leaving a blank line above the new text.
+    AppendParagraph { text: String },
+    /// Append `text` at the end of the last body block, which must be a text
+    /// block (paragraph, heading or list item). Resolved at apply time, so
+    /// repeated invocations append in order.
+    ///
+    /// A caret-free writer (an agent streaming text) uses it; an editor with
+    /// a caret uses `move-caret {to: document-end}` then `type-text`.
+    ContinueParagraph { text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks { blocks: Vec<String> },
@@ -403,6 +415,8 @@ impl RichTextAction {
             | Self::SetMark { .. }
             | Self::PasteFragment { .. }
             | Self::InsertParagraph { .. }
+            | Self::AppendParagraph { .. }
+            | Self::ContinueParagraph { .. }
             | Self::RemoveBlocks { .. }
             | Self::ReplaceBody { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
@@ -443,7 +457,9 @@ pub const MAX_TABLE_CELLS: usize = 10_000;
 /// Read only the addressed block while matching qdoc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
 /// non-Text text projects to the empty string, just as `materialize_block` does.
-fn splice_target_len(
+/// Characters of region block `id`, `None` when it is not a block of that
+/// region: the validator's one-block membership and length reading.
+pub fn splice_target_len(
     doc: &AutoCommit,
     c: &Containers,
     region: RegionKind,
@@ -727,6 +743,12 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::InsertParagraph { after, text } => {
                 self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
+            }
+            RichTextAction::AppendParagraph { text } => !text.is_empty() && Self::safe_text(text),
+            RichTextAction::ContinueParagraph { text } => {
+                !text.is_empty()
+                    && Self::safe_text(text)
+                    && body_end(self.doc, self.containers).is_some_and(|end| end.text_block)
             }
             RichTextAction::RemoveBlocks { blocks } => {
                 self.unique_existing(RegionKind::Body, blocks)
@@ -1659,6 +1681,57 @@ fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
     }
 }
 
+/// The last body block as `append-paragraph`/`continue-paragraph` resolve it
+/// at apply time. Validation, the write and an editor's predicted caret share
+/// this one reading.
+pub struct BodyEnd {
+    pub id: String,
+    pub kind: Option<String>,
+    /// Characters, the unit [`RichTextAction::SpliceText`] `at` uses.
+    pub chars: usize,
+    /// A paragraph, heading or list item: text that can be continued.
+    pub text_block: bool,
+}
+
+/// Read the last body block, `None` for an empty body.
+pub fn body_end(doc: &AutoCommit, c: &Containers) -> Option<BodyEnd> {
+    let id = qdoc::model::blocks_in_order(doc, c).pop()?;
+    Some(body_end_at(doc, c, id))
+}
+
+/// Read `id` as the last body block, for a caller that knows which block is
+/// last (from a kept body order) and so need not list the body.
+pub fn body_end_at(doc: &AutoCommit, c: &Containers, id: String) -> BodyEnd {
+    let kind = qdoc::model::block_kind(doc, c, &id);
+    let chars = qdoc::model::block_text(doc, c, &id)
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let text_block = matches!(kind.as_deref(), Some("paragraph" | "heading" | "list_item"));
+    BodyEnd {
+        id,
+        kind,
+        chars,
+        text_block,
+    }
+}
+
+fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
+    let target = match body_end(dm.doc, dm.c) {
+        Some(end) if end.chars == 0 && end.kind.as_deref() == Some("paragraph") => end.id,
+        Some(end) => dm.insert_block(Some(&end.id), "paragraph"),
+        None => dm.insert_block(None, "paragraph"),
+    };
+    dm.splice_text(&target, 0, 0, text);
+}
+
+fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
+    // Validated before the mutable view: the last body block is a text block.
+    if let Some(end) = body_end(dm.doc, dm.c).filter(|end| end.text_block) {
+        dm.splice_text(&end.id, end.chars, 0, text);
+    }
+}
+
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
@@ -1822,6 +1895,8 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         RichTextAction::InsertParagraph { after, text } => {
             apply_insert_paragraph(dm, after, text);
         }
+        RichTextAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
+        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         _ => {}
@@ -2464,6 +2539,20 @@ pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> RichTex
 pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
     RichTextAction::InsertParagraph {
         after: after.to_string(),
+        text: text.to_string(),
+    }
+}
+
+/// Append `text` as a new paragraph at the end of the body (resolved at apply).
+pub fn append_paragraph_action(text: &str) -> RichTextAction {
+    RichTextAction::AppendParagraph {
+        text: text.to_string(),
+    }
+}
+
+/// Append `text` to the end of the last body paragraph (resolved at apply).
+pub fn continue_paragraph_action(text: &str) -> RichTextAction {
+    RichTextAction::ContinueParagraph {
         text: text.to_string(),
     }
 }

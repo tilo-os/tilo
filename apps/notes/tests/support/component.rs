@@ -93,12 +93,17 @@ pub fn close_widget(widget: &mut dyn ui::Widget) {
 }
 
 pub fn driver(f: &LegacyFixture, instance: u64, checkout: &RecordCheckout) -> ui::headless::Driver {
-    ui::headless::Driver::from_component(
+    let mut driver = ui::headless::Driver::from_component(
         component(f, instance, existing(checkout)),
         (1000, 700),
         runner_inputs(),
     )
-    .unwrap()
+    .unwrap();
+    // These scenarios spell host shortcuts with Ctrl (Ctrl+Z undo). The
+    // driver otherwise follows the build host's conventions, where macOS
+    // binds undo to Cmd and a Ctrl+Z would never reach history.
+    driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+    driver
 }
 pub fn invoke(
     driver: &mut ui::headless::Driver,

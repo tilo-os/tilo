@@ -12,7 +12,7 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
