@@ -1930,7 +1930,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn constructing_files_provider_starts_no_ambient_file_search() {
         let guard = crate::shell::test_support::DenyAmbientStarts::new();
@@ -1939,7 +1938,10 @@ mod tests {
             provider.ready.get().is_none(),
             "home walk and tantivy must wait for the first query"
         );
-        assert!(provider.rank.get().is_none(), "rank worker must wait for first use");
+        assert!(
+            provider.rank.get().is_none(),
+            "rank worker must wait for first use"
+        );
         assert_eq!(guard.attempts(), 0);
         drop(guard);
         drop(provider);
@@ -2474,7 +2476,14 @@ mod tests {
             );
             assert!(page.results.is_empty());
             assert_eq!(p.last_scanned.load(Ordering::Relaxed), 0);
-            assert!(p.rank.get().expect("rank worker").active.load(Ordering::Relaxed) <= 1);
+            assert!(
+                p.rank
+                    .get()
+                    .expect("rank worker")
+                    .active
+                    .load(Ordering::Relaxed)
+                    <= 1
+            );
         }
         let page = eventually_page(|| {
             p.query_page(
@@ -2484,7 +2493,14 @@ mod tests {
             )
         });
         assert_eq!(page.results[0].title, "needlestick-current.md");
-        assert_eq!(p.rank.get().expect("rank worker").peak.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            p.rank
+                .get()
+                .expect("rank worker")
+                .peak
+                .load(Ordering::Relaxed),
+            1
+        );
         let cache = p.ranked_queries.lock().unwrap();
         assert!(cache.ready.iter().all(|plan| plan.needle == "needlestick"));
         assert!(
