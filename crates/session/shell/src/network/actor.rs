@@ -503,6 +503,103 @@ struct TopicRuntime {
 struct HostRuntime {
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
+    /// Whether the host has answered the subscription. Until it has, the
+    /// host would take anything sent on the session as a protocol breach
+    /// and end it: presence is dropped, everything else waits here.
+    ready: std::sync::atomic::AtomicBool,
+    held: Mutex<Vec<HostSend>>,
+}
+
+/// One thing to send on a workspace host session.
+enum HostSend {
+    Checkpoint {
+        channel: [u8; 32],
+        entry: [u8; 32],
+        coverage: tilo_relay_client::Coverage,
+        body: Vec<u8>,
+    },
+    Retained {
+        channel: [u8; 32],
+        entry: [u8; 32],
+        body: Vec<u8>,
+    },
+    Presence(Vec<u8>),
+    Replay([u8; 32]),
+    RemoteAction {
+        target: [u8; 32],
+        frame: Vec<u8>,
+    },
+}
+
+/// Most sends a host session holds while it waits for its subscription.
+const MAX_HELD_HOST_SENDS: usize = 1024;
+
+impl HostRuntime {
+    fn new(session: Arc<RelayCoeditSession>, pump: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            session,
+            pump,
+            ready: std::sync::atomic::AtomicBool::new(false),
+            held: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Send now on a subscribed session; before that, hold it (presence,
+    /// which is only ever current, is dropped instead).
+    fn send(&self, send: HostSend) -> Result<(), tilo_relay_client::CoeditError> {
+        if self.ready.load(Ordering::Acquire) {
+            return self.send_now(send);
+        }
+        if matches!(send, HostSend::Presence(_)) {
+            return Ok(());
+        }
+        if let Ok(mut held) = self.held.lock()
+            && held.len() < MAX_HELD_HOST_SENDS
+        {
+            held.push(send);
+        }
+        Ok(())
+    }
+
+    fn send_now(&self, send: HostSend) -> Result<(), tilo_relay_client::CoeditError> {
+        match send {
+            HostSend::Checkpoint {
+                channel,
+                entry,
+                coverage,
+                body,
+            } => self
+                .session
+                .publish_checkpoint(channel, entry, coverage, body),
+            HostSend::Retained {
+                channel,
+                entry,
+                body,
+            } => self.session.publish_retained_delta(channel, entry, body),
+            HostSend::Presence(payload) => self.session.publish_presence(payload),
+            HostSend::Replay(channel) => self.session.request_channel_replay(channel),
+            HostSend::RemoteAction { target, frame } => {
+                self.session.publish_remote_action(target, frame)
+            }
+        }
+    }
+
+    /// The host answered the subscription: send what waited for it, in
+    /// order.
+    fn become_ready(&self, ws: WorkspaceId) {
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        self.ready.store(true, Ordering::Release);
+        tracing::debug!(ws, held = held.len(), "subscribed at a workspace host");
+        for send in held {
+            if let Err(error) = self.send_now(send) {
+                tracing::warn!(ws, %error, "a workspace host send that waited for its subscription failed");
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -997,7 +1094,7 @@ impl ActorState {
             Some(NetCmd::ReplayChannel { ws, channel }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws
-                        && let Err(error) = runtime.session.request_channel_replay(channel)
+                        && let Err(error) = runtime.send(HostSend::Replay(channel))
                     {
                         tracing::warn!(ws, %error, "workspace host channel replay request failed");
                     }
@@ -1671,8 +1768,10 @@ impl ActorState {
             .filter(|((session_ws, _), _)| *session_ws == ws)
             .any(|(_, runtime)| {
                 runtime
-                    .session
-                    .publish_remote_action(*target.as_bytes(), frame.clone())
+                    .send(HostSend::RemoteAction {
+                        target: *target.as_bytes(),
+                        frame: frame.clone(),
+                    })
                     .is_ok()
             });
         if !relayed {
@@ -2172,8 +2271,9 @@ impl ActorState {
                 let session = Arc::new(session);
                 let pump =
                     spawn_host_pump(ws, peer, Arc::clone(&session), self.internal_tx.clone());
+                tracing::debug!(ws, peer = %peer, "connected to a workspace host");
                 self.host_sessions
-                    .insert((ws, peer), HostRuntime { session, pump });
+                    .insert((ws, peer), HostRuntime::new(session, pump));
             }
             Err(error) => {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
@@ -2186,6 +2286,9 @@ impl ActorState {
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         let mapped = match event {
             HostEvent::Ready => {
+                if let Some(runtime) = self.host_sessions.get(&(ws, peer)) {
+                    runtime.become_ready(ws);
+                }
                 // Enrolled home peers never redeem; a provider host's ready
                 // subscription means the redemption (if any) went through.
                 if self
@@ -2308,7 +2411,10 @@ impl ActorState {
         };
         if let Ok(bytes) = postcard::to_allocvec(&msg) {
             for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+                let _ = topic
+                    .sender
+                    .broadcast_neighbors(Bytes::from(bytes.clone()))
+                    .await;
             }
         }
         // What this machine can encode and decode rides along with every
@@ -2319,7 +2425,10 @@ impl ActorState {
         );
         if let Ok(bytes) = postcard::to_allocvec(&advert) {
             for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+                let _ = topic
+                    .sender
+                    .broadcast_neighbors(Bytes::from(bytes.clone()))
+                    .await;
             }
         }
     }
@@ -2373,12 +2482,12 @@ impl ActorState {
         let Some((channel, _)) = retention(&hello, false) else {
             return;
         };
-        if let Err(error) = runtime.session.publish_checkpoint(
+        if let Err(error) = runtime.send(HostSend::Checkpoint {
             channel,
-            retained_entry_id(&hello),
-            tilo_relay_client::Coverage::Supersedes,
-            bytes,
-        ) {
+            entry: retained_entry_id(&hello),
+            coverage: tilo_relay_client::Coverage::Supersedes,
+            body: bytes,
+        }) {
             tracing::warn!(ws, %error, "could not retain this device's identity at the host");
         }
     }
@@ -2970,20 +3079,20 @@ async fn publish_with(
             if *session_ws != ws {
                 continue;
             }
-            let result = match (retention, entry) {
-                (Some((channel, Retention::Checkpoint)), Some(entry)) => {
-                    runtime.session.publish_checkpoint(
-                        channel,
-                        entry,
-                        host_coverage(&msg, host.covers),
-                        bytes.clone(),
-                    )
-                }
-                (Some((channel, Retention::Delta)), Some(entry)) => runtime
-                    .session
-                    .publish_retained_delta(channel, entry, bytes.clone()),
-                _ => runtime.session.publish_presence(bytes.clone()),
-            };
+            let result = runtime.send(match (retention, entry) {
+                (Some((channel, Retention::Checkpoint)), Some(entry)) => HostSend::Checkpoint {
+                    channel,
+                    entry,
+                    coverage: host_coverage(&msg, host.covers),
+                    body: bytes.clone(),
+                },
+                (Some((channel, Retention::Delta)), Some(entry)) => HostSend::Retained {
+                    channel,
+                    entry,
+                    body: bytes.clone(),
+                },
+                _ => HostSend::Presence(bytes.clone()),
+            });
             if let Err(error) = result {
                 tracing::warn!(ws, %error, "workspace host publish failed");
             }
@@ -2991,7 +3100,12 @@ async fn publish_with(
     }
     if broadcast_gossip {
         if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
+            // Direct neighbours only. A receiver holds a message to the
+            // endpoint that delivered it, so a copy another peer forwarded is
+            // refused — and gossip, having seen that copy, would never
+            // deliver the author's own. Peers beyond the neighbourhood are
+            // reached through the workspace host.
+            if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         } else if host_sessions
@@ -3339,6 +3453,26 @@ fn spawn_host_pump(
         while let Some(inbound) = session.recv().await {
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
+                HostInbound::Refused { reason } => {
+                    // Said once per room and reason: the actor asks again
+                    // on its reconnect cadence, and a host that does not
+                    // carry a room keeps saying so.
+                    static REFUSALS: std::sync::OnceLock<
+                        Mutex<std::collections::HashSet<(WorkspaceId, String)>>,
+                    > = std::sync::OnceLock::new();
+                    let first = REFUSALS
+                        .get_or_init(Mutex::default)
+                        .lock()
+                        .is_ok_and(|mut seen| seen.insert((ws, reason.clone())));
+                    if first {
+                        tracing::warn!(ws, host = %host, %reason, "the workspace host refused this device");
+                    } else {
+                        tracing::debug!(ws, host = %host, %reason, "the workspace host refused this device");
+                    }
+                    // A refused session carries nothing; publishing on it
+                    // would only have the host end it as a protocol breach.
+                    break;
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;

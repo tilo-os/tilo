@@ -1410,6 +1410,10 @@ pub struct InboundDocument {
     /// a live delivery: an exact op the broker already validated is handed
     /// to local apps again instead of being refused as a repeat.
     pub replayed: bool,
+    /// Delivered by a durable host rather than directly by its author: it
+    /// may be the room's retained past (a catch-up on subscribe, a queued
+    /// delta, a replay), so its age is not held against it.
+    pub history: bool,
 }
 
 /// One received piece of channel governance, addressed to a room this
@@ -2489,6 +2493,11 @@ impl ShellNetwork {
         let wire = self.register_local_record(app_id, cluster_id, record_id);
         let route = format!("app\0{app_id}\0{wire}");
         let channel = *blake3::hash(route.as_bytes()).as_bytes();
+        tracing::debug!(
+            app_id,
+            record_id,
+            "asking the room's hosts to replay a document"
+        );
         self.join_topic(ws)
             && self
                 .cmd_tx
@@ -2521,6 +2530,10 @@ impl ShellNetwork {
     }
 
     /// Queue a received signed document for the broker's drainer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one inbound document: its route, role, envelope and how it arrived"
+    )]
     pub fn handle_document_message(
         &self,
         peer: u64,
@@ -2529,6 +2542,7 @@ impl ShellNetwork {
         record_id: String,
         role: collab_types::Role,
         envelope: collab_types::SignedOp,
+        via_host: bool,
     ) {
         self.queue_document(InboundDocument {
             peer,
@@ -2538,6 +2552,7 @@ impl ShellNetwork {
             role,
             envelope: Box::new(envelope),
             replayed: false,
+            history: via_host,
         });
     }
 
@@ -5927,6 +5942,7 @@ impl ShellNetwork {
             tracing::warn!(
                 peer = %peer,
                 claimed_peer,
+                kind = Self::published_kind(&msg),
                 "dropping collaboration message whose session identity does not match its authenticated transport"
             );
             return;
@@ -5971,7 +5987,7 @@ impl ShellNetwork {
             pending.remove(&room);
         }
         self.record_retained_room_message(ws, &msg);
-        self.dispatch_authorized_neighbour_msg(ws, peer, msg);
+        self.dispatch_authorized_neighbour_msg(ws, peer, msg, membership_epoch.is_none());
         if let Some(room) = governance_room {
             self.apply_room_admissions(room);
         }
@@ -6119,6 +6135,7 @@ impl ShellNetwork {
             return;
         }
         let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
+            tracing::debug!(%app_id, "a replayed document names a record no local app holds");
             return;
         };
         let own = peer == self.keypair.public();
@@ -6148,8 +6165,10 @@ impl ShellNetwork {
             self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
         };
         let Some(role) = role else {
+            tracing::debug!(%app_id, %record_id, "a replayed document's author may not write it here");
             return;
         };
+        tracing::debug!(%app_id, %record_id, own, "a host replayed a document");
         self.queue_document(InboundDocument {
             peer: peer_hash,
             app_id,
@@ -6158,6 +6177,7 @@ impl ShellNetwork {
             role,
             envelope,
             replayed: true,
+            history: true,
         });
     }
 
@@ -6172,6 +6192,7 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         msg: NeighbourMsg,
+        via_host: bool,
     ) {
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
         match msg {
@@ -6220,7 +6241,7 @@ impl ShellNetwork {
                     && let Some(role) = role
                 {
                     self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, role, *envelope, via_host,
                     );
                 }
             }
@@ -6483,6 +6504,29 @@ impl ShellNetwork {
     /// cursor, input, stream, app-presence, or scrollback state is accepted.
     /// `PermissionGrant.peer` is deliberately excluded because it names the
     /// grant's recipient rather than its publisher.
+    /// Which of the messages that name their publisher `msg` is, for a log.
+    fn published_kind(msg: &NeighbourMsg) -> &'static str {
+        match msg {
+            NeighbourMsg::PresenceMoved { .. } => "presence moved",
+            NeighbourMsg::PresenceCleared { .. } => "presence cleared",
+            NeighbourMsg::RemoteInput { .. } => "remote input",
+            NeighbourMsg::PermissionRequest { .. } => "permission request",
+            NeighbourMsg::Heartbeat { .. } => "heartbeat",
+            NeighbourMsg::MediaCapabilities { .. } => "media capabilities",
+            NeighbourMsg::AppDocument { .. } => "app document",
+            NeighbourMsg::AppPresenceV2 { .. } => "app presence",
+            NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::SurfaceFrame { .. } => "surface stream",
+            NeighbourMsg::ScrollbackRequest { .. } | NeighbourMsg::ScrollbackResponse { .. } => {
+                "scrollback"
+            }
+            NeighbourMsg::PersonalContinuityRequest { .. }
+            | NeighbourMsg::PersonalContinuityCheckpoint { .. } => "personal continuity",
+            _ => "other",
+        }
+    }
+
     fn claimed_publisher(msg: &NeighbourMsg) -> Option<u64> {
         match msg {
             NeighbourMsg::PresenceMoved { peer, .. }
@@ -11880,6 +11924,7 @@ mod tests {
                 "uuid:9f".to_string(),
                 collab_types::Role::Editor,
                 envelope.clone(),
+                false,
             );
             let buf = buf_handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
@@ -12493,7 +12538,7 @@ mod tests {
         team_device: ed25519_dalek::SigningKey,
         team: Option<Arc<ShellNetwork>>,
         token: String,
-        _relay: tilo_relay::Relay,
+        relay: tilo_relay::Relay,
         _state: tempfile::TempDir,
     }
 
@@ -12646,7 +12691,7 @@ mod tests {
             team_device: team.key.clone(),
             team: team_net,
             token,
-            _relay: relay,
+            relay,
             _state: state,
         }
     }
@@ -12961,6 +13006,91 @@ mod tests {
         }
     }
 
+    /// A change the broker accepted for a route while no app of this device
+    /// held it reached nobody; the app that joins the route later is served
+    /// it, with what it depends on, by the broker itself — with no other
+    /// holder and no host to replay it.
+    #[test]
+    fn an_app_joining_a_route_is_served_what_the_broker_accepted_before_it() {
+        let team_root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+        let team_device = ed25519_dalek::SigningKey::from_bytes(&[0xB2; 32]);
+        let mut tree = WorkspaceTree::default();
+        let community = tree.append_public_workspace("Community");
+        let room = tree.room_of(community).expect("room");
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == community)
+            .expect("community")
+            .set_owner(person_of(&team_root));
+        tree.desktop.active = community;
+        let tree = tree.shared();
+        let dir = tempfile::tempdir().expect("scratch");
+        let socket = dir.path().join("broker.sock");
+        let handle = crate::shell::collab_broker::spawn_native_harness(
+            socket.clone(),
+            tree,
+            vec![team_device.verifying_key().to_bytes()],
+        )
+        .expect("broker");
+
+        // The team's earlier Chat left the conversation with a channel in it.
+        let app = "so.tilo.chat";
+        let record = tilo_reference::CHAT_CONVERSATION_RECORD;
+        let cluster = room.to_string();
+        let mut earlier = automerge::AutoCommit::new();
+        chat::doc::ChatDoc::seed_starter(&mut earlier, "u_team", "Team", "T");
+        chat::doc::ChatDoc::insert_channel(
+            &mut earlier,
+            "c_early",
+            "ws_home",
+            "cat_home_text",
+            "early",
+            chat::model::ChannelKind::Text,
+        );
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(earlier.save())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(app, &cluster, record),
+            collab_types::Ed25519PublicKey::from_bytes(team_device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(app, &cluster, record),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &team_device).expect("the team signs");
+        handle
+            .fanout()
+            .accept_shell_document(
+                &crate::shell::collab_broker::CrdtRoute::record(app, &cluster, record),
+                op,
+                team_root.verifying_key().to_bytes(),
+                "team",
+            )
+            .expect("the broker accepts the change while no app holds the route");
+
+        let seat = ChatSeat {
+            root: team_root,
+            device: team_device,
+            label: "Team",
+        };
+        let mut chat = seat.chat(&socket, &dir.path().join("team"), room);
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::list_channels(&chat.state_mut_for_test().doc)
+            .iter()
+            .any(|channel| channel.id == "c_early")
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "the joining Chat was never served what the broker accepted before it"
+            );
+            chat.step_headless();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(handle);
+    }
+
     /// Step every app and tick every network once.
     #[allow(
         clippy::future_not_send,
@@ -13146,6 +13276,24 @@ mod tests {
             author.step_headless();
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        // Cara is in the room before the team writes anything, but opens
+        // Chat only afterwards: the room's live traffic reached her device
+        // while no app of hers held the conversation.
+        let (cara, cara_root, cara_device) =
+            Box::pin(join_community(&community, "Cara", 0xE9)).await;
+        let cara = Arc::new(cara);
+        let cara_person = person_of(&cara_root);
+        assert!(
+            tick_until(&cara, 60, |net| {
+                team.tick();
+                workspace_state(net, room)
+                    .is_some_and(|(_, _, roster)| roster.iter().any(|(who, _)| who == &cara_person))
+            })
+            .await,
+            "Cara is admitted: {:?}",
+            workspace_state(&cara, room)
+        );
+        let (cara_broker, cara_socket) = broker("cara", &cara, &cara_device.key);
         let mut editor = team_seat.chat(&team_socket, &dir.path().join("team"), room);
 
         let started = std::time::Instant::now();
@@ -13246,7 +13394,90 @@ mod tests {
             late.step_headless();
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        drop((team_broker, ada_broker, bea_broker));
+
+        let cara_seat = ChatSeat {
+            root: cara_root.clone(),
+            device: cara_device.key.clone(),
+            label: "Cara",
+        };
+        // Made an Editor by the owner first, as a second team member is.
+        {
+            let tree = team.tree_handle().expect("tree");
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("the community room");
+            workspace
+                .grant_as(
+                    &person_of(&community.team_root),
+                    crate::shell::state::CapOverride::membership(
+                        crate::shell::state::Subject::person(cara_person.clone()),
+                        room.to_string(),
+                        crate::network::invite::InviteRole::Editor.verb(),
+                    ),
+                )
+                .expect("the owner grants Cara Editor");
+            tree.sync_room_doc(room);
+        }
+        team.publish_sync_requests();
+        assert!(
+            tick_until(&cara, 60, |net| {
+                team.tick();
+                workspace_state(net, room).is_some_and(|(_, _, roster)| {
+                    roster.iter().any(|(who, role)| {
+                        who == &cara_person && *role == crate::shell::state::CapRole::Editor
+                    })
+                })
+            })
+            .await,
+            "Cara learns she is an Editor: {:?}",
+            workspace_state(&cara, room)
+        );
+        let mut opened_late = cara_seat.chat(&cara_socket, &dir.path().join("cara"), room);
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::is_feedback_channel(
+            &opened_late.state_mut_for_test().doc,
+            feedback,
+        ) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Cara's Chat, opened after the team wrote while she was in the room, never \
+                 received the conversation with its feedback channel (seeded: {})",
+                chat::doc::ChatDoc::is_seeded(&opened_late.state_mut_for_test().doc)
+            );
+            step_all(&mut [&mut editor, &mut opened_late], &[&team, &cara]).await;
+        }
+        // Cara's Chat wrote her into the roster when it opened, and she does
+        // nothing else: the team's next change still reaches her.
+        chat_invoke(
+            &team_host,
+            &team_seat,
+            room,
+            (&format!("chat.channel:{feedback}"), "unmark-feedback"),
+            &mut [&mut editor, &mut opened_late],
+            &[&team, &cara],
+        )
+        .await;
+        let started = std::time::Instant::now();
+        while chat::doc::ChatDoc::is_feedback_channel(
+            &opened_late.state_mut_for_test().doc,
+            feedback,
+        ) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Cara's Chat, which only opened, never took the team's later change"
+            );
+            step_all(&mut [&mut editor, &mut opened_late], &[&team, &cara]).await;
+        }
+        assert_eq!(
+            community.relay.metrics().peer_sessions_ended,
+            0,
+            "no device sent the host anything before its subscription was answered"
+        );
+        drop((team_broker, ada_broker, bea_broker, cara_broker));
     }
 
     /// The rooms.md rule, across two devices: a member of a room reaches the

@@ -2519,6 +2519,78 @@ impl CapnpBrokerState {
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
+    /// Most ops [`Self::serve_route_history`] hands one joining app.
+    const MAX_SERVED_HISTORY: usize = 8192;
+
+    /// Hand the app `requester` on `channel_id` every op this broker holds
+    /// for the route's document, oldest first. An op the broker accepted
+    /// before any app of this device held the route reached nobody when it
+    /// arrived; the app that joins later is served it here, with everything
+    /// it depends on, rather than having to catch it live. Returns how many
+    /// ops were served.
+    pub(crate) fn serve_route_history(&self, channel_id: &str, requester: u64) -> usize {
+        let route = CrdtRoute::from_channel_key(channel_id);
+        if route.app_id.is_empty() {
+            return 0;
+        }
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let mut ops: Vec<SignedOp> = Vec::new();
+        {
+            let Ok(mut held) = self.broker_channels.lock() else {
+                return 0;
+            };
+            let mut before = u64::MAX;
+            loop {
+                let (page, exhausted) = held.scrollback_page(artifact, before, 256);
+                let Some(oldest) = page.first().map(|op| op.seq) else {
+                    break;
+                };
+                before = oldest;
+                ops.splice(0..0, page);
+                if exhausted || ops.len() >= Self::MAX_SERVED_HISTORY {
+                    break;
+                }
+            }
+        }
+        tracing::debug!(app_id = %route.app_id, record = %route.record_id, held = ops.len(), "serving a joining app what this broker holds");
+        if ops.is_empty() {
+            return 0;
+        }
+        if ops.len() >= Self::MAX_SERVED_HISTORY {
+            tracing::warn!(
+                app_id = %route.app_id,
+                served = ops.len(),
+                "a joining app was served only the newest part of its document's history"
+            );
+        }
+        let Ok(mut channels) = self.channels.lock() else {
+            return 0;
+        };
+        let Some(channel) = channels.get_mut(channel_id) else {
+            return 0;
+        };
+        let mut served = 0usize;
+        for subscriber in channel.op.iter().filter(|sub| sub.peer_id == requester) {
+            for op in &ops {
+                let Ok(op_bytes) = postcard::to_stdvec(op) else {
+                    continue;
+                };
+                if subscriber
+                    .tx
+                    .send(OpEnvelope {
+                        op_bytes,
+                        from_user_id: hex::encode(op.author.as_bytes()),
+                        kind: OpKind::Signed,
+                    })
+                    .is_ok()
+                {
+                    served = served.saturating_add(1);
+                }
+            }
+        }
+        served
+    }
+
     pub(crate) fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
         // A participant inside the shell that holds this route's document
         // (a replay peer) answers first; it is where the room's state is.
@@ -5577,6 +5649,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let _ = self
             .state
             .request_document_snapshot(&self.channel_id, self.peer_id);
+        // What this broker already accepted for the route, including what
+        // reached nobody because no app held the route yet.
+        let _ = self
+            .state
+            .serve_route_history(&self.channel_id, self.peer_id);
         // The app asks once its streams are installed, so a replayed
         // retained message reaches it: that is what lets its later
         // snapshots name as covered what the host retained before it came.
@@ -7318,7 +7395,8 @@ impl channel_handle::Server for CapnpChannelHandle {
     ) -> Promise<(), capnp::Error> {
         let state = self.state.clone();
         let peer_id = self.peer_id;
-        Promise::from_future(async move {
+        let app_id = self.route().app_id;
+        let applied = async move {
             let request = params.get()?;
             let id = request.get_id();
             let json = request.get_update_json()?.to_str()?;
@@ -7460,9 +7538,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 if let Ok(mut requests) = state.cancellation_requests.lock() {
                     requests.remove(&id);
                 }
+                if !completion.code.is_empty() {
+                    tracing::warn!(
+                        peer_id,
+                        id,
+                        code = %completion.code,
+                        message = %completion.message,
+                        "an application action did not complete"
+                    );
+                }
                 let _ = pending.tx.send(completion);
             }
             Ok(())
+        };
+        Promise::from_future(async move {
+            let applied = applied.await;
+            if let Err(error) = &applied {
+                tracing::warn!(%app_id, peer_id, %error, "refused an application's invocation update");
+            }
+            applied
         })
     }
 
