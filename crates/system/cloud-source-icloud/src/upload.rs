@@ -289,29 +289,7 @@ impl UploadSession for Upload {
 /// `upload/web` insists on a content type; by extension, with a generic
 /// fallback.
 fn mime_for(name: &str) -> &'static str {
-    let extension = name
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .unwrap_or_default();
-    match extension.as_str() {
-        "txt" | "md" => "text/plain",
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "csv" => "text/csv",
-        "json" => "application/json",
-        "xml" => "application/xml",
-        "pdf" => "application/pdf",
-        "zip" => "application/zip",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "heic" => "image/heic",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        _ => "application/octet-stream",
-    }
+    mime_guess::from_path(name)
+        .first_raw()
+        .unwrap_or("application/octet-stream")
 }
