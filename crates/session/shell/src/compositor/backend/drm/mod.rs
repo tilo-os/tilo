@@ -1841,6 +1841,10 @@ impl Backend for DrmBackend {
         self.inner.dispatch.adaptive_sync_engaged()
     }
 
+    fn output_hdr(&self, output: OutputId) -> Option<super::OutputHdr> {
+        self.inner.dispatch.output_hdr(output)
+    }
+
     fn set_keyboard_source(&mut self, index: usize) {
         self.inner.set_keyboard_source(index);
     }
