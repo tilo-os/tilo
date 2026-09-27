@@ -553,16 +553,16 @@ fn push_mail_field(query: &mut Vec<String>, key: &str, value: &str) {
 }
 
 fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => {
-                vec![char::from(byte)]
-            }
-            other => format!("%{other:02X}").chars().collect(),
-        })
-        .collect()
+    percent_encoding::utf8_percent_encode(value, QUERY_VALUE).to_string()
 }
+
+/// Everything but the RFC 3986 unreserved characters and `@`.
+const QUERY_VALUE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'@');
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenshotTarget {
