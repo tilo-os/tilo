@@ -969,6 +969,9 @@ pub struct ChatApp {
     pub(crate) feedback: crate::feedback::FeedbackUi,
     /// What people wrote in feedback channels, in records they own.
     pub(crate) comments: crate::comments::Comments,
+    /// A headless participant working through this Chat (see
+    /// [`crate::hand`]); `None` for a person's.
+    hand: Option<crate::hand::ChatHand>,
 }
 
 impl Default for ChatApp {
@@ -1018,6 +1021,14 @@ impl ChatApp {
         };
         app.perms = ChatPermissions::unknown();
         app.new_live_view()
+    }
+
+    /// Let a headless participant read this Chat and ask it for its
+    /// actions through `hand`.
+    #[must_use]
+    pub fn with_hand(mut self, hand: crate::hand::ChatHand) -> Self {
+        self.hand = Some(hand);
+        self
     }
 
     fn new_live_view(self) -> Self {
@@ -1182,6 +1193,7 @@ impl ChatApp {
             legacy_migration_attempted: false,
             feedback: crate::feedback::FeedbackUi::default(),
             comments: crate::comments::Comments::new(ui::record::RecordStore::in_memory()),
+            hand: None,
         }
     }
 
@@ -1245,6 +1257,7 @@ impl ChatApp {
         let mut commented = self.comments.messages(channel);
         for message in &mut commented {
             message.report = ChatDoc::comment_report(doc, &message.id);
+            message.approved = ChatDoc::issue_approval(doc, &message.id);
         }
         messages.extend(commented);
         messages
@@ -2806,6 +2819,9 @@ impl ChatApp {
             }
         }
         self.users = self.workspace_people(doc);
+        if let Some(hand) = &self.hand {
+            hand.publish(&self.channels, &self.search_messages);
+        }
         self.reconcile_record_sharing();
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
@@ -4779,7 +4795,11 @@ impl Widget for ChatApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.feedback.controls.pop_front()
+        self.feedback.controls.pop_front().or_else(|| {
+            self.hand
+                .as_ref()
+                .and_then(crate::hand::ChatHand::next_request)
+        })
     }
 
     fn joined_records(&self) -> Option<&ui::record::JoinedRecords> {
@@ -4787,6 +4807,9 @@ impl Widget for ChatApp {
     }
 
     fn permissions_changed(&mut self, permissions: &PermissionContext) {
+        if let Some(hand) = &self.hand {
+            hand.permissions_changed(permissions);
+        }
         self.perms = ChatPermissions::from_context(permissions.clone());
         self.relayout = true;
     }
@@ -4822,6 +4845,10 @@ impl Widget for ChatApp {
 
     fn has_pending_control_invocation(&self) -> bool {
         !self.feedback.controls.is_empty()
+            || self
+                .hand
+                .as_ref()
+                .is_some_and(crate::hand::ChatHand::has_request)
     }
 
     fn on_control_invocation_result(
@@ -4832,6 +4859,9 @@ impl Widget for ChatApp {
         if let Err(error) = result
             && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
         {
+            if let Some(hand) = &self.hand {
+                hand.refused(address, error.to_string());
+            }
             self.feedback.notice = Some(Self::request_notice(address, &error.to_string()));
             self.relayout = true;
         }

@@ -214,6 +214,7 @@ impl Comments {
                 pinned: false,
                 work: None,
                 report: None,
+                approved: None,
             });
         }
         out.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.id.cmp(&b.id)));

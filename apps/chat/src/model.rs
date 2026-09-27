@@ -265,6 +265,9 @@ pub enum Attachment {
     /// Posting it brings the record into this room; the message carries only
     /// its address and a bounded summary, never the record's bytes.
     Record(Box<tilo_reference::RecordAttachment>),
+    /// A forge issue drafted for a report, waiting for an Editor to approve
+    /// it (see [`crate::feedback::IssueDraft`]).
+    Issue(Box<crate::feedback::IssueDraft>),
 }
 
 impl Attachment {
@@ -278,7 +281,7 @@ impl Attachment {
             Attachment::Image { blob, .. }
             | Attachment::Video { blob, .. }
             | Attachment::File { blob, .. } => Some(blob),
-            Attachment::Record(_) => None,
+            Attachment::Record(_) | Attachment::Issue(_) => None,
         }
     }
     pub fn name(&self) -> &str {
@@ -287,11 +290,18 @@ impl Attachment {
             | Attachment::Video { name, .. }
             | Attachment::File { name, .. } => name,
             Attachment::Record(record) => &record.label,
+            Attachment::Issue(issue) => &issue.title,
         }
     }
     pub fn record(&self) -> Option<&tilo_reference::RecordAttachment> {
         match self {
             Attachment::Record(record) => Some(record.as_ref()),
+            _ => None,
+        }
+    }
+    pub fn issue(&self) -> Option<&crate::feedback::IssueDraft> {
+        match self {
+            Attachment::Issue(issue) => Some(issue.as_ref()),
             _ => None,
         }
     }
@@ -362,6 +372,8 @@ pub struct Message {
     pub work: Option<AgentWork>,
     /// A report's status in a feedback channel; `None` reads as open.
     pub report: Option<crate::feedback::ReportState>,
+    /// An Editor's approval of the issue this message's attachment drafts.
+    pub approved: Option<crate::feedback::IssueApproval>,
 }
 
 impl Message {
@@ -780,6 +792,7 @@ mod tests {
             pinned: false,
             work: None,
             report: None,
+            approved: None,
         }
     }
 

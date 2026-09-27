@@ -395,6 +395,7 @@ mod tests {
             pinned: false,
             work: None,
             report: None,
+            approved: None,
         }
     }
 

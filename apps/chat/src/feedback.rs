@@ -75,6 +75,44 @@ pub struct ReportState {
     pub since: i64,
 }
 
+/// Bounds on a drafted issue, checked by [`IssueDraft::is_valid`] before a
+/// row carrying one is written.
+const MAX_ISSUE_TITLE_BYTES: usize = 256;
+const MAX_ISSUE_BODY_BYTES: usize = 16 * 1024;
+
+/// A forge issue drafted for a report, attached to a reply in the report's
+/// thread (`Attachment::Issue`). Nothing is filed until an Editor approves
+/// the reply that carries it ([`crate::actions::ChatAction::ApproveIssue`]);
+/// what is filed is exactly this draft, so what the Editor read is what the
+/// forge receives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueDraft {
+    /// The report the issue is for: a top-level message of the channel.
+    pub report: String,
+    pub title: String,
+    /// The issue's text, already free of anything personal: it is made only
+    /// of what the report showed the room.
+    pub body: String,
+}
+
+impl IssueDraft {
+    pub fn is_valid(&self) -> bool {
+        tilo_reference::is_chat_message_id(&self.report)
+            && !self.title.trim().is_empty()
+            && self.title.len() <= MAX_ISSUE_TITLE_BYTES
+            && !self.title.contains(['\n', '\r'])
+            && self.body.len() <= MAX_ISSUE_BODY_BYTES
+    }
+}
+
+/// An Editor's approval of a drafted issue: who approved it and when, one
+/// authored value like [`ReportState`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueApproval {
+    pub by: String,
+    pub since: i64,
+}
+
 /// How a feedback channel lists its reports on this peer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -282,6 +320,7 @@ mod tests {
                 by: "u_team".into(),
                 since: 0,
             }),
+            approved: None,
         }
     }
 

@@ -409,6 +409,15 @@ pub enum ChatAction {
         msg: String,
         state: crate::feedback::ReportState,
     },
+    /// Approve the forge issue drafted on message `msg`. An Editor's
+    /// decision, like a report's status: the agent that drafted it files the
+    /// issue only once this is in the conversation, which only an Editor can
+    /// write.
+    ApproveIssue {
+        channel: String,
+        msg: String,
+        approval: crate::feedback::IssueApproval,
+    },
     /// Withdraw the record attached to a message from this room. The row
     /// keeps its card; the author's peer removes the room's reference.
     WithdrawAttachment {
@@ -555,6 +564,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         }
         ChatAction::SetReportStatus { channel, msg, .. } => {
             ("chat-undo-set-report-status", channel, msg, "chat.message")
+        }
+        ChatAction::ApproveIssue { channel, msg, .. } => {
+            ("chat-undo-approve-issue", channel, msg, "chat.message")
         }
         ChatAction::WithdrawAttachment { channel, msg } => (
             "chat-undo-withdraw-attachment",
@@ -772,6 +784,13 @@ impl ChatAction {
                 state,
             } => {
                 ChatDoc::set_report_status(doc, channel, msg, state);
+            }
+            ChatAction::ApproveIssue {
+                channel,
+                msg,
+                approval,
+            } => {
+                ChatDoc::approve_issue(doc, channel, msg, approval);
             }
             ChatAction::WithdrawAttachment { channel, msg } => {
                 ChatDoc::withdraw_attachment(doc, channel, msg);
@@ -1100,6 +1119,17 @@ pub fn set_report_status_action(
     }
 }
 
+pub fn approve_issue_action(channel: &str, msg: &str, by: &str, since: i64) -> ChatAction {
+    ChatAction::ApproveIssue {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+        approval: crate::feedback::IssueApproval {
+            by: by.to_string(),
+            since,
+        },
+    }
+}
+
 pub fn withdraw_attachment_action(channel: &str, msg: &str) -> ChatAction {
     ChatAction::WithdrawAttachment {
         channel: channel.to_string(),
@@ -1265,6 +1295,8 @@ pub struct MessageResource {
     pub also: Vec<tilo_reference::ResourceRef>,
     /// Present when the message is a report: top-level in a feedback channel.
     pub report: Option<ReportResource>,
+    /// The message carries a drafted issue no Editor has approved yet.
+    pub issue_pending: bool,
     /// An attachment is a durable, content-addressed child of the message,
     /// rather than an unsearchable bit of its paint. There can be only one in
     /// the current message schema, so its stable address is keyed by message.
@@ -1306,6 +1338,11 @@ impl MessageResource {
             author: message.author.clone(),
             reference: message.reference.clone(),
             also: message.also.clone(),
+            issue_pending: message
+                .attachment
+                .as_ref()
+                .is_some_and(|attachment| attachment.issue().is_some())
+                && message.approved.is_none(),
             report: (feedback && message.is_top_level()).then(|| ReportResource {
                 status: crate::feedback::status_of(message),
                 votes: crate::feedback::vote_count(message),
@@ -2321,7 +2358,21 @@ fn with_participation_actions(
         ));
         message = message.with_action(set_status_spec(&ch.id, &m.id, &ctx.me));
     }
+    if m.issue_pending {
+        message = message.with_action(approve_issue_spec(&ch.id, &m.id, &ctx.me));
+    }
     message
+}
+
+/// Approve the issue a message drafts. Write, so an Editor's, like a
+/// report's status: nothing is filed on a Commenter's or an agent's say.
+fn approve_issue_spec(channel: &str, msg: &str, me: &str) -> ActionSpec {
+    immediate_spec(
+        "approve-issue",
+        &crate::i18n::t("chat-action-approve-issue"),
+        &approve_issue_action(channel, msg, me, unix_now_i64()),
+    )
+    .requiring(PermissionRequirement::Write)
 }
 
 /// The portable attachment is an addressable child of its message. Opening it
@@ -2512,6 +2563,17 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
             "The id to post the message under, when the sender already named \
              records after it (m_ and up to 62 of A-Z a-z 0-9 _ -)",
         ),
+        ActionParam::optional(
+            "parent",
+            ParamType::Text,
+            "The message whose thread this remark replies in",
+        ),
+        ActionParam::optional(
+            "issue",
+            ParamType::Object,
+            "A forge issue drafted for a report, for an Editor to approve: \
+             an IssueDraft {report, title, body}",
+        ),
     ];
     let build = move |args: &tilo_actions::ActionArgs| match remark_from_args(args) {
         Ok((text, reference, also, attachment, mentions)) => encode(&ChatAction::SendMessage {
@@ -2526,8 +2588,11 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
             author: me.clone(),
             ts: unix_now_i64(),
             text,
-            parent: None,
-            attachment: attachment.map(|record| Attachment::Record(Box::new(record))),
+            parent: args
+                .text("parent")
+                .filter(|id| tilo_reference::is_chat_message_id(id))
+                .map(ToString::to_string),
+            attachment,
             mentions,
             reference: Some(reference),
             references: also,
@@ -2567,7 +2632,7 @@ type RemarkParts = (
     String,
     tilo_reference::ResourceRef,
     Vec<tilo_reference::ResourceRef>,
-    Option<tilo_reference::RecordAttachment>,
+    Option<Attachment>,
     Vec<crate::mention::Mention>,
 );
 
@@ -2586,12 +2651,27 @@ fn remark_from_args(args: &tilo_actions::ActionArgs) -> Result<RemarkParts, Stri
         Some(value) => serde_json::from_value::<Vec<tilo_reference::ResourceRef>>(value.clone())
             .map_err(|_| "the references are not ResourceRefs".to_string())?,
     };
-    let attachment = match json.get("attachment") {
+    let record = match json.get("attachment") {
         None | Some(serde_json::Value::Null) => None,
         Some(value) => Some(
             serde_json::from_value::<tilo_reference::RecordAttachment>(value.clone())
                 .map_err(|_| "the attachment is not a RecordAttachment".to_string())?,
         ),
+    };
+    let issue = match json.get("issue") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<crate::feedback::IssueDraft>(value.clone())
+                .ok()
+                .filter(crate::feedback::IssueDraft::is_valid)
+                .ok_or("the issue is not an IssueDraft")?,
+        ),
+    };
+    let attachment = match (record, issue) {
+        (Some(_), Some(_)) => return Err("a remark carries one attachment".into()),
+        (Some(record), None) => Some(Attachment::Record(Box::new(record))),
+        (None, Some(issue)) => Some(Attachment::Issue(Box::new(issue))),
+        (None, None) => None,
     };
     let mentions = match json.get("mentions") {
         None | Some(serde_json::Value::Null) => Vec::new(),
@@ -4023,6 +4103,102 @@ mod feedback_tests {
         assert_eq!(
             refused.type_id,
             tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
+    }
+
+    /// An agent's drafted issue is a remark in the report's thread; only an
+    /// Editor's `approve-issue` approves it, once, and only a draft can be.
+    #[test]
+    fn a_drafted_issue_replies_in_the_thread_and_only_an_editor_approves_it() {
+        let mut doc = feedback_doc();
+        post(&mut doc, "m_report", "u_a71c", None);
+        let channel = resolved(&doc, model::ME, "chat.channel:c_fb");
+        let spec = action(&channel, "remark").expect("a channel takes remarks");
+        let draft = crate::feedback::IssueDraft {
+            report: "m_report".into(),
+            title: "Send does nothing".into(),
+            body: "> a report".into(),
+        };
+        let mut args = serde_json::Map::new();
+        args.insert("text".into(), "Drafted an issue".into());
+        args.insert(
+            "reference".into(),
+            serde_json::to_value(ResourceRef::whole(
+                "chat.message",
+                "chat.message:m_report",
+                "a report",
+            ))
+            .unwrap(),
+        );
+        args.insert("parent".into(), "m_report".into());
+        args.insert("issue".into(), serde_json::to_value(&draft).unwrap());
+        args.insert("message".into(), "m_draft".into());
+        perform_comment(&mut doc, &built(spec, &args));
+        let reply = ChatDoc::list_messages(&doc, "c_fb")
+            .into_iter()
+            .find(|m| m.id == "m_draft")
+            .expect("the reply");
+        assert_eq!(reply.parent.as_deref(), Some("m_report"));
+        assert_eq!(
+            reply.attachment.as_ref().and_then(Attachment::issue),
+            Some(&draft)
+        );
+        assert_eq!(reply.approved, None);
+
+        let resource = resolved(&doc, model::ME, "chat.message:m_draft");
+        let approve = action(&resource, "approve-issue").expect("a draft can be approved");
+        assert_eq!(approve.contract.permission, PermissionRequirement::Write);
+        assert!(
+            action(
+                &resolved(&doc, model::ME, "chat.message:m_report"),
+                "approve-issue"
+            )
+            .is_none(),
+            "a report carries no draft"
+        );
+
+        dispatch(
+            &mut doc,
+            &approve_issue_action("c_fb", "m_draft", "u_team", 7),
+        );
+        dispatch(
+            &mut doc,
+            &approve_issue_action("c_fb", "m_draft", "u_other", 9),
+        );
+        assert_eq!(
+            ChatDoc::issue_approval(&doc, "m_draft"),
+            Some(crate::feedback::IssueApproval {
+                by: "u_team".into(),
+                since: 7
+            }),
+            "the first approval counts"
+        );
+        assert!(
+            action(
+                &resolved(&doc, model::ME, "chat.message:m_draft"),
+                "approve-issue"
+            )
+            .is_none(),
+            "an approved draft is not approved again"
+        );
+        dispatch(
+            &mut doc,
+            &approve_issue_action("c_fb", "m_report", "u_team", 7),
+        );
+        assert_eq!(
+            ChatDoc::issue_approval(&doc, "m_report"),
+            None,
+            "only a draft is approved"
+        );
+
+        args.insert(
+            "attachment".into(),
+            serde_json::to_value(recording()).unwrap(),
+        );
+        assert_eq!(
+            built(spec, &args).type_id,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "a remark carries one attachment"
         );
     }
 
