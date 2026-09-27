@@ -1038,6 +1038,10 @@ pub fn try_to_ui_tile(
     try_to_ui_tile_for_tab(t, services, inputs, None)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over every tile kind, each building its hosted tile with localized fallbacks"
+)]
 fn try_to_ui_tile_for_tab(
     t: &ShellTile,
     services: terminal::HostedProcessServices,
@@ -1072,7 +1076,7 @@ fn try_to_ui_tile_for_tab(
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: if note.is_empty() {
-                "Restoring this window…".into()
+                crate::shell::i18n::t("shell-window-restoring")
             } else {
                 note.clone()
             },
@@ -1140,8 +1144,13 @@ fn try_to_ui_tile_for_tab(
                         path, reason, ..
                     }) => UiTile::Notice {
                         title: path.file_name().map_or_else(
-                            || "Document unavailable".to_string(),
-                            |name| format!("{} unavailable", name.to_string_lossy()),
+                            || crate::shell::i18n::t("shell-document-unavailable"),
+                            |name| {
+                                crate::shell::i18n::t_args(
+                                    "shell-named-document-unavailable",
+                                    &[("name", name.to_string_lossy().into_owned().into())],
+                                )
+                            },
                         ),
                         detail: reason,
                     },
@@ -1262,11 +1271,24 @@ fn open_legacy_document_from_files(
 ) -> Result<(), String> {
     let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
     if let Some(app) = native_app {
-        let path = path
-            .canonicalize()
-            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let path = path.canonicalize().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-open-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-read-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
         let title = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
