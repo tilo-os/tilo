@@ -222,6 +222,8 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The shared runtime daemon; `runtime_host::Session` supplies its services.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# The app identity service: broker, registry, device fleet, provisioning.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The compositor-free runtime host serves its apps' document media from the
 # same content store and capability implementation as the filesystem daemon.
 tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
