@@ -20,6 +20,7 @@ standalone-history-restore-stale = The document changed while you were reviewing
 standalone-history-restore-pending = Finish the current edit, then restore the version.
 standalone-history-restore-denied = Only editors can restore a version.
 standalone-history-restore-unavailable = This version can't be restored here.
+standalone-history-preview-resource = Document
 history-edited-field = { $more ->
     [0] Edited { $path }
    *[other] Edited { $path } and { $more } more
@@ -28,6 +29,18 @@ history-removed-field = { $more ->
     [0] Removed { $path }
    *[other] Removed { $path } and { $more } more
 }
+history-review-title = Restore { $resource }
+history-review-confirm = Restore version
+history-review-refresh = Refresh review
+history-review-cancel = Cancel
+history-review-body = Version: { $version }
+
+    Restoring returns the document to exactly this version as one new change. Later changes stay in history, and Undo reverses the restore.
+history-review-selected-version = Selected version
+history-review-not-content = This activity does not contain restorable document content.
+history-review-no-clock = The current time is unavailable. Restore cannot check permission expiry.
+history-restore-unsupported = This version cannot be restored safely with this application's content format.
+history-preview-description = { $resource } as of this version
 
 music-open-audio-file = Open audio file
 

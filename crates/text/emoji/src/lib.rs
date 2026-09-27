@@ -280,7 +280,8 @@ pub struct Catalogue {
     genders: HashMap<usize, (Option<usize>, Option<usize>)>,
     /// Gendered index → its neutral index.
     neutral_of: HashMap<usize, usize>,
-    keys: Vec<search::Key>,
+    /// Names and keywords, indexed on the first search.
+    search: OnceLock<tilo_search::SearchIndex>,
 }
 
 static ENGLISH_CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
@@ -444,8 +445,9 @@ impl Catalogue {
     }
 
     /// Up to `limit` emoji matching `query`, best first. Every whitespace
-    /// separated term must match the name or a keyword; a name prefix beats a
-    /// word match, which beats a substring. Ties keep Unicode order. In a
+    /// separated term must match the name or a keyword; the name ranks above
+    /// a keyword, and a prefix above a word, above a substring. Ties keep
+    /// Unicode order. In a
     /// translated catalogue, emoji that match only in English follow every
     /// native match, ranked the same way.
     #[must_use]
@@ -458,6 +460,10 @@ impl Catalogue {
     #[must_use]
     pub fn suggest(&self, word: &str, limit: usize) -> Vec<&Emoji> {
         search::suggest(self, word, limit)
+    }
+
+    fn search_index(&self) -> &tilo_search::SearchIndex {
+        self.search.get_or_init(|| search::index(&self.emoji))
     }
 
     fn position(&self, emoji: &Emoji) -> Option<usize> {

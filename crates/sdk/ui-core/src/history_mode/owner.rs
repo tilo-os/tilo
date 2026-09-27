@@ -380,11 +380,11 @@ impl HistoryOwner {
         }
     }
 
-    pub(crate) fn restore_prepared(
+    pub(crate) fn restore_write(
         &self,
         outer: &mut AutoCommit,
         admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-        prepared: &crate::history_mode::restore::PreparedContentRestore,
+        write: crate::state::owned_restore::RestoreWrite<'_>,
     ) -> Result<
         crate::state::owned_restore::OwnedActionReceipt,
         crate::state::owned_restore::OwnedRestoreError,
@@ -395,10 +395,20 @@ impl HistoryOwner {
             )
         })?;
         match &self.0 {
-            OwnerKind::Component(binding) => binding.restore_prepared(outer, admitted, prepared),
+            OwnerKind::Component(binding) => binding.restore_write(outer, admitted, write),
             OwnerKind::Legacy {
                 store, checkout, ..
-            } => crate::bound_dispatch::restore_legacy_history(store, checkout, admitted, prepared),
+            } => crate::bound_dispatch::restore_legacy_history(store, checkout, admitted, write),
+        }
+    }
+
+    /// See [`crate::bound_dispatch::CallbackBinding::close_open_step`]. A
+    /// legacy tile keeps no open step.
+    pub(crate) fn close_open_step(&self, outer: &mut AutoCommit) {
+        if let OwnerKind::Component(binding) = &self.0
+            && let Err(error) = binding.close_open_step(outer)
+        {
+            tracing::debug!(?error, "history review could not close the open step");
         }
     }
 

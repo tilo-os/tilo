@@ -110,6 +110,14 @@ has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
 has "$workflow" 'runner: runner-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
+snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
+if printf '%s\n' "$snapshot_job" | grep -Fq 'Install and check native snapshot host tools' \
+  && printf '%s\n' "$snapshot_job" | grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' \
+  && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
+  ok 'native RPM snapshot installs and checks host tools before accessing the base'
+else
+  bad 'native RPM snapshot may access the base without its required host tools'
+fi
 has "$workflow" 'platforms: ${{ matrix.platform }}' \
   'snapshot explicitly selects each native OCI platform'
 has "$workflow" 'needs: [fingerprint, snapshot]' \
@@ -122,8 +130,11 @@ has "$workflow" 'python3 os/dev/rpm-snapshot-fingerprint.py' \
   'snapshot workflow computes the package-set fingerprint'
 has "$workflow" './os/dev/resolve-rpm-snapshot.sh' \
   'snapshot workflow resolves the fingerprint tag to a verified digest'
-has "$workflow" 'workflow_call:' \
-  'snapshot workflow is reusable for image builds'
+if ! grep -Fq 'workflow_call:' "$workflow"; then
+  ok 'snapshot signing runs only in standalone workflows with OIDC'
+else
+  bad 'snapshot signing is exposed through a reusable workflow without OIDC'
+fi
 has "$workflow" '--tag "$FINGERPRINT_TAG"' \
   'snapshot promotion publishes the set-<fingerprint> tag'
 has "$workflow" 'needs: [fingerprint, signing-preflight]' \
@@ -207,17 +218,19 @@ has "$resolve_script" 'derive-rpm-package-set.py" --arch aarch64' \
   'fingerprint resolve derives the explicit ARM64 RPM package set'
 has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
-has "$image_workflow" 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
-  'OS CI depends on resolve-or-create for the frozen RPM snapshot'
 has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
-has "$relay_workflow" 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
-  'relay CI depends on resolve-or-create for the frozen RPM snapshot'
-for caller in "$image_workflow" "$relay_workflow"; do
-  awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$caller" \
-    | grep -Fx '    enable-openid-connect: true' >/dev/null \
-    && ok "$(basename "$caller") grants OIDC to the reusable RPM snapshot" \
-    || bad "$(basename "$caller") omits OIDC on the reusable RPM snapshot caller"
+for consumer in "$image_workflow" "$relay_workflow"; do
+  resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
+  if printf '%s\n' "$resolver_job" | grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' \
+    && printf '%s\n' "$resolver_job" | grep -Fq './os/dev/resolve-rpm-snapshot.sh' \
+    && printf '%s\n' "$resolver_job" | grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' \
+    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
+    && ! printf '%s\n' "$resolver_job" | grep -Fq 'enable-openid-connect: true'; then
+    ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
+  else
+    bad "$(basename "$consumer") may sign in a reusable job or accept an unverified RPM snapshot"
+  fi
 done
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
