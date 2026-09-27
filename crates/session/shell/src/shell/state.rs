@@ -455,6 +455,44 @@ impl std::fmt::Display for PeerOrigin {
 /// projects it into governance, and a governance sync never removes it.
 pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
 
+/// Id prefix of the membership a person gives an agent acting for them on
+/// their own device, such as the session recorder: `delegate-<person>:<id>`.
+/// It needs no room administrator, because it grants nothing the person
+/// cannot already do: its verb is bounded by the person's own role, and it
+/// stands only while that person still holds the role
+/// ([`WorkspaceTree::device_delegate_stands`]). Like a delegated admission
+/// it is held outside governance, on the device it acts from, and a
+/// governance sync never removes it; a room administrator still forbids it
+/// with a restriction on the agent, which governance does carry.
+pub const DEVICE_DELEGATE_CAP_PREFIX: &str = "delegate-";
+
+/// Whether `cap` is an admission governance never carries: a host-delegated
+/// admission or a person's device delegate.
+pub fn held_outside_governance(cap: &CapOverride) -> bool {
+    cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX)
+        || cap.id.starts_with(DEVICE_DELEGATE_CAP_PREFIX)
+}
+
+/// The widest verb `role` grants in its room; `None` for a blocked member.
+fn role_verb(role: CapRole) -> Option<Verb> {
+    match role {
+        CapRole::Owner => Some(Verb::Admin),
+        CapRole::Editor => Some(Verb::Write),
+        CapRole::Commenter => Some(Verb::Comment),
+        CapRole::Viewer => Some(Verb::Read),
+        CapRole::Denied => None,
+    }
+}
+
+/// The person a device-delegate capability acts for, if `cap` is one.
+pub fn device_delegate_person(cap: &CapOverride) -> Option<&str> {
+    cap.id
+        .strip_prefix(DEVICE_DELEGATE_CAP_PREFIX)?
+        .split_once(':')
+        .map(|(person, _)| person)
+        .filter(|person| !person.is_empty())
+}
+
 /// Who may write a room's governance — its owner and capability list —
 /// as this machine knows it. Automerge merges a map key
 /// last-writer-wins with no per-key ACL, so without this record
@@ -1677,12 +1715,14 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let channel_class = ws.channel_class;
-        // Delegated admissions are records of their own; projecting them
-        // would republish every member of a public room with each change.
+        // Admissions held outside governance are not the room's to carry:
+        // a delegated admission is a record of its own, and projecting them
+        // would republish every member of a public room with each change;
+        // a person's device delegate is theirs, on their device.
         let caps: Vec<CapOverride> = ws
             .capabilities
             .iter()
-            .filter(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+            .filter(|cap| !held_outside_governance(cap))
             .cloned()
             .collect();
         let tasks = ws.tasks.clone();
@@ -2671,13 +2711,10 @@ impl WorkspaceTree {
             workspace
         } else {
             governed = workspace.clone();
+            governed.capabilities.retain(held_outside_governance);
             governed
                 .capabilities
-                .retain(|cap| cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX));
-            governed.capabilities.extend(
-                caps.into_iter()
-                    .filter(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX)),
-            );
+                .extend(caps.into_iter().filter(|cap| !held_outside_governance(cap)));
             &governed
         };
         let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
@@ -2850,14 +2887,14 @@ impl WorkspaceTree {
         }
         // Replaced rather than merged: a revoked capability is simply
         // absent from the peer's document, so carrying the local list
-        // over would let it survive. Delegated admissions are the one
-        // exception: governance never carries them.
+        // over would let it survive. Admissions held outside governance
+        // are the one exception: governance never carries them.
         let mut sorted = caps;
-        sorted.retain(|cap| !cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX));
+        sorted.retain(|cap| !held_outside_governance(cap));
         sorted.extend(
             ws.capabilities
                 .iter()
-                .filter(|cap| cap.id.starts_with(DELEGATED_ADMISSION_CAP_PREFIX))
+                .filter(|cap| held_outside_governance(cap))
                 .cloned(),
         );
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -3261,6 +3298,88 @@ impl WorkspaceTree {
         self.doc_insert_capability(workspace_id, &stored);
         self.flush_to_disk();
         Some(id)
+    }
+
+    /// Admit an agent to `workspace_id` as `person`'s delegate on this device,
+    /// with no administrator's grant: `cap` must name an agent, cover the
+    /// room, and ask no more than `person`'s own role allows, and no
+    /// restriction the room holds may forbid that agent. Kept on this device
+    /// and on disk, never in governance (see [`DEVICE_DELEGATE_CAP_PREFIX`]).
+    /// Returns the capability id, or `None` when refused.
+    pub fn admit_device_delegate(
+        &mut self,
+        workspace_id: WorkspaceId,
+        person: &UserId,
+        cap: CapOverride,
+    ) -> Option<String> {
+        let Subject::Principal(Principal::Agent(agent)) = &cap.subject else {
+            return None;
+        };
+        if cap.effect != Effect::Grant || person.contains(':') {
+            return None;
+        }
+        let ws = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?;
+        let covers_this_room = match &cap.scope {
+            Scope::Room(room) => *room == ws.room.to_string(),
+            _ => false,
+        };
+        let role_verb = role_verb(ws.role_of(person)?)?;
+        if !covers_this_room
+            || !role_verb.implies(cap.verb)
+            || ws.role_of_agent(agent) == Some(CapRole::Denied)
+        {
+            return None;
+        }
+        let id = format!("{DEVICE_DELEGATE_CAP_PREFIX}{person}:{}", cap.id);
+        ws.grant_capability(cap.with_id(id.clone()));
+        self.flush_to_disk();
+        Some(id)
+    }
+
+    /// Take back a device delegate's admission; see
+    /// [`Self::admit_device_delegate`]. Only this device holds it, so only
+    /// this device removes it.
+    pub fn revoke_device_delegate(&mut self, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+        if !cap_id.starts_with(DEVICE_DELEGATE_CAP_PREFIX) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.revoke_capability(cap_id) {
+            return false;
+        }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Whether every device-delegate admission `agent` holds in `workspace`
+    /// still stands on its person's role: they still hold one that allows
+    /// what they delegated. A person removed or blocked takes their
+    /// delegate with them.
+    pub fn device_delegate_stands(workspace: &Workspace, agent: &str) -> bool {
+        workspace
+            .capabilities
+            .iter()
+            .filter(
+                |cap| matches!(&cap.subject, Subject::Principal(Principal::Agent(a)) if a == agent),
+            )
+            .filter_map(|cap| Some((device_delegate_person(cap)?, cap.verb)))
+            .all(|(person, verb)| {
+                workspace
+                    .role_of(&person.to_string())
+                    .and_then(role_verb)
+                    .is_some_and(|held| held.implies(verb))
+            })
     }
 
     /// Revoke a capability in `workspace_id`, mirroring the removal to

@@ -76,6 +76,21 @@ revokes it. That is the recording indicator, the consent boundary and the
 revocation path, all existing ones. It is admitted only to rooms the user
 chose to record.
 
+Recording does not need a room administrator. In a room the user
+administers, on the machine that governs it, the recorder's admission is an
+ordinary agent grant in the room's governance. Anywhere else, including a
+shared room the user only views, it is the user's **device delegate**
+(`WorkspaceTree::admit_device_delegate`). That is a membership held on the
+user's own device and never written into governance, like a host-delegated
+admission. It asks no more than the user's own role allows. It stands only
+while the user keeps that role, so a person who is removed takes the
+recorder with them. Stopping revokes it, and on the user's device it lists
+as an agent like any other. One gap remains: other members' devices do not
+list a device delegate, because no governance record of it reaches them. The
+role model also has no restriction a room administrator could set to forbid
+delegates. A restriction below Read is what would mark an agent as blocked,
+but every verb implies Read.
+
 A room's app routes are encrypted channels, so what the recorder sees is
 ciphertext until it is opened. The shell's participants (the recorder, a
 replay peer, record custody) reach a channel's content keys the way an app
