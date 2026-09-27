@@ -82,7 +82,6 @@ apps/mail/src/app.rs pixel_const 24
 apps/mail/src/compose.rs pixel_const 15
 apps/mail/src/draw.rs pixel_const 8
 apps/mail/src/pane.rs pixel_const 7
-apps/mail/src/wysiwyg.rs pixel_const 6
 apps/maps/src/app.rs pixel_const 8
 apps/maps/src/canvas.rs pixel_const 1
 apps/maps/src/geo.rs pixel_const 1
