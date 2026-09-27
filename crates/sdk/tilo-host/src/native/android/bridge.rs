@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
@@ -14,6 +13,7 @@ use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
 use jni::{JNIEnv, NativeMethod};
 
 use crate::location::LocationOutcome;
+use crate::wake::Reply;
 
 pub(super) const RESULTS: &str = "so.tilo.android.TiloActivityResults";
 pub(super) const DOCUMENTS: &str = "so.tilo.android.TiloDocuments";
@@ -121,7 +121,7 @@ type PermissionWaiter = Box<dyn FnOnce(Result<bool, String>) + Send>;
 
 static RESULT_WAITERS: Waiters<ResultWaiter> = Waiters::new();
 static PERMISSION_WAITERS: Waiters<PermissionWaiter> = Waiters::new();
-static LOCATION_WAITERS: Waiters<Sender<LocationOutcome>> = Waiters::new();
+static LOCATION_WAITERS: Waiters<Reply<LocationOutcome>> = Waiters::new();
 
 /// Start the intent `intent` builds for a result, which reaches `on_result`
 /// on the activity's UI thread. When the intent cannot be started,
@@ -205,7 +205,7 @@ pub(super) fn request_permissions(
 }
 
 /// Ask the location service for one fix, answered on `answer`.
-pub(super) fn locate(answer: Sender<LocationOutcome>) {
+pub(super) fn locate(answer: Reply<LocationOutcome>) {
     let token = LOCATION_WAITERS.insert(answer);
     let requested = super::with_activity(|env, activity| {
         let location = class(env, activity, LOCATION)?;
@@ -220,7 +220,7 @@ pub(super) fn locate(answer: Sender<LocationOutcome>) {
     if let Err(error) = requested
         && let Some(answer) = LOCATION_WAITERS.take(token)
     {
-        let _ = answer.send(LocationOutcome::Unavailable(format!(
+        answer.send(LocationOutcome::Unavailable(format!(
             "could not ask the location service: {error}"
         )));
     }
@@ -335,5 +335,5 @@ extern "system" fn deliver_location<'local>(
             reason.unwrap_or_else(|| "the location service gave no reason".to_string()),
         )
     };
-    let _ = answer.send(outcome);
+    answer.send(outcome);
 }
