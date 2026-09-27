@@ -12,43 +12,32 @@
 //! records in its own workspace file, the invocation journal and
 //! collaboration history.
 
+mod workspace;
+
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
 use std::{
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
 };
 use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::BrokerChannels,
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{
-        AppActionGrants, HostServices, LauncherServices, LegacyWorkspaceProjection,
-        WorkspaceAuthority,
-    },
+    services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTaskStatus,
-};
 use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+use workspace::{ProfileGrants, ProfileWorkspace};
 
-/// The desktop session's workspace file. Read, never written, here: its
-/// native authority fields belong to that host.
-const DESKTOP_WORKSPACE: &str = "workspace.json";
-/// This host's own workspace file, for a profile the desktop never served.
-const STANDALONE_WORKSPACE: &str = "desktop.json";
-/// The broker's durable invocation journal: a retried invocation id never
-/// starts twice, across restarts too.
-const INVOCATION_JOURNAL: &str = "invocations";
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
@@ -63,20 +52,6 @@ pub struct Standalone {
     blob_socket: PathBuf,
     _media: profile::MediaHost,
     _lock: advisory_lock::FileLock,
-}
-
-impl Standalone {
-    /// Read document media an app in this session's room stored.
-    /// # Errors
-    /// Returns connection errors; `Ok(None)` when the content is not readable.
-    pub fn read_media(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
-        profile::read_media(&self.blob_socket, &self.room, app_id, hash)
-    }
-
-    /// The live action broker, for in-process inspection.
-    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
-        self.broker.app_action_broker()
-    }
 }
 
 impl RuntimeServices for Standalone {
@@ -242,326 +217,6 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
-}
-
-/// The profile's committed workspace tree.
-struct ProfileWorkspace {
-    root: PathBuf,
-    tree: RwLock<DesktopTree>,
-    /// Where this host keeps the tree; `None` when the desktop session's
-    /// file is authoritative and read only.
-    path: Option<PathBuf>,
-}
-
-impl ProfileWorkspace {
-    /// The desktop session's tree when that host served this profile,
-    /// otherwise this host's own, created on first start.
-    fn open(root: &Path) -> io::Result<Self> {
-        let desktop = root.join(DESKTOP_WORKSPACE);
-        if desktop.exists() {
-            // The desktop session versions this file by its native layout,
-            // which only adds fields this host ignores; it is read only here.
-            return Ok(Self {
-                root: root.to_path_buf(),
-                tree: RwLock::new(parse_tree(&std::fs::read(&desktop)?)?),
-                path: None,
-            });
-        }
-        let path = root.join(STANDALONE_WORKSPACE);
-        let tree = match read_tree(&path) {
-            Ok(tree) => tree,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => bootstrap(),
-            Err(error) => return Err(error),
-        };
-        if tree.workspaces.is_empty() {
-            return Err(io::Error::other("runtime profile has no workspace"));
-        }
-        Ok(Self {
-            root: root.to_path_buf(),
-            tree: RwLock::new(tree),
-            path: Some(path),
-        })
-    }
-
-    fn room(&self) -> String {
-        self.tree
-            .read()
-            .map(|tree| {
-                tree.workspaces
-                    .first()
-                    .map(|workspace| workspace.room.to_string())
-            })
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-    }
-
-    /// Give an unowned workspace to `actor` and persist this host's tree.
-    fn adopt(&self, actor: &str) -> io::Result<()> {
-        let mut tree = self
-            .tree
-            .write()
-            .map_err(|_| io::Error::other("runtime workspace lock poisoned"))?;
-        let workspace = tree
-            .workspaces
-            .first_mut()
-            .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        if workspace.owner.is_none() {
-            if self.path.is_none() {
-                return Err(io::Error::other(
-                    "the desktop session's runtime workspace has no owner",
-                ));
-            }
-            workspace.set_owner(actor.to_owned());
-        }
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let bytes = serde_json::to_vec_pretty(&*tree).map_err(io::Error::other)?;
-        drop(tree);
-        atomic_file::write_with_mode(path, &bytes, 0o600)
-    }
-
-    /// Whether this host governs the tree: it keeps its own file, rather
-    /// than reading the desktop session's.
-    fn governs(&self) -> bool {
-        self.path.is_some()
-    }
-
-    /// Apply `change` to this host's own tree and persist it. `None`, with
-    /// the tree unchanged, when this host does not govern it, `change`
-    /// declines, or the result cannot be saved.
-    fn update<R>(&self, change: impl FnOnce(&mut DesktopTree) -> Option<R>) -> Option<R> {
-        let path = self.path.as_ref()?;
-        let mut tree = self.tree.write().ok()?;
-        let before = tree.clone();
-        let result = change(&mut tree)?;
-        let saved = serde_json::to_vec_pretty(&*tree)
-            .map_err(io::Error::other)
-            .and_then(|bytes| atomic_file::write_with_mode(path, &bytes, 0o600));
-        if let Err(error) = saved {
-            *tree = before;
-            drop(tree);
-            tracing::warn!(%error, "runtime workspace change not saved; undone");
-            return None;
-        }
-        drop(tree);
-        Some(result)
-    }
-
-    /// Apply `change` to the workspace of `room` and persist it, refused
-    /// when this host does not govern the tree.
-    fn record(
-        &self,
-        room: &str,
-        change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
-    ) -> Result<(), String> {
-        if !self.governs() {
-            return Err("the desktop session's workspace is read only in the runtime".into());
-        }
-        self.update(|tree| {
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room.to_string() == room)?
-                .id;
-            change(tree, workspace)
-        })
-        .ok_or_else(|| format!("room {room} has no such record target, or it was not saved"))
-    }
-}
-
-/// Grants people give applications for other apps' actions, recorded in
-/// this host's own workspace by the person who gave them and noted in its
-/// history. A profile adopted from the desktop session is that host's to
-/// govern: nothing is granted or written here.
-struct ProfileGrants {
-    workspace: Arc<ProfileWorkspace>,
-    apps: Arc<apps::Apps>,
-}
-
-impl AppActionGrants for ProfileGrants {
-    fn may_grant(&self, room: &str, person: &str) -> bool {
-        self.workspace.governs()
-            && self.workspace.tree.read().is_ok_and(|tree| {
-                tree.workspaces
-                    .iter()
-                    .find(|workspace| workspace.room.to_string() == room)
-                    .is_some_and(|workspace| {
-                        workspace.may_administer_at(&person.to_owned(), unix_now())
-                    })
-            })
-    }
-
-    fn record(
-        &self,
-        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
-        answer: tilo_action_broker::app_actions::AppActionConsent,
-    ) -> Option<String> {
-        if !self.workspace.governs() {
-            return None;
-        }
-        let context = tilo_desktop_model::grants::app_action_grant_context(
-            &request.room,
-            &self.apps.display_name(&request.app_id),
-            &self.apps.display_name(&request.target_app),
-            &request.action_label,
-            answer.lifetime(),
-        );
-        let now = unix_now();
-        self.workspace.update(|tree| {
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room.to_string() == request.room)?
-                .id;
-            let stored = tree.grant_in_workspace_at(workspace, &request.person, capability, now)?;
-            tree.append_workspace_effect_receipt_at(
-                workspace,
-                tilo_actions::InvocationId::new(),
-                &request.person,
-                context,
-                tilo_actions::EffectReceiptStatus::Succeeded,
-                i64::try_from(now).unwrap_or(i64::MAX),
-            );
-            Some(stored.id)
-        })
-    }
-
-    fn revoke(&self, room: &str, capability: &str) {
-        self.workspace.update(|tree| {
-            tree.workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room.to_string() == room)?
-                .revoke_capability(capability)
-                .then_some(())
-        });
-    }
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-/// Effect and task records the broker keeps in this host's own workspace.
-/// A profile adopted from the desktop session refuses them: its file is
-/// that host's to write.
-impl LegacyWorkspaceProjection for ProfileWorkspace {
-    fn record_effect(
-        &self,
-        room: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &str,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
-    ) -> Result<(), String> {
-        let completed_at = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        self.record(room, |tree, workspace| {
-            // A retried invocation keeps its first receipt.
-            tree.append_workspace_effect_receipt_at(
-                workspace,
-                invocation,
-                actor,
-                context,
-                status,
-                completed_at,
-            );
-            Some(())
-        })
-    }
-
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String> {
-        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        self.record(room, |tree, workspace| {
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|candidate| candidate.id == workspace)?;
-            if let Some(status) = status {
-                workspace.set_task_status_at(task, status, actor, now);
-            }
-            workspace.append_task_audit_at(task, actor, summary, now)?;
-            Some(())
-        })
-    }
-}
-
-impl WorkspaceAuthority for ProfileWorkspace {
-    fn snapshot(&self) -> Result<DesktopTree, String> {
-        self.tree
-            .read()
-            .map(|tree| tree.clone())
-            .map_err(|_| "runtime workspace lock poisoned".to_owned())
-    }
-
-    /// This host's own journal, also for an adopted profile: the desktop
-    /// session's files stay untouched.
-    fn legacy_journal_root(&self) -> Option<PathBuf> {
-        Some(self.root.join(INVOCATION_JOURNAL))
-    }
-}
-
-impl WorkspaceMembership for ProfileWorkspace {
-    fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-        if let Ok(tree) = self.tree.read()
-            && let Some(workspace) = tree
-                .workspaces
-                .iter()
-                .find(|workspace| &workspace.room == room)
-        {
-            read(workspace);
-        }
-    }
-}
-
-fn parse_tree(bytes: &[u8]) -> io::Result<DesktopTree> {
-    serde_json::from_slice(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-fn read_tree(path: &Path) -> io::Result<DesktopTree> {
-    let tree = parse_tree(&std::fs::read(path)?)?;
-    if tree.schema_version > tilo_desktop_model::STATE_SCHEMA_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "workspace layout {} is newer than the {} this build understands",
-                tree.schema_version,
-                tilo_desktop_model::STATE_SCHEMA_VERSION
-            ),
-        ));
-    }
-    Ok(tree)
-}
-
-/// One empty home workspace with one strip, as a new desktop starts.
-fn bootstrap() -> DesktopTree {
-    let mut ids = IdMinter::default();
-    let workspace = WorkspaceId(ids.mint());
-    let strip = StripId(ids.mint());
-    let home = Workspace {
-        strips: vec![Strip {
-            id: strip,
-            name: "Main".into(),
-            window_groups: Vec::new(),
-        }],
-        ..Workspace::new(workspace, "Home")
-    };
-    DesktopTree {
-        workspaces: vec![home],
-        active: workspace,
-        active_strip: std::iter::once((workspace, strip)).collect(),
-        ..DesktopTree::default()
-    }
 }
 
 #[cfg(test)]
