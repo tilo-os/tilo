@@ -15,7 +15,7 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run -p shell-redraw-bench --example redraw_bench --release
+//! cargo run -p shell --example redraw_bench --release
 //! ```
 
 #[path = "support/populated_shell_fixture.rs"]

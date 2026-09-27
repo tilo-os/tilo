@@ -96,7 +96,7 @@ and p99 at most 50,000 microseconds. Its
 production render/readback harness is:
 
 ```sh
-cargo build -p shell-redraw-bench --release --example redraw_bench --locked
+cargo build -p shell --release --example redraw_bench --locked
 target/release/examples/redraw_bench
 ```
 

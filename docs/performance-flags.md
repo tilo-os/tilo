@@ -222,7 +222,7 @@ Sources: [perf_scenario.rs](../crates/dev/ui-examples/examples/perf_scenario.rs)
 
 ## Shell redraw and cold-scene harnesses
 
-Build `cargo build -p shell-redraw-bench --release --example redraw_bench --locked` and run
+Build `cargo build -p shell --release --example redraw_bench --locked` and run
 `target/release/examples/redraw_bench`. The workload is fixed at 1,000 actions,
 native 3840×2160, with GPU completion, readback, and CPU XRGB conversion. There
 is no environment override for the action count, resolution, or gate limits.
@@ -246,8 +246,8 @@ reading its explicit mode and result.
 `legacy-dense`, `legacy-versioned`, `segmented-dense`, or
 `segmented-versioned`. It renders one **cold** native-4K frame with phase
 timing; it is not an acceptance benchmark. Sources:
-[redraw_bench.rs](../crates/dev/shell-redraw-bench/examples/redraw_bench.rs),
-[retained_scene_probe.rs](../crates/dev/shell-redraw-bench/examples/retained_scene_probe.rs).
+[redraw_bench.rs](../crates/session/shell/examples/redraw_bench.rs),
+[retained_scene_probe.rs](../crates/session/shell/examples/retained_scene_probe.rs).
 
 ## Presentation-loop controls
 
