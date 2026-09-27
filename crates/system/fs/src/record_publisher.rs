@@ -24,8 +24,8 @@ use crate::record_replication::{
     RecordSnapshot,
 };
 use crate::record_repository::{
-    MAX_RECORD_BATCH_OPERATIONS, MAX_RECORD_CONFLICTS, MAX_RECORD_VERSIONS, RecordRepository,
-    RecordRepositoryError, RecordRepositoryKey,
+    MAX_RECORD_BATCH_OPERATIONS, MAX_RECORD_CONFLICTS, RecordRepository, RecordRepositoryError,
+    RecordRepositoryKey,
 };
 
 const MAX_SEQUENCE_RETRIES: usize = 8;
@@ -598,7 +598,7 @@ impl RecordPublisher {
         if metadata.latest_actor != Some(self.actor) {
             return Err(RecordPublisherError::ActorMismatch);
         }
-        if versions.len() > MAX_RECORD_VERSIONS {
+        if versions.len() > self.repository.max_record_versions() {
             return Err(RecordPublisherError::HistoryTooLarge);
         }
         if conflicts.len() > MAX_RECORD_CONFLICTS {
