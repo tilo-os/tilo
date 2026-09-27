@@ -17403,6 +17403,7 @@ dependencies = [
  "advisory-lock",
  "anyhow",
  "automerge",
+ "fnv",
  "gstreamer",
  "gstreamer-app",
  "media",

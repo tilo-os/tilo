@@ -48,11 +48,9 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
         "charlie" => (0x10, 0xb9, 0x81), // emerald-500
         _ => {
             // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            for b in user_id.as_bytes() {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x10_0000_01b3);
-            }
+            let mut hasher = fnv::FnvHasher::default();
+            std::hash::Hasher::write(&mut hasher, user_id.as_bytes());
+            let h = std::hash::Hasher::finish(&hasher);
             // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
             // so the remainder can never divide by zero; the result is
             // always < 24, so it always fits `usize`.
