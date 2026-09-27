@@ -25,6 +25,7 @@ use crate::shell::search::{
     SearchResult,
 };
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -217,7 +218,8 @@ struct ApplicationsSnapshot {
     /// turns a broad palette page into a quadratic catalogue query.
     installed_ids: HashSet<String>,
     host_app_ids: HashSet<String>,
-    index: ui::search::SearchTextIndex,
+    /// Entries' fields, keyed by position in `entries`.
+    index: SearchIndex,
 }
 
 impl ApplicationsProvider {
@@ -334,25 +336,7 @@ impl ApplicationsProvider {
                 })
                 .map(ApplicationEntry::Catalogue),
         );
-        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
-            ApplicationEntry::Installed(app) => format!(
-                "{}\u{1f}{}\u{1f}{}",
-                app.display_name,
-                app.package_id,
-                app.category.as_deref().unwrap_or("")
-            ),
-            ApplicationEntry::Dynamic(record) => format!(
-                "{}\u{1f}{}\u{1f}{}",
-                record.name, record.id, record.owner_app_id
-            ),
-            ApplicationEntry::Catalogue(app) => format!(
-                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                app.display_name,
-                app.package_id,
-                app.category.as_deref().unwrap_or(""),
-                app.description
-            ),
-        }));
+        let index = index_entries(&entries);
         ApplicationsSnapshot {
             // Never stamp a completed mixed read with a generation fetched
             // afterwards: a source can change while this worker builds.
@@ -1056,7 +1040,7 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let after = match cursor {
+        let offset = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
             Some(cursor) => match cursor
                 .token
@@ -1067,20 +1051,27 @@ impl SearchProvider for ApplicationsProvider {
                         .filter(|(_, query)| *query == ctx.needle)
                         .and_then(|(offset, _)| offset.parse::<usize>().ok())
                 }) {
-                Some(offset) => Some(offset),
+                Some(offset) => offset,
                 None => return SearchPage::stale(revision),
             },
-            None => None,
+            None => 0,
         };
-        let page =
-            snapshot
-                .index
-                .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
-        let mut next_after = page.next_after;
+        let found = snapshot.index.search(
+            ctx.needle,
+            Page {
+                offset,
+                limit: budget.max_work.min(budget.max_results),
+            },
+        );
+        let mut considered = 0usize;
         let mut bytes = 0usize;
         let mut results = Vec::new();
-        for id in page.ids {
-            let Some(entry) = snapshot.entries.get(id) else {
+        for hit in &found.hits {
+            let Some(entry) = usize::try_from(hit.key)
+                .ok()
+                .and_then(|at| snapshot.entries.get(at))
+            else {
+                considered = considered.saturating_add(1);
                 continue;
             };
             let mut rows = match entry {
@@ -1101,25 +1092,29 @@ impl SearchProvider for ApplicationsProvider {
                     ctx.chrome.open_target,
                 ),
             };
-            let Some(row) = rows.pop() else { continue };
+            let Some(row) = rows.pop() else {
+                considered = considered.saturating_add(1);
+                continue;
+            };
             let row_bytes = row
                 .title
                 .len()
                 .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
             if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                next_after = Some(id);
                 break;
             }
             bytes = bytes.saturating_add(row_bytes);
+            considered = considered.saturating_add(1);
             results.push(row);
         }
-        let exhausted = next_after.is_none();
+        let exhausted = !found.more && considered == found.hits.len();
+        let next = offset.saturating_add(considered);
         SearchPage {
             revision: revision.clone(),
             results,
-            next_cursor: next_after.map(|offset| SearchCursor {
+            next_cursor: (!exhausted).then(|| SearchCursor {
                 revision,
-                token: format!("applications:{offset}\u{1f}{}", ctx.needle),
+                token: format!("applications:{next}\u{1f}{}", ctx.needle),
             }),
             exhausted,
             stale_cursor: false,
@@ -1142,6 +1137,56 @@ impl ApplicationsProvider {
 }
 
 pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score as match_score};
+
+/// Index the fields [`match_score`] ranks, keyed by position, best match
+/// first. Words of a multi-word query may spread over fields, as there.
+fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
+    fn app_fields(
+        document: Document,
+        name: &str,
+        package_id: &str,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> Document {
+        let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
+        document
+            .field(name, FieldWeight::TITLE)
+            .field(last_segment, FieldWeight::TITLE)
+            .field(package_id, PACKAGE_ID_WEIGHT)
+            .field(category.unwrap_or_default(), FieldWeight::METADATA)
+            .field(description.unwrap_or_default(), FieldWeight::BODY)
+    }
+    let mut index = SearchIndex::new(Matching {
+        spanning: true,
+        typos: false,
+    });
+    index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
+        let document = Document::new(at as u64);
+        match entry {
+            ApplicationEntry::Installed(app) => app_fields(
+                document,
+                &app.display_name,
+                &app.package_id,
+                app.category.as_deref(),
+                None,
+            ),
+            ApplicationEntry::Dynamic(record) => {
+                app_fields(document, &record.name, &record.id, None, None)
+            }
+            ApplicationEntry::Catalogue(app) => app_fields(
+                document,
+                &app.display_name,
+                &app.package_id,
+                app.category.as_deref(),
+                Some(&app.description),
+            ),
+        }
+    }));
+    if let Err(error) = index.commit() {
+        tracing::error!(%error, "could not index applications");
+    }
+    index
+}
 
 #[cfg(test)]
 mod tests {
@@ -1939,12 +1984,7 @@ mod tests {
                 ))
             })
             .collect::<Vec<_>>();
-        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
-            ApplicationEntry::Installed(app) => {
-                format!("{}\u{1f}{}", app.display_name, app.package_id)
-            }
-            ApplicationEntry::Dynamic(_) | ApplicationEntry::Catalogue(_) => String::new(),
-        }));
+        let index = index_entries(&entries);
         *provider.snapshot.borrow_mut() = Some(ApplicationsSnapshot {
             source_generation: provider.source_generation(),
             entries,

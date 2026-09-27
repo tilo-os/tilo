@@ -8,16 +8,13 @@
 //! in index order. Multi-word queries spread over fields and typos in a
 //! title are further, lower stages. Body text is last and ordered by BM25.
 
-use std::ops::Bound;
-
 use tantivy::Term;
 use tantivy::query::{
-    BooleanQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, PhraseQuery, Query, RangeQuery,
-    TermQuery,
+    BooleanQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, PhraseQuery, Query, TermQuery,
 };
 use tantivy::schema::{Field, IndexRecordOption};
 
-use crate::index::{Fields, KEY_FIELD, RECORD_SEGMENT};
+use crate::index::{Fields, RECORD_SEGMENT};
 use crate::tokenizer::{GRAM_WIDTH, VALUE_END, VALUE_START, WORD_START, marked, words};
 use crate::weight::{FUZZY_RANK, INDEXED_WEIGHTS, MatchTier, SPANNING_RANK};
 
@@ -174,13 +171,12 @@ enum Part<'a> {
 pub(crate) struct Stage<'a> {
     pub rank: i32,
     parts: Vec<Part<'a>>,
-    after_key: Option<u64>,
 }
 
 impl Stage<'_> {
     /// The stage as one tantivy query, or `None` when nothing can match.
     pub fn query(&self) -> Option<BoxQuery> {
-        let found = any_of(
+        any_of(
             self.parts
                 .iter()
                 .filter_map(|part| match part {
@@ -188,23 +184,7 @@ impl Stage<'_> {
                     Part::Built(build) => build(),
                 })
                 .collect(),
-        )?;
-        Some(restrict(found, self.after_key))
-    }
-}
-
-/// Only records with a key after `after_key`.
-fn restrict(found: BoxQuery, after_key: Option<u64>) -> BoxQuery {
-    match after_key {
-        Some(after) => all_of(vec![
-            found,
-            Box::new(RangeQuery::new_u64_bounds(
-                KEY_FIELD.to_owned(),
-                Bound::Excluded(after),
-                Bound::Unbounded,
-            )),
-        ]),
-        None => found,
+        )
     }
 }
 
@@ -224,7 +204,6 @@ pub(crate) fn plan<'a>(
     used: Used,
     matching: Matching,
     text: &'a str,
-    after_key: Option<u64>,
 ) -> Plan<'a> {
     let query = marked(text, false);
     if query.is_empty() {
@@ -238,7 +217,6 @@ pub(crate) fn plan<'a>(
                         IndexRecordOption::Basic,
                     )))
                 }))],
-                after_key,
             }],
             body: None,
             body_order: None,
@@ -253,15 +231,13 @@ pub(crate) fn plan<'a>(
             _ => stages.push(Stage {
                 rank,
                 parts: vec![part],
-                after_key,
             }),
         }
     }
     let body = used
         .body
         .then(|| sequence_query(fields.body_grams, &query))
-        .flatten()
-        .map(|body| restrict(body, after_key));
+        .flatten();
     let body_order = body.as_ref().and_then(|_| {
         any_of(
             words(text)
