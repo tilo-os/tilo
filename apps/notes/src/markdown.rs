@@ -480,11 +480,7 @@ fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
         let (Some(&a), Some(&b)) = (open.first(), open.get(1)) else {
             continue;
         };
-        if open.len() == 2
-            && a == b
-            && bytes.get(at) == Some(&a)
-            && bytes.get(at + 1) == Some(&b)
-        {
+        if open.len() == 2 && a == b && bytes.get(at) == Some(&a) && bytes.get(at + 1) == Some(&b) {
             return Some((a, mark));
         }
     }
