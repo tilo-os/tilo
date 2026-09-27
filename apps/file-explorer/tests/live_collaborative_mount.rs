@@ -8,7 +8,7 @@
 #![cfg(unix)]
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use file_explorer::model::{AvailabilityPolicy, Residency};
 use file_explorer::{FileCommand, FileExplorerWidget};
@@ -82,7 +82,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     config.mount_options = vec![MountOption::FSName("tilo_files_live_test".into())];
     let session = fuser::spawn_mount2(quick_fs, &mount, &config).unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() == expected.len() + 1) {
             break;
@@ -143,7 +143,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     // availability record.
     let later = mount.join("Offline/later.txt");
     std::fs::write(&later, b"created after folder pin").unwrap();
-    let child_deadline = Instant::now() + Duration::from_secs(10);
+    let child_deadline = tilo_test_env::hang_deadline();
     loop {
         if std::fs::read_dir(mount.join("Offline")).is_ok_and(|entries| entries.count() == 1) {
             break;

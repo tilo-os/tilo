@@ -8188,16 +8188,15 @@ mod tests {
     /// between frames, block on the outstanding worker's reply: a loaded
     /// runner can take many seconds to schedule a worker that writes and syncs
     /// a file, so no short budget is safe. A lost worker disconnects its
-    /// channel and the app reports it; the cap only catches a hung one.
+    /// channel and the app reports it; the hang bound only catches a hung one.
     fn sync_until(app: &mut SheetsApp, doc: &mut AutoCommit, done: impl Fn(&SheetsApp) -> bool) {
-        const CAP: Duration = Duration::from_secs(120);
-        let started = Instant::now();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             app.sync(doc, &automerge::ROOT);
             if done(app) {
                 return;
             }
-            let within = CAP.saturating_sub(started.elapsed());
+            let within = deadline.saturating_duration_since(Instant::now());
             let pending = app.status.clone();
             if let Some(rx) = app.persistence_rx.take() {
                 app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
@@ -8207,8 +8206,8 @@ mod tests {
                 // No reply outstanding: a retry delay or a frame-driven step.
                 assert!(
                     !within.is_zero(),
-                    "Sheets did not settle within {} s with no worker outstanding (status: {pending})",
-                    CAP.as_secs()
+                    "Sheets did not settle within {:?} with no worker outstanding (status: {pending})",
+                    tilo_test_env::hang_bound()
                 );
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -8232,7 +8231,7 @@ mod tests {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => rx,
             Err(mpsc::RecvTimeoutError::Timeout) => panic!(
-                "background Sheets {worker} worker sent no reply before the 120 s cap (status: {status})"
+                "background Sheets {worker} worker sent no reply before the hang bound (status: {status})"
             ),
         }
     }

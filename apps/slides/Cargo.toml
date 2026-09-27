@@ -56,3 +56,4 @@ workspace = true
 [dev-dependencies]
 vello_encoding.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }

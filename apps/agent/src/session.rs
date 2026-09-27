@@ -4336,7 +4336,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let offers = loop {
                 assert!(Instant::now() < deadline, "both app catalogues must arrive");
                 session.refresh_catalogue().unwrap();
