@@ -545,7 +545,7 @@ fn a_notebook_carried_to_another_workspace_opens_there_and_its_old_room_starts_f
         notes::definition().app_id,
         home.workspace_id(),
         &origin,
-        transfer::Retirement::Moved,
+        &transfer::Retirement::Moved(None),
     )
     .unwrap();
 
