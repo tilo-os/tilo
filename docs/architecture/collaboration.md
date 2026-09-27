@@ -125,9 +125,15 @@ takes:
   signed over that nonce. An entry counts only when its bringing-in is sealed
   by the room's authority or by a member the room lets edit. A withdrawal
   counts only when it is sealed by whoever brought the record in or by such a
-  member. Anything else is ignored on read, and a batch that brings in,
-  recasts, restores or withdraws an entry without such a seal is refused whole
-  (`WorkspaceTree::apply_room_changes`). A Commenter therefore brings no
+  member. Anything else is ignored on read. A batch is refused whole
+  (`WorkspaceTree::apply_room_changes`) only for a seal that can never have
+  been genuine: an entry brought in, recast, restored or withdrawn with no
+  seal at all, with a signature that does not verify, or signed by someone who
+  is not in the room. Whether the sealer may add records is never grounds for
+  refusal, because an editor who sealed an entry may since have been demoted,
+  and refusing then would keep every newcomer from syncing. The room's
+  authority instead seals afresh any record it holds, and any withdrawal it
+  followed, whose seal no longer stands. A Commenter therefore brings no
   references into a room and takes none out.
 - **Governance, compaction and redaction operations** are signed with their own
   classes, which the role table grants to the owner only.

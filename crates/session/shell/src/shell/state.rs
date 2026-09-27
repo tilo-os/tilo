@@ -1840,11 +1840,77 @@ impl WorkspaceTree {
         projection::project_channel_class(doc, channel_class);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
+        self.confirm_room_records(room, &held);
+        let Some(doc) = self.room_docs.get_mut(&room) else {
+            return;
+        };
         let _ = tilo_resource::history::commit_stamped(doc);
         // Nothing reads this doc through patches, so the log is pure
         // overhead — worse, `PatchLog::migrate_actors` panics when a
         // peer's actor can't be spliced into it in sort order.
         doc.reset_diff_cursor();
+    }
+
+    /// As `room`'s authority, vouch for what the room's records say once the
+    /// governance just projected holds: a record this machine holds whose
+    /// bringing-in no longer stands — its sealer has lost the right to add
+    /// records — is sealed afresh, and a withdrawal this machine followed
+    /// whose seal no longer stands is sealed afresh too. So a demotion never
+    /// takes a record out of the room, or puts one back, for anybody.
+    fn confirm_room_records(
+        &mut self,
+        room: RoomId,
+        held: &std::collections::BTreeMap<String, String>,
+    ) {
+        let Some(doc) = self.room_docs.get(&room) else {
+            return;
+        };
+        let standing = self.room_record_standing(room, doc);
+        let mut bring_in: Vec<(String, String)> = Vec::new();
+        let mut take_out: Vec<(String, String)> = Vec::new();
+        for entry in projection::room_record_entries_of(doc) {
+            let live = standing.live.iter().any(|(id, _)| *id == entry.id);
+            let withdrawn = standing.withdrawn.contains(&entry.id);
+            match held.get(&entry.id) {
+                Some(kind) if !entry.removed && !live && !withdrawn => {
+                    bring_in.push((entry.id, kind.clone()));
+                }
+                // Taken out by a member with standing when they sealed it:
+                // this machine followed, and nothing it has yet to fold in
+                // brings the record back.
+                None if entry.removed
+                    && live
+                    && self.withdrawal_genuine(room, doc, &entry)
+                    && !self
+                        .desktop
+                        .room_records_inbound
+                        .iter()
+                        .any(|(r, id, _)| *r == room && *id == entry.id) =>
+                {
+                    if let Some((nonce, _)) = self.sealed_bringing_ins(room, doc, &entry).first() {
+                        take_out.push((entry.id.clone(), (*nonce).to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if bring_in.is_empty() && take_out.is_empty() {
+            return;
+        }
+        let Some(signer) = self.room_record_signer() else {
+            return;
+        };
+        let seal =
+            |act: projection::RoomRecordAct<'_>| Some(seal_room_record_act(&signer, room, act));
+        let Some(doc) = self.room_docs.get_mut(&room) else {
+            return;
+        };
+        for (id, kind) in bring_in {
+            projection::reseal_room_record(doc, &id, &kind, &seal);
+        }
+        for (id, nonce) in take_out {
+            projection::reseal_room_record_withdrawal(doc, &id, &nonce, &seal);
+        }
     }
 
     /// Key the room document stores its peers' names under.
@@ -2455,12 +2521,19 @@ impl WorkspaceTree {
     }
 
     /// True (and logs a warning) if `candidate` changes the room's records
-    /// in a way no member with standing sealed. Every entry it brings in,
-    /// recasts or brings back must carry a new bringing-in sealed by a
-    /// member who may add records, and every new bringing-in must be one;
-    /// every record it newly marks removed must carry a withdrawal that
-    /// stands on its seal, not on who relayed it. Automerge has no per-key
-    /// ACL, so the check is on the batch, like governance.
+    /// with a seal that could never have been genuine: an entry it brings
+    /// in, recasts or brings back with no new bringing-in, a new bringing-in
+    /// or a newly marked withdrawal that is unsealed, whose signature does
+    /// not verify, or whose sealer is neither the room's authority nor a
+    /// member certified in it. Automerge has no per-key ACL, so the check is
+    /// on the batch, like governance.
+    ///
+    /// Whether the sealer may add or take out records is judged on read
+    /// instead ([`Self::room_record_standing`]), never here: a member who
+    /// could when they sealed may have lost the right since, and refusing
+    /// the whole batch then would keep every newcomer from syncing the room.
+    /// Such an entry is ignored, the rest applies, and the room's authority
+    /// seals it afresh if it still holds it ([`Self::confirm_room_records`]).
     fn room_records_change_refused(&self, room: RoomId, candidate: &AutoCommit) -> bool {
         let before: std::collections::BTreeMap<String, projection::RoomRecordEntry> = self
             .room_docs
@@ -2477,39 +2550,104 @@ impl WorkspaceTree {
                 .iter()
                 .filter(|added| prior.is_none_or(|prior| !prior.added.contains(added)))
                 .collect();
-            let sealed = self.sealed_bringing_ins(room, candidate, &entry);
-            let fresh_sealed = fresh
-                .iter()
-                .all(|added| sealed.iter().any(|(nonce, _)| *nonce == added.nonce));
+            let genuine = |added: &projection::RoomRecordAdded| {
+                added.seal.as_ref().is_some_and(|(by, sig)| {
+                    room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Added {
+                            id: &entry.id,
+                            kind: &entry.kind,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    ) && self.known_in_room(room, candidate, by)
+                })
+            };
             let needs_bringing_in = match prior {
                 None => true,
                 Some(prior) => prior.kind != entry.kind || (prior.removed && !entry.removed),
             };
-            if !fresh_sealed || (needs_bringing_in && fresh.is_empty()) {
-                tracing::warn!(
-                    target: "shell::state",
-                    room = %room,
-                    record = %entry.id,
-                    "room sync refused: a record is brought into the room without the seal of a member who may add records",
-                );
-                return true;
-            }
-            let newly_removed = entry.removed && prior.is_none_or(|prior| !prior.removed);
-            if newly_removed
-                && !sealed
-                    .iter()
-                    .any(|(nonce, by)| self.withdrawal_stands(room, candidate, &entry, nonce, by))
+            if !fresh.iter().all(|added| genuine(added)) || (needs_bringing_in && fresh.is_empty())
             {
                 tracing::warn!(
                     target: "shell::state",
                     room = %room,
                     record = %entry.id,
-                    "room sync refused: a record's withdrawal is not sealed by who brought it in, the room's authority or an editor",
+                    "room sync refused: a record is brought into the room without a genuine seal",
+                );
+                return true;
+            }
+            let newly_removed = entry.removed && prior.is_none_or(|prior| !prior.removed);
+            if newly_removed && !self.withdrawal_genuine(room, candidate, &entry) {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    record = %entry.id,
+                    "room sync refused: a record is taken out of the room without a genuine seal",
                 );
                 return true;
             }
         }
         false
+    }
+
+    /// Whether `entry` carries a withdrawal sealed, over one of its
+    /// bringing-ins, by anyone in `room` — genuine, whether or not its sealer
+    /// may take records out.
+    fn withdrawal_genuine(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        entry: &projection::RoomRecordEntry,
+    ) -> bool {
+        entry.withdrawn.iter().any(|(by, sig)| {
+            self.known_in_room(room, doc, by)
+                && entry.added.iter().any(|added| {
+                    room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Withdrawn {
+                            id: &entry.id,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    )
+                })
+        })
+    }
+
+    /// Whether `endpoint` is `room`'s authority.
+    fn is_room_authority(&self, room: RoomId, endpoint: &str) -> bool {
+        match self.room_authority(room) {
+            RoomAuthority::Peer(peer) => peer == PeerOrigin::peer_id(endpoint),
+            RoomAuthority::Local => self
+                .room_record_signer()
+                .is_some_and(|key| key.public().to_string() == endpoint),
+            RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// The certified identity of the member whose device is `endpoint`, from
+    /// what this machine holds or what `doc`'s governance carries.
+    fn room_member_identity(
+        &self,
+        room: RoomId,
+        doc: &AutoCommit,
+        endpoint: &str,
+    ) -> Option<GovernedPeerIdentity> {
+        self.room_peer_identities
+            .get(&room)
+            .and_then(|identities| identities.get(endpoint))
+            .cloned()
+            .or_else(|| Self::peer_identities_of(doc).remove(endpoint))
+    }
+
+    /// Whether `endpoint` is anyone in `room` at all: its authority, or a
+    /// member certified in it, whatever their role.
+    fn known_in_room(&self, room: RoomId, doc: &AutoCommit, endpoint: &str) -> bool {
+        self.is_room_authority(room, endpoint)
+            || self.room_member_identity(room, doc, endpoint).is_some()
     }
 
     /// Whether the member whose device is `endpoint` may add records to
@@ -2518,23 +2656,10 @@ impl WorkspaceTree {
     /// from what this machine already holds, so a member admitted in the
     /// same batch is known.
     fn member_may_edit_room(&self, room: RoomId, doc: &AutoCommit, endpoint: &str) -> bool {
-        let authority = match self.room_authority(room) {
-            RoomAuthority::Peer(peer) => peer == PeerOrigin::peer_id(endpoint),
-            RoomAuthority::Local => self
-                .room_record_signer()
-                .is_some_and(|key| key.public().to_string() == endpoint),
-            RoomAuthority::Unpinned => false,
-        };
-        if authority {
+        if self.is_room_authority(room, endpoint) {
             return true;
         }
-        let Some(identity) = self
-            .room_peer_identities
-            .get(&room)
-            .and_then(|identities| identities.get(endpoint))
-            .cloned()
-            .or_else(|| Self::peer_identities_of(doc).remove(endpoint))
-        else {
+        let Some(identity) = self.room_member_identity(room, doc, endpoint) else {
             return false;
         };
         let Some(workspace) = self.workspace_in_room(room) else {
@@ -5747,8 +5872,15 @@ mod automerge_foundation_tests {
     }
 
     /// Certify `device` in the room `host` governs as a person of its own
-    /// (their root key made from `seed`) and give that person `verb`.
-    fn admit(host: &mut WorkspaceTree, device: &iroh::SecretKey, seed: u8, name: &str, verb: Verb) {
+    /// (their root key made from `seed`) and give that person `verb`,
+    /// returning the grant's id.
+    fn admit(
+        host: &mut WorkspaceTree,
+        device: &iroh::SecretKey,
+        seed: u8,
+        name: &str,
+        verb: Verb,
+    ) -> String {
         let room = host.desktop.workspaces[0].room;
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut certificate = tilo_user_identity::DeviceCert {
@@ -5769,7 +5901,8 @@ mod automerge_foundation_tests {
         ) else {
             unreachable!("a person key names a person")
         };
-        host.desktop
+        let grant = host
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -5780,6 +5913,7 @@ mod automerge_foundation_tests {
                 verb,
             ));
         host.sync_room_doc(room);
+        grant
     }
 
     /// Another machine in `room`, with its own device key.
@@ -6466,17 +6600,30 @@ mod automerge_foundation_tests {
         commenter.set_room_records(room, spam);
         ship(&mut commenter, &mut host, room, 2);
         assert!(host.take_inbound_room_records().is_empty());
-        let doc = host.room_docs.get(&room).expect("a room document");
-        assert_eq!(entry_ids(doc), vec!["file:/docs/plan.md".to_string()]);
+        assert_eq!(live_in(&host, room), plan());
 
-        // Had the batch slipped past, nobody reads the entries as in the room:
-        // they carry only the Commenter's seal.
-        let theirs = commenter.room_docs.get(&room).expect("their document");
-        assert_eq!(entry_ids(theirs).len(), 51);
+        // Nor by anyone the host passes the room on to.
+        let mut newcomer = joiner(room, "zoe");
+        let device = newcomer.room_record_signer().expect("a device key");
+        admit(&mut host, &device, 93, "Zoe", Verb::Comment);
+        ship(&mut host, &mut newcomer, room, 1);
         assert_eq!(
-            host.room_record_standing(room, theirs).live,
-            vec![("file:/docs/plan.md".to_string(), "document".to_string())]
+            newcomer.take_inbound_room_records(),
+            vec![(
+                room,
+                "file:/docs/plan.md".to_string(),
+                "document".to_string()
+            )]
         );
+    }
+
+    fn live_in(tree: &WorkspaceTree, room: RoomId) -> Vec<(String, String)> {
+        tree.room_record_standing(room, tree.room_docs.get(&room).expect("a room document"))
+            .live
+    }
+
+    fn plan() -> Vec<(String, String)> {
+        vec![("file:/docs/plan.md".to_string(), "document".to_string())]
     }
 
     /// Nor may a Commenter take out, or recast, a record somebody else
@@ -6486,17 +6633,76 @@ mod automerge_foundation_tests {
         let (mut host, mut commenter, room) = a_room_with_a_commenter();
         assert!(!commenter.may_withdraw_room_record(room, "file:/docs/plan.md"));
 
-        let mut recaster = commenter.clone();
-        recaster.set_room_records(room, held(("file:/docs/plan.md", "script")));
-        ship(&mut recaster, &mut host, room, 2);
-        let doc = host.room_docs.get(&room).expect("a room document");
-        assert_eq!(projection::room_records_of(doc)[0].1, "document");
+        commenter.set_room_records(room, held(("file:/docs/plan.md", "script")));
+        ship(&mut commenter, &mut host, room, 2);
+        assert!(host.take_inbound_room_records().is_empty());
+        // The host still holds the record as it was, and vouches for it.
+        host.sync_room_doc(room);
+        assert_eq!(live_in(&host, room), plan());
+        ship(&mut host, &mut commenter, room, 1);
 
         commenter.set_room_records(room, std::collections::BTreeMap::new());
         ship(&mut commenter, &mut host, room, 2);
-        let doc = host.room_docs.get(&room).expect("a room document");
-        assert!(!projection::room_record_removed(doc, "file:/docs/plan.md"));
         assert!(host.take_withdrawn_room_records().is_empty());
+        assert_eq!(live_in(&host, room), plan());
+    }
+
+    /// An editor who brought records in and is then demoted takes nothing
+    /// out of the room: the host vouches afresh for what it holds. And a
+    /// newcomer still syncs the room whole — an entry whose sealer lost the
+    /// right to add records is ignored, never a reason to refuse the rest.
+    #[test]
+    fn a_demoted_editors_records_stay_and_newcomers_still_sync() {
+        let (mut host, mut editor, room) = two_in_a_room_unadmitted();
+        let host_device = host.room_record_signer().expect("a device key");
+        admit(&mut host, &host_device, 90, "Quinten", Verb::Write);
+        let editor_device = editor.room_record_signer().expect("a device key");
+        let grant = admit(&mut host, &editor_device, 91, "Xaver", Verb::Write);
+        ship(&mut host, &mut editor, room, 1);
+
+        let kept = "file:/docs/kept.md";
+        let dropped = "file:/docs/never-folded-in.md";
+        editor.set_room_records(
+            room,
+            [kept, dropped]
+                .into_iter()
+                .map(|id| (id.to_string(), "document".to_string()))
+                .collect(),
+        );
+        ship(&mut editor, &mut host, room, 2);
+        assert_eq!(host.take_inbound_room_records().len(), 2);
+        // The host's index folds in only one of them.
+        host.set_room_records(room, held((kept, "document")));
+
+        assert!(
+            host.desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("the host's workspace")
+                .revoke_capability(&grant)
+        );
+        host.sync_room_doc(room);
+        assert_eq!(
+            live_in(&host, room),
+            vec![(kept.to_string(), "document".to_string())],
+            "what the host holds stays; the rest is no longer vouched for"
+        );
+
+        let mut newcomer = joiner(room, "zoe");
+        let device = newcomer.room_record_signer().expect("a device key");
+        admit(&mut host, &device, 93, "Zoe", Verb::Comment);
+        ship(&mut host, &mut newcomer, room, 1);
+        let doc = newcomer.room_docs.get(&room).expect("the newcomer synced");
+        assert_eq!(
+            entry_ids(doc),
+            vec![kept.to_string(), dropped.to_string()],
+            "the whole batch applied"
+        );
+        assert_eq!(
+            newcomer.take_inbound_room_records(),
+            vec![(room, kept.to_string(), "document".to_string())]
+        );
     }
 
     /// An entry with no seal, or with a seal lifted from another record, is

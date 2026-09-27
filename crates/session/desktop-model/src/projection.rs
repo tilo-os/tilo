@@ -1168,6 +1168,60 @@ pub fn project_room_records(
     Ok(())
 }
 
+/// Seal a fresh bringing-in of record `id`, as `kind`, onto its existing
+/// entry — how a room's authority vouches for a record it holds whose
+/// earlier seal no longer stands (its sealer lost the right to add records).
+/// Returns whether anything was written.
+pub fn reseal_room_record(
+    doc: &mut AutoCommit,
+    id: &str,
+    kind: &str,
+    seal: RoomRecordSeal<'_>,
+) -> bool {
+    use automerge::transaction::Transactable;
+    let Some(entry) = record_entry(doc, id) else {
+        return false;
+    };
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let Some(sealed) = seal(RoomRecordAct::Added {
+        id,
+        kind,
+        nonce: &nonce,
+    }) else {
+        return false;
+    };
+    if entry_kind(doc, &entry).as_deref() != Some(kind) {
+        let _ = doc.put(&entry, "kind", kind);
+    }
+    if entry_removed(doc, &entry) {
+        let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, false);
+    }
+    doc.put(&entry, ROOM_RECORD_ADDED_KEY, format!("{nonce} {sealed}"))
+        .is_ok()
+}
+
+/// Seal a withdrawal of record `id`'s bringing-in `nonce` onto its entry —
+/// how a room's authority vouches for a withdrawal whose sealer lost the
+/// right to take records out. Returns whether anything was written.
+pub fn reseal_room_record_withdrawal(
+    doc: &mut AutoCommit,
+    id: &str,
+    nonce: &str,
+    seal: RoomRecordSeal<'_>,
+) -> bool {
+    use automerge::transaction::Transactable;
+    let Some(entry) = record_entry(doc, id) else {
+        return false;
+    };
+    let Some(sealed) = seal(RoomRecordAct::Withdrawn { id, nonce }) else {
+        return false;
+    };
+    if !entry_removed(doc, &entry) {
+        let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, true);
+    }
+    doc.put(&entry, ROOM_RECORD_WITHDRAWN_KEY, sealed).is_ok()
+}
+
 fn strings_at(doc: &AutoCommit, entry: &automerge::ObjId, key: &str) -> Vec<String> {
     use automerge::{ScalarValue, Value};
     doc.get_all(entry, key)
