@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 url = { workspace = true, features = ["serde"] }
+percent-encoding.workspace = true
 # The in-memory WebDAV/Nextcloud server behind `fake-server`.
 test-http = { path = "../../dev/test-http", optional = true }
 workspace-hack = { version = "0.1" }

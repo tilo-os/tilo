@@ -1510,45 +1510,10 @@ fn paths_from_uri_list(body: &[u8]) -> Vec<std::path::PathBuf> {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| {
-            let encoded = line.strip_prefix("file://")?;
-            let local = encoded
-                .strip_prefix("localhost/")
-                .map_or(encoded, |path| path.strip_prefix('/').map_or(path, |p| p));
-            let local = if encoded.starts_with("localhost/") {
-                format!("/{local}")
-            } else if encoded.starts_with('/') {
-                local.to_string()
-            } else {
-                return None;
-            };
-            Some(std::path::PathBuf::from(percent_decode_uri_path(&local)))
+            let uri = url::Url::parse(line).ok()?;
+            (uri.scheme() == "file").then(|| uri.to_file_path().ok())?
         })
         .collect()
-}
-
-fn percent_decode_uri_path(path: &str) -> String {
-    let mut out = Vec::with_capacity(path.len());
-    let bytes = path.as_bytes();
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
-        if byte == b'%'
-            && let Some(hex_start) = index.checked_add(1)
-            && let Some(next_index) = index.checked_add(3)
-            && let Some(hex_bytes) = bytes.get(hex_start..next_index)
-            && let Ok(hex) = std::str::from_utf8(hex_bytes)
-            && let Ok(value) = u8::from_str_radix(hex, 16)
-        {
-            out.push(value);
-            index = next_index;
-            continue;
-        }
-        out.push(byte);
-        let Some(next_index) = index.checked_add(1) else {
-            break;
-        };
-        index = next_index;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn preferred_drag_content_mime(mimes: &[String]) -> Option<&str> {
