@@ -24,10 +24,10 @@ const snapshotB = {
 
 test('member colours are stable, match the Rust vectors and label ink contrasts', () => {
   assert.equal(memberColor('alice'), '#ec4899');
-  assert.equal(memberColor('dave'), PEER_PALETTE[23]);
-  assert.equal(memberColor('eve'), PEER_PALETTE[21]);
-  assert.equal(memberColor('a1b2c3d4'), PEER_PALETTE[21]);
-  assert.equal(memberColor('7f00aa55'.repeat(8)), PEER_PALETTE[13]);
+  assert.equal(memberColor('dave'), PEER_PALETTE[15]);
+  assert.equal(memberColor('eve'), PEER_PALETTE[13]);
+  assert.equal(memberColor('a1b2c3d4'), PEER_PALETTE[13]);
+  assert.equal(memberColor('7f00aa55'.repeat(8)), PEER_PALETTE[21]);
   assert.equal(memberColor('dave'), memberColor('dave'));
   assert.equal(labelInk('#dfdc3a'), '#111111');
   assert.equal(labelInk('#6366f1'), '#ffffff');

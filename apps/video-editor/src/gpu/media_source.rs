@@ -211,12 +211,10 @@ impl MediaFrameSource {
             if !item.kind.is_visual() || item.kind.is_generated() {
                 continue;
             }
-            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            for b in item.id.as_bytes().iter().chain(item.path.as_bytes()) {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x1000_0000_01b3);
-            }
-            acc = acc.wrapping_add(h);
+            let mut hasher = fnv::FnvHasher::default();
+            std::hash::Hasher::write(&mut hasher, item.id.as_bytes());
+            std::hash::Hasher::write(&mut hasher, item.path.as_bytes());
+            acc = acc.wrapping_add(std::hash::Hasher::finish(&hasher));
         }
         acc
     }
