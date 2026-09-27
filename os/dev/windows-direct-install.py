@@ -334,14 +334,9 @@ def fetch(data, work, progress):
         extract_named(archive, [stem + ".qcow2.zst.sha256", stem + ".qcow2.sha256",
                                 stem + ".whpx-source.json",
                                 stem + ".whpx-source.json.sig", stem + ".whpx-source.json.bundle"], ci)
-        # The untrusted schema only selects which artifact to fetch. Signature,
-        # target, and byte hashes are checked before the medium is used.
-        legacy = read_json(identity_path(work, profile)).get("schema") == \
-            "tilo.whpx-ci-installer-medium.v1"
-        if legacy:
-            cycle = directory / "cycle.zip"
-            download_artifact(data["imager_run"], f"tilo-installer-full-cycle-aarch64-{profile}", cycle)
-            extract_named(cycle, ["guest-install-proof.json"], ci)
+        cycle = directory / "cycle.zip"
+        download_artifact(data["imager_run"], f"tilo-installer-full-cycle-aarch64-{profile}", cycle)
+        extract_named(cycle, ["guest-install-proof.json"], ci)
         identity = verify_identity(data, work, profile, imager_id)
         require((ci / (stem + ".qcow2.zst.sha256")).read_text().split()[0]
                 == identity["archive_sha256"]
@@ -353,8 +348,7 @@ def fetch(data, work, progress):
         # The signed identity, sidecars and native CI proof remain. The two
         # ZIPs are redundant once the exact qcow2 has a durable checkpoint.
         archive.unlink()
-        if legacy:
-            cycle.unlink()
+        cycle.unlink()
     return ({profile: verify_identity(data, work, profile, imager_id)
              for profile in PROFILES}, os_ids)
 
