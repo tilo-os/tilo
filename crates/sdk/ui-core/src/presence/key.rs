@@ -248,6 +248,7 @@ mod view_key_tests {
                     },
                 },
             ],
+            save_status: None,
         };
         let key = PresenceKey::view(&subset);
         assert!(matches!(key, PresenceKey::View { .. }));

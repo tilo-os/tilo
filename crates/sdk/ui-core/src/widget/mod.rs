@@ -827,6 +827,15 @@ pub trait Widget {
         }
     }
 
+    /// What the app may do changed: the broker granted or revoked
+    /// something. A widget that decides what to write or offer on its own
+    /// (before or between draws) adopts `permissions` here.
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        for child in self.children_mut() {
+            child.permissions_changed(permissions);
+        }
+    }
+
     /// Opaque actual custody for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         self.callback_binding()
@@ -1553,6 +1562,29 @@ pub trait Widget {
     /// follower sees what they see. Only following calls this; resuming a
     /// frozen app restores its own view.
     fn follow_open_resource(&mut self, _resource: &str) {}
+
+    /// The durability this widget's app shows for its record, when it owns
+    /// one: what its View carries to followers and recordings.
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        None
+    }
+
+    /// A replay's followed participant showed `status` for their record:
+    /// show it as this app's own, when this app is a view onto that record.
+    fn follow_record_status(&mut self, _status: Option<crate::record::RecordSaveStatus>) {}
+
+    /// Stand where a followed participant stood: take the caret or
+    /// selection they had under `key` (what their [`Self::presence_payload`]
+    /// reported) as this widget's own, and say whether it did. Only a
+    /// replay follows this way: its viewer's view is the recorded
+    /// participant's.
+    fn follow_presence(
+        &mut self,
+        _key: &PresenceKey,
+        _payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        false
+    }
 
     /// The toolkit-owned overlays this widget has open: the menus, popovers,
     /// dialogs, toasts and banners it owns. The App collects them into

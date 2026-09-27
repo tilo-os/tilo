@@ -987,19 +987,17 @@ impl ChatApp {
         app.comments =
             crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
         app.me = LocalIdentity::resolve();
+        // Least privilege until the host hands over the real context.
+        app.perms = ChatPermissions::unknown();
         app.new_live_view()
     }
 
     /// A live Chat for the participant `id`, keeping this peer's comment
-    /// records in `comments` and authorised by `permissions` — what a host
-    /// with its own identity and record store (a test over a real broker)
-    /// launches instead of [`Self::new`].
-    pub fn for_participant(
-        id: &str,
-        name: &str,
-        comments: ui::record::RecordStore,
-        permissions: ui::permissions::PermissionContext,
-    ) -> Self {
+    /// records in `comments` — what a host with its own identity and record
+    /// store (a test over a real broker) launches instead of [`Self::new`].
+    /// Like every live Chat it may do nothing until its host hands it what
+    /// the broker grants.
+    pub fn for_participant(id: &str, name: &str, comments: ui::record::RecordStore) -> Self {
         let mut app = Self::bare(ContentStore::memory());
         app.is_live = true;
         app.comments = crate::comments::Comments::new(comments);
@@ -1009,7 +1007,7 @@ impl ChatApp {
             initials: crate::identity::initials_for(name),
             color_idx: crate::identity::color_index_for(id.as_bytes()),
         };
-        app.perms = ChatPermissions::from_context(permissions);
+        app.perms = ChatPermissions::unknown();
         app.new_live_view()
     }
 
@@ -4766,6 +4764,11 @@ impl Widget for ChatApp {
         Some(self.comments.joined())
     }
 
+    fn permissions_changed(&mut self, permissions: &PermissionContext) {
+        self.perms = ChatPermissions::from_context(permissions.clone());
+        self.relayout = true;
+    }
+
     fn room_index_changed(&mut self, index: &AutoCommit) {
         let channels: Vec<Id> = self
             .channels
@@ -4781,9 +4784,11 @@ impl Widget for ChatApp {
     /// unqualified route is free for the room's index — the index is where
     /// people's comment records become discoverable.
     fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
-        // Someone who may not write the conversation follows it without
-        // bringing it into the room: that is for the members who write it.
-        self.is_live.then(|| {
+        // Nothing is checked out before the host has said what this peer
+        // may do: a checkout brings the conversation into the room, which
+        // is only a writer's to do. Someone who may not write the
+        // conversation follows it without bringing it into the room.
+        (self.is_live && self.perms.is_known()).then(|| {
             let conversation = crate::comments::conversation();
             if self.can_participate() {
                 conversation

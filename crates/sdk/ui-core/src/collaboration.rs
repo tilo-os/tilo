@@ -429,7 +429,13 @@ impl ChannelAccessState {
 pub enum CollabEvent {
     Context {
         collaborators: Vec<Collaborator>,
-        permissions: Vec<String>,
+    },
+    /// What this connection may do in its room now, as the broker enforces
+    /// it: sent when the connection subscribes and again whenever a grant or
+    /// revocation changes it. The app's permission context is this and only
+    /// this.
+    Grant {
+        grant: collab_types::ConnectionGrant,
     },
     /// Session chrome asked this app to bind its viewport/view mode to a
     /// participant, or release that binding. This is local session control:
@@ -1041,6 +1047,15 @@ impl CollaborationManager {
 
     /// Whether requests currently reach peers: [`Self::state`] is
     /// [`CollaborationState::Ready`].
+    /// Whether the broker at the other end decides what this app may do (see
+    /// [`CollabTransport::grants_authority`]).
+    pub fn grants_authority(&self) -> bool {
+        match &self.backend {
+            Backend::Disabled(_) => false,
+            Backend::Transport(transport) => transport.grants_authority(),
+        }
+    }
+
     pub fn is_connected(&self) -> bool {
         match &self.backend {
             Backend::Disabled(_) => false,

@@ -1385,8 +1385,18 @@ pub fn build_tilo_overlay_host_with_handle(
 /// its records live under this package in the compositor's own state dir.
 pub const SHELL_RECORDS_PACKAGE: &str = "org.tilo.Shell";
 
+/// The compositor's own records, owner-backed so it can mint records (a
+/// remark's reviewed recording) as well as open them.
 pub fn session_record_store() -> ui::record::RecordStore {
-    ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
+    ui::record::RecordOwners::native()
+        .open_launched(SHELL_RECORDS_PACKAGE)
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                ?error,
+                "the session's records could not be opened; they stay in memory"
+            );
+            ui::record::RecordStore::in_memory()
+        })
 }
 
 /// Backdrop, topbar, and one [`GroupRow`] per strip of the tree's active
@@ -1425,10 +1435,15 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .unwrap_or_default();
     let strip_view: Box<dyn Widget> = Box::new(StripView::new(strips_for_view, 0));
     let workspace_view: Box<dyn Widget> = Box::new(WorkspaceView::new(
-        tree.desktop.workspaces.len(),
         tree.desktop
             .workspaces
             .iter()
+            .filter(|w| w.is_shown())
+            .count(),
+        tree.desktop
+            .workspaces
+            .iter()
+            .filter(|w| w.is_shown())
             .position(|w| w.id == tree.desktop.active)
             .unwrap_or(0),
     ));
@@ -1667,6 +1682,7 @@ fn build_overlay_host_from_chrome(
         .desktop
         .workspaces
         .iter()
+        .filter(|w| w.is_shown())
         .map(|w| sidebar_wheel_disc::SpokeLabel {
             text: w.name.clone(),
             workspace_id: Some(w.id.0),
@@ -1676,6 +1692,7 @@ fn build_overlay_host_from_chrome(
         .desktop
         .workspaces
         .iter()
+        .filter(|w| w.is_shown())
         .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
@@ -1712,7 +1729,7 @@ fn build_overlay_host_from_chrome(
 pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
     use ui::permissions::UserId;
     use ui::presence::PresenceKey;
-    if let Some(ws) = tree.desktop.active_workspace() {
+    if let Some(ws) = tree.desktop.active_workspace().filter(|w| w.is_shown()) {
         for c in &ws.collaborators {
             // Colour overrides first: later write wins for the same user
             // id, but ordering doesn't matter since this only walks the

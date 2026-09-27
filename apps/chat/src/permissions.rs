@@ -17,12 +17,15 @@
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
-//! The default is [`ChatPermissions::permissive`] (the local single-user
-//! admin), so the demo, `--shots`, and a normal solo install are unrestricted;
-//! a restricted `PermissionContext` (a member role without the relevant grant)
-//! gates exactly the actions it should.
+//! The demo and `--shots` run [`ChatPermissions::permissive`] (the local
+//! single-user admin). A live Chat starts from [`ChatPermissions::unknown`],
+//! which grants nothing, and holds what it may do only once its host has
+//! handed it a context: nothing it does before then — scaffolding a
+//! workspace, joining the roster, bringing the conversation into the room —
+//! can outrun the grant. A restricted `PermissionContext` (a member role
+//! without the relevant grant) gates exactly the actions it should.
 
-use ui::permissions::{PermissionContext, PermissionScope, Verb};
+use ui::permissions::{Actor, PermissionContext, PermissionScope, Verb};
 
 use crate::call::CallAction;
 
@@ -30,6 +33,9 @@ use crate::call::CallAction;
 #[derive(Clone, Debug)]
 pub struct ChatPermissions {
     ctx: PermissionContext,
+    /// Whether `ctx` is a context a host handed this Chat, not the
+    /// grant-nothing stand-in it starts from.
+    known: bool,
 }
 
 impl Default for ChatPermissions {
@@ -45,12 +51,26 @@ impl ChatPermissions {
     pub fn permissive() -> Self {
         Self {
             ctx: PermissionContext::permissive(),
+            known: true,
+        }
+    }
+
+    /// Before the host has said what this peer may do: nothing is allowed.
+    pub fn unknown() -> Self {
+        Self {
+            ctx: PermissionContext::from_capabilities(Actor::person(None, ""), Vec::new()),
+            known: false,
         }
     }
 
     /// Adopt the context the compositor passed into `draw`.
     pub fn from_context(ctx: PermissionContext) -> Self {
-        Self { ctx }
+        Self { ctx, known: true }
+    }
+
+    /// Whether a host has handed this Chat its context yet.
+    pub fn is_known(&self) -> bool {
+        self.known
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
@@ -106,6 +126,17 @@ mod tests {
             Actor::person(Some(Role::Viewer), "u_guest"),
             vec![],
         ))
+    }
+
+    #[test]
+    fn a_chat_nobody_has_authorised_may_do_nothing() {
+        let p = ChatPermissions::unknown();
+        assert!(!p.is_known());
+        assert!(!p.can_participate());
+        assert!(!p.can_comment());
+        assert!(!p.can_embed(&"a".repeat(64)));
+        assert!(!p.allows(CallAction::Join));
+        assert!(ChatPermissions::from_context(PermissionContext::permissive()).is_known());
     }
 
     #[test]

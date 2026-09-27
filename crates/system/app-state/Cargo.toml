@@ -27,9 +27,10 @@ tilo-automerge.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The home an app is handed bounds the directories it makes durable.
+xdg-paths = { path = "../xdg-paths" }
 
 [target.'cfg(windows)'.dependencies]
-xdg-paths = { path = "../xdg-paths" }
 # Compare volume/file identities through live Windows handles.
 same-file = "1.0.6"
 
@@ -38,6 +39,8 @@ durable-store = { path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# Confines a test to a sandbox-shaped home, as the launcher confines an app.
+landlock.workspace = true
 
 [lints]
 workspace = true

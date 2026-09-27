@@ -225,7 +225,7 @@ impl JoinedRecords {
     pub(crate) fn followers(
         &self,
     ) -> Vec<(crate::collaboration::RouteSpec, Rc<RefCell<AutoCommit>>)> {
-        let Some((_, package, room)) = self.store.canonical_namespace().or_else(|| {
+        let Some((_, package, room)) = self.store.route_namespace().or_else(|| {
             self.own
                 .first()
                 .and_then(|c| self.store.history_namespace(&c.id).ok())

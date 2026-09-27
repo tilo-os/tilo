@@ -134,7 +134,7 @@ pub fn query_text_app(
     }
     let mut out = Vec::new();
     let tree = ctx.chrome.tree();
-    for w in &tree.desktop.workspaces {
+    for w in tree.desktop.workspaces.iter().filter(|w| w.is_shown()) {
         for s in &w.strips {
             for g in &s.window_groups {
                 for t in &g.tabs {
@@ -270,7 +270,7 @@ fn build_snapshot(
 ) -> TextSnapshot {
     let mut entries = Vec::new();
     let tree = ctx.chrome.tree();
-    for workspace in &tree.desktop.workspaces {
+    for workspace in tree.desktop.workspaces.iter().filter(|w| w.is_shown()) {
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {

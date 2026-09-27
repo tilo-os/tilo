@@ -21,10 +21,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-automation = { path = "../../collab/automation" }
-uuid.workspace = true
-
-[dev-dependencies]
 tilo-automerge = { path = "../../doc/tilo-automerge" }
+uuid.workspace = true
 
 [lints]
 workspace = true

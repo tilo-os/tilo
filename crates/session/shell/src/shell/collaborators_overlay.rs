@@ -1605,9 +1605,12 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
     // handoff before the other (and old control clients still update only
     // the mirror). Merge by stable participant id, preferring the room row's
     // richer activity fields, so nobody temporarily disappears from People.
-    let mut roster = tree
-        .desktop
-        .active_workspace()
+    let active = tree.desktop.active_workspace();
+    // A hidden room is nobody's company: none of it is listed.
+    if active.is_some_and(|workspace| !workspace.is_shown()) {
+        return Vec::new();
+    }
+    let mut roster = active
         .map(|workspace| workspace.collaborators.clone())
         .unwrap_or_default();
     for participant in &tree.desktop.collaborators {
@@ -1616,10 +1619,7 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
         }
     }
     let colors = crate::shell::state::roster_colors_with_local_user(&roster, local_user);
-    let agent_members = tree
-        .desktop
-        .active_workspace()
-        .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
+    let agent_members = active.map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
@@ -1837,6 +1837,29 @@ mod tests {
         assert!(rows[0].is_agent, "the recording indicator is the AGENT row");
         assert_eq!(rows[0].label, RECORDER_LABEL);
         assert_eq!(rows[0].role.as_deref(), Some("viewer"));
+    }
+
+    #[test]
+    fn a_hidden_room_lists_nobody_even_when_it_is_active() {
+        use crate::shell::state::{Workspace, WorkspaceId};
+
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Check");
+        workspace.ephemeral = true;
+        workspace.hidden = true;
+        let mut viewing = crate::shell::state::Collaborator::new("replay", "Replay");
+        viewing.active_tab = Some(1);
+        workspace.collaborators.push(viewing);
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("replay", "Replay"));
+
+        assert!(collaborator_roster_rows(&tree).is_empty());
+        let mut presence = ui::presence::PresenceCtx::default();
+        crate::shell::sync_tab_presence_from_tree(&tree, &mut presence);
+        assert!(presence.here.is_empty());
     }
 
     #[test]

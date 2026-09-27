@@ -1231,6 +1231,10 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Room-document heads this machine last published as the state of each
+    /// public room it governs. Members of a public room never ask for its
+    /// state, so its authority pushes a new checkpoint whenever this changes.
+    published_public_heads: Mutex<std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>>,
     /// Private, same-person continuation state. It is intentionally separate
     /// from `replica`, whose documents are visible to room collaborators.
     personal_continuity: Mutex<crate::shell::personal_continuity::PersonalContinuity>,
@@ -1716,6 +1720,7 @@ impl ShellNetwork {
                     &persisted_continuity.continuity,
                 ),
             ),
+            published_public_heads: Mutex::new(std::collections::HashMap::new()),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
             personal_continuity_user,
             personal_continuity_device,
@@ -2784,6 +2789,11 @@ impl ShellNetwork {
                     .ok_or_else(|| format!("{room:?} is not a room id"))?;
                 status(self.room_status(room)?)
             }
+            CommunityRequest::GrantRole { room, person, role } => {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or_else(|| format!("{room:?} is not a room id"))?;
+                status(self.grant_room_role(room, &person, role)?)
+            }
         }
     }
 
@@ -2932,6 +2942,59 @@ impl ShellNetwork {
         self.room_status(room)
     }
 
+    /// Grant `person` (a person id) `role` in `room`, which this machine
+    /// governs, as the ordinary room-membership capability the invitation
+    /// path grants — so the room's governance carries it to every member.
+    /// A role the person already holds through a delegated admission is
+    /// superseded, never lowered: membership resolves to the highest grant.
+    ///
+    /// # Errors
+    ///
+    /// The room is not held or not governed here, the person id is not a
+    /// person key, or this session may not administer the room.
+    pub fn grant_room_role(
+        &self,
+        room: crate::shell::state::RoomId,
+        person: &str,
+        role: crate::network::invite::InviteRole,
+    ) -> Result<RoomStatus, String> {
+        if hex::decode(person).map_or(true, |key| key.len() != 32) {
+            return Err(format!(
+                "{person:?} is not a person id (a 32-byte user key in hex)"
+            ));
+        }
+        let tree_handle = self.tree_handle()?;
+        {
+            let mut tree = tree_handle.write();
+            if !tree.governs_room(room) {
+                return Err(format!(
+                    "room {room} is governed elsewhere; grant it from its owner"
+                ));
+            }
+            let grantor = crate::shell::state::local_user_id_for_room(&room);
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .ok_or_else(|| format!("no workspace holds room {room}"))?;
+            workspace
+                .grant_as(
+                    &grantor,
+                    crate::shell::state::CapOverride::membership(
+                        crate::shell::state::Subject::person(person.to_string()),
+                        room.to_string(),
+                        role.verb(),
+                    ),
+                )
+                .ok_or_else(|| format!("{grantor} may not administer room {room}"))?;
+            tree.sync_room_doc(room);
+            tree.flush_to_disk();
+        }
+        self.publish_sync_requests();
+        self.room_status(room)
+    }
+
     /// The community room as this session knows it, or `None` when it has
     /// not joined (or no community is configured).
     ///
@@ -3012,39 +3075,54 @@ impl ShellNetwork {
         hosts: &[iroh::EndpointAddr],
     ) -> Result<RoomStatus, String> {
         let tree_handle = self.tree_handle()?;
-        let held = tree_handle
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room);
-        if !held {
+        {
             let mut tree = tree_handle.write();
-            let local = tree.append_empty_workspace(label);
-            tree.set_room(local, room);
-            if governing {
-                // Joining a derived room surrenders governance by default;
-                // this end creates it, so it governs it.
-                tree.room_authority.remove(&room);
+            let held = tree
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room);
+            if !held {
+                let local = tree.append_empty_workspace(label);
+                tree.set_room(local, room);
+                if governing {
+                    // Joining a derived room surrenders governance by
+                    // default; this end creates it, so it governs it.
+                    tree.room_authority.remove(&room);
+                    let me = crate::shell::state::local_user_id_for_room(&room);
+                    if let Some(workspace) =
+                        tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local)
+                    {
+                        workspace.set_owner(me);
+                    }
+                }
+                // Otherwise the other end created and governs it: `set_room`
+                // left the authority unpinned, and only the other member of
+                // the derived pair may supply its first governance.
+            }
+            // Idempotent: the creating end makes sure the other member holds
+            // Editor, whether the room is new or was opened before.
+            if governing && tree.governs_room(room) {
                 let me = crate::shell::state::local_user_id_for_room(&room);
-                let room_scope = room.to_string();
-                if let Some(workspace) =
-                    tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local)
-                {
-                    workspace.set_owner(me.clone());
-                    let _ = workspace.grant_as(
-                        &me,
-                        crate::shell::state::CapOverride::membership(
-                            crate::shell::state::Subject::person(other.to_string()),
-                            room_scope,
-                            crate::shell::state::Verb::Write,
-                        ),
-                    );
+                let workspace = tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .find(|ws| ws.room == room)
+                    .ok_or_else(|| format!("no workspace holds room {room}"))?;
+                if workspace.role_of(&other.to_string()).is_none() {
+                    workspace
+                        .grant_as(
+                            &me,
+                            crate::shell::state::CapOverride::membership(
+                                crate::shell::state::Subject::person(other.to_string()),
+                                room.to_string(),
+                                crate::shell::state::Verb::Write,
+                            ),
+                        )
+                        .ok_or_else(|| format!("{me} may not administer room {room}"))?;
                 }
             }
-            // Otherwise the other end created and governs it: `set_room`
-            // left the authority unpinned, so whichever of them first
-            // supplies governance through the admitting host is it.
             tree.sync_room_doc(room);
             tree.seed_doc_from_cache();
             tree.flush_to_disk();
@@ -5000,6 +5078,57 @@ impl ShellNetwork {
         *last = Some(now);
         drop(last);
         self.publish_sync_requests();
+        self.publish_public_room_state();
+    }
+
+    /// Push the state of every public room this machine governs whose room
+    /// document changed since it was last published, as the retained
+    /// checkpoint its host replays. Members of a public room neither ask
+    /// each other for room state nor answer (see `quiet_in_public_room`),
+    /// so without this a grant made after someone joined — a teammate made
+    /// Editor, a member blocked — would reach nobody already in the room.
+    fn publish_public_room_state(&self) {
+        let rooms: Vec<RoomId> = {
+            let tree = self.tree.read();
+            tree.desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| {
+                    workspace.channel_class == collab_types::ChannelClass::Public
+                        && tree.governs_room(workspace.room)
+                })
+                .map(|workspace| workspace.room)
+                .collect()
+        };
+        for room in rooms {
+            let (heads, changes) = {
+                let mut tree = self.tree.write();
+                tree.sync_room_doc(room);
+                let heads = tree.room_heads(room);
+                let unchanged = self
+                    .published_public_heads
+                    .lock()
+                    .is_ok_and(|published| published.get(&room) == Some(&heads));
+                if unchanged {
+                    continue;
+                }
+                let changes = tree
+                    .export_room_changes_since(room, &[])
+                    .unwrap_or_default();
+                drop(tree);
+                (heads, changes)
+            };
+            if changes.is_empty() {
+                continue;
+            }
+            if self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
+                changes,
+                room: room.to_string(),
+            }) && let Ok(mut published) = self.published_public_heads.lock()
+            {
+                published.insert(room, heads);
+            }
+        }
     }
 
     /// Drain a bounded batch of pending [`NetEvent`]s from the actor, forward `Msg`
@@ -7016,6 +7145,7 @@ pub(crate) fn shell_network_for_test(
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
+        published_public_heads: Mutex::new(std::collections::HashMap::new()),
         personal_continuity: Mutex::new(
             crate::shell::personal_continuity::PersonalContinuity::default(),
         ),
@@ -10229,6 +10359,74 @@ mod tests {
                 true,
             ),
             "bootstrap authority is pinned to one authenticated transport peer"
+        );
+    }
+
+    #[test]
+    fn a_public_rooms_authority_pushes_each_governance_change_once() {
+        let _env = tilo_test_env::lock();
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_public_workspace("Community");
+        let room = tree.room_of(local).expect("room");
+        let owner = crate::shell::state::local_user_id_for_room(&room);
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("community")
+            .set_owner(owner);
+        let (net, mut commands) = shell_network_for_test(tree.shared(), 5);
+        let pushed = |commands: &mut mpsc::Receiver<NetCmd>| {
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter(|command| {
+                    matches!(
+                        command,
+                        NetCmd::PublishCovered {
+                            msg: NeighbourMsg::SyncResp { room: pushed, .. },
+                            shell_checkpoint: true,
+                            ..
+                        } if *pushed == room.to_string()
+                    )
+                })
+                .count()
+        };
+
+        net.publish_public_room_state();
+        assert_eq!(
+            pushed(&mut commands),
+            1,
+            "the room's state is published once"
+        );
+        net.publish_public_room_state();
+        assert_eq!(
+            pushed(&mut commands),
+            0,
+            "an unchanged room is not republished"
+        );
+
+        let teammate = hex::encode([0x5A; 32]);
+        let status = net
+            .grant_room_role(room, &teammate, crate::network::invite::InviteRole::Editor)
+            .expect("the owner grants");
+        assert_eq!(status.channel_class, "public");
+        assert_eq!(
+            net.tree.read().desktop.workspaces[0].role_of(&teammate),
+            Some(crate::shell::state::CapRole::Editor)
+        );
+        net.publish_public_room_state();
+        assert_eq!(
+            pushed(&mut commands),
+            1,
+            "a grant reaches members who never ask for room state"
+        );
+
+        assert!(
+            net.grant_room_role(
+                room,
+                "not-a-key",
+                crate::network::invite::InviteRole::Editor
+            )
+            .is_err()
         );
     }
 

@@ -152,6 +152,14 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Whether the far end decides what this connection may do and says so
+    /// with [`CollabEvent::Grant`]. An app on such a transport holds nothing
+    /// until the first grant arrives; one on a transport that grants nothing
+    /// (a loopback, no service at all) is the local user acting alone.
+    fn grants_authority(&self) -> bool {
+        false
+    }
+
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 

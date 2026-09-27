@@ -7,6 +7,7 @@
 
 mod diff;
 mod driver;
+mod fixture_home;
 mod mode;
 mod remark;
 mod scenario;
@@ -444,6 +445,10 @@ Examples:\n\
 }
 
 fn main() -> Result<(), String> {
+    // Apps in a shot see a fixture home, never the host's files.
+    if let Some(code) = fixture_home::reenter()? {
+        std::process::exit(code);
+    }
     // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.

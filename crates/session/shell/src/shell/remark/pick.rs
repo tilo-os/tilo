@@ -29,7 +29,8 @@ pub struct PickNode {
     pub children: Vec<String>,
     /// The document address the node stands for, when the app has one.
     pub reference: Option<ResourceRef>,
-    /// The node's value is personal: shown here, never sent unreviewed.
+    /// The label shows a personal value (a field with no name, shown by
+    /// what it holds): shown here, never sent unreviewed.
     pub personal: bool,
 }
 
@@ -166,8 +167,9 @@ pub struct PickScene {
 
 /// Nodes smaller than this on screen are not offered by hover: nothing a
 /// person can point at is that small, and such a node is usually a layout
-/// artefact rather than something they meant.
-const MIN_TARGET: f64 = 2.0;
+/// artefact rather than something they meant. Half the smallest spacing
+/// step: narrower than any gap the theme lays out.
+const MIN_TARGET: f64 = ui::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 impl PickScene {
     pub fn surface(&self, key: &str) -> Option<&PickSurface> {
@@ -398,8 +400,9 @@ pub struct PickState {
     pub drag: Option<(Point, Point)>,
 }
 
-/// A press that has moved this far is a region drag, not a click.
-pub const DRAG_THRESHOLD: f64 = 4.0;
+/// A press that has moved this far is a region drag, not a click: the
+/// smallest spacing step, so a hand's tremor never starts a drag.
+pub const DRAG_THRESHOLD: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
 impl PickState {
     pub fn clear(&mut self) {

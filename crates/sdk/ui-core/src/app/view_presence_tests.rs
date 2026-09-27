@@ -445,6 +445,7 @@ fn follow_binds_local_viewport_and_unfollow_releases() {
             viewport: crate::view::ViewRect::default(),
             view_mode: Some(mode.into()),
             overlays: Vec::new(),
+            save_status: None,
         };
         app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: peer.into(),

@@ -1979,7 +1979,7 @@ impl RoomActivityPane {
             .filter(|facet| facet.key == "tilo.invocation")
             .map(|facet| facet.value.clone())
             .collect::<HashSet<_>>();
-        for workspace in &tree.desktop.workspaces {
+        for workspace in tree.desktop.workspaces.iter().filter(|w| w.is_shown()) {
             for receipt in &workspace.effect_receipts {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;

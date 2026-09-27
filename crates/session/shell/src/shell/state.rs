@@ -655,6 +655,53 @@ pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
+/// The device key this process seals room-record acts with; see
+/// [`WorkspaceTree::room_record_signer`].
+static ROOM_RECORD_SIGNER: std::sync::RwLock<Option<iroh::SecretKey>> =
+    std::sync::RwLock::new(None);
+
+/// What a room-record seal signs: the act, the room, the record and the
+/// bringing-in it concerns — so a seal says nothing about any other.
+fn room_record_act_message(room: RoomId, act: projection::RoomRecordAct<'_>) -> Vec<u8> {
+    let (verb, id, nonce) = match act {
+        projection::RoomRecordAct::Added { id, nonce } => ("add", id, nonce),
+        projection::RoomRecordAct::Withdrawn { id, nonce } => ("withdraw", id, nonce),
+    };
+    format!("tilo.room.record.v1\0{verb}\0{room}\0{id}\0{nonce}").into_bytes()
+}
+
+fn seal_room_record_act(
+    key: &iroh::SecretKey,
+    room: RoomId,
+    act: projection::RoomRecordAct<'_>,
+) -> String {
+    let signature = key.sign(&room_record_act_message(room, act));
+    format!("{} {}", key.public(), hex::encode(signature.to_bytes()))
+}
+
+/// Whether `signature` is `by`'s over `act` in `room`.
+fn room_record_seal_holds(
+    room: RoomId,
+    act: projection::RoomRecordAct<'_>,
+    by: &str,
+    signature: &str,
+) -> bool {
+    let Ok(key) = by.parse::<iroh::EndpointId>() else {
+        return false;
+    };
+    let Some(bytes) = hex::decode(signature)
+        .ok()
+        .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
+    else {
+        return false;
+    };
+    key.verify(
+        &room_record_act_message(room, act),
+        &iroh::Signature::from_bytes(&bytes),
+    )
+    .is_ok()
+}
+
 pub(crate) fn next_id() -> u64 {
     let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
     compose_id(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed), counter)
@@ -828,6 +875,9 @@ pub struct WorkspaceTree {
     /// re-projected from the cache after a restart.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
+    /// See [`Self::set_room_record_signer_override`].
+    #[serde(skip, default)]
+    pub room_record_signer_override: Option<iroh::SecretKey>,
     /// Who may write each room's governance — see [`RoomAuthority`]. A
     /// room absent from this map is one this machine minted and governs.
     /// Persisted, unlike [`Self::room_docs`] — can't be re-derived.
@@ -912,6 +962,7 @@ impl Default for WorkspaceTree {
             local_app_records: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
+            room_record_signer_override: None,
         }
     }
 }
@@ -1035,6 +1086,34 @@ impl WorkspaceTree {
     /// itself; `next_id` reads the static.
     pub fn set_salt_override(&mut self, salt: u16) {
         self.desktop.peer_salt_override = Some(salt);
+    }
+
+    /// Install this machine's device key as what it seals its room-record
+    /// acts with (see [`Self::room_record_signer`]). Set once at boot, when
+    /// the key is loaded; a machine without one seals nothing, and its
+    /// withdrawals are refused by everyone else.
+    pub fn set_process_room_record_signer(key: iroh::SecretKey) {
+        if let Ok(mut signer) = ROOM_RECORD_SIGNER.write() {
+            *signer = Some(key);
+        }
+    }
+
+    /// Give this tree its own device key without touching the process-wide
+    /// one, for holding two trees at once.
+    pub fn set_room_record_signer_override(&mut self, key: iroh::SecretKey) {
+        self.room_record_signer_override = Some(key);
+    }
+
+    /// The device key this machine seals the records it brings into a room,
+    /// and takes out of one, with: the same key its transport identity is,
+    /// so a seal names the member as the room knows them.
+    pub fn room_record_signer(&self) -> Option<iroh::SecretKey> {
+        self.room_record_signer_override.clone().or_else(|| {
+            ROOM_RECORD_SIGNER
+                .read()
+                .ok()
+                .and_then(|signer| signer.clone())
+        })
     }
 
     /// Walk every id and advance `NEXT_ID` past the highest counter
@@ -1601,6 +1680,12 @@ impl WorkspaceTree {
         // a guest claiming ownership would put a competing claim on
         // the wire that `apply_room_changes` would only refuse anyway.
         let governs = self.governs_room(room);
+        let signer = self.room_record_signer();
+        let seal = |act: projection::RoomRecordAct<'_>| {
+            signer
+                .as_ref()
+                .map(|key| seal_room_record_act(key, room, act))
+        };
 
         let doc = self.room_docs.entry(room).or_default();
 
@@ -1648,17 +1733,8 @@ impl WorkspaceTree {
         // Projected by **every** member, unlike governance below: a room
         // a guest can't bring a record — or a window — into isn't shared.
         let previous = self.desktop.room_records_projected.get(&room);
-        if let Err(err) = projection::project_room_records(doc, &held, previous) {
+        if let Err(err) = projection::project_room_records(doc, &held, previous, &seal) {
             tracing::error!(?err, "room doc: records map");
-        }
-        // A reference this machine made first is its own to take back.
-        for id in held.keys() {
-            if previous.is_none_or(|previous| !previous.contains_key(id)) {
-                self.desktop
-                    .room_record_adders
-                    .entry((room, id.clone()))
-                    .or_insert_with(|| PeerOrigin::local().as_str().to_string());
-            }
         }
         // First projection this session: a withdrawal already in the
         // document applies to a copy still held here.
@@ -2231,12 +2307,7 @@ impl WorkspaceTree {
     /// for `room`, queues the difference for the shell to fold in (see
     /// [`Self::take_inbound_room_records`]), and reports whether
     /// anything arrived.
-    fn queue_inbound_records(
-        &mut self,
-        room: RoomId,
-        candidate: &AutoCommit,
-        from: &PeerOrigin,
-    ) -> bool {
+    fn queue_inbound_records(&mut self, room: RoomId, candidate: &AutoCommit) -> bool {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
@@ -2246,10 +2317,6 @@ impl WorkspaceTree {
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
             if known.map(std::string::String::as_str) != Some(kind.as_str()) {
-                self.desktop
-                    .room_record_adders
-                    .entry((room, id.clone()))
-                    .or_insert_with(|| from.as_str().to_string());
                 inbound.push((room, id.clone(), kind));
             }
         }
@@ -2267,15 +2334,12 @@ impl WorkspaceTree {
     }
 
     /// True (and logs a warning) if `candidate` withdraws a room record
-    /// that `from` has no standing to withdraw: only the peer that brought
-    /// it in, or the room's authority, may take it out. Automerge has no
+    /// nobody with standing withdrew. A withdrawal stands on its seal, not
+    /// on who relayed it: it must be signed by the member who brought the
+    /// record in (their sealed bringing-in names them), by the room's
+    /// authority, or by a member the room lets edit. Automerge has no
     /// per-key ACL, so the check is on the batch, like governance.
-    fn record_withdrawal_refused(
-        &self,
-        room: RoomId,
-        candidate: &AutoCommit,
-        from: &PeerOrigin,
-    ) -> bool {
+    fn record_withdrawal_refused(&self, room: RoomId, candidate: &AutoCommit) -> bool {
         let before: std::collections::BTreeSet<String> = self
             .room_docs
             .get(&room)
@@ -2283,37 +2347,117 @@ impl WorkspaceTree {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let authority =
-            matches!(self.room_authority(room), RoomAuthority::Peer(ref peer) if peer == from);
         for id in projection::room_records_removed_of(candidate) {
             if before.contains(&id) {
                 continue;
             }
-            let adder = self.desktop.room_record_adders.get(&(room, id.clone()));
-            if authority || adder.is_some_and(|adder| adder == from.as_str()) {
+            let added = projection::room_record_added(candidate, &id);
+            let withdrawals = projection::room_record_withdrawals(candidate, &id);
+            let stands = added.iter().any(|added| {
+                let bringer = added.seal.as_ref().and_then(|(by, sig)| {
+                    room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Added {
+                            id: &id,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    )
+                    .then_some(by.as_str())
+                });
+                withdrawals.iter().any(|(by, sig)| {
+                    room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Withdrawn {
+                            id: &id,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    ) && (bringer == Some(by.as_str())
+                        || self.may_withdraw_any_room_record(room, by))
+                })
+            });
+            if stands {
                 continue;
             }
             tracing::warn!(
                 target: "shell::state",
                 room = %room,
-                from = %from,
                 record = %id,
-                "room sync refused: only who brought a record in, or the room's authority, may take it out",
+                "room sync refused: a record's withdrawal is not sealed by who brought it in, the room's authority or an editor",
             );
             return true;
         }
         false
     }
 
-    /// Whether this machine may take `record` out of `room`: it brought it
-    /// in, or it governs the room.
-    pub fn may_withdraw_room_record(&self, room: RoomId, record: &str) -> bool {
-        self.governs_room(room)
+    /// Whether the member whose device is `endpoint` may take any record out
+    /// of `room`: the room's authority, or someone the room lets edit.
+    fn may_withdraw_any_room_record(&self, room: RoomId, endpoint: &str) -> bool {
+        let authority = match self.room_authority(room) {
+            RoomAuthority::Peer(peer) => peer == PeerOrigin::peer_id(endpoint),
+            RoomAuthority::Local => self
+                .room_record_signer()
+                .is_some_and(|key| key.public().to_string() == endpoint),
+            RoomAuthority::Unpinned => false,
+        };
+        authority
             || self
-                .desktop
-                .room_record_adders
-                .get(&(room, record.to_string()))
-                .is_none_or(|adder| adder == PeerOrigin::local().as_str())
+                .room_peer_identities
+                .get(&room)
+                .and_then(|identities| identities.get(endpoint))
+                .zip(self.workspace_in_room(room))
+                .is_some_and(|(identity, workspace)| {
+                    let collab_types::Principal::Person(person) =
+                        collab_types::Principal::person_from_key(
+                            collab_types::Ed25519PublicKey::from_bytes(
+                                identity.device_cert.user_public_key,
+                            ),
+                        )
+                    else {
+                        return false;
+                    };
+                    let actor = workspace.actor_for_person(&person);
+                    workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write)
+                })
+    }
+
+    /// Whether this machine may take `record` out of `room`: it brought it
+    /// in, by its own seal, or it governs the room.
+    pub fn may_withdraw_room_record(&self, room: RoomId, record: &str) -> bool {
+        if self.governs_room(room) {
+            return true;
+        }
+        let Some(doc) = self.room_docs.get(&room) else {
+            return true;
+        };
+        let added = projection::room_record_added(doc, record);
+        if added.is_empty() {
+            // Not in the room at all: nothing to take out.
+            return true;
+        }
+        let Some(me) = self
+            .room_record_signer()
+            .map(|key| key.public().to_string())
+        else {
+            return false;
+        };
+        added.iter().any(|added| {
+            added.seal.as_ref().is_some_and(|(by, sig)| {
+                by == &me
+                    && room_record_seal_holds(
+                        room,
+                        projection::RoomRecordAct::Added {
+                            id: record,
+                            nonce: &added.nonce,
+                        },
+                        by,
+                        sig,
+                    )
+            })
+        }) || self.may_withdraw_any_room_record(room, &me)
     }
 
     /// Merge a peer's changes to `room` into the cached workspace, and
@@ -2377,7 +2521,7 @@ impl WorkspaceTree {
         if self.owned_contents_conflict(room, &candidate, from) {
             return Ok(false);
         }
-        if self.record_withdrawal_refused(room, &candidate, from) {
+        if self.record_withdrawal_refused(room, &candidate) {
             return Ok(false);
         }
 
@@ -2406,7 +2550,7 @@ impl WorkspaceTree {
                 }
             }
         }
-        let records_changed = self.queue_inbound_records(room, &candidate, from);
+        let records_changed = self.queue_inbound_records(room, &candidate);
 
         self.room_docs.insert(room, candidate);
 
@@ -3618,6 +3762,7 @@ impl WorkspaceTree {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
 
         let mut active_strip = HashMap::new();
@@ -3711,20 +3856,7 @@ impl WorkspaceTree {
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
             ],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            channel_class: collab_types::ChannelClass::default(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-            ephemeral: false,
+            ..Workspace::default()
         };
 
         let mut tree = Self {
@@ -3810,6 +3942,7 @@ impl WorkspaceTree {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
@@ -3839,6 +3972,17 @@ impl WorkspaceTree {
     /// mirrored into the desktop document peers are served from, and focus
     /// does not move to it; the caller decides that.
     pub fn open_ephemeral_room(&mut self, name: &str, owner: &UserId) -> (WorkspaceId, RoomId) {
+        self.open_ephemeral_room_shown(name, owner, true)
+    }
+
+    /// [`Self::open_ephemeral_room`], or one nobody is shown (`shown ==
+    /// false`): see [`Workspace::hidden`].
+    pub fn open_ephemeral_room_shown(
+        &mut self,
+        name: &str,
+        owner: &UserId,
+        shown: bool,
+    ) -> (WorkspaceId, RoomId) {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let room = RoomId::new();
@@ -3851,6 +3995,7 @@ impl WorkspaceTree {
         }];
         workspace.set_owner(owner.clone());
         workspace.ephemeral = true;
+        workspace.hidden = !shown;
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(workspace);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
@@ -4307,10 +4452,12 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
-        let Some(prev_idx) = idx.checked_sub(1) else {
-            return false;
-        };
-        let Some(prev) = self.desktop.workspaces.get(prev_idx) else {
+        let Some(prev) = self
+            .desktop
+            .workspaces
+            .get(..idx)
+            .and_then(|before| before.iter().rev().find(|w| w.is_shown()))
+        else {
             return false;
         };
         self.desktop.active = prev.id;
@@ -4326,7 +4473,12 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
-        let Some(next) = self.desktop.workspaces.get(idx.saturating_add(1)) else {
+        let Some(next) = self
+            .desktop
+            .workspaces
+            .get(idx.saturating_add(1)..)
+            .and_then(|after| after.iter().find(|w| w.is_shown()))
+        else {
             return false;
         };
         self.desktop.active = next.id;
@@ -5299,15 +5451,23 @@ mod automerge_foundation_tests {
     /// from the side that did not make it.
     fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
         let mut host = WorkspaceTree::bootstrap_demo();
+        host.set_room_record_signer_override(iroh::SecretKey::generate());
         let host_ws = host.desktop.workspaces[0].id;
         let room = host.room_of(host_ws).expect("bootstrap mints a room");
         host.adopt_ownerless_workspaces(&"quinten".to_string());
 
+        let guest = joiner(room, "xaver");
+        (host, guest, room)
+    }
+
+    /// Another machine in `room`, with its own device key.
+    fn joiner(room: RoomId, person: &str) -> WorkspaceTree {
         let mut guest = WorkspaceTree::bootstrap_demo();
+        guest.set_room_record_signer_override(iroh::SecretKey::generate());
         let guest_ws = guest.desktop.workspaces[0].id;
         assert!(guest.set_room(guest_ws, room));
-        guest.adopt_ownerless_workspaces(&"xaver".to_string());
-        (host, guest, room)
+        guest.adopt_ownerless_workspaces(&person.to_string());
+        guest
     }
 
     /// A peer's strip is shared layout, not an instruction to pour its
@@ -5541,6 +5701,115 @@ mod automerge_foundation_tests {
             "a member cannot withdraw another's record",
         );
         assert!(host.may_withdraw_room_record(room, "file:/docs/plan.md"));
+    }
+
+    /// A room with the host, a member who brings a record in and a third
+    /// member between them: the host has the record, and so does the third.
+    fn a_record_brought_in_by_one_of_three(
+        record: &str,
+    ) -> (WorkspaceTree, WorkspaceTree, WorkspaceTree, RoomId) {
+        let (mut host, mut adder, room) = two_in_a_room();
+        let mut relay = joiner(room, "yara");
+        adder.set_room_records(room, held((record, "document")));
+        ship(&mut adder, &mut host, room, 2);
+        assert_eq!(host.take_inbound_room_records().len(), 1);
+        host.set_room_records(room, held((record, "document")));
+        ship(&mut host, &mut relay, room, 1);
+        assert_eq!(relay.take_inbound_room_records().len(), 1);
+        relay.set_room_records(room, held((record, "document")));
+        // Its index has folded the record in, as the frame pump does.
+        relay.sync_room_doc(room);
+        (host, adder, relay, room)
+    }
+
+    /// A withdrawal stands on who made it, not on who passed it on: the
+    /// member who brought the record in takes it out, and the batch that
+    /// carries that to the host comes from somebody else.
+    #[test]
+    fn a_withdrawal_relayed_by_another_member_still_stands() {
+        let record = "file:/docs/from-xaver.md";
+        let (mut host, mut adder, mut relay, room) = a_record_brought_in_by_one_of_three(record);
+        ship(&mut host, &mut adder, room, 1);
+        adder.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut adder, &mut relay, room, 2);
+        assert_eq!(
+            relay.take_withdrawn_room_records(),
+            vec![(room, record.to_string())]
+        );
+
+        // The relay is neither who brought it in nor the room's authority.
+        ship(&mut relay, &mut host, room, 3);
+        let doc = host.room_docs.get(&room).expect("a room document");
+        assert!(
+            projection::room_record_removed(doc, record),
+            "the adder's withdrawal reaches the host through the relay"
+        );
+        assert_eq!(
+            host.take_withdrawn_room_records(),
+            vec![(room, record.to_string())]
+        );
+    }
+
+    /// And the other way round: a member relaying a batch cannot pass off a
+    /// withdrawal of their own as the adder's.
+    #[test]
+    fn a_member_cannot_withdraw_anothers_record_by_relaying_it() {
+        let record = "file:/docs/from-xaver.md";
+        let (mut host, _adder, mut relay, room) = a_record_brought_in_by_one_of_three(record);
+        assert!(!relay.may_withdraw_room_record(room, record));
+        relay.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut relay, &mut host, room, 3);
+        let doc = host.room_docs.get(&room).expect("a room document");
+        assert!(
+            !projection::room_record_removed(doc, record),
+            "a withdrawal only the relay signed is refused"
+        );
+    }
+
+    /// An editor of the room may take out a record somebody else brought in.
+    #[test]
+    fn an_editor_may_withdraw_anothers_record() {
+        let record = "file:/docs/from-xaver.md";
+        let (mut host, _adder, mut editor, room) = a_record_brought_in_by_one_of_three(record);
+        let device = editor.room_record_signer().expect("a device key");
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Yara's laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        let endpoint = device.public().to_string();
+        assert!(host.name_peer(room, &"quinten".to_string(), &endpoint, "Yara"));
+        assert!(host.certify_peer_identity(room, &endpoint, certificate));
+        let collab_types::Principal::Person(yara) = collab_types::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(root_key.verifying_key().to_bytes()),
+        ) else {
+            unreachable!("a person key names a person")
+        };
+        let workspace = host
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("the host's workspace");
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person(yara),
+            room.to_string(),
+            Verb::Write,
+        ));
+
+        editor.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut editor, &mut host, room, 3);
+        let doc = host.room_docs.get(&room).expect("a room document");
+        assert!(
+            projection::room_record_removed(doc, record),
+            "an editor's withdrawal stands"
+        );
     }
 
     /// Two people bringing something at the same moment — keyed by
@@ -7189,6 +7458,7 @@ mod active_group_tests {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -7666,6 +7936,7 @@ mod active_workspace_peer_count_tests {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);

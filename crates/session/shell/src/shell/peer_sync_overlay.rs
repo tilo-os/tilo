@@ -56,6 +56,13 @@ pub enum CommunityRequest {
     OpenDirectRoom { person: String, label: String },
     /// Report one room's class and this session's role in it.
     RoomStatus { room: String },
+    /// Grant `person` a role in a room this machine governs: how the owner
+    /// of a public room makes a team member an Editor.
+    GrantRole {
+        room: String,
+        person: String,
+        role: crate::network::invite::InviteRole,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

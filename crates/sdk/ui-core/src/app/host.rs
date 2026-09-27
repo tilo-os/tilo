@@ -627,6 +627,10 @@ impl crate::view::FreezeThaw for App {
 mod view_presence_tests;
 
 #[cfg(test)]
+#[path = "replay_stand_in_tests.rs"]
+mod replay_stand_in_tests;
+
+#[cfg(test)]
 #[path = "semantic_tree_app_tests.rs"]
 mod semantic_tree_app_tests;
 

@@ -85,7 +85,6 @@ fn authenticated_context_marks_agent_presence_before_it_moves() {
             is_agent: true,
             is_self: false,
         }],
-        permissions: vec![],
     });
     app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
         user_id: "agent@release".into(),

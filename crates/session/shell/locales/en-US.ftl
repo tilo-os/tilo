@@ -137,6 +137,32 @@ remark-pick-count = { $count ->
 remark-pick-done = Done
 remark-pick-nothing = Nothing here can be picked
 remark-pick-personal = personal
+remark-role-button = Button
+remark-role-toggle-button = Toggle button
+remark-role-text-input = Text field
+remark-role-multiline-text-input = Text area
+remark-role-search-box = Search field
+remark-role-combo-box = Drop-down
+remark-role-link = Link
+remark-role-checkbox = Checkbox
+remark-role-switch = Switch
+remark-role-radio-button = Option
+remark-role-tab = Tab
+remark-role-menu-item = Menu item
+remark-role-heading = Heading
+remark-role-image = Image
+remark-role-list = List
+remark-role-list-item = List item
+remark-role-alert = Alert
+remark-role-status = Status
+remark-role-window = Window
+remark-role-text = Text
+remark-role-label = Label
+remark-role-slider = Slider
+remark-role-toolbar = Toolbar
+remark-role-group = Group
+remark-role-dialog = Dialog
+remark-role-application = App
 
 ## Review
 

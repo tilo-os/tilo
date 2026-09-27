@@ -290,6 +290,21 @@ impl Banner {
         self.dismissed
     }
 
+    /// Start hidden, until the app's model shows it with
+    /// [`set_shown`](Self::set_shown).
+    #[must_use]
+    pub fn hidden(mut self) -> Self {
+        self.dismissed = true;
+        self
+    }
+
+    /// Show or hide the banner from the app's own model: a failure that
+    /// just happened, a condition that cleared. Hidden, it collapses to
+    /// nothing, as a dismissed banner does.
+    pub fn set_shown(&mut self, shown: bool) {
+        self.dismissed = !shown;
+    }
+
     /// The effective leading icon (override or severity default).
     pub fn icon(&self) -> Icon {
         self.icon.unwrap_or_else(|| self.kind.default_icon())

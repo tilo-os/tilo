@@ -16,6 +16,11 @@
 //! in the replay room, as [`replay_participant`] of the recorded participant:
 //! the recorded identity, named as a replay of it. It is never the id of a
 //! live person, so the person replaying their own session can follow it.
+//!
+//! Seeking backwards rebuilds the documents as they were at the target. The
+//! peer keeps a few [checkpoints](CHECKPOINT_EVERY) of its documents as the
+//! playhead passes them, so a short scrub back starts from the nearest one
+//! rather than from the beginning of the recording.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -58,8 +63,21 @@ pub enum ReplayError {
     Malformed { app: String, reason: String },
 }
 
+/// Every this many timeline entries the peer keeps its documents as they
+/// stand, so a seek backwards resumes from there.
+pub const CHECKPOINT_EVERY: usize = 64;
+/// The checkpoints kept at most; the one farthest from a new one goes.
+const CHECKPOINTS_KEPT: usize = 8;
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The documents and what the recorded participant showed once timeline
+/// entries `0..at` happened, where `at` is the checkpoint's key.
+struct Checkpoint {
+    docs: Vec<Vec<u8>>,
+    presence: BTreeMap<(String, Vec<u8>), (usize, PresenceUpdate)>,
 }
 
 /// One recorded document route and its state at the playhead.
@@ -97,6 +115,76 @@ struct PeerState {
     /// an app that joins late sees what the recorded participant showed.
     presence: BTreeMap<(String, Vec<u8>), (usize, PresenceUpdate)>,
     key: SigningKey,
+    /// Checkpoints by the number of entries they reflect.
+    checkpoints: BTreeMap<usize, Checkpoint>,
+}
+
+impl PeerState {
+    /// Apply timeline entry `index`, as [`advance`] does, keeping a
+    /// checkpoint when the documents reach one.
+    fn step(
+        &mut self,
+        index: usize,
+        outbound: Option<&mut Vec<(CollabEvent, CrdtRoute)>>,
+        room: &str,
+    ) {
+        advance(self, index, outbound, room);
+        let at = index.saturating_add(1);
+        if at.is_multiple_of(CHECKPOINT_EVERY) && !self.checkpoints.contains_key(&at) {
+            self.keep_checkpoint(at);
+        }
+    }
+
+    fn keep_checkpoint(&mut self, at: usize) {
+        let checkpoint = Checkpoint {
+            docs: self
+                .routes
+                .iter_mut()
+                .map(|route| route.doc.save())
+                .collect(),
+            presence: self.presence.clone(),
+        };
+        self.checkpoints.insert(at, checkpoint);
+        while self.checkpoints.len() > CHECKPOINTS_KEPT {
+            let Some(farthest) = self
+                .checkpoints
+                .keys()
+                .copied()
+                .max_by_key(|kept| kept.abs_diff(at))
+            else {
+                break;
+            };
+            self.checkpoints.remove(&farthest);
+        }
+    }
+
+    /// Stand at the latest checkpoint at or before `end`, or at the start of
+    /// the recording. Returns the entries the documents then reflect.
+    fn restore(&mut self, end: usize) -> usize {
+        let from = self
+            .checkpoints
+            .range(..=end)
+            .next_back()
+            .map(|(at, checkpoint)| (*at, checkpoint));
+        let (at, docs, presence) = match from {
+            Some((at, checkpoint)) => (at, checkpoint.docs.clone(), checkpoint.presence.clone()),
+            None => (
+                0,
+                self.routes
+                    .iter()
+                    .map(|route| route.start.clone())
+                    .collect(),
+                BTreeMap::new(),
+            ),
+        };
+        for (route, bytes) in self.routes.iter_mut().zip(docs) {
+            route.doc = AutoCommit::load(&bytes).unwrap_or_else(|_| AutoCommit::new());
+            route.live = None;
+        }
+        self.presence = presence;
+        self.applied = at;
+        at
+    }
 }
 
 /// A recorded session being played into one replay room.
@@ -141,6 +229,7 @@ impl ReplayPeer {
             applied: 0,
             presence: BTreeMap::new(),
             key: session_key(),
+            checkpoints: BTreeMap::new(),
         }));
         let holder_state = Arc::clone(&state);
         let holder_fanout = Arc::downgrade(fanout);
@@ -203,7 +292,7 @@ impl ReplayPeer {
             let start = range.start.max(state.applied);
             let end = range.end.min(state.timeline.len());
             for index in start..end {
-                advance(&mut state, index, Some(&mut outbound), &self.room);
+                state.step(index, Some(&mut outbound), &self.room);
             }
             state.applied = state.applied.max(end);
         }
@@ -212,20 +301,34 @@ impl ReplayPeer {
 
     /// Rebuild the documents as they were after timeline entries `0..end`,
     /// publishing nothing: the apps that asked before hold later state, so
-    /// the caller starts fresh ones, and they ask for this.
-    pub fn rewind(&self, end: usize) {
+    /// the caller starts fresh ones, and they ask for this. The rebuild
+    /// starts at the nearest checkpoint before `end`; returns the entries
+    /// that checkpoint reflected (0 when it started from the beginning).
+    pub fn rewind(&self, end: usize) -> usize {
         let mut state = lock(&self.state);
-        for route in &mut state.routes {
-            route.doc = AutoCommit::load(&route.start).unwrap_or_else(|_| AutoCommit::new());
-            route.live = None;
-        }
-        state.presence.clear();
-        state.applied = 0;
         let end = end.min(state.timeline.len());
-        for index in 0..end {
-            advance(&mut state, index, None, &self.room);
+        let from = state.restore(end);
+        for index in from..end {
+            state.step(index, None, &self.room);
         }
         state.applied = end;
+        from
+    }
+
+    /// Take over the checkpoints `previous`, a peer of the same recording,
+    /// kept: a seek backwards reopens the room with a new peer, and what
+    /// the old one passed still stands.
+    pub fn inherit_checkpoints(&self, previous: &Self) {
+        if std::ptr::eq(self, previous) {
+            return;
+        }
+        let kept = std::mem::take(&mut lock(&previous.state).checkpoints);
+        lock(&self.state).checkpoints.extend(kept);
+    }
+
+    /// The timeline positions the peer holds checkpoints at.
+    pub fn checkpoints(&self) -> Vec<usize> {
+        lock(&self.state).checkpoints.keys().copied().collect()
     }
 
     /// Ask every app in the room to follow the recorded participant.

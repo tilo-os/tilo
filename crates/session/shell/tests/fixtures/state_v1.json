@@ -101,6 +101,7 @@
           "granted_by": null
         }
       ],
+      "channel_class": "encrypted",
       "permission_profiles": [],
       "default_apps": {
         "policy": {},
@@ -159,6 +160,7 @@
       "ownership_transfer_audit": [],
       "ownership_transfer_cancellations": [],
       "capabilities": [],
+      "channel_class": "encrypted",
       "permission_profiles": [],
       "default_apps": {
         "policy": {},

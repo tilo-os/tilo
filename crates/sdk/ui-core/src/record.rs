@@ -9,7 +9,12 @@
 //! A record id is scoped by the room that hydrates it. Rooms hold references
 //! ([`room::reference`]), but an identical id in another room gets a distinct
 //! local document and collaboration route; explicit export/import is required
-//! to move content across that authority boundary.
+//! to move content across that authority boundary. The one exception is a
+//! view, not a crossing: an app replayed in a replay room checks out the
+//! recorded room's records read-only and in memory, their routes travelling
+//! only in the replay room (`RecordStore::view_in`, and
+//! `docs/architecture/rooms.md`, "Replaying a room's records is a view, not a
+//! way in").
 //!
 //! One document per record is forced, not chosen: an Automerge change graph
 //! names its dependencies by hash, so a filtered stream leaves the receiver
@@ -948,13 +953,81 @@ pub mod room {
         str_at,
     };
 
-    /// `None` only if `put_object` on the document root itself fails, which
-    /// does not happen for a document this call has exclusive access to.
-    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-        match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
+    /// The actor that makes every room's index map. Never a device's: no
+    /// one writes as it, it only ever makes the one change in
+    /// [`index_genesis`].
+    const INDEX_GENESIS_ACTOR: [u8; 16] = *b"tilo-room-index\0";
+
+    /// The change that makes a room's index map — byte for byte the same on
+    /// every peer, so it hashes the same. Two members who each bring the
+    /// first record into an empty room both apply this one change and end up
+    /// holding one index; had each made its own map under the same key, one
+    /// map would win and the other's entries would be hidden behind it.
+    fn index_genesis() -> Vec<automerge::Change> {
+        thread_local! {
+            static GENESIS: Vec<automerge::Change> = {
+                let mut genesis = AutoCommit::new()
+                    .with_actor(automerge::ActorId::from(INDEX_GENESIS_ACTOR.as_slice()));
+                let made = genesis.put_object(&ROOT, INDEX, ObjType::Map);
+                debug_assert!(made.is_ok(), "an empty document takes a root map");
+                genesis.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+                genesis.get_changes(&[])
+            };
         }
+        GENESIS.with(Clone::clone)
+    }
+
+    /// Whether `change` is [`index_genesis`], which every room shares and
+    /// anyone may bring: it holds nothing but the empty index.
+    pub(super) fn is_index_genesis(change: &automerge::Change) -> bool {
+        index_genesis()
+            .iter()
+            .any(|genesis| genesis.hash() == change.hash())
+    }
+
+    fn made_by_genesis(index: &ObjId) -> bool {
+        matches!(index, ObjId::Id(_, actor, _) if actor.to_bytes() == INDEX_GENESIS_ACTOR.as_slice())
+    }
+
+    /// The change that makes record `id`'s entry in the room index, of type
+    /// `kind` — like [`index_genesis`], byte for byte the same on every peer:
+    /// its actor is derived from the entry, it depends only on the index's
+    /// genesis and it carries no time. Two members bringing the same record
+    /// in at once make one entry, not two maps under one key with one hidden.
+    fn entry_genesis(id: &str, kind: &str) -> Vec<automerge::Change> {
+        let mut doc = AutoCommit::new();
+        if tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, index_genesis()).is_err() {
+            return Vec::new();
+        }
+        let base = doc.get_heads();
+        let mut actor = blake3::Hasher::new();
+        actor.update(b"tilo.room-index.entry.v1\0");
+        actor.update(id.as_bytes());
+        actor.update(b"\0");
+        actor.update(kind.as_bytes());
+        let actor = actor.finalize();
+        let mut doc = doc.with_actor(automerge::ActorId::from(&actor.as_bytes()[..16]));
+        let Some(index) = index_ro(&doc) else {
+            return Vec::new();
+        };
+        let Ok(entry) = doc.put_object(&index, id, ObjType::Map) else {
+            return Vec::new();
+        };
+        if doc.put(&entry, "kind", kind).is_err() {
+            return Vec::new();
+        }
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.get_changes(&base)
+    }
+
+    /// The room's index map, made by [`index_genesis`] when the room has
+    /// none yet. `None` only if the document refuses the genesis change.
+    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
+        if let Some(id) = index_ro(doc) {
+            return Some(id);
+        }
+        tilo_automerge::ApplyIncoming::apply_incoming(doc, index_genesis()).ok()?;
+        index_ro(doc)
     }
 
     fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
@@ -986,6 +1059,13 @@ pub mod room {
                 let _ = doc.put(&obj, "kind", kind.as_str());
             }
             false
+        } else if made_by_genesis(&idx) {
+            tilo_automerge::ApplyIncoming::apply_incoming(
+                doc,
+                entry_genesis(id.as_str(), kind.as_str()),
+            )
+            .is_ok()
+                && doc.get(&idx, id.as_str()).ok().flatten().is_some()
         } else {
             let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
                 return false;
@@ -1130,17 +1210,20 @@ pub mod room {
     /// delete, a change whose dependencies are missing — is refused. `index`
     /// is left untouched.
     pub fn comment_references_only(index: &AutoCommit, delta: &[u8], author: &[u8; 32]) -> bool {
-        let Some(index_obj) = index_ro(index) else {
-            // Commenters never create the index: two concurrent creations
-            // would conflict and one would hide the other's entries.
-            return false;
-        };
         let mut after = index.clone();
         let before_heads = after.get_heads();
         let missing_before = after.get_missing_deps(&[]).len();
         if tilo_automerge::ApplyIncoming::load_incoming(&mut after, delta).is_err()
             || after.get_missing_deps(&[]).len() != missing_before
         {
+            return false;
+        }
+        // A change may bring the index only as the shared genesis: any
+        // other creation would sit beside the room's and hide one of them.
+        let Some(index_obj) = index_ro(&after) else {
+            return false;
+        };
+        if index_ro(index).is_none() && !made_by_genesis(&index_obj) {
             return false;
         }
         changes_are_comment_references(&index_obj, &after.get_changes(&before_heads), author)
@@ -1176,6 +1259,9 @@ pub mod room {
             return false;
         }
         for change in changes {
+            if is_index_genesis(change) {
+                continue;
+            }
             let change = change.decode();
             let start = change.start_op.get();
             let mut made_entries: Vec<u64> = Vec::new();
@@ -1268,12 +1354,22 @@ pub struct RecordSet {
     /// The room these records are being opened in — the cluster/workspace id.
     /// Stamped as a record's home when it is first created here.
     home: String,
+    /// The room this set's records travel in when it is not their home: a
+    /// replay room showing a recorded room's records ([`RecordStore::view_in`]).
+    route_room: Option<String>,
+    /// What a record view shows as its durability: the status the followed
+    /// participant's app showed, not this view's own in-memory one.
+    shown_status: Option<RecordSaveStatus>,
     open: HashMap<RecordId, Parked>,
     /// Names currently granted by the room index.  Discovery is intentionally
     /// separate from `open`: a hostile or merely large index must not create
     /// local replicas or subscribe the app to unrelated documents.
     known: BTreeMap<RecordId, RecordKind>,
     active: Option<RecordId>,
+    /// The live record was checked out read-only (see
+    /// [`RecordCheckout::read_only`]); declaring it again as a writer brings
+    /// it into the room then.
+    active_read_only: bool,
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
@@ -1308,20 +1404,7 @@ impl RecordSet {
     ///
     /// The host's workspace (else cluster) id scopes the records.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let environment = crate::host::environment();
-        let identity = &environment.identity;
-        let package_id = identity
-            .package_id
-            .clone()
-            .unwrap_or_else(|| manifest_id.into());
-        let home = identity
-            .workspace_id
-            .clone()
-            .or_else(|| identity.cluster_id.clone())
-            // A launcher-less process still gets an explicit, non-routable
-            // scope.  It may not collaborate (the broker rejects nil), but
-            // it must never fall back to the historical package-global file.
-            .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+        let (package_id, home) = launch_scope(manifest_id.into());
         Self::open_in(app_state::DocStore::native_store(), package_id, home)
     }
 
@@ -1336,9 +1419,12 @@ impl RecordSet {
         Self {
             package_id: package_id.into(),
             home: home.into(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: true,
             documents: Some(store),
             backend: None,
@@ -1359,9 +1445,12 @@ impl RecordSet {
         Self {
             package_id: String::new(),
             home: String::new(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: false,
             documents: None,
             backend: None,
@@ -1459,6 +1548,17 @@ impl RecordSet {
             return false;
         }
         if self.active.as_ref() == Some(&want.id) {
+            // Declared a writer of the record it only read: someone was
+            // granted more. Bringing it into the room is theirs to do now.
+            if self.active_read_only && !want.read_only {
+                self.active_read_only = false;
+                if let Some(room) = room {
+                    room::reference(room, &want.id, &want.kind);
+                    for (target, _) in &want.references {
+                        room::reference(room, &target.id, &target.kind);
+                    }
+                }
+            }
             return false;
         }
 
@@ -1554,6 +1654,7 @@ impl RecordSet {
             }
         }
         self.active = Some(want.id.clone());
+        self.active_read_only = want.read_only;
         self.remember(want);
         true
     }
@@ -1998,6 +2099,24 @@ impl RecordSet {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
+/// The package and room the process environment scopes records to: the
+/// host's package id always wins over `manifest_id`, and the host's
+/// workspace (else cluster) id is the room.
+fn launch_scope(manifest_id: String) -> (String, String) {
+    let environment = crate::host::environment();
+    let identity = &environment.identity;
+    let package_id = identity.package_id.clone().unwrap_or(manifest_id);
+    let home = identity
+        .workspace_id
+        .clone()
+        .or_else(|| identity.cluster_id.clone())
+        // A launcher-less process still gets an explicit, non-routable
+        // scope.  It may not collaborate (the broker rejects nil), but
+        // it must never fall back to the historical package-global file.
+        .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+    (package_id, home)
+}
+
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
@@ -2009,6 +2128,26 @@ impl RecordOwners {
     /// Owners persisting under a local profile directory.
     pub fn new(profile_state_root: PathBuf) -> Self {
         Self::with_store(Rc::new(app_state::FsStore::new(profile_state_root)))
+    }
+
+    /// Owners persisting in the native store ([`app_state::DocStore::native_store`]),
+    /// where [`RecordSet::open`] keeps a launched process's records.
+    pub fn native() -> Self {
+        Self::with_store(app_state::DocStore::native_store())
+    }
+
+    /// The owner of the records the process environment scopes to (see
+    /// [`RecordSet::open`]): the same documents, owner-backed, so records
+    /// can also be reserved and minted.
+    ///
+    /// # Errors
+    /// Rejects an invalid package or workspace.
+    pub fn open_launched(
+        &mut self,
+        manifest_id: impl Into<String>,
+    ) -> Result<RecordStore, RecordOpenError> {
+        let (package_id, home) = launch_scope(manifest_id.into());
+        self.open(&package_id, &home)
     }
 
     /// Owners persisting through a host-provided store.
@@ -2043,9 +2182,12 @@ impl RecordOwners {
         let store = RecordStore::new(RecordSet {
             package_id: package_id.to_owned(),
             home: workspace_id.to_owned(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: true,
             documents: None,
             backend: Some(Rc::clone(&self.store)),
@@ -2058,7 +2200,7 @@ impl RecordOwners {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecordSaveStatus {
     Saved,
     Saving,
@@ -2109,6 +2251,58 @@ fn validate_identity(
     Ok(())
 }
 
+/// Make `doc` the record `checkout` of `workspace` as it is created: its
+/// identity and the app's `initialize`d content, in one change that is byte
+/// for byte the same on every peer that creates it. The change is made by an
+/// actor derived from the record's identity, at time zero, so it hashes the
+/// same everywhere: two members of a room that each create a record another
+/// member is creating too (a derived default, the same file) make the same
+/// change and converge on one record rather than two competing roots.
+/// `doc` is a fresh document of this device; what it holds so far (the
+/// store's schema stamp) is made part of the genesis, and its own actor
+/// writes everything after it.
+fn genesis(
+    doc: &mut AutoCommit,
+    checkout: &RecordCheckout,
+    workspace: &str,
+    initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+) -> Result<(), RecordOpenError> {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"tilo.record.genesis\0")
+        .chain_update(checkout.id.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(checkout.kind.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(workspace.as_bytes())
+        .finalize();
+    let actor = automerge::ActorId::from(digest.get(..16).unwrap_or_default());
+    let mut made = AutoCommit::new().with_actor(actor);
+    for key in doc.keys(&ROOT).collect::<Vec<_>>() {
+        if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, key.as_str()) {
+            made.put(&ROOT, key.as_str(), value.into_owned())
+                .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+        }
+    }
+    if !init_scoped(
+        &mut made,
+        &checkout.id,
+        &checkout.kind,
+        workspace,
+        Some(workspace),
+    ) {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    let changes = made.get_changes(&[]);
+    let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
+    ApplyIncoming::apply_incoming(&mut created, changes)
+        .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+    *doc = created;
+    Ok(())
+}
+
 /// The unique construction owner of a not-yet-live record. Drop cancels only this generation.
 pub struct RecordReservation {
     store: RecordStore,
@@ -2150,16 +2344,7 @@ impl RecordReservation {
             (Rc::clone(&pending.store), set.home.clone())
         };
         let mut doc = owner.new_document()?;
-        if !init_scoped(
-            &mut doc,
-            &self.checkout.id,
-            &self.checkout.kind,
-            &workspace,
-            Some(&workspace),
-        ) {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        initialize(&mut doc).map_err(RecordOpenError::Initialization)?;
+        genesis(&mut doc, &self.checkout, &workspace, initialize)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit();
@@ -2280,6 +2465,32 @@ impl RecordStore {
         ))
     }
 
+    /// Show these records, which belong to their home room, in `room`: the
+    /// replay room an app replayed from a recording runs in. Their routes
+    /// travel in `room`; their identity stays their home's. A record view
+    /// is read-only (see `ui::application::RECORD_SCOPE_ENV`).
+    pub(crate) fn view_in(&self, room: &str) {
+        self.0.borrow_mut().route_room = Some(room.to_owned());
+    }
+
+    /// Show `status` as a record view's durability: the status the app it
+    /// replays showed. Ignored by a store that is not a view.
+    pub(crate) fn show_status(&self, status: Option<RecordSaveStatus>) {
+        if let Ok(mut set) = self.0.try_borrow_mut()
+            && set.route_room.is_some()
+        {
+            set.shown_status = status;
+        }
+    }
+
+    /// [`Self::canonical_namespace`] with the room these records' routes
+    /// travel in: their home, or the room they are viewed in.
+    pub(crate) fn route_namespace(&self) -> Option<(String, String, String)> {
+        let (storage, package, home) = self.canonical_namespace()?;
+        let room = self.0.borrow().route_room.clone().unwrap_or(home);
+        Some((storage, package, room))
+    }
+
     /// Open Existing only; a missing document is never implicitly initialized.
     ///
     /// # Errors
@@ -2341,6 +2552,15 @@ impl RecordStore {
             return Err(RecordOpenError::Busy);
         }
         let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        // A view onto another room's records keeps nothing: it shows what
+        // the app it replays showed, and until it knows, that it keeps
+        // nothing.
+        if set.route_room.is_some() {
+            return Ok(set
+                .shown_status
+                .clone()
+                .unwrap_or(RecordSaveStatus::MemoryOnly));
+        }
         let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
         if let Some(saver) = &slot.autosave {
             let snapshot = saver.durability_snapshot();
@@ -2908,6 +3128,62 @@ mod identity_tests;
 mod tests {
     use super::*;
 
+    /// Two members of a room each create the record the room derives for
+    /// them, before either has heard of the other's: the same record, from
+    /// the same initial content. Their documents merge into one record whose
+    /// content has one value at every key, not two competing roots.
+    #[test]
+    fn members_creating_the_same_record_converge_on_one() {
+        let initialize = |doc: &mut AutoCommit| {
+            for key in ["pages", "tags"] {
+                doc.put_object(ROOT, key, ObjType::Map)
+                    .map_err(|e| e.to_string())?;
+            }
+            doc.put(ROOT, "schema_version", 1_u64)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        };
+        let checkout = RecordCheckout::new(
+            RecordId::derived("default-notebook", &RecordId::for_tab(7)),
+            RecordKind::new("notebook"),
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let created: Vec<Vec<u8>> = ["ada", "bea"]
+            .into_iter()
+            .map(|member| {
+                let mut owners = RecordOwners::new(temp.path().join(member));
+                let store = owners.open("so.tilo.test", "room-a").unwrap();
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(initialize)
+                    .unwrap();
+                store.read(&checkout.id, |doc| doc.clone().save()).unwrap()
+            })
+            .collect();
+        let mut merged = AutoCommit::load(&created[0]).unwrap();
+        let mut other = AutoCommit::load(&created[1]).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut other).unwrap();
+        for key in ["pages", "tags", "schema_version"] {
+            assert_eq!(
+                merged.get_all(ROOT, key).unwrap().len(),
+                1,
+                "{key} has one value once both members' records meet"
+            );
+        }
+        assert_eq!(
+            identity(&merged).map(|found| found.id),
+            Some(checkout.id.clone()),
+            "the record keeps its one identity"
+        );
+        // Each member still writes as itself after the shared creation.
+        let actors: std::collections::BTreeSet<_> = [&created[0], &created[1]]
+            .iter()
+            .map(|bytes| AutoCommit::load(bytes).unwrap().get_actor().clone())
+            .collect();
+        assert_eq!(actors.len(), 2, "the members keep their own actors");
+    }
+
     #[test]
     fn blob_references_are_idempotent_and_validated() {
         let mut doc = AutoCommit::new();
@@ -3301,19 +3577,81 @@ mod tests {
     }
 
     #[test]
-    fn a_commenter_cannot_create_the_room_index() {
+    fn a_commenter_may_bring_only_the_shared_room_index() {
         let me = [3; 32];
         let mut empty = AutoCommit::new();
-        let mut replica = empty.fork();
         let parent = RecordId::minted();
         let mine = RecordId::for_comment(me, "m1", &parent).unwrap();
-        assert!(room::reference(
-            &mut replica,
-            &mine,
-            &RecordKind::new("chat.message")
-        ));
+        let kind = RecordKind::new("chat.message");
+
+        // The index every room shares, with the Commenter's own reference.
+        let mut replica = empty.fork();
+        assert!(room::reference(&mut replica, &mine, &kind));
+        let delta = delta_since(&mut empty, &mut replica);
+        assert!(room::comment_references_only(&empty, &delta, &me));
+
+        // An index map of the Commenter's own making would sit beside the
+        // room's and hide one of them.
+        let mut replica = empty.fork();
+        let own = replica.put_object(ROOT, INDEX, ObjType::Map).unwrap();
+        let entry = replica
+            .put_object(&own, mine.as_str(), ObjType::Map)
+            .unwrap();
+        replica.put(&entry, "kind", kind.as_str()).unwrap();
         let delta = delta_since(&mut empty, &mut replica);
         assert!(!room::comment_references_only(&empty, &delta, &me));
+    }
+
+    #[test]
+    fn two_members_bringing_the_same_record_in_at_once_make_one_entry() {
+        let mut ada = AutoCommit::new();
+        let mut bo = AutoCommit::new();
+        let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        assert!(room::reference(&mut ada, &record.id, &record.kind));
+        assert!(room::reference(&mut bo, &record.id, &record.kind));
+        let ada_changes = ada.save();
+        let bo_changes = bo.save();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut ada, &bo_changes).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut bo, &ada_changes).unwrap();
+        for peer in [&ada, &bo] {
+            let (_, index) = peer.get(ROOT, INDEX).unwrap().unwrap();
+            assert_eq!(
+                peer.get_all(&index, record.id.as_str()).unwrap().len(),
+                1,
+                "one entry, not one per member"
+            );
+        }
+        assert_eq!(ada.get_heads(), bo.get_heads(), "nothing left to exchange");
+    }
+
+    #[test]
+    fn two_members_bringing_the_first_records_into_a_room_share_one_index() {
+        let mut ada = AutoCommit::new();
+        let mut bo = AutoCommit::new();
+        let from_ada = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let from_bo = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.channel"));
+        assert!(room::reference(&mut ada, &from_ada.id, &from_ada.kind));
+        assert!(room::reference(&mut bo, &from_bo.id, &from_bo.kind));
+
+        let ada_changes = ada.save();
+        let bo_changes = bo.save();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut ada, &bo_changes).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut bo, &ada_changes).unwrap();
+
+        let mut both = vec![from_ada, from_bo];
+        both.sort();
+        for peer in [&ada, &bo] {
+            assert_eq!(
+                peer.get_all(ROOT, INDEX).unwrap().len(),
+                1,
+                "one index, not one per member"
+            );
+            assert_eq!(
+                room::references(peer),
+                both,
+                "every member's records listed"
+            );
+        }
     }
 
     fn text(doc: &AutoCommit, key: &str) -> Option<String> {
@@ -3594,6 +3932,24 @@ mod tests {
 
         set.checkout(&mut state, Some(&mut room_doc), &a);
         assert_eq!(text(&state.doc, "note").as_deref(), Some("a's note"));
+    }
+
+    #[test]
+    fn a_reader_granted_more_brings_the_record_into_the_room() {
+        let mut room_doc = AutoCommit::new();
+        let mut set = RecordSet::in_memory();
+        let mut state = State::new();
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.conversation"));
+        assert!(set.checkout(&mut state, Some(&mut room_doc), &want.clone().read_only()));
+        assert!(
+            !room::holds(&room_doc, &want.id),
+            "a reader brings nothing in"
+        );
+        assert!(
+            !set.checkout(&mut state, Some(&mut room_doc), &want),
+            "still the live record"
+        );
+        assert!(room::holds(&room_doc, &want.id), "a writer does");
     }
 
     #[test]

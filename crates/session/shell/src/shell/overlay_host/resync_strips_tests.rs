@@ -54,6 +54,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
         collaborators: vec![],
         shared_surfaces: SharedSurfaces::default(),
         ephemeral: false,
+        hidden: false,
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);

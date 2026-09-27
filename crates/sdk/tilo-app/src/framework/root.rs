@@ -261,6 +261,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.room_index_changed(index);
     }
 
+    fn permissions_changed(&mut self, permissions: &ui_core::permissions::PermissionContext) {
+        self.content.permissions_changed(permissions);
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending() || self.content.has_pending_control_invocation()
     }

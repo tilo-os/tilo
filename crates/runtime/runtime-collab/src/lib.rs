@@ -2748,12 +2748,15 @@ pub struct Collaborator {
     pub is_self: bool,
 }
 
-/// Roster + local permissions snapshot delivered on
+/// Roster snapshot, or this connection's own grant, delivered on
 /// [`ContextStream`]. See the capnp docs for the exact semantics.
 #[derive(Debug, Clone)]
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
-    pub permissions: Vec<String>,
+    /// `Some` only on a grant frame: what this connection may do in its
+    /// room now, as `collab_types::ConnectionGrant` JSON. The roster is
+    /// left untouched by such a frame.
+    pub grant: Option<String>,
     /// `Some` only for a session-local Follow control frame; ordinary
     /// context snapshots keep this field at `None` and replace
     /// roster/permissions as before.
@@ -2816,17 +2819,16 @@ impl ContextStream {
                 is_self: c.get_is_self(),
             });
         }
-        let perms_reader = ctx.get_permissions()?;
-        let mut permissions = Vec::with_capacity(perms_reader.len() as usize);
-        for i in 0..perms_reader.len() {
-            permissions.push(
-                perms_reader
-                    .get(i)?
+        let grant = if ctx.get_grant_changed() {
+            Some(
+                ctx.get_grant()?
                     .to_str()
-                    .map_err(|e| capnp::Error::failed(format!("invalid utf8 permission: {e}")))?
+                    .map_err(|e| capnp::Error::failed(format!("invalid utf8 grant: {e}")))?
                     .to_owned(),
-            );
-        }
+            )
+        } else {
+            None
+        };
         let follow_changed = ctx.get_follow_changed().then(|| FollowControl {
             target: ctx
                 .get_follow_target()
@@ -2838,7 +2840,7 @@ impl ContextStream {
         });
         Ok(ChannelContext {
             collaborators,
-            permissions,
+            grant,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
         })

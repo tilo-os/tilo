@@ -148,17 +148,24 @@ fn pick_surface(key: &str, surface: &InspectedSurface) -> Option<PickSurface> {
         .iter()
         .filter_map(|node| {
             let bounds = node.visible.or(node.bounds)?;
+            // A field goes by its name; only a node without one is shown by
+            // what it holds.
+            let name = node.label.clone().filter(|name| !name.trim().is_empty());
+            let (label, shows_content) = match (&node.content, name) {
+                (tilo_reference::inspect::Content::Value, Some(name)) => (Some(name), false),
+                (tilo_reference::inspect::Content::Value, None) => {
+                    (node.value.clone(), node.value.is_some())
+                }
+                (tilo_reference::inspect::Content::Label, name) => (name, true),
+            };
             Some(PickNode {
                 id: node.id.clone(),
                 role: node.role.clone(),
-                label: node
-                    .content_text()
-                    .map(ToString::to_string)
-                    .or_else(|| node.label.clone()),
+                label,
                 bounds: rect_of(bounds),
                 children: node.children.clone(),
                 reference: node.reference.clone(),
-                personal: node.sensitivity == tilo_actions::Sensitivity::Personal,
+                personal: shows_content && node.sensitivity == tilo_actions::Sensitivity::Personal,
             })
         })
         .collect();
@@ -200,14 +207,21 @@ fn in_process_surface(
         .iter()
         .filter_map(|node| {
             let bounds = node.visible_bounds().or(node.bounds)?;
+            // A field goes by its name; only a node without one is shown by
+            // what it holds.
+            let name = node.name.clone().filter(|name| !name.trim().is_empty());
+            let (label, shows_content) = if node.presents_value() {
+                match name {
+                    Some(name) => (Some(name), false),
+                    None => (node.value.clone(), node.value.is_some()),
+                }
+            } else {
+                (name, true)
+            };
             Some(PickNode {
                 id: node.id.as_str().to_string(),
                 role: ui::inspect::role_name(node.role),
-                label: node
-                    .value
-                    .clone()
-                    .filter(|_| node.presents_value())
-                    .or_else(|| node.name.clone()),
+                label,
                 bounds: Rect::new(
                     bounds.x0 - tile.x0,
                     bounds.y0 - tile.y0,
@@ -221,7 +235,7 @@ fn in_process_surface(
                     .filter(|child| ids.contains(child.as_str()))
                     .collect(),
                 reference: node.reference.clone(),
-                personal: node.sensitivity == tilo_actions::Sensitivity::Personal,
+                personal: shows_content && node.sensitivity == tilo_actions::Sensitivity::Personal,
             })
         })
         .collect();
@@ -248,7 +262,9 @@ impl ShellOverlayHost {
         self.remark.replay = Some(replay);
     }
 
-    pub fn seed_remark_directory_for_shots(&mut self, directory: Directory) {
+    /// Where a remark can go, for a session nothing configures: a
+    /// headless render or a test, with no community or collaborators.
+    pub fn seed_remark_directory(&mut self, directory: Directory) {
         self.remark.fixture_directory = Some(directory);
         self.remark.directory_at = None;
     }
@@ -1095,6 +1111,13 @@ impl ShellOverlayHost {
                 crate::shell::i18n::t("remark-blocked-nothing-picked"),
             );
             return;
+        };
+        let remark = match chrome.borrow().remark.review.as_ref() {
+            Some(review) => crate::shell::remark::hide_reviewed(
+                remark,
+                &session_trace::redact::Masker::new(review.hidden_values()),
+            ),
+            None => remark,
         };
         let ts = tilo_clock::unix_now_i64();
         let delivery = match crate::shell::remark::plan_delivery(&remark, &option, &me, &id, ts) {

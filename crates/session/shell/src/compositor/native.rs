@@ -2897,6 +2897,37 @@ fn execute_planned_action(
     None
 }
 
+/// Drive the replays checked out of sight: size their windows to the
+/// recorded surfaces, and capture them once each has drawn at its offset.
+fn service_offscreen_checks(frame_builder: &FrameBuilder, state: &State) {
+    let Some(replay) = frame_builder.chrome().replay().cloned() else {
+        return;
+    };
+    let scale = if state.scale.is_finite() && state.scale > 0.0 {
+        state.scale
+    } else {
+        1.0
+    };
+    for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+        let id = crate::compositor::state::surface_id(toplevel.wl_surface());
+        if let Some((width, height)) = replay.offscreen_surface_size(id) {
+            foreign::store().note_placement(
+                id,
+                vello::kurbo::Rect::new(0.0, 0.0, width * scale, height * scale),
+            );
+        }
+    }
+    for request in replay.offscreen_captures(std::time::Instant::now()) {
+        let frames = crate::compositor::capture::CaptureExecutor::surface_frames(
+            frame_builder,
+            &request.surfaces,
+            request.at,
+            request.scale,
+        );
+        replay.deliver_captures(&request, frames);
+    }
+}
+
 /// Capture the open replay room's surfaces the way a recording captures
 /// them, named by the routes they were recorded under.
 fn write_replay_frames(
@@ -4173,6 +4204,7 @@ fn load_session_tree(
         match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
                 tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
+                crate::shell::state::WorkspaceTree::set_process_room_record_signer(kp);
             }
             Err(e) => {
                 peer_sync_possible = false;
@@ -8273,19 +8305,21 @@ pub fn run() {
                 // locking the tree — nothing here needs the RefCell guard itself.
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
+                // A room nobody is shown has no pointer in it and no
+                // presence to paint.
                 let rooms = tree
                     .desktop
                     .workspaces
                     .iter()
+                    .filter(|w| w.is_shown())
                     .map(|w| w.room.to_string())
                     .collect::<Vec<_>>();
                 // The room the user is looking at (where their pointer is), distinct from
                 // the set above (every room the session listens to).
                 let here = tree
                     .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == tree.desktop.active)
+                    .active_workspace()
+                    .filter(|w| w.is_shown())
                     .map(|w| w.room.to_string());
                 (rooms, here)
             };
@@ -9109,6 +9143,7 @@ pub fn run() {
             force_first_paint = false;
             // The layout pass above published each foreign tab's rect — tell clients
             // what size to render at, then release the frame throttle for on-screen ones; both no-ops with no external client.
+            service_offscreen_checks(&frame_builder, &state);
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
             state.client_cursor.send_frame_callbacks(

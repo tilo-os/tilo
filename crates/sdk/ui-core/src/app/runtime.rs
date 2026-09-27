@@ -336,6 +336,12 @@ pub(super) struct PresenceRuntime {
     /// things in the document (a menu for a page, a scroll into a list), so
     /// it is applied again once the widgets have synced to that change.
     pub(super) follow_after_sync: bool,
+    /// Where a replay's recorded participant last had their caret or
+    /// selection, which the viewer stands at as their own.
+    pub(super) stood_at: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    /// The semantic tree revision at which standing there last found no
+    /// widget to take it: it is tried again only once the tree has changed.
+    pub(super) stood_missed_at: Option<u64>,
     pub(super) last_pointer_broadcast: Option<Instant>,
     pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
@@ -353,6 +359,8 @@ impl PresenceRuntime {
             follow_mode: crate::view::FollowMode::Live,
             mirrored_overlays: Vec::new(),
             follow_after_sync: false,
+            stood_at: None,
+            stood_missed_at: None,
             last_pointer_broadcast: None,
             last_focus: None,
             last_location: None,

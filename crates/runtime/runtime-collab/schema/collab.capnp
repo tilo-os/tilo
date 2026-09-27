@@ -718,16 +718,19 @@ struct PresencePayload {
   }
 }
 
-# Roster + permission snapshot delivered on `ContextStream`.
-# `collaborators` is the full current membership; `permissions` is
-# a bag of string tags naming grants held by the *local* identity
-# on this channel (the caller). The broker sends a fresh snapshot
-# every time its view changes rather than diffing — this bounds
-# the client-side state to O(members) and keeps a slow reader from
-# drifting.
+# Roster snapshot, or this connection's own grant, delivered on
+# `ContextStream`. `collaborators` is the full current membership. The
+# broker sends a fresh snapshot every time its view changes rather than
+# diffing — this bounds the client-side state to O(members) and keeps a
+# slow reader from drifting.
 struct ChannelContext {
   collaborators @0 :List(Collaborator);
-  permissions   @1 :List(Text);
+  # With `grantChanged`: what the receiving connection may do in its room
+  # now, as `collab_types::ConnectionGrant` JSON — its role and the
+  # capabilities that name it. Sent to that connection alone, when it
+  # subscribes and whenever a grant or revocation changes it; the roster
+  # is left untouched.
+  grant         @1 :Text;
   # A session-local Follow command. `followChanged == false` means this is
   # the ordinary complete roster/permission snapshot above. When true,
   # clients leave that snapshot untouched and either follow `followTarget`
@@ -741,6 +744,8 @@ struct ChannelContext {
   # session, so its overlays are restored as the app's own and the viewer's
   # input does not end the follow. False is a live follow.
   followReplay @5 :Bool;
+  # This frame carries `grant` alone.
+  grantChanged @6 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

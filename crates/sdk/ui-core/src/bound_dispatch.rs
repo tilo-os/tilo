@@ -1825,7 +1825,7 @@ pub(crate) fn with_owned_record_action<R>(
 
 impl CallbackBinding {
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
-        let (_, app, workspace) = self.records.canonical_namespace()?;
+        let (_, app, workspace) = self.records.route_namespace()?;
         if app != self.app_id {
             return None;
         }

@@ -109,6 +109,18 @@ pub struct Workspace {
     /// a place to put things. Closing it removes it and its app storage.
     #[serde(skip)]
     pub ephemeral: bool,
+    /// An ephemeral room nobody looks at: a replay the device runs for its
+    /// own checks. It never becomes the active workspace and is left out of
+    /// every place that lists workspaces to a person.
+    #[serde(skip)]
+    pub hidden: bool,
+}
+
+impl Workspace {
+    /// Whether a person is shown this workspace at all.
+    pub fn is_shown(&self) -> bool {
+        !self.hidden
+    }
 }
 
 /// Stable identifier for a person. The compositor's collaborator table
@@ -812,6 +824,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         }
     }
 
@@ -884,6 +897,7 @@ impl Default for Workspace {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         }
     }
 }

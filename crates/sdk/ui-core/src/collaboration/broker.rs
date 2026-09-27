@@ -221,6 +221,10 @@ impl BrokerTransport {
 }
 
 impl CollabTransport for BrokerTransport {
+    fn grants_authority(&self) -> bool {
+        true
+    }
+
     fn status(&self) -> TransportStatus {
         if self.worker_stopped {
             return TransportStatus::Closed("collaboration worker stopped".into());
@@ -696,8 +700,6 @@ fn workspace_control_event_bytes(
 fn context_event_bytes(
     collaborators: &[Collaborator],
     collaborator_capacity: usize,
-    permissions: &[String],
-    permission_capacity: usize,
     meter: &mut ByteMeter,
 ) {
     meter.add_product(collaborator_capacity, std::mem::size_of::<Collaborator>());
@@ -705,9 +707,16 @@ fn context_event_bytes(
         meter.string_capacity(&collaborator.id);
         meter.string_capacity(&collaborator.name);
     }
-    meter.add_product(permission_capacity, std::mem::size_of::<String>());
-    for permission in permissions {
-        meter.string_capacity(permission);
+}
+
+fn grant_event_bytes(grant: &collab_types::ConnectionGrant, meter: &mut ByteMeter) {
+    meter.string_capacity(&grant.room);
+    meter.add_product(
+        grant.capabilities.capacity(),
+        std::mem::size_of::<collab_types::CapOverride>(),
+    );
+    for capability in &grant.capabilities {
+        meter.string_capacity(&capability.id);
     }
 }
 
@@ -778,16 +787,10 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
 fn event_bytes(event: &CollabEvent) -> Option<usize> {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
     match event {
-        CollabEvent::Context {
-            collaborators,
-            permissions,
-        } => context_event_bytes(
-            collaborators,
-            collaborators.capacity(),
-            permissions,
-            permissions.capacity(),
-            &mut meter,
-        ),
+        CollabEvent::Context { collaborators } => {
+            context_event_bytes(collaborators, collaborators.capacity(), &mut meter);
+        }
+        CollabEvent::Grant { grant } => grant_event_bytes(grant, &mut meter),
         CollabEvent::FollowChanged { peer_id, .. } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
@@ -3025,8 +3028,9 @@ fn mutation_bytes(mutation: &collab_types::DocumentMutation) -> &[u8] {
     }
 }
 
-/// Bridge `channel`'s collaborator/permissions context stream into
-/// [`CollabEvent::Context`] on `inbound_tx`.
+/// Bridge `channel`'s context stream into [`CollabEvent::Context`] (the
+/// roster) and [`CollabEvent::Grant`] (this connection's own authority) on
+/// `inbound_tx`.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
@@ -3062,6 +3066,19 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
+                if let Some(grant) = context.grant {
+                    match serde_json::from_str::<collab_types::ConnectionGrant>(&grant) {
+                        Ok(grant) => {
+                            if !tx.send_durable(CollabEvent::Grant { grant }) {
+                                break;
+                            }
+                        }
+                        // Keep the authority already held: nothing is
+                        // widened by a grant that cannot be read.
+                        Err(error) => tracing::warn!(%error, "collab: unreadable grant frame"),
+                    }
+                    continue;
+                }
                 let collaborators = context
                     .collaborators
                     .into_iter()
@@ -3073,10 +3090,7 @@ async fn spawn_context_stream(
                         is_self: collaborator.is_self,
                     })
                     .collect();
-                if !tx.send_durable(CollabEvent::Context {
-                    collaborators,
-                    permissions: context.permissions,
-                }) {
+                if !tx.send_durable(CollabEvent::Context { collaborators }) {
                     break;
                 }
             }
@@ -4635,7 +4649,7 @@ mod tests {
     #[derive(Clone)]
     struct SeedContext {
         collaborators: Vec<(String, String, u32)>,
-        permissions: Vec<String>,
+        grant: Option<String>,
     }
 
     #[derive(Clone)]
@@ -4891,12 +4905,9 @@ mod tests {
                     c.set_color(*color);
                 }
             }
-            {
-                let mut perms =
-                    ctx.init_permissions(u32::try_from(seed.permissions.len()).unwrap_or(u32::MAX));
-                for (i, p) in seed.permissions.iter().enumerate() {
-                    perms.set(u32::try_from(i).unwrap_or(u32::MAX), p.as_str());
-                }
+            if let Some(grant) = &seed.grant {
+                ctx.set_grant(grant);
+                ctx.set_grant_changed(true);
             }
             Promise::ok(())
         }
@@ -6903,13 +6914,27 @@ mod tests {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
             op_backlog: vec![],
             presence_backlog: vec![],
-            context_backlog: vec![SeedContext {
-                collaborators: vec![
-                    ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                    ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
-                ],
-                permissions: vec!["edit".to_owned(), "share".to_owned()],
-            }],
+            context_backlog: vec![
+                SeedContext {
+                    collaborators: vec![
+                        ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
+                        ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
+                    ],
+                    grant: None,
+                },
+                SeedContext {
+                    collaborators: Vec::new(),
+                    grant: Some(
+                        serde_json::to_string(&collab_types::ConnectionGrant {
+                            role: Some(collab_types::Role::Commenter),
+                            principal: collab_types::Principal::Person("alice".into()),
+                            room: Uuid::nil().to_string(),
+                            capabilities: Vec::new(),
+                        })
+                        .unwrap(),
+                    ),
+                },
+            ],
             scrollback_response: None,
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
@@ -6917,20 +6942,23 @@ mod tests {
         let events = poll_until(&mut mgr, |events| {
             events
                 .iter()
-                .any(|e| matches!(e, CollabEvent::Context { .. }))
+                .any(|e| matches!(e, CollabEvent::Grant { .. }))
         });
 
-        let ctx = events
+        let collabs = events
             .iter()
             .find_map(|e| match e {
-                CollabEvent::Context {
-                    collaborators,
-                    permissions,
-                } => Some((collaborators.clone(), permissions.clone())),
+                CollabEvent::Context { collaborators } => Some(collaborators.clone()),
                 _ => None,
             })
             .expect("must receive a Context event");
-        let (collabs, perms) = ctx;
+        let grant = events
+            .iter()
+            .find_map(|e| match e {
+                CollabEvent::Grant { grant } => Some(grant.clone()),
+                _ => None,
+            })
+            .expect("and this connection's grant");
         assert_eq!(collabs.len(), 2);
         assert_eq!(collabs[0].id, "alice");
         assert_eq!(collabs[0].name, "Alice");
@@ -6938,7 +6966,7 @@ mod tests {
         assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
         assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
         assert!(collabs[0].color[2].abs() < 1e-3);
-        assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+        assert_eq!(grant.role, Some(collab_types::Role::Commenter));
     }
 
     #[test]

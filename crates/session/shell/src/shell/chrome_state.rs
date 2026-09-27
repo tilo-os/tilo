@@ -2706,6 +2706,17 @@ impl ChromeState {
             self.notification_policy_checked = Some(std::time::Instant::now());
         }
         for inc in bridge.drain_incoming() {
+            // An app running where nobody looks (a replay checked out of
+            // sight) tells nobody anything.
+            if inc.caller.as_ref().is_some_and(|caller| {
+                self.tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == caller.workspace_id && workspace.hidden)
+            }) {
+                continue;
+            }
             let dbus_id = inc.dbus_id;
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));

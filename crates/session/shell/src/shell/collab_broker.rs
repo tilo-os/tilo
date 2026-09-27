@@ -1743,7 +1743,6 @@ fn remote_participant_id(
                 is_agent: false,
                 is_self: false,
             }],
-            permissions: Vec::new(),
         };
         // Cluster scope: a roster is chrome traffic, every app in the
         // room is a legitimate audience.

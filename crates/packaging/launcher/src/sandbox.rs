@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::capabilities::CapabilityPlan;
+use crate::capabilities::{CapabilityPlan, Participation};
 use crate::manifest::{MinimalManifest, PortalPolicy};
 
 /// In-sandbox mount root for the package payload.
@@ -335,6 +335,25 @@ pub fn build_bwrap_argv(
     )
 }
 
+/// Names the room whose records a read-only launch shows when that is not
+/// the room it runs in: the recorded room of an app replayed in a replay
+/// room. See `ui::application::RECORD_SCOPE_ENV`.
+pub const RECORD_SCOPE_ENV: &str = "TILO_RECORD_SCOPE";
+
+/// Pass [`RECORD_SCOPE_ENV`] through, when the shell named a room.
+fn push_record_scope(argv: &mut Vec<String>) {
+    let Ok(value) = std::env::var(RECORD_SCOPE_ENV) else {
+        return;
+    };
+    if let Ok(room) = uuid::Uuid::parse_str(value.trim()) {
+        argv.extend([
+            "--setenv".to_string(),
+            RECORD_SCOPE_ENV.to_string(),
+            room.to_string(),
+        ]);
+    }
+}
+
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
         "TILO_CONTINUITY_INSTANCE",
@@ -548,6 +567,11 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("TILO_PARTICIPATION".to_string());
         argv.push(mode.to_string());
+    }
+    // Another room's records reach only a participant that can change
+    // nothing: a replayed app shown what was recorded.
+    if capabilities.participation == Participation::ReadOnly {
+        push_record_scope(&mut argv);
     }
 
     // User identity: the path is a host-side presence marker only. Private
@@ -1579,6 +1603,36 @@ mod tests {
                 .any(|w| w[0] == "--setenv" && w[1] == "TILO_PARTICIPATION" && w[2] == "author"),
             "and is told so: {argv:?}"
         );
+    }
+
+    // A recorded room's scope reaches only a read-only participant; an
+    // author launched with one names no other room than its own.
+    #[test]
+    fn a_record_scope_reaches_only_a_read_only_participant() {
+        let m = mk_manifest("off");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(RECORD_SCOPE_ENV, "3f2b1c00-0000-4000-8000-00000000000a");
+        let scoped = |participation| {
+            build_bwrap_argv(
+                &m,
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan {
+                    participation,
+                    ..CapabilityPlan::empty()
+                },
+            )
+            .windows(3)
+            .any(|w| w[0] == "--setenv" && w[1] == RECORD_SCOPE_ENV)
+        };
+        assert!(scoped(Participation::ReadOnly));
+        assert!(!scoped(Participation::Author));
+        assert!(!scoped(Participation::Unscoped));
+        env.set(RECORD_SCOPE_ENV, "not a room");
+        assert!(!scoped(Participation::ReadOnly), "only a room id passes");
     }
 
     // An app no workspace capability names keeps the launch it always had:

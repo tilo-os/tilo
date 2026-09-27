@@ -183,7 +183,6 @@ mod tests {
         "chat-media-sequence-exhausted",
         "chat-emoji-add-reaction",
         "chat-emoji-title",
-        "chat-emoji-frequent",
         "chat-history-title",
         "chat-history-now",
         "chat-history-edited",

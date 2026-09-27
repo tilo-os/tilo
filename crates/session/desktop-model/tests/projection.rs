@@ -188,7 +188,7 @@ fn tasks_and_record_references_round_trip() {
     let held = [("rec-1".to_string(), "note".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut doc, &held, None).unwrap();
+    project_room_records(&mut doc, &held, None, &|_| None).unwrap();
     assert_eq!(
         room_records_of(&doc),
         vec![("rec-1".to_string(), "note".to_string())]
@@ -231,4 +231,64 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
         workspace_shortcuts_of(&bob),
         vec![shortcut("a", "A"), shortcut("b", "B")]
     );
+}
+
+/// Two members bringing the first records into a room at once must not
+/// each make a record map: one would hide the other's references.
+#[test]
+fn two_members_starting_a_rooms_records_share_one_map() {
+    use automerge::{ROOT, ReadDoc};
+    let mut alice = AutoCommit::new();
+    let mut bob = AutoCommit::new();
+    let from_alice = [("rec-a".to_string(), "note".to_string())]
+        .into_iter()
+        .collect();
+    let from_bob = [("rec-b".to_string(), "sheet".to_string())]
+        .into_iter()
+        .collect();
+    project_room_records(&mut alice, &from_alice, None, &|_| None).unwrap();
+    project_room_records(&mut bob, &from_bob, None, &|_| None).unwrap();
+
+    let alice_bytes = alice.save();
+    let bob_bytes = bob.save();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut alice, &bob_bytes).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut bob, &alice_bytes).unwrap();
+
+    for peer in [&alice, &bob] {
+        assert_eq!(peer.get_all(ROOT, "records").unwrap().len(), 1, "one map");
+        assert_eq!(
+            room_records_of(peer),
+            vec![
+                ("rec-a".to_string(), "note".to_string()),
+                ("rec-b".to_string(), "sheet".to_string()),
+            ],
+            "both members' references survive"
+        );
+    }
+}
+
+/// Two members bringing the same record in at once make one entry, so
+/// neither's seal on it is hidden behind the other's.
+#[test]
+fn two_members_bringing_the_same_record_in_share_one_entry() {
+    use automerge::{ROOT, ReadDoc};
+    let mut alice = AutoCommit::new();
+    let mut bob = AutoCommit::new();
+    let held = [("rec-1".to_string(), "note".to_string())]
+        .into_iter()
+        .collect();
+    project_room_records(&mut alice, &held, None, &|_| None).unwrap();
+    project_room_records(&mut bob, &held, None, &|_| None).unwrap();
+    let alice_bytes = alice.save();
+    let bob_bytes = bob.save();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut alice, &bob_bytes).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut bob, &alice_bytes).unwrap();
+    for peer in [&alice, &bob] {
+        let (_, records) = peer.get(ROOT, "records").unwrap().unwrap();
+        assert_eq!(
+            peer.get_all(&records, "rec-1").unwrap().len(),
+            1,
+            "one entry"
+        );
+    }
 }

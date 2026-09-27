@@ -618,6 +618,10 @@ pub trait Decorator {
         self.inner_mut().room_index_changed(index);
     }
 
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        self.inner_mut().permissions_changed(permissions);
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         self.inner().control_action_bindings()
     }
@@ -681,6 +685,22 @@ pub trait Decorator {
 
     fn follow_open_resource(&mut self, resource: &str) {
         self.inner_mut().follow_open_resource(resource);
+    }
+
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        self.inner().record_status()
+    }
+
+    fn follow_presence(
+        &mut self,
+        key: &PresenceKey,
+        payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        self.inner_mut().follow_presence(key, payload)
+    }
+
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        self.inner_mut().follow_record_status(status);
     }
 
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
@@ -1429,6 +1449,10 @@ impl<T: Decorator> Widget for T {
         Decorator::room_index_changed(self, index);
     }
 
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        Decorator::permissions_changed(self, permissions);
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         Decorator::control_action_bindings(self)
     }
@@ -1491,6 +1515,22 @@ impl<T: Decorator> Widget for T {
 
     fn follow_open_resource(&mut self, resource: &str) {
         Decorator::follow_open_resource(self, resource);
+    }
+
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        Decorator::record_status(self)
+    }
+
+    fn follow_presence(
+        &mut self,
+        key: &PresenceKey,
+        payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        Decorator::follow_presence(self, key, payload)
+    }
+
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        Decorator::follow_record_status(self, status);
     }
 
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {

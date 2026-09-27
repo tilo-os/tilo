@@ -17,6 +17,7 @@
 //! at the target.
 
 pub mod headless;
+pub mod offscreen;
 pub mod peer;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -76,6 +77,9 @@ pub struct Launches {
     pub workspace: Option<WorkspaceId>,
     /// Recorded apps to start there.
     pub apps: Vec<String>,
+    /// The room each recorded app was recorded in: the records it is shown,
+    /// read-only, in the replay room.
+    pub recorded_rooms: Vec<(String, RoomId)>,
     /// Tabs a restarted app's window goes back into, by app id: the window
     /// the person was watching keeps its place.
     pub into_tabs: Vec<(String, crate::shell::state::TabId)>,
@@ -83,6 +87,18 @@ pub struct Launches {
     pub close_surfaces: Vec<u64>,
     /// Replay rooms left behind, whose app storage is to be removed.
     pub closed: Vec<RoomId>,
+}
+
+/// The apps `trace` recorded, each with the room it was recorded in.
+fn recorded_rooms(trace: &SessionTrace) -> Vec<(String, RoomId)> {
+    let mut out: Vec<(String, RoomId)> = trace
+        .routes()
+        .into_iter()
+        .filter(|route| !route.app_id.is_empty())
+        .filter_map(|route| Some((route.app_id, RoomId::parse(&route.room)?)))
+        .collect();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
 }
 
 /// The app windows open in `workspace`: `(tab, app id, surface)`.
@@ -136,6 +152,12 @@ pub struct ReplayController {
     custody: Mutex<Option<Arc<crate::shell::record_custody::RecordCustody>>>,
     /// Replays waiting for their record to arrive from a room.
     fetching: Mutex<Vec<(RecordId, UserId, Presentation)>>,
+    /// The person at this device, whom out-of-sight checks run for.
+    viewer: Mutex<Option<UserId>>,
+    /// Offscreen checks by id, and what they ask the frame loop to launch.
+    checks: Mutex<std::collections::BTreeMap<u64, offscreen::Check>>,
+    check_launches: Mutex<Vec<Launches>>,
+    next_check: std::sync::atomic::AtomicU64,
     /// What the last open or reload asks the frame loop to launch.
     launches: Mutex<Launches>,
 }
@@ -158,6 +180,10 @@ impl ReplayController {
             records: Mutex::new(None),
             custody: Mutex::new(None),
             fetching: Mutex::new(Vec::new()),
+            viewer: Mutex::new(None),
+            checks: Mutex::new(std::collections::BTreeMap::new()),
+            check_launches: Mutex::new(Vec::new()),
+            next_check: std::sync::atomic::AtomicU64::new(1),
             launches: Mutex::new(Launches::default()),
         })
     }
@@ -169,6 +195,11 @@ impl ReplayController {
     /// The replay room, while one is open.
     pub fn room(&self) -> Option<RoomId> {
         lock(&self.replay).as_ref().map(|replay| replay.room)
+    }
+
+    /// The person at this device, whom out-of-sight checks run for.
+    pub fn set_viewer(&self, viewer: UserId) {
+        *lock(&self.viewer) = Some(viewer);
     }
 
     /// Where [`Self::open_record`] looks a record up.
@@ -316,6 +347,7 @@ impl ReplayController {
             launches.room = Some(room);
             launches.workspace = Some(workspace);
             launches.apps.clone_from(&apps);
+            launches.recorded_rooms = recorded_rooms(&trace);
         }
         *lock(&self.replay) = Some(Replay {
             record,
@@ -385,6 +417,32 @@ impl ReplayController {
                 return Err(TransportError::Room(format!(
                     "{owner} cannot admit the replay peer to its own replay room"
                 )));
+            }
+            // The replayed apps see what was recorded and change nothing:
+            // read-only participation, in the room's own vocabulary.
+            if let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.room == room)
+            {
+                for (app, _) in recorded_rooms(trace) {
+                    for capability in [
+                        CapOverride::grant(
+                            Subject::app(&app),
+                            crate::shell::state::Scope::Workspace,
+                            Verb::Read,
+                        ),
+                        CapOverride::new(
+                            Subject::app(&app),
+                            crate::shell::state::Scope::Workspace,
+                            crate::shell::state::Effect::Restrict,
+                            Verb::Read,
+                        ),
+                    ] {
+                        let _ = workspace.grant_as(owner, capability);
+                    }
+                }
             }
             if presentation == Presentation::Shown
                 && let Some(workspace) = tree
@@ -628,7 +686,8 @@ impl ReplayController {
                 // The same workspace, and so the same windows, in a fresh
                 // room: the apps started there ask for the document and get
                 // it as it was at the target.
-                let workspace = self.with(|replay| Ok(replay.workspace))?;
+                let (workspace, previous) =
+                    self.with(|replay| Ok((replay.workspace, Arc::clone(&replay.peer))))?;
                 let (windows, rekeyed) = {
                     let mut tree = self.tree.write();
                     (
@@ -639,6 +698,8 @@ impl ReplayController {
                 let (closed, room) = rekeyed
                     .ok_or_else(|| TransportError::Room("the replay room is gone".into()))?;
                 let peer = self.admit(room, &trace, &owner, presentation)?;
+                peer.inherit_checkpoints(&previous);
+                drop(previous);
                 peer.rewind(end);
                 let apps = self.with(|replay| {
                     replay.room = room;
@@ -649,6 +710,7 @@ impl ReplayController {
                 launches.room = Some(room);
                 launches.workspace = Some(workspace);
                 launches.apps = apps;
+                launches.recorded_rooms = recorded_rooms(&trace);
                 for (tab, app, surface) in windows {
                     launches.into_tabs.push((app, tab));
                     launches.close_surfaces.push(surface);

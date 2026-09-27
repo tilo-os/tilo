@@ -508,6 +508,11 @@ pub struct PresenceCtx {
     /// people (a row for yourself there is a pill over your own document).
     /// `None` until the room has said.
     self_participant: Option<(UserId, String)>,
+    /// The participant whose view this app shows as its own: the recorded
+    /// participant a replay follows (`FollowMode::Replay`). Their view is
+    /// followed; nothing of theirs is painted as another person's, because
+    /// the viewer stands where they stood.
+    stand_in: Option<UserId>,
     /// The surface this process draws, spelled as [`crate::local_surface_id`]
     /// spells it, compared against a pointer's claimed surface to decide
     /// whether a content-space position is this process's to place. `None`
@@ -572,6 +577,28 @@ impl PresenceCtx {
             return false;
         }
         self.own.insert(UserId(id.to_string()))
+    }
+
+    /// Stand in for `participant`, or for nobody: whom a replay follows, whose
+    /// view is this app's own and whose presence is therefore not painted.
+    /// What was painted of them goes; the view they last showed stays, for
+    /// the follow.
+    pub fn set_stand_in(&mut self, participant: Option<UserId>) {
+        if let Some(participant) = &participant {
+            let view = self.views.get(participant).cloned();
+            self.unregister_peer(&participant.0);
+            if let Some(view) = view {
+                self.views.insert(participant.clone(), view);
+            }
+        }
+        self.stand_in = participant;
+    }
+
+    /// Whether this app stands in for `user_id`.
+    fn stands_in_for(&self, user_id: &str) -> bool {
+        self.stand_in
+            .as_ref()
+            .is_some_and(|stand_in| stand_in.0 == user_id)
     }
 
     /// Set from [`crate::local_surface_id`] — the same value the publishing
@@ -1102,7 +1129,7 @@ impl PresenceCtx {
     ) {
         // Second door into the same pill (`RemoteCursorMoved` bypasses
         // `apply_remote_presence`); guarding only one door leaves the bug reachable.
-        if self.is_own_identity(&user_id) {
+        if self.is_own_identity(&user_id) || self.stands_in_for(&user_id) {
             return;
         }
         let uid = UserId(user_id.clone());
@@ -1243,6 +1270,10 @@ impl PresenceCtx {
         if let Some(subset) = key.as_view() {
             self.set_peer_view(UserId(user_id), subset);
             return RemotePresenceEffect::PeerViewChanged;
+        }
+        // Whom this app stands in for is followed, not painted.
+        if self.stands_in_for(&user_id) {
+            return RemotePresenceEffect::None;
         }
 
         match payload {
@@ -1862,6 +1893,56 @@ mod string_id_wrapper_tests {
         );
     }
 
+    /// A replay's viewer stands where the recorded participant stood: their
+    /// view is followed, and nothing of theirs is painted as another
+    /// person's, whether it was painted before the follow began or arrives
+    /// after. Everyone else is still painted.
+    #[test]
+    fn the_participant_a_replay_stands_in_for_is_followed_not_painted() {
+        use crate::collaboration::PresencePayload::{Caret, Pointer};
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace {
+            id: "40fc5b85-22d7-4294-a9df-ecc8a391cfce".into(),
+        };
+        let recorded = UserId("replay:ada".into());
+        let other = UserId("peer@9".into());
+        ctx.apply_remote_presence(recorded.0.clone(), key.clone(), Pointer { x: 4.0, y: 4.0 });
+        ctx.set_stand_in(Some(recorded.clone()));
+        assert!(
+            ctx.remote_cursors.is_empty(),
+            "what was painted of them goes"
+        );
+        ctx.apply_remote_presence(recorded.0.clone(), key.clone(), Caret { pos: 3 });
+        ctx.apply_remote_presence(recorded.0.clone(), key.clone(), Pointer { x: 9.0, y: 9.0 });
+        ctx.upsert_remote_cursor(recorded.0.clone(), [9.0, 9.0], None);
+        let view = crate::view::ViewSubset {
+            scroll: vec![12.0],
+            ..crate::view::ViewSubset::default()
+        };
+        assert_eq!(
+            ctx.apply_remote_presence(
+                recorded.0.clone(),
+                PresenceKey::view(&view),
+                crate::collaboration::PresencePayload::Arrived,
+            ),
+            RemotePresenceEffect::PeerViewChanged
+        );
+        assert_eq!(ctx.caret_for(&key, &recorded), None);
+        assert_eq!(ctx.pointer_for(&key, &recorded), None);
+        assert!(ctx.remote_cursors.is_empty());
+        assert_eq!(
+            ctx.peer_view(&recorded),
+            Some(&view),
+            "their view is followed"
+        );
+        ctx.apply_remote_presence(other.0.clone(), key.clone(), Caret { pos: 1 });
+        assert_eq!(
+            ctx.caret_for(&key, &other),
+            Some(1),
+            "everyone else is painted"
+        );
+    }
+
     /// The other half: a pointer with no desktop scope has no overlay
     /// claiming it, so this layer stays the one that draws it.
     #[test]
@@ -2314,6 +2395,7 @@ mod own_identity_tests {
             },
             view_mode: None,
             overlays: Vec::new(),
+            save_status: None,
         };
         assert_eq!(
             ctx.apply_remote_presence(

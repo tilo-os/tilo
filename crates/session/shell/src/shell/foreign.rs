@@ -2405,6 +2405,21 @@ pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
     false
 }
 
+/// Whether `surface_id` is a window of a hidden room (a replay checked out
+/// of sight), which draws though nobody sees it.
+pub fn is_hidden_room_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.hidden)
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .any(
+            |tab| matches!(&tab.tile, ShellTile::Foreign { surface_id: s, .. } if *s == surface_id),
+        )
+}
+
 /// Reconcile the set of foreign tabs in `rendered` against `source`.
 ///
 /// The compositor's protocol state and the chrome's rendered tree are
@@ -2676,7 +2691,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
         let id = crate::compositor::state::surface_id(surface);
         let visible_tab = {
             let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, store().sheet_root(id))
+            // A replay checked out of sight is drawn by its apps too; its
+            // frames are what the check compares.
+            let root = store().sheet_root(id);
+            is_visible_tab(&tree, root) || is_hidden_room_tab(&tree, root)
         };
         if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
             continue;

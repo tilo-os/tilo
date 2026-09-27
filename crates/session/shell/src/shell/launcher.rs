@@ -525,6 +525,8 @@ pub enum LaunchError {
     /// The host entry exists but cannot be run as written (for example an
     /// unusable `Exec=` line).
     HostAppRefused { desktop_id: String, detail: String },
+    /// Only a replay room shows an app another room's records.
+    NotAReplayRoom,
 }
 
 impl LaunchError {
@@ -575,6 +577,9 @@ impl LaunchError {
             LaunchError::HostAppRefused { desktop_id, detail } => {
                 format!("{desktop_id} cannot be started: {detail}")
             }
+            LaunchError::NotAReplayRoom => {
+                "only a replay room shows an app another room's records".to_string()
+            }
         }
     }
 
@@ -599,6 +604,7 @@ impl LaunchError {
             }
             Self::NoDisplay => "The desktop is still starting. Try again in a moment.",
             Self::NoWorkspace => "Choose a workspace, then try again.",
+            Self::NotAReplayRoom => "This room cannot show a recorded room's records.",
             Self::ShellOwnedIntent => "Open this destination from the desktop controls.",
             Self::IdentityUnavailable { .. } => {
                 "The workspace identity could not be loaded. Try again."
@@ -2185,6 +2191,14 @@ fn launch_with_context(
     execute_installed(app, room, document, uri, tool_intent, media_handoff, None)
 }
 
+/// What a launch into a room may do there: the room's capabilities for
+/// the app and, in a replay room, the recorded room whose records the app
+/// is shown (read-only, see [`queue_replayed_launch`]).
+struct RoomAuthority {
+    capabilities: Vec<CapOverride>,
+    record_scope: Option<RoomId>,
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_EXECUTION_PROGRAM: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
@@ -2243,7 +2257,7 @@ fn execute_installed(
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
-    capability_snapshot: Option<Vec<CapOverride>>,
+    authority: Option<RoomAuthority>,
 ) -> Result<InstalledApp, LaunchError> {
     execute_installed_inner(
         app,
@@ -2252,7 +2266,7 @@ fn execute_installed(
         uri,
         tool_intent.map_or(LaunchContext::None, LaunchContext::Tool),
         media_handoff,
-        capability_snapshot,
+        authority,
     )
 }
 
@@ -2263,9 +2277,12 @@ fn execute_installed_inner(
     uri: Option<&str>,
     context: LaunchContext<'_>,
     media_handoff: Option<MediaHandoffLaunch>,
-    capability_snapshot: Option<Vec<CapOverride>>,
+    authority: Option<RoomAuthority>,
 ) -> Result<InstalledApp, LaunchError> {
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
+    let (capability_snapshot, record_scope) = authority.map_or((None, None), |authority| {
+        (Some(authority.capabilities), authority.record_scope)
+    });
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = selected_execution_program()?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launcher and display resolved");
@@ -2320,6 +2337,12 @@ fn execute_installed_inner(
         "TILO_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
     ));
+    if let Some(recorded) = record_scope {
+        command.env.push((
+            launcher::sandbox::RECORD_SCOPE_ENV.to_string(),
+            recorded.to_string(),
+        ));
+    }
     command.env.push((
         "TILO_STARTUP_METRICS_PATH".to_string(),
         format!("/run/tilo/app/startup-{continuity_instance}.json"),
@@ -2402,6 +2425,35 @@ pub fn queue_launch_in_workspace(
     app: InstalledApp,
     workspace: &Workspace,
 ) -> Result<(), LaunchError> {
+    queue_launch(app, workspace, None)
+}
+
+/// [`queue_launch_in_workspace`] for an app replayed in a replay room: it
+/// is shown `recorded`'s records, the room the session the viewer was given
+/// recorded it in, as they were. The replay room grants it read-only
+/// participation, so it can change, keep and publish none of them; the
+/// launcher passes the scope to nothing else.
+///
+/// # Errors
+///
+/// [`LaunchError::NotAReplayRoom`] unless `workspace` is an ephemeral room,
+/// and as [`queue_launch_in_workspace`].
+pub fn queue_replayed_launch(
+    app: InstalledApp,
+    workspace: &Workspace,
+    recorded: RoomId,
+) -> Result<(), LaunchError> {
+    if !workspace.ephemeral {
+        return Err(LaunchError::NotAReplayRoom);
+    }
+    queue_launch(app, workspace, Some(recorded))
+}
+
+fn queue_launch(
+    app: InstalledApp,
+    workspace: &Workspace,
+    record_scope: Option<RoomId>,
+) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
     let room = workspace.room;
@@ -2413,8 +2465,18 @@ pub fn queue_launch_in_workspace(
                 .into_iter()
                 .filter(|capability| capability.subject == Subject::app(&package_id))
                 .collect();
-            let outcome =
-                execute_installed(app, room, None, None, None, None, Some(app_capabilities));
+            let outcome = execute_installed(
+                app,
+                room,
+                None,
+                None,
+                None,
+                None,
+                Some(RoomAuthority {
+                    capabilities: app_capabilities,
+                    record_scope,
+                }),
+            );
             if let Err(error) = outcome {
                 push_event(LaunchEvent {
                     package_id,
@@ -4064,6 +4126,32 @@ mod tests {
             })
         );
         assert_eq!(legacy, InstalledContinuityRequirements::NotInstalled);
+    }
+
+    /// Another room's records are shown only in a replay room: an ordinary
+    /// room refuses a replayed launch before anything starts.
+    #[test]
+    fn only_a_replay_room_shows_an_app_another_rooms_records() {
+        let app = InstalledApp {
+            package_id: "so.tilo.hello".into(),
+            display_name: "Hello".into(),
+            category: None,
+            version: "0.1.0".into(),
+            manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
+            payload_root: PathBuf::from("/apps/hello"),
+            has_gui: true,
+            opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
+        };
+        let room = crate::shell::state::Workspace::new(
+            <crate::shell::state::WorkspaceId as crate::shell::state::FreshId>::new(),
+            "Ordinary",
+        );
+        assert_eq!(
+            queue_replayed_launch(app, &room, RoomId::new()),
+            Err(LaunchError::NotAReplayRoom)
+        );
     }
 
     #[test]

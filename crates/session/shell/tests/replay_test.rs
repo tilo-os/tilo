@@ -442,6 +442,24 @@ fn a_replay_room_never_reaches_peers_or_disk() {
         "an offscreen replay leaves the person where they are"
     );
     assert!(!tree.read().rooms().contains(&room), "never synced");
+    // The replayed apps see what was recorded and change nothing: the room
+    // grants them read-only participation, which the launcher turns into a
+    // sandbox without a signing identity.
+    let capabilities = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| workspace.capabilities.clone())
+        .unwrap();
+    let plan = launcher::capabilities::CapabilityPlan::for_app(APP, &capabilities, None);
+    assert_eq!(
+        plan.participation,
+        launcher::capabilities::Participation::ReadOnly,
+        "a replayed app may not author: {capabilities:?}"
+    );
+    assert!(!plan.participation.carries_identity());
     let path = dir.path().join("state.json");
     shell::shell::persist::save_tree_to(&tree.read(), &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
@@ -505,4 +523,340 @@ fn session_trace_with_one_document(room: &str) -> session_trace::SessionTrace {
         redactions: session_trace::Redactions::default(),
         truncated: false,
     }
+}
+
+fn solid(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+    [rgb[0], rgb[1], rgb[2], 0xff].repeat(usize::try_from(width.saturating_mul(height)).unwrap())
+}
+
+const GREEN: [u8; 3] = [0x20, 0xA0, 0x40];
+const BLUE: [u8; 3] = [0x20, 0x40, 0xC0];
+const RED: [u8; 3] = [0xD0, 0x20, 0x20];
+
+/// Run an offscreen check of `trace` against `strip` to its end, with the
+/// replayed app drawing `draws(at)` at each offset, and return what the
+/// divergence check says of it.
+fn check_offscreen(
+    replay: &ReplayController,
+    tree: &WorkspaceTreeHandle,
+    trace: &session_trace::SessionTrace,
+    strip: &session_trace::frames::FrameStrip,
+    surface: u64,
+    draws: impl Fn(session_trace::Offset) -> [u8; 3],
+) -> session_trace::divergence::DivergenceReport {
+    use shell::compositor::capture::CaptureExecutor;
+    use shell::compositor::foreign::store;
+
+    let visible_before = visible(tree);
+    let check = replay
+        .start_check_of(trace.clone(), "Check", strip)
+        .expect("the session can be checked");
+    let launches = replay.take_check_launches();
+    let room = launches
+        .iter()
+        .find(|launch| !launch.apps.is_empty())
+        .and_then(|launch| launch.room)
+        .expect("the check launches its apps into a room");
+    // The recorded app joins the hidden room as a launched window would.
+    shell::compositor::tab_binding::adopt_toplevel_in_room(
+        &mut tree.write(),
+        surface,
+        Some(APP.to_string()),
+        room,
+    )
+    .expect("the window is adopted in the check's room");
+    store().forget(surface);
+    store().publish_rgba(
+        surface,
+        &solid(80, 60, draws(session_trace::Offset(0))),
+        80,
+        60,
+    );
+    {
+        let tree = tree.read();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("the check's room");
+        assert!(workspace.hidden && workspace.ephemeral);
+        assert!(!tree.rooms().contains(&room), "never synced");
+        drop(tree);
+    }
+    assert_eq!(visible(tree), visible_before, "nobody is shown the check");
+    let fb = shell::compositor::frame::FrameBuilder::new((1280, 800));
+    let deadline = later(Duration::from_secs(20));
+    let collected = loop {
+        assert!(Instant::now() < deadline, "the check did not finish");
+        for request in replay.offscreen_captures(Instant::now()) {
+            store().publish_rgba(surface, &solid(80, 60, draws(request.at)), 80, 60);
+            let frames =
+                CaptureExecutor::surface_frames(&fb, &request.surfaces, request.at, request.scale);
+            replay.deliver_captures(&request, frames);
+        }
+        if let Some(done) = replay.take_check(check) {
+            break done.expect("the check ran");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        visible(tree),
+        visible_before,
+        "nothing the person sees changed"
+    );
+    assert!(
+        !tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room == room),
+        "the check's room is gone when it is done"
+    );
+    let mut provider = collected;
+    session_trace::divergence::check(
+        trace,
+        strip,
+        &mut provider,
+        &session_trace::divergence::Tolerance::default(),
+    )
+    .expect("frames compare")
+}
+
+/// What the person is shown: the active workspace and the workspaces listed.
+fn visible(tree: &WorkspaceTreeHandle) -> (WorkspaceId, Vec<WorkspaceId>) {
+    let tree = tree.read();
+    let shown = tree
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.is_shown())
+        .map(|workspace| workspace.id)
+        .collect();
+    (tree.desktop.active, shown)
+}
+
+/// The divergence check against an offscreen replay: a recording replayed
+/// out of sight whose app draws what it drew is `Logic`; one whose app draws
+/// something else is below the toolkit. Either way the person's workspaces
+/// and focus are untouched.
+#[test]
+fn a_recording_checked_against_its_own_replay_is_logic() {
+    use shell::compositor::capture::CaptureExecutor;
+    use shell::compositor::foreign::store;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tree = room_tree();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        dir.path().join("collab.sock"),
+        Arc::clone(&tree),
+        Vec::new(),
+    )
+    .unwrap();
+    let replay = ReplayController::attach(&broker, Arc::clone(&tree));
+    replay.set_viewer(owner());
+    // The recording's semantic tree describes the whole surface, so its
+    // pixels are explained by structure and can be checked.
+    let mut trace = session_trace_with_one_document(&ROOM.to_string());
+    let mut layout = tilo_reference::inspect::InspectReply::empty();
+    let whole = tilo_reference::inspect::SurfaceRect {
+        x: 0.0,
+        y: 0.0,
+        width: 80.0,
+        height: 60.0,
+    };
+    layout.nodes.push(tilo_reference::inspect::InspectedNode {
+        id: "root".into(),
+        identity: tilo_reference::inspect::Identity::Durable,
+        role: "group".into(),
+        label: None,
+        value: None,
+        sensitivity: tilo_actions::Sensitivity::Public,
+        content: tilo_reference::inspect::Content::Label,
+        bounds: Some(whole),
+        visible: Some(whole),
+        pixels: tilo_reference::inspect::Pixels::Described,
+        state: tilo_reference::inspect::NodeState::default(),
+        children: Vec::new(),
+        reference: None,
+    });
+    trace.timeline.push(session_trace::TimedEvent {
+        at: session_trace::Offset(0),
+        event: session_trace::Event::Inspect(session_trace::InspectKeyframe {
+            route: session_trace::Route::new(APP, ROOM.to_string(), ""),
+            reply: layout,
+        }),
+    });
+
+    // What the recording captured: its app green at 10 ms, blue at 20 ms.
+    let recorded_surface = 0x5EED_4E91_0001;
+    let route = session_trace::Route::new(APP, ROOM.to_string(), "");
+    let fb = shell::compositor::frame::FrameBuilder::new((1280, 800));
+    let mut builder = session_trace::frames::FrameStripBuilder::new(
+        session_trace::frames::PixelPurpose::Check,
+        session_trace::frames::FrameLimits::default(),
+    );
+    for (at, color) in [(10_000, GREEN), (20_000, BLUE)] {
+        store().forget(recorded_surface);
+        store().publish_rgba(recorded_surface, &solid(80, 60, color), 80, 60);
+        let frame = CaptureExecutor::surface_frames(
+            &fb,
+            &[(
+                recorded_surface,
+                route.clone(),
+                vello::kurbo::Rect::new(0.0, 0.0, 80.0, 60.0),
+            )],
+            session_trace::Offset(at),
+            1.0,
+        )
+        .remove(0)
+        .expect("captured");
+        let regions = session_trace::frames::SemanticLayout::from_trace(&trace)
+            .at(&route, session_trace::Offset(at))
+            .unwrap_or_default()
+            .to_vec();
+        builder.push(frame, &regions).expect("kept");
+    }
+    store().forget(recorded_surface);
+    let strip = builder.finish(&trace).expect("strip");
+    assert_eq!(strip.offsets().len(), 2);
+
+    let same = check_offscreen(&replay, &tree, &trace, &strip, 0x5EED_4E91_0002, |at| {
+        if at.0 >= 20_000 { BLUE } else { GREEN }
+    });
+    assert_eq!(same.compared, 2);
+    assert_eq!(
+        same.layer,
+        session_trace::SessionLayer::Logic,
+        "a replay that draws what was recorded matches it: {same:?}"
+    );
+
+    let different = check_offscreen(&replay, &tree, &trace, &strip, 0x5EED_4E91_0003, |_| RED);
+    assert_eq!(
+        different.layer,
+        session_trace::SessionLayer::BelowToolkit,
+        "pixels the replay does not reproduce are below the toolkit"
+    );
+    drop(broker);
+}
+
+/// A trace whose one Notes document counts up: entry `i`, recorded at `i` ms,
+/// sets `count` to `i + 1`.
+fn session_trace_counting_to(room: &str, entries: u64) -> session_trace::SessionTrace {
+    use automerge::transaction::Transactable as _;
+    let mut trace = session_trace_with_one_document(room);
+    let start = trace.snapshots[0].frames[0].payload.clone();
+    let collab_types::DocumentMutation::Snapshot(bytes) =
+        collab_types::DocumentMutation::decode(&start).unwrap()
+    else {
+        panic!("the start is a snapshot");
+    };
+    let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+    for entry in 0..entries {
+        let heads = doc.get_heads();
+        doc.put(automerge::ROOT, "count", entry.saturating_add(1))
+            .unwrap();
+        let change = doc.save_after(&heads);
+        let envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(change)
+                .encode()
+                .unwrap(),
+            collab_types::ArtifactId(uuid::Uuid::nil()),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId(uuid::Uuid::nil()),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            entry.saturating_add(2),
+        );
+        trace.timeline.push(session_trace::TimedEvent {
+            at: session_trace::Offset(entry),
+            event: session_trace::Event::Op(session_trace::DocumentOp {
+                route: session_trace::Route::new(APP, room, ""),
+                from: "ada".into(),
+                envelope,
+            }),
+        });
+    }
+    trace.duration = session_trace::Offset(entries);
+    trace
+}
+
+fn replayed_count(replay: &ReplayController, room: &str) -> Option<u64> {
+    let document = replay
+        .peer()?
+        .document(&session_trace::Route::new(APP, room, ""))?;
+    match automerge::ReadDoc::get(&document, automerge::ROOT, "count").ok()?? {
+        (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
+            automerge::ScalarValue::Uint(count) => Some(*count),
+            automerge::ScalarValue::Int(count) => u64::try_from(*count).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A scrub back starts from the checkpoint the playhead last passed, and
+/// stands exactly where it would had the replay been rebuilt from the start.
+#[test]
+fn a_short_scrub_back_resumes_from_a_checkpoint() {
+    use shell::shell::replay::peer::CHECKPOINT_EVERY;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tree = room_tree();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        dir.path().join("collab.sock"),
+        Arc::clone(&tree),
+        Vec::new(),
+    )
+    .unwrap();
+    let replay = ReplayController::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+    let entries = u64::try_from(CHECKPOINT_EVERY * 3 + 10).unwrap();
+    replay
+        .open(
+            session_trace_counting_to(&room, entries),
+            None,
+            &owner(),
+            Presentation::Offscreen,
+        )
+        .unwrap();
+
+    let end = session_trace::Offset(entries - 1);
+    replay.seek_offset(end).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(entries));
+    let passed = replay.peer().unwrap().checkpoints();
+    assert_eq!(
+        passed,
+        vec![CHECKPOINT_EVERY, CHECKPOINT_EVERY * 2, CHECKPOINT_EVERY * 3],
+        "the playhead leaves a checkpoint every {CHECKPOINT_EVERY} entries"
+    );
+
+    // Back a few entries past the last checkpoint: a new room and peer,
+    // which keeps what the old one passed.
+    let back = u64::try_from(CHECKPOINT_EVERY * 3 + 2).unwrap();
+    replay.seek_offset(session_trace::Offset(back - 1)).unwrap();
+    let peer = replay.peer().unwrap();
+    assert_eq!(
+        peer.checkpoints(),
+        passed,
+        "the checkpoints outlive the reload"
+    );
+    assert_eq!(replayed_count(&replay, &room), Some(back));
+    assert_eq!(
+        peer.rewind(usize::try_from(back).unwrap()),
+        CHECKPOINT_EVERY * 3,
+        "the rebuild starts at the checkpoint just before the target"
+    );
+
+    // Before any checkpoint, it starts from the recording's beginning.
+    replay.seek_offset(session_trace::Offset(4)).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(5));
+    assert_eq!(replay.peer().unwrap().rewind(5), 0);
+
+    // And forward again lands where a straight run would.
+    replay.seek_offset(end).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(entries));
+    assert!(replay.close());
+    drop(broker);
 }

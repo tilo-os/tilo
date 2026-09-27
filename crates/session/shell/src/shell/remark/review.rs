@@ -77,6 +77,24 @@ impl Verdict {
     }
 }
 
+/// The places replay does not vouch for, each once: the innermost region
+/// of a step, not the containers around it too.
+pub fn diverging_places(
+    report: &session_trace::divergence::DivergenceReport,
+) -> Vec<&session_trace::divergence::DivergentRegion> {
+    report
+        .steps
+        .iter()
+        .flat_map(|step| {
+            step.regions.iter().filter(|region| {
+                !step.regions.iter().any(|inner| {
+                    inner.bounds != region.bounds && region.bounds.contains(&inner.bounds)
+                })
+            })
+        })
+        .collect()
+}
+
 /// Which model titled the steps and proposed redactions, and what it saw.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]

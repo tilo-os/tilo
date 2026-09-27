@@ -1277,12 +1277,19 @@ impl App {
             last_theme_store_check: crate::time::now(),
             theme_schedule: None,
             focus_history: HistoryRuntime::new(),
+            // What an app connected to a broker may do is the broker's to
+            // say: it holds nothing until the first grant arrives. Without
+            // one it is the local user, alone.
+            permission_ctx: if inputs.collab_manager.grants_authority() {
+                PermissionContext::none()
+            } else {
+                PermissionContext::permissive()
+            },
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
                 inputs.local_author.resolve(),
             ),
             presence_ctx: inputs.presence_ctx.resolve(),
-            permission_ctx: PermissionContext::permissive(),
             presence: PresenceRuntime::new(),
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             window: WindowRuntime::new(),

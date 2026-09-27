@@ -318,6 +318,14 @@ where
         self.child.follow_open_resource(resource);
     }
 
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        self.child.record_status()
+    }
+
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        self.child.follow_record_status(status);
+    }
+
     fn set_record_scope(&mut self, record: &crate::record::RecordId) {
         self.child.set_record_scope(record);
     }

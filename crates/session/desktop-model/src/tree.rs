@@ -100,11 +100,6 @@ pub struct DesktopTree {
     /// a fresh session that clears no withdrawal.
     #[serde(skip, default)]
     pub room_records_projected: HashMap<RoomId, BTreeMap<String, String>>,
-    /// Who brought each room record in, as this machine learned it: the
-    /// peer whose batch first carried it live, or `local`. A withdrawal is
-    /// accepted from that peer or from the room's authority only.
-    #[serde(skip, default)]
-    pub room_record_adders: HashMap<(RoomId, String), String>,
     /// This tree's own peer salt, overriding the host's process-wide one —
     /// needed when one process holds two trees (e.g. two simulated peers).
     #[serde(skip, default)]
@@ -128,7 +123,6 @@ impl Default for DesktopTree {
             room_records_withdrawn: Vec::new(),
             person_requests: Vec::new(),
             room_records_projected: HashMap::new(),
-            room_record_adders: HashMap::new(),
             peer_salt_override: None,
         }
     }

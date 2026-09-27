@@ -45,19 +45,23 @@ DATA = REPO / "target" / "feedback-dev"
 # under the short per-user runtime directory, not the worktree.
 RUNTIME = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-feedback-dev"
 STATE = DATA / "state.json"
-SESSIONS = ("team", "reporter")
+SESSIONS = ("team", "reporter", "teammate")
+# The teammate is a second person on the team: not the room's owner, admitted
+# through the standing invitation like anyone, then made an Editor by the
+# owner — the path a team member who triages takes.
+OPTIONAL_SESSIONS = ("teammate",)
 RELAY_PORT = int(os.environ.get("FEEDBACK_DEV_RELAY_PORT", "47831"))
 MIN_AVAILABLE_MIB = int(os.environ.get("FEEDBACK_DEV_MIN_MIB", "3072"))
 
 BINARIES = (
     "shell", "tilo-control", "tilo-launcher", "tilo-relay", "tilo-relay-admin",
-    "tilo-enroll", "tilo-app", "tilo-app-package", "tilo-install",
+    "tilo-enroll", "tilo-app", "tilo-app-package", "tilo-install", "tilo-runtime-bundle",
 )
 BUILD = (
     "rcargo build -p shell --bin shell --bin tilo-control -p launcher --bin tilo-launcher "
     "-p tilo-relay --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll "
     "-p tilo-app-cli --bin tilo-app -p tilo-app-package-cli --bin tilo-app-package "
-    "-p install --bin tilo-install"
+    "-p install --bin tilo-install -p runtime-bundle --bin tilo-runtime-bundle"
 )
 # Apps this checkout's feedback work changes, packaged from the worktree and
 # installed into each session's own store the way `tilo-vm swap app:<dir>`
@@ -94,6 +98,8 @@ What `up` does, each step skipped when already done:
                Commenter in the public room
   private      reporter: `community team-room`; team: `community direct-room
                <reporter>` — the private feedback room, carried by the relay
+  teammate     (`up --teammate`) a second team member joins like anyone, then
+               the owner runs `public-room grant ROOM <teammate> --role editor`
 
 Logs: {DATA}/<name>/log (shells), {DATA}/relay/log. State: {STATE}.
 """
@@ -179,6 +185,62 @@ def tail(log: pathlib.Path, lines: int = 15) -> str:
         return "(no log)"
 
 
+# ---------------------------------------------------------- host guard -----
+#
+# The dev shells are real desktops: their power menu, idle policy and apps run
+# session actions (`loginctl lock-session`, `systemctl suspend|reboot|poweroff`,
+# the display manager's switch-user call) that would act on *this* machine and
+# its logged-in user. Each shell therefore runs on its own private session bus
+# with the system bus unreachable, and with these commands resolving to a
+# refusing stub ahead of the host's. `doctor` proves both before anything
+# starts.
+
+HOST_SESSION_COMMANDS = (
+    "systemctl", "loginctl", "busctl", "gdbus", "dbus-send", "shutdown", "reboot",
+    "poweroff", "halt", "gnome-session-quit",
+)
+
+
+def guard_bin() -> pathlib.Path:
+    return DATA / "host-guard" / "bin"
+
+
+def write_host_guard() -> None:
+    directory = guard_bin()
+    directory.mkdir(parents=True, exist_ok=True)
+    script = (
+        "#!/bin/sh\n"
+        "# feedback-dev: a dev shell must never act on the host's session or power.\n"
+        "printf 'feedback-dev: refused \"%s %s\" from a dev session\\n' \"${0##*/}\" \"$*\" >&2\n"
+        "exit 1\n"
+    )
+    for name in HOST_SESSION_COMMANDS:
+        path = directory / name
+        if not path.exists() or path.read_text() != script:
+            path.write_text(script)
+        path.chmod(0o755)
+
+
+def guarded_path() -> str:
+    return f"{guard_bin()}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+
+
+def host_guard_problems(env: dict) -> list[str]:
+    problems = []
+    for name in HOST_SESSION_COMMANDS:
+        found = shutil.which(name, path=env["PATH"])
+        if found != str(guard_bin() / name):
+            problems.append(f"`{name}` resolves to {found or 'nothing'} in a dev session, not the refusing stub")
+    for variable in ("DBUS_SYSTEM_BUS_ADDRESS",):
+        if env.get(variable) != "disabled:":
+            problems.append(f"{variable} is not disabled in a dev session")
+    if "TILO_SESSION_LOGOUT_REQUEST" in env:
+        problems.append("a dev session carries the host session wrapper's logout channel")
+    if env.get("XDG_RUNTIME_DIR", "").rstrip("/") == os.environ.get("XDG_RUNTIME_DIR", "").rstrip("/"):
+        problems.append("a dev session shares the host's XDG_RUNTIME_DIR (and so its systemd user manager)")
+    return problems
+
+
 # ------------------------------------------------------------ binaries -----
 
 def binary(name: str) -> str:
@@ -201,8 +263,9 @@ def session_env(name: str, headless: bool) -> dict:
     for path in (home, root / "config", root / "data", root / "cache", root / "state"):
         path.mkdir(parents=True, exist_ok=True)
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_host_guard()
     env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": guarded_path(),
         "HOME": str(home),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "XDG_CONFIG_HOME": str(root / "config"),
@@ -217,8 +280,12 @@ def session_env(name: str, headless: bool) -> dict:
         "RUST_LOG": os.environ.get("FEEDBACK_DEV_LOG", "info"),
         # The worktree's launcher, which knows this branch's app contract.
         "TILO_LAUNCHER_BIN": str(TARGET / "tilo-launcher"),
-        # Two dev identities never belong in the desktop's keyring: without
-        # a session bus the identity service keeps them in its file custody.
+        # Two dev identities never belong in the desktop's keyring, and a
+        # dev shell never reaches logind or systemd: the system bus is
+        # unreachable, and each shell gets a private session bus of its own
+        # (`dbus-run-session`, below). Without the host's Secret Service the
+        # identity service keeps these identities in its file custody.
+        "DBUS_SYSTEM_BUS_ADDRESS": "disabled:",
         "DBUS_SESSION_BUS_ADDRESS": "disabled:",
     }
     endpoint = load_state().get("relay_endpoint")
@@ -311,7 +378,12 @@ def start_shell(name: str, headless: bool) -> None:
     backend = "headless" if headless else "winit"
     say(f"starting the {name} shell ({backend})")
     log = session_dir(name) / "log"
-    spawn(name, [binary("shell"), "--backend", backend], env, log)
+    problems = host_guard_problems(env)
+    if problems:
+        raise Fix("refusing to start a shell that could act on this machine: " + "; ".join(problems),
+                  "feedback-dev doctor")
+    env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    spawn(name, ["dbus-run-session", "--", binary("shell"), "--backend", backend], env, log)
     for _ in range(240):
         if sock.exists():
             return
@@ -334,10 +406,14 @@ def package_apps(rebuild: bool) -> list[pathlib.Path]:
         out.parent.mkdir(parents=True, exist_ok=True)
         log = DATA / "apps" / f"{app}.log"
         with open(log, "wb") as output:
+            # Thin, against a runtime bundle baked from this same build — the
+            # shipped apps' shape; `tilo-app package --help` explains it.
             result = subprocess.run(
                 [binary("tilo-app"), "package", str(REPO / "apps" / app),
-                 "--output", str(out), "--force"],
-                env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package")},
+                 "--output", str(out), "--force",
+                 "--runtime-out", str(DATA / "apps" / "runtime")],
+                env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package"),
+                     "BUNDLE_BIN": binary("tilo-runtime-bundle")},
                 cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=3600,
             )
         if result.returncode != 0:
@@ -351,6 +427,16 @@ def install_apps(name: str, packages: list[pathlib.Path]) -> None:
     if marker.exists() and marker.read_text() == stamp:
         return
     env = session_env(name, headless=True)
+    bundles = DATA / "apps" / "runtime" / "tilo-runtime"
+    for bundle in sorted(bundles.iterdir()) if bundles.is_dir() else []:
+        say(f"installing runtime bundle {bundle.name} into the {name} session")
+        result = subprocess.run(
+            [binary("tilo-install"), "runtime", "install", "--bundle", str(bundle), "--force"],
+            env=env, capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            raise Fix(f"installing runtime {bundle.name} for {name} failed:\n{result.stdout}{result.stderr}",
+                      "see the message above")
     for package in packages:
         say(f"installing {package.name} into the {name} session's app store")
         result = subprocess.run(
@@ -550,20 +636,42 @@ def write_community_config(invite: str) -> None:
         path.write_text(text)
 
 
-def join_reporter(room: str) -> dict:
-    status = answer("reporter", {"op": "community_status"})
+def join_community(name: str, room: str, role: str | None = None) -> dict:
+    status = answer(name, {"op": "community_status"})
     if status.get("room") != room:
-        say("the reporter redeems the standing invitation")
-        answer("reporter", {"op": "community_join"})
+        say(f"the {name} redeems the standing invitation")
+        answer(name, {"op": "community_join"})
     for _ in range(120):
-        status = answer("reporter", {"op": "community_status"})
-        if status.get("role") and status.get("governed") and status.get("channel_class") == "public":
+        status = answer(name, {"op": "community_status"})
+        if (
+            status.get("governed")
+            and status.get("channel_class") == "public"
+            and status.get("role")
+            and (role is None or status.get("role") == role)
+        ):
             return status
         time.sleep(1.0)
     raise Fix(
-        f"the reporter did not become a member of the public room: {status}",
-        f"see {session_dir('reporter') / 'log'} and {relay_dir() / 'log'}",
+        f"the {name} did not become {role or 'a member'} of the public room: {status}",
+        f"see {session_dir(name) / 'log'} and {relay_dir() / 'log'}",
     )
+
+
+def join_reporter(room: str) -> dict:
+    return join_community("reporter", room)
+
+
+def add_teammate(room: str, headless: bool, packages: list[pathlib.Path]) -> dict:
+    provision("teammate")
+    install_apps("teammate", packages)
+    start_shell("teammate", headless)
+    join_community("teammate", room)
+    status = answer("teammate", {"op": "community_status"})
+    if status.get("role") != "editor":
+        say("the team owner makes the teammate an Editor of the community room")
+        answer("team", {"op": "room_grant", "room": room, "person": person_id("teammate"),
+                        "role": "editor"})
+    return join_community("teammate", room, role="editor")
 
 
 def open_private_room() -> dict:
@@ -604,6 +712,11 @@ def doctor(quiet: bool = False) -> list[Fix]:
             f"about {MIN_AVAILABLE_MIB} MiB",
             "stop other builds or sessions, or set FEEDBACK_DEV_MIN_MIB to accept the risk",
         ))
+    if not shutil.which("dbus-run-session"):
+        problems.append(Fix("dbus-run-session is not installed; each dev shell needs a private session bus",
+                            "install dbus (the dbus-daemon package)"))
+    for problem in host_guard_problems(session_env("team", headless=True)):
+        problems.append(Fix(problem, "report this: the host guard in feedback-dev is broken"))
     busy = subprocess.run(["ss", "-ulpn"], capture_output=True, text=True).stdout
     if ":45831 " in busy and not running("relay"):
         problems.append(Fix("the LAN pairing port 45831/udp is in use",
@@ -612,7 +725,9 @@ def doctor(quiet: bool = False) -> list[Fix]:
         for problem in problems:
             print(f"  FAIL  {problem.problem}\n        fix: {problem.fix}")
         if not problems:
-            print("  ok    binaries built, memory available, pairing port free")
+            print("  ok    binaries built, memory available, pairing port free,")
+            print("        dev shells isolated from the host's session and power (private D-Bus,")
+            print("        no system bus, session commands stubbed)")
     return problems
 
 
@@ -623,6 +738,8 @@ def cmd_up(args: argparse.Namespace) -> None:
     headless = not args.nested
     packages = package_apps(args.rebuild_apps) if args.worktree_apps else []
     for name in SESSIONS:
+        if name in OPTIONAL_SESSIONS:
+            continue
         provision(name)
         install_apps(name, packages)
     enrol_relay()
@@ -636,12 +753,15 @@ def cmd_up(args: argparse.Namespace) -> None:
     start_shell("reporter", headless)
     status = join_reporter(room)
     private = open_private_room()
+    teammate = add_teammate(room, headless, packages) if args.teammate else None
     state = load_state()
     state["private_room"] = private["room"]
     state["mode"] = "headless" if headless else "nested"
     save_state(state)
     say(f"up: room {room} is public; the reporter holds {status['role']}")
     say(f"up: private room {private['room']}: the team holds {private['role']}")
+    if teammate:
+        say(f"up: the teammate holds {teammate['role']} in the public room")
     say("next: feedback-dev ctl reporter -- community team-room   |   feedback-dev status")
 
 
@@ -689,6 +809,8 @@ def main() -> int:
     mode = up.add_mutually_exclusive_group()
     mode.add_argument("--headless", action="store_true", help="both shells headless (default)")
     mode.add_argument("--nested", action="store_true", help="both shells as windows in this session")
+    up.add_argument("--teammate", action="store_true",
+                    help="also a second team member, admitted and made Editor by the owner")
     up.add_argument("--worktree-apps", action="store_true",
                     help="package and install this worktree's chat into both sessions")
     up.add_argument("--rebuild-apps", action="store_true",

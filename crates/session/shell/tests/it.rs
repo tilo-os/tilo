@@ -161,10 +161,14 @@ mod real_apps_visual;
 mod recorder_test;
 #[path = "recording_frames_test.rs"]
 mod recording_frames_test;
+#[path = "remark_e2e.rs"]
+mod remark_e2e;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
+#[path = "replay_headless_e2e.rs"]
+mod replay_headless_e2e;
 #[path = "replay_test.rs"]
 mod replay_test;
 #[path = "runtime_daemon_process.rs"]

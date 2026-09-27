@@ -64,10 +64,10 @@ use notification_center::{NotificationRowControl, notification_row_controls};
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
-    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
-    shortcut_reference_step,
+    SHORTCUT_NAVIGATION_COLUMNS, configured_shortcut_action, shortcut_action_label,
+    shortcut_action_rows, shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
+    shortcut_navigation_height, shortcut_navigation_step, shortcut_reference_columns,
+    shortcut_reference_group_height, shortcut_reference_rows, shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -12890,6 +12890,7 @@ impl ShellOverlayHost {
             let room = tree
                 .desktop
                 .active_workspace()
+                .filter(|workspace| workspace.is_shown())
                 .map(|workspace| workspace.room);
             drop(tree);
             drop(state);
@@ -13118,8 +13119,13 @@ impl ShellOverlayHost {
             self.room_records.borrow().local_record_lookup(),
             chrome.borrow().custody().cloned(),
         );
+        replay.set_viewer(chrome.borrow().active_local_user());
         broker.install_replay(std::sync::Arc::clone(&replay));
-        chrome.borrow_mut().set_replay(replay);
+        chrome
+            .borrow_mut()
+            .set_replay(std::sync::Arc::clone(&replay));
+        // Review checks a recording against its replay out of sight.
+        self.set_remark_replay(replay as _);
     }
 
     /// Replay upkeep: publish what became due, start the recorded apps in a
@@ -13131,8 +13137,24 @@ impl ShellOverlayHost {
         }) else {
             return false;
         };
-        let mut changed = replay.pump(std::time::Instant::now());
-        let launches = replay.take_launches();
+        // A check out of sight advances as frames are made: keep making
+        // them while one runs, though nothing on screen changes.
+        let mut changed = replay.pump(std::time::Instant::now()) | replay.checking();
+        let mut all = vec![replay.take_launches()];
+        all.extend(replay.take_check_launches());
+        for launches in all {
+            changed |= self.apply_replay_launches(&tree, &launches);
+        }
+        changed
+    }
+
+    /// Start the apps a replay room asks for and clean up the rooms left.
+    fn apply_replay_launches(
+        &self,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        launches: &crate::shell::replay::Launches,
+    ) -> bool {
+        let mut changed = false;
         if let Some(chrome) = self.chrome.as_ref() {
             let mut chrome = chrome.borrow_mut();
             for surface in &launches.close_surfaces {
@@ -13167,9 +13189,22 @@ impl ShellOverlayHost {
                         crate::shell::tab_binding::Placement::IntoTab(*tab),
                     );
                 }
-                if let Err(error) =
-                    crate::shell::launcher::queue_launch_in_workspace(app, &workspace)
-                {
+                // A replayed app is shown the records of the room it was
+                // recorded in, read-only.
+                let recorded = launches
+                    .recorded_rooms
+                    .iter()
+                    .find(|(recorded, _)| {
+                        crate::shell::launcher::app_id_matches_package(recorded, &app.package_id)
+                    })
+                    .map(|(_, room)| *room);
+                let queued = match recorded {
+                    Some(room) => {
+                        crate::shell::launcher::queue_replayed_launch(app, &workspace, room)
+                    }
+                    None => crate::shell::launcher::queue_launch_in_workspace(app, &workspace),
+                };
+                if let Err(error) = queued {
                     tracing::warn!(%app_id, %error, "replay: the recorded app could not be launched");
                 }
             }
@@ -20291,8 +20326,9 @@ impl ShellOverlayHost {
                     ),
                 ];
                 let compact = body.height() < 450.0;
-                let navigation_step = if compact { 41.0 } else { 44.0 };
-                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let navigation_step = shortcut_navigation_step(compact);
+                let navigation_columns = SHORTCUT_NAVIGATION_COLUMNS;
+                let navigation_height = shortcut_navigation_height(compact, rows.len());
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 scene.fill(
@@ -20312,9 +20348,12 @@ impl ShellOverlayHost {
                     TextWeight::Semibold,
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = index % 2;
-                    let row = index / 2;
-                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
+                    let column = index % navigation_columns;
+                    let row = index / navigation_columns;
+                    let column_width = (navigation_surface.width()
+                        - 28.0
+                        - 8.0 * usize_to_f64_lossy(navigation_columns.saturating_sub(1)))
+                        / usize_to_f64_lossy(navigation_columns);
                     let x = navigation_surface.x0
                         + 14.0
                         + usize_to_f64_lossy(column) * (column_width + 8.0);
@@ -20360,9 +20399,9 @@ impl ShellOverlayHost {
                     }
 
                     let reset = Rect::new(
-                        hit_rects[1].x1 + 12.0,
+                        hit_rects[1].x1 + 8.0,
                         y + 18.0,
-                        hit_rects[1].x1 + 34.0,
+                        hit_rects[1].x1 + 30.0,
                         y + 40.0,
                     );
                     let changed = actions.into_iter().any(|action| {
@@ -21930,10 +21969,11 @@ impl ShellOverlayHost {
             None,
             &shape,
         );
+        // The edge is derived from the surface it bounds (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &shape,
         );
