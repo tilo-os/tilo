@@ -24,6 +24,7 @@ use ui::charts::{Chart, ChartLabels, ChartStyle, Series, TrendRange, TrendStyle}
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
+use ui::control_custody::RawControlSlot;
 use ui::icons::Icon;
 use ui::paint::{fill_round, stroke_round};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -400,6 +401,10 @@ pub struct VpnApp {
     /// In-flight XDG-portal file import, drained once per frame. `None` when
     /// idle.
     import_rx: Option<PortalChannel>,
+    #[cfg(test)]
+    controlled_import_portal: Option<Box<dyn Fn(PickRequest) -> PortalChannel>>,
+    #[cfg(test)]
+    history_control_arm: Option<Rc<Cell<Option<ConnKind>>>>,
     /// Which protocol the pending import was requested for (seeds the parser
     /// when the chosen file has an ambiguous extension).
     import_hint: ConnKind,
@@ -408,7 +413,7 @@ pub struct VpnApp {
     provision_target: Option<ConnId>,
     import_invocation: Option<tilo_actions::InvocationId>,
     completed_import: Option<tilo_actions::InvocationUpdate>,
-    pending_control_invocation: Option<ControlInvocation>,
+    pending_control_invocation: RawControlSlot,
     operation_error: Option<String>,
     /// Import errors can be retried without making the user rediscover which
     /// protocol they were importing. Other machine-action errors deliberately
@@ -522,11 +527,15 @@ impl VpnApp {
             completed_delete: None,
             activity: Vec::new(),
             import_rx: None,
+            #[cfg(test)]
+            controlled_import_portal: None,
+            #[cfg(test)]
+            history_control_arm: None,
             import_hint: ConnKind::WireGuard,
             provision_target: None,
             import_invocation: None,
             completed_import: None,
-            pending_control_invocation: None,
+            pending_control_invocation: RawControlSlot::replace_one(),
             operation_error: None,
             retry_import_kind: None,
             last_mouse: Point::ZERO,
@@ -907,7 +916,7 @@ impl VpnApp {
                         doc,
                         VPN_ACTION_TYPE,
                         &action,
-                        tilo_actions::ActionContext::for_action("org.tilo.Vpn", "VPN", &action),
+                        tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
                     );
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
@@ -939,7 +948,16 @@ impl VpnApp {
         self.operation_error = None;
         self.retry_import_kind = None;
         self.import_hint = kind;
-        self.import_rx = Some(tunnel_import_request(kind).send());
+        let request = tunnel_import_request(kind);
+        #[cfg(test)]
+        let receiver = if let Some(portal) = &self.controlled_import_portal {
+            portal(request)
+        } else {
+            request.send()
+        };
+        #[cfg(not(test))]
+        let receiver = request.send();
+        self.import_rx = Some(receiver);
         self.log(format!("choose a .{} file to import…", kind.ext()));
     }
 
@@ -957,7 +975,7 @@ impl VpnApp {
             ConnKind::WireGuard => "import-wireguard",
             ConnKind::OpenVpn => "import-openvpn",
         };
-        self.pending_control_invocation = Some(ControlInvocation {
+        let _ = self.pending_control_invocation.emit(ControlInvocation {
             address: ActionAddress::new("vpn.vault", action),
             arguments: serde_json::Map::new(),
         });
@@ -1104,7 +1122,7 @@ impl VpnApp {
                                 VPN_ACTION_TYPE,
                                 &action,
                                 tilo_actions::ActionContext::for_action(
-                                    "org.tilo.Vpn",
+                                    "so.tilo.vpn",
                                     "VPN",
                                     &action,
                                 ),
@@ -1223,7 +1241,7 @@ impl VpnApp {
             doc,
             VPN_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Vpn", "VPN", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
         );
         self.refresh(doc);
     }
@@ -3150,6 +3168,58 @@ impl VpnApp {
         }
     }
 
+    /// Semantic mirror of the import sheet: the protocol segments, Cancel and
+    /// the Import button, on the same rects the painter and hit test use.
+    fn add_modal_access(&self, card: Rect) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<AccessNode> = add_modal_kind_rects(card)
+            .into_iter()
+            .zip(ADD_MODAL_KINDS)
+            .map(|(bounds, kind)| {
+                let target = match kind {
+                    ConnKind::WireGuard => "vpn:add-kind:wireguard",
+                    ConnKind::OpenVpn => "vpn:add-kind:openvpn",
+                };
+                AccessNode::new(Role::RadioButton)
+                    .with_name(kind.long_name())
+                    .with_action_target(target)
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.add_kind == kind),
+                    )
+            })
+            .collect();
+        let (cancel, import) = add_modal_button_rects(card);
+        children.push(
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target("vpn:cancel-import")
+                .with_bounds(cancel)
+                .with_state(AccessState::new().focusable(true)),
+        );
+        let (import_target, import_name) = match self.add_kind {
+            ConnKind::WireGuard => ("vpn:import-wireguard", "Import WireGuard profile"),
+            ConnKind::OpenVpn => ("vpn:import-openvpn", "Import OpenVPN profile"),
+        };
+        children.push(
+            AccessNode::new(Role::Button)
+                .with_name(import_name)
+                .with_action_target(import_target)
+                .with_bounds(import)
+                .with_state(AccessState::new().focusable(true)),
+        );
+        AccessNode::new(Role::Dialog)
+            .with_name(if self.provision_target.is_some() {
+                "Set up on this device"
+            } else {
+                "Import VPN profile"
+            })
+            .with_bounds(card)
+            .with_children(children)
+    }
+
     /// Route modal-level Escape/Enter and pointer input while the import
     /// chooser is open. Every event is consumed so nothing reaches the
     /// connection list behind the scrim.
@@ -3304,6 +3374,10 @@ impl Widget for VpnApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        #[cfg(test)]
+        if let Some(kind) = self.history_control_arm.as_ref().and_then(|arm| arm.take()) {
+            self.queue_import(kind);
+        }
         // Fold in a completed portal import (if any), then read the vault and
         // reconcile real interface state, then poll real throughput counters.
         self.drain_import(state);
@@ -3363,7 +3437,7 @@ impl Widget for VpnApp {
                             state,
                             VPN_ACTION_TYPE,
                             &action,
-                            tilo_actions::ActionContext::for_action("org.tilo.Vpn", "VPN", &action),
+                            tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
                         );
                         self.local_selected = None;
                         self.live_status.remove(&id);
@@ -3808,8 +3882,18 @@ impl Widget for VpnApp {
         self.actions.take_committed()
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+    }
+
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take()
+        self.pending_control_invocation.take_legacy_compatibility()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3938,6 +4022,11 @@ impl Widget for VpnApp {
                     .with_live(Politeness::Polite),
             );
         }
+        // The import sheet is modal: while it is up it is the only surface a
+        // pointer or keyboard can reach, so it is the only one published.
+        if self.modal == Modal::Add {
+            children = vec![self.add_modal_access(lay.modal_card)];
+        }
         let children = children
             .into_iter()
             .enumerate()
@@ -3965,9 +4054,28 @@ impl Widget for VpnApp {
             return false;
         }
         match target {
-            "vpn:import-wireguard" => self.queue_import(ConnKind::WireGuard),
-            "vpn:import-openvpn" => self.queue_import(ConnKind::OpenVpn),
+            "vpn:import-wireguard" | "vpn:import-openvpn" => {
+                let kind = if target == "vpn:import-wireguard" {
+                    ConnKind::WireGuard
+                } else {
+                    ConnKind::OpenVpn
+                };
+                if self.modal == Modal::Add {
+                    // The sheet's Import button: same path as a click or Enter.
+                    self.add_kind = kind;
+                    self.commit_add();
+                } else {
+                    self.queue_import(kind);
+                }
+            }
             "vpn:import-dialog" => self.open_add(ConnKind::WireGuard),
+            "vpn:add-kind:wireguard" if self.modal == Modal::Add => {
+                self.add_kind = ConnKind::WireGuard;
+            }
+            "vpn:add-kind:openvpn" if self.modal == Modal::Add => {
+                self.add_kind = ConnKind::OpenVpn;
+            }
+            "vpn:cancel-import" if self.modal == Modal::Add => self.modal = Modal::None,
             "vpn:tor-global" => self.request_tor_global(),
             "vpn:back" => self.compact_detail_open = false,
             "vpn:retry-import" => self.retry_import(),
@@ -4255,6 +4363,144 @@ impl VpnApp {
 mod tests {
     use super::*;
 
+    static CUSTODY_HISTORY: ui::history_mode::HistoryDefinition =
+        ui::history_mode::HistoryDefinition {
+            app_id: "dev.tilo.vpn.controlled-custody",
+            scopes: &[ui::history_mode::HistoryScopeDefinition {
+                key: "vpn-controlled-document",
+                title: "VPN controlled document",
+                presentation: ui::history_mode::HistoryPresentation::External {
+                    reason: "controlled in-memory VPN custody fixture",
+                },
+                content_schema: None,
+            }],
+        };
+
+    struct CustodyVpnRoot {
+        child: Box<dyn Widget>,
+        denied: Rc<Cell<bool>>,
+    }
+
+    impl Widget for CustodyVpnRoot {
+        fn name(&self) -> &'static str {
+            "CustodyVpnRoot"
+        }
+        fn document_history_definition(
+            &self,
+        ) -> Option<&'static ui::history_mode::HistoryDefinition> {
+            Some(&CUSTODY_HISTORY)
+        }
+        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+            self.child.sync(doc, path);
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            theme: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.child.build_layout(tree, theme, nodes)
+        }
+        fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.child.apply_layout(tree, node, origin);
+        }
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) {
+            self.child.draw(scene, transform, text, theme, presence);
+        }
+        fn get_rect(&self) -> Rect {
+            self.child.get_rect()
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            scale: f64,
+            modifiers: &Modifiers,
+            doc: &mut AutoCommit,
+            path: &ObjId,
+            handled: &mut bool,
+            focus: &mut Option<NodeId>,
+            node: NodeId,
+            tree: &TaffyTree<()>,
+        ) {
+            self.child.handle_event(
+                event, scale, modifiers, doc, path, handled, focus, node, tree,
+            );
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![self.child.as_ref()]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            if self.denied.get() {
+                Vec::new()
+            } else {
+                vec![self.child.as_mut()]
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+            if self.denied.get() {
+                None
+            } else {
+                self.child.take_control_invocation()
+            }
+        }
+    }
+
+    fn custody_driver(root: Box<dyn Widget>, doc: AutoCommit) -> ui::headless::Driver {
+        let registration = ui::history_mode::HistoryRegistration::new(
+            &CUSTODY_HISTORY,
+            vec![ui::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "vpn-controlled-document",
+                reason: "controlled in-memory VPN custody fixture",
+            }],
+        )
+        .unwrap();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+        ui::headless::Driver::from_managed_root_with_controlled_inputs(
+            ui::State::from_doc(doc),
+            ui::history_mode::ManagedRoot::new(root, registration),
+            (900, 700),
+            ui::Theme::dark(),
+            renderer,
+            ui::permissions::UserId("vpn-custody-author".into()),
+        )
+        .unwrap()
+    }
+
+    fn palette_control(driver: &ui::headless::Driver, label: &str) -> (String, Option<String>) {
+        fn access(node: &ui::a11y::AccessNode, label: &str) -> Option<(String, Option<String>)> {
+            if node.name.as_deref() == Some(label) {
+                return node
+                    .action_target
+                    .clone()
+                    .map(|target| (target, node.description.clone()));
+            }
+            node.children.iter().find_map(|node| access(node, label))
+        }
+        fn widget(
+            node: &ui::headless::InspectionNode,
+            label: &str,
+        ) -> Option<(String, Option<String>)> {
+            node.semantics
+                .as_ref()
+                .and_then(|node| access(node, label))
+                .or_else(|| node.children.iter().find_map(|node| widget(node, label)))
+        }
+        widget(&driver.inspection().root, label)
+            .unwrap_or_else(|| panic!("missing published palette control {label:?}"))
+    }
+
     /// The demo build populated + read back — used by the tests that need a
     /// fleet to operate on. The live app never fabricates this.
     fn demo_with_doc() -> (VpnApp, AutoCommit) {
@@ -4490,6 +4736,141 @@ mod tests {
             app.select_offset(1);
             assert_eq!(app.vault.selected.unwrap(), first);
         }
+    }
+
+    #[test]
+    fn control_custody_vpn_unreachable_private_route_saves_the_armed_import_and_confirms_a_fresh_one()
+     {
+        let (mut app, doc) = demo_with_doc();
+        let arm = Rc::new(Cell::new(None));
+        app.history_control_arm = Some(arm.clone());
+        let portal_attempts = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let ledger = portal_attempts.clone();
+        app.controlled_import_portal = Some(Box::new(move |request| {
+            ledger.borrow_mut().push(
+                request
+                    .filter_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            );
+            {
+                let (answer, channel) = std::sync::mpsc::channel();
+                let _ = answer.send(PortalOutcome::Cancelled);
+                channel
+            }
+        }));
+        let denied = Rc::new(Cell::new(false));
+        let root = CustodyVpnRoot {
+            child: Box::new(app),
+            denied: denied.clone(),
+        };
+        let mut driver = custody_driver(Box::new(root), doc);
+
+        arm.set(Some(ConnKind::WireGuard));
+        driver.relayout();
+        denied.set(true);
+        driver.click_named("history-open").unwrap();
+        let sealed = driver.pending_history_controls();
+        assert_eq!(
+            sealed.len(),
+            1,
+            "mounted custody saves the armed WireGuard import without traversal"
+        );
+        assert_eq!(sealed[0].invocation.address.resource, "vpn.vault");
+        assert_eq!(sealed[0].invocation.address.action, "import-wireguard");
+        assert!(sealed[0].invocation.arguments.is_empty());
+
+        arm.set(Some(ConnKind::OpenVpn));
+        driver.relayout();
+        driver.click_named("history-open").unwrap();
+        denied.set(false);
+        driver.send(&WindowEvent::Focused(true));
+        assert!(
+            portal_attempts.borrow().is_empty(),
+            "the saved import and the hidden OpenVPN import start no portal"
+        );
+        assert_eq!(
+            driver.pending_history_controls().len(),
+            1,
+            "the hidden OpenVPN import is not saved"
+        );
+
+        // The published import sheet, opened and committed semantically.
+        driver
+            .perform_semantic_named(
+                "vpn_app",
+                Some("vpn:import-dialog"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        driver
+            .perform_semantic_named(
+                "vpn_app",
+                Some("vpn:import-wireguard"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert!(
+            portal_attempts.borrow().is_empty(),
+            "the fresh import waits for ordinary confirmation"
+        );
+        let (field, instruction) = palette_control(&driver, "Confirmation");
+        let value = instruction
+            .as_deref()
+            .and_then(|text| text.strip_prefix("Type "))
+            .and_then(|text| text.strip_suffix(" to confirm"))
+            .filter(|text| !text.is_empty())
+            .expect("published confirmation field describes the required text");
+        driver
+            .perform_semantic_named(
+                "action-palette",
+                Some(&field),
+                &ui::a11y::Action::SetValue(value.into()),
+            )
+            .unwrap();
+        let (confirm, _) = palette_control(&driver, "Confirm");
+        driver
+            .perform_semantic_named(
+                "action-palette",
+                Some(&confirm),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            portal_attempts.borrow().as_slice(),
+            &[vec!["WireGuard (.conf)".to_owned(), "All files".to_owned()]],
+            "the confirmed fresh WireGuard import opens the typed portal request once",
+        );
+        assert_eq!(driver.control_coverage().registered, 1);
+    }
+
+    #[test]
+    fn control_custody_vpn_wireguard_openvpn_replace_one_and_fresh_after_drain() {
+        let (mut app, _doc) = demo_with_doc();
+        let target = app.vault.connections[0].id;
+        app.provision_target = Some(target);
+        app.queue_import(ConnKind::WireGuard);
+        assert_eq!(app.provision_target, None);
+        app.queue_import(ConnKind::OpenVpn);
+
+        let replaced =
+            Widget::take_control_invocation(&mut app).expect("OpenVPN replaces WireGuard");
+        assert_eq!(
+            replaced.address,
+            ActionAddress::new("vpn.vault", "import-openvpn")
+        );
+        assert!(replaced.arguments.is_empty());
+        assert!(Widget::take_control_invocation(&mut app).is_none());
+
+        app.queue_import(ConnKind::WireGuard);
+        let fresh = Widget::take_control_invocation(&mut app).expect("fresh post-drain import");
+        assert_eq!(
+            fresh.address,
+            ActionAddress::new("vpn.vault", "import-wireguard")
+        );
+        assert!(fresh.arguments.is_empty());
+        assert!(Widget::take_control_invocation(&mut app).is_none());
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
@@ -4828,7 +5209,11 @@ mod tests {
             app.open_add(ConnKind::OpenVpn);
             app.commit_add();
             assert_eq!(app.vault.connections.len(), before);
-            assert!(app.pending_control_invocation.is_some());
+            assert!(
+                app.pending_control_invocation
+                    .controlled_pending_for_test()
+                    .is_some()
+            );
         }
         // Case `add_modal_kind_segments_hit_where_they_are_painted`:
         // The protocol segments are painted and hit-tested from one geometry:
@@ -4869,7 +5254,11 @@ mod tests {
             dispatch(&mut app, &mut doc, &cursor_at(save.center()));
             dispatch(&mut app, &mut doc, &press());
             assert_eq!(app.vault.connections.len(), before);
-            assert!(app.pending_control_invocation.is_some());
+            assert!(
+                app.pending_control_invocation
+                    .controlled_pending_for_test()
+                    .is_some()
+            );
             assert_eq!(app.modal, Modal::None);
 
             app.open_add(ConnKind::OpenVpn);
@@ -4894,7 +5283,11 @@ mod tests {
             dispatch(&mut app, &mut doc, &key(Key::Named(NamedKey::Enter), None));
             assert_eq!(app.modal, Modal::None);
             assert_eq!(app.vault.connections.len(), before);
-            assert!(app.pending_control_invocation.is_some());
+            assert!(
+                app.pending_control_invocation
+                    .controlled_pending_for_test()
+                    .is_some()
+            );
         }
     }
 }

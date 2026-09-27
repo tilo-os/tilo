@@ -422,6 +422,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -533,8 +534,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         }
         let room = typed_peer::room();
 
-        let (files_peer, files_doc, wp_peer, replica) =
-            connect_files_and_word_processor(&sock, room);
+        let (files_thread, wp_peer, replica) = connect_files_and_word_processor(&sock, room);
         std::thread::sleep(Duration::from_millis(100));
 
         // A room, and no record to tell the room's documents apart.
@@ -544,6 +544,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             app_id: APP.into(),
             cluster: room,
             record: None,
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -561,7 +562,6 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
                 .expect("the agent must survive another app's document")
         });
 
-        let files_thread = std::thread::spawn(move || drive_files_peer(files_peer, files_doc));
         let (replica, done) = drive_word_processor_to_table(wp_peer, replica);
 
         assert!(
@@ -636,21 +636,28 @@ fn assert_seeds_collide() {
 fn connect_files_and_word_processor(
     sock: &std::path::Path,
     room: Uuid,
-) -> (UnixStream, AutoCommit, UnixStream, AutoCommit) {
+) -> (std::thread::JoinHandle<()>, UnixStream, AutoCommit) {
     // The file manager: a real document, in this room, that is not the
     // agent's business and never mentions it.
-    let mut files_peer = UnixStream::connect(sock);
-    send(
-        &mut files_peer,
-        &CollabRequest::Hello {
-            app_id: "so.tilo.file-explorer".into(),
-            cluster_id: room,
-            record: None,
-            handle: Some("files".into()),
-        },
-    )
-    .unwrap();
-    let files_doc = seed_foreign();
+    // A typed collaboration manager stays on its owning thread.
+    let files_socket = sock.to_path_buf();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let files_thread = std::thread::spawn(move || {
+        let mut files_peer = UnixStream::connect(&files_socket);
+        send(
+            &mut files_peer,
+            &CollabRequest::Hello {
+                app_id: "so.tilo.file-explorer".into(),
+                cluster_id: room,
+                record: None,
+                handle: Some("files".into()),
+            },
+        )
+        .unwrap();
+        ready_tx.send(()).unwrap();
+        drive_files_peer(files_peer, seed_foreign());
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
 
     // The word processor, holding the page with the instruction on it.
     let mut wp_peer = UnixStream::connect(sock);
@@ -665,7 +672,7 @@ fn connect_files_and_word_processor(
     )
     .unwrap();
     let replica = seed_colliding_document();
-    (files_peer, files_doc, wp_peer, replica)
+    (files_thread, wp_peer, replica)
 }
 
 /// A file-manager connection on another route must never receive the directed
@@ -784,6 +791,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         // The shape of the mistake: a room that exists, on a record
         // nobody in it is looking at.
         record: Some("file:/var/workspace/Demo/nobody-has-this.docx".into()),
+        agent_id: "Scribe".into(),
         name: "Scribe".into(),
         pace: Duration::from_millis(10),
         once: true,
@@ -859,6 +867,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -998,6 +1007,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,

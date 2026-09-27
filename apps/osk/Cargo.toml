@@ -51,12 +51,12 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 libc.workspace = true
 
 [dev-dependencies]
+tilo-automerge.workspace = true
 tempfile.workspace = true
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"
