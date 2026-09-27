@@ -739,6 +739,13 @@ if [ -n "$USERSPEC" ]; then
       # which is exactly the offline-relabel case it exists for.
       fc=/etc/selinux/targeted/contexts/files/file_contexts
       [ -r \"\$fc\" ] || { echo 'no file_contexts in the image; home left unlabelled' >&2; exit 1; }
+      # useradd and chpasswd atomically replace these account files. With
+      # SELinux inactive in the offline container, their new inodes otherwise
+      # boot as unlabeled_t and break NSS in dbus-broker and greetd.
+      for db in passwd group shadow gshadow; do
+        [ -f \"/etc/\$db\" ] || { echo \"missing /etc/\$db after account creation\" >&2; exit 1; }
+        setfiles -F \"\$fc\" \"/etc/\$db\"
+      done
       setfiles -F \"\$fc\" /var/home"
 fi
 
