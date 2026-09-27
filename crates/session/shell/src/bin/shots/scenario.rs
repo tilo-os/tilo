@@ -1608,7 +1608,6 @@ const SETTLE_SAMPLES: &[u64] = &[0, 60, 140, 240, 400];
 /// One workspace on the wheel disc is 15° / 0.15 = 100 px of drag.
 const PER_WORKSPACE_PX: f64 = 100.0;
 
-
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the
 /// poller would have published.
 ///
@@ -1684,7 +1683,6 @@ fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
     }
 }
 
-
 /// Resolve a [`Action::SeedOsd`] preset into the readout the media-key
 /// handler would have raised.
 fn osd_preset(name: &str) -> shell::shell::osd::Osd {
@@ -1712,34 +1710,48 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
                 Action::Relayout,
                 Action::Snapshot("02-restore-existing"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::RestoreError),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::RestoreError,
+                ),
                 Action::Relayout,
                 Action::Snapshot("03-restore-error"),
                 Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Protect),
                 Action::Relayout,
                 Action::Snapshot("04-protect-identity"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::CreateError),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::CreateError,
+                ),
                 Action::Relayout,
                 Action::Snapshot("05-create-error"),
                 Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Backup),
                 Action::Relayout,
                 Action::Snapshot("06-encrypted-backup"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::BackupVerified),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::BackupVerified,
+                ),
                 Action::Relayout,
                 Action::Snapshot("07-backup-verified"),
                 Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Ready),
                 Action::Relayout,
                 Action::Snapshot("08-ready"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::TourNavigate),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::TourNavigate,
+                ),
                 Action::Relayout,
                 Action::Snapshot("09-tour-navigate"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::TourOrganise),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::TourOrganise,
+                ),
                 Action::Relayout,
                 Action::Snapshot("10-tour-organise"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::TourCollaborate),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::TourCollaborate,
+                ),
                 Action::Relayout,
                 Action::Snapshot("11-tour-collaborate"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::TourStart),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::TourStart,
+                ),
                 Action::Relayout,
                 Action::Snapshot("12-tour-start"),
             ],
@@ -1769,9 +1781,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::Drag {
-                from: Point::new(360.0, 220.0),
-                to: Point::new(980.0, 590.0),
-                steps: 8,
+                    from: Point::new(360.0, 220.0),
+                    to: Point::new(980.0, 590.0),
+                    steps: 8,
                 },
                 Action::Snapshot("capture-studio"),
                 Action::MoveCursor(Point::new(650.0, 50.0)),
@@ -1790,22 +1802,22 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(12),
                 Action::ClickNamed("capture.multi"),
                 Action::Drag {
-                from: Point::new(180.0, 170.0),
-                to: Point::new(500.0, 350.0),
-                steps: 7,
+                    from: Point::new(180.0, 170.0),
+                    to: Point::new(500.0, 350.0),
+                    steps: 7,
                 },
                 Action::Snapshot("multi-single"),
                 Action::Drag {
-                from: Point::new(530.0, 210.0),
-                to: Point::new(740.0, 390.0),
-                steps: 7,
+                    from: Point::new(530.0, 210.0),
+                    to: Point::new(740.0, 390.0),
+                    steps: 7,
                 },
                 Action::Snapshot("multi-replaced"),
                 Action::Modifiers(ModifiersState::SHIFT),
                 Action::Drag {
-                from: Point::new(70.0, 400.0),
-                to: Point::new(300.0, 590.0),
-                steps: 7,
+                    from: Point::new(70.0, 400.0),
+                    to: Point::new(300.0, 590.0),
+                    steps: 7,
                 },
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Snapshot("multi-shift-added"),
@@ -1824,9 +1836,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::Drag {
-                from: Point::new(360.0, 220.0),
-                to: Point::new(980.0, 590.0),
-                steps: 8,
+                    from: Point::new(360.0, 220.0),
+                    to: Point::new(980.0, 590.0),
+                    steps: 8,
                 },
                 Action::Snapshot("selection-initial"),
                 Action::MoveCursorNamed("capture.selection.0.move"),
@@ -1871,9 +1883,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::Drag {
-                from: Point::new(360.0, 220.0),
-                to: Point::new(980.0, 590.0),
-                steps: 8,
+                    from: Point::new(360.0, 220.0),
+                    to: Point::new(980.0, 590.0),
+                    steps: 8,
                 },
                 Action::CaptureScreenshotFinished { copied: false },
                 Action::CaptureScreenshotTransition(0),
@@ -1907,9 +1919,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::Drag {
-                from: Point::new(180.0, 170.0),
-                to: Point::new(620.0, 540.0),
-                steps: 8,
+                    from: Point::new(180.0, 170.0),
+                    to: Point::new(620.0, 540.0),
+                    steps: 8,
                 },
                 Action::CaptureScreenshotFinished { copied: true },
                 Action::CaptureScreenshotTransition(1_000),
@@ -1925,9 +1937,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::Drag {
-                from: Point::new(320.0, 180.0),
-                to: Point::new(1_180.0, 650.0),
-                steps: 8,
+                    from: Point::new(320.0, 180.0),
+                    to: Point::new(1_180.0, 650.0),
+                    steps: 8,
                 },
                 Action::CaptureExecutionEnabled(true),
                 Action::ClickNamed("capture.save"),
@@ -1952,9 +1964,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("markup.fit"),
                 Action::Snapshot("markup-fit"),
                 Action::Drag {
-                from: Point::new(300.0, 220.0),
-                to: Point::new(600.0, 360.0),
-                steps: 18,
+                    from: Point::new(300.0, 220.0),
+                    to: Point::new(600.0, 360.0),
+                    steps: 18,
                 },
                 Action::Snapshot("markup-pen"),
                 Action::ClickNamed("markup.tool"),
@@ -1962,9 +1974,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("markup.tool-highlighter"),
                 Action::ClickNamed("markup.color-yellow"),
                 Action::Drag {
-                from: Point::new(320.0, 400.0),
-                to: Point::new(620.0, 400.0),
-                steps: 18,
+                    from: Point::new(320.0, 400.0),
+                    to: Point::new(620.0, 400.0),
+                    steps: 18,
                 },
                 Action::Snapshot("markup-highlighter"),
                 Action::ClickNamed("markup.undo"),
@@ -1972,26 +1984,26 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("markup.tool"),
                 Action::ClickNamed("markup.tool-arrow"),
                 Action::Drag {
-                from: Point::new(280.0, 390.0),
-                to: Point::new(520.0, 250.0),
-                steps: 18,
+                    from: Point::new(280.0, 390.0),
+                    to: Point::new(520.0, 250.0),
+                    steps: 18,
                 },
                 Action::Snapshot("markup-arrow"),
                 Action::ClickNamed("markup.tool"),
                 Action::ClickNamed("markup.tool-rectangle"),
                 Action::ClickNamed("markup.color-blue"),
                 Action::Drag {
-                from: Point::new(250.0, 270.0),
-                to: Point::new(470.0, 405.0),
-                steps: 18,
+                    from: Point::new(250.0, 270.0),
+                    to: Point::new(470.0, 405.0),
+                    steps: 18,
                 },
                 Action::Snapshot("markup-rectangle"),
                 Action::ClickNamed("markup.tool"),
                 Action::ClickNamed("markup.tool-redact"),
                 Action::Drag {
-                from: Point::new(270.0, 318.0),
-                to: Point::new(550.0, 342.0),
-                steps: 12,
+                    from: Point::new(270.0, 318.0),
+                    to: Point::new(550.0, 342.0),
+                    steps: 12,
                 },
                 Action::Snapshot("markup-redact"),
                 Action::MoveCursorNamed("markup.save"),
@@ -2009,14 +2021,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.current",
-                surface_id: 5421,
+                    app_id: "org.example.current",
+                    surface_id: 5421,
                 },
                 Action::Wait(20),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.next",
-                surface_id: 5422,
+                    app_id: "org.example.next",
+                    surface_id: 5422,
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(1_000),
@@ -2046,9 +2058,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::MouseWheel { dx: 0.0, dy: 5.0 },
                 Action::Snapshot("full-app-markup-zoom"),
                 Action::MiddleDrag {
-                from: Point::new(800.0, 430.0),
-                to: Point::new(800.0, 650.0),
-                steps: 18,
+                    from: Point::new(800.0, 430.0),
+                    to: Point::new(800.0, 650.0),
+                    steps: 18,
                 },
                 Action::Snapshot("full-app-markup-pan"),
                 Action::ClickNamed("markup.fit"),
@@ -2062,14 +2074,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.current",
-                surface_id: 5411,
+                    app_id: "org.example.current",
+                    surface_id: 5411,
                 },
                 Action::Wait(20),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.next",
-                surface_id: 5412,
+                    app_id: "org.example.next",
+                    surface_id: 5412,
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(1_000),
@@ -2146,14 +2158,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.current",
-                surface_id: 5401,
+                    app_id: "org.example.current",
+                    surface_id: 5401,
                 },
                 Action::Wait(20),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.next",
-                surface_id: 5402,
+                    app_id: "org.example.next",
+                    surface_id: 5402,
                 },
                 Action::Wait(20),
                 // With three wide groups and the last selected, Notes remains
@@ -2305,9 +2317,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::CaptureReplayBuffered(4),
                 Action::Snapshot("replay-warming"),
                 Action::SnapshotSequence {
-                prefix: "replay-settle",
-                frames: 5,
-                gap_frames: 4,
+                    prefix: "replay-settle",
+                    frames: 5,
+                    gap_frames: 4,
                 },
                 Action::CaptureReplayBuffered(30),
                 Action::Snapshot("replay-ready"),
@@ -2360,11 +2372,11 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(12),
                 Action::ClickNamed("capture.pip"),
                 Action::Drag {
-                // Span the live Notes focal content at compact and wide
-                // viewports; a tiny fixed-left sample becomes empty at 1600.
-                from: Point::new(330.0, 160.0),
-                to: Point::new(1_050.0, 620.0),
-                steps: 7,
+                    // Span the live Notes focal content at compact and wide
+                    // viewports; a tiny fixed-left sample becomes empty at 1600.
+                    from: Point::new(330.0, 160.0),
+                    to: Point::new(1_050.0, 620.0),
+                    steps: 7,
                 },
                 Action::Snapshot("pip-region-ready"),
                 Action::CaptureExecutionEnabled(true),
@@ -2393,14 +2405,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.current",
-                surface_id: 5421,
+                    app_id: "org.example.current",
+                    surface_id: 5421,
                 },
                 Action::Wait(20),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
-                app_id: "org.example.next",
-                surface_id: 5422,
+                    app_id: "org.example.next",
+                    surface_id: 5422,
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(1_000),
@@ -2443,15 +2455,15 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("capture.pip"),
                 Action::ClickNamed("capture.multi"),
                 Action::Drag {
-                from: Point::new(250.0, 180.0),
-                to: Point::new(500.0, 330.0),
-                steps: 7,
+                    from: Point::new(250.0, 180.0),
+                    to: Point::new(500.0, 330.0),
+                    steps: 7,
                 },
                 Action::Modifiers(ModifiersState::SHIFT),
                 Action::Drag {
-                from: Point::new(520.0, 300.0),
-                to: Point::new(740.0, 470.0),
-                steps: 7,
+                    from: Point::new(520.0, 300.0),
+                    to: Point::new(740.0, 470.0),
+                    steps: 7,
                 },
                 Action::Modifiers(ModifiersState::empty()),
                 Action::ClickNamed("capture.pip.grid"),
@@ -2511,9 +2523,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("00-open"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::SnapshotSequence {
-                prefix: "close",
-                frames: 10,
-                gap_frames: 1,
+                    prefix: "close",
+                    frames: 10,
+                    gap_frames: 1,
                 },
             ],
         },
@@ -2523,12 +2535,12 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::Snapshot("01-tabs-initial"),
                 Action::Drag {
-                // Approximate centres of pills 1 and 3 inside the first
-                // window group's tab bar at viewport (1600, 900) with the
-                // sidebar wheel taking ~200 px of left padding.
-                from: Point::new(360.0, 130.0),
-                to: Point::new(560.0, 130.0),
-                steps: 8,
+                    // Approximate centres of pills 1 and 3 inside the first
+                    // window group's tab bar at viewport (1600, 900) with the
+                    // sidebar wheel taking ~200 px of left padding.
+                    from: Point::new(360.0, 130.0),
+                    to: Point::new(560.0, 130.0),
+                    steps: 8,
                 },
                 // Wait long enough for the post-reorder layout spring
                 // (`LAYOUT_ANIM_MS = 180 ms` in `quick-ui::widget::tabs`)
@@ -2546,19 +2558,19 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::Snapshot("01-before-drag"),
                 Action::Drag {
-                // Pill centres inside the lone bootstrap Wide=800 group
-                // bar live around y=128 (topbar=48 + Column padding=24
-                // + workspace_view + strip_view chrome ≈ 56 → bar
-                // mid-y ≈ 128). Pill 1 (Files) sits at x≈424 with the
-                // Wide group laid out from x≈224 + 24 padding + 14 px
-                // leading icon + ~6 px gap. The integration test
-                // `driver_tab_drag_and_detach_scope_to_the_right_group` reads
-                // these via `WindowGroup::tab_rects()` for pixel-
-                // accurate hit; this scenario just needs coords close
-                // enough that the press lands inside the pill.
-                from: Point::new(424.0, 120.0),
-                to: Point::new(1124.0, 120.0),
-                steps: 16,
+                    // Pill centres inside the lone bootstrap Wide=800 group
+                    // bar live around y=128 (topbar=48 + Column padding=24
+                    // + workspace_view + strip_view chrome ≈ 56 → bar
+                    // mid-y ≈ 128). Pill 1 (Files) sits at x≈424 with the
+                    // Wide group laid out from x≈224 + 24 padding + 14 px
+                    // leading icon + ~6 px gap. The integration test
+                    // `driver_tab_drag_and_detach_scope_to_the_right_group` reads
+                    // these via `WindowGroup::tab_rects()` for pixel-
+                    // accurate hit; this scenario just needs coords close
+                    // enough that the press lands inside the pill.
+                    from: Point::new(424.0, 120.0),
+                    to: Point::new(1124.0, 120.0),
+                    steps: 16,
                 },
                 Action::Wait(4),
                 Action::Snapshot("02-after-drag"),
@@ -2576,9 +2588,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::MoveCursorNamed("tab:Notes"),
                 Action::Snapshot("01-lift-start"),
                 Action::SnapshotSequence {
-                prefix: "02-held-lift",
-                frames: 5,
-                gap_frames: 2,
+                    prefix: "02-held-lift",
+                    frames: 5,
+                    gap_frames: 2,
                 },
                 Action::MouseRelease,
                 Action::Wait(12),
@@ -2595,8 +2607,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(2),
                 Action::OpenHostedWindow {
-                app: "Files",
-                title: "Files",
+                    app: "Files",
+                    title: "Files",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
@@ -2608,9 +2620,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::MoveCursorGroupReorderTarget(1),
                 Action::Snapshot("01-lift-start"),
                 Action::SnapshotSequence {
-                prefix: "02-held-lift",
-                frames: 5,
-                gap_frames: 2,
+                    prefix: "02-held-lift",
+                    frames: 5,
+                    gap_frames: 2,
                 },
                 Action::MouseRelease,
                 Action::Wait(12),
@@ -2625,17 +2637,17 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-ws0"),
                 Action::SwitchWorkspace(1),
                 Action::SnapshotSequence {
-                prefix: "02-ws1-immediately",
-                frames: 2,
-                gap_frames: 0,
+                    prefix: "02-ws1-immediately",
+                    frames: 2,
+                    gap_frames: 0,
                 },
                 Action::Wait(1),
                 Action::Snapshot("02-ws1"),
                 Action::SwitchWorkspace(0),
                 Action::SnapshotSequence {
-                prefix: "03-ws0-immediately",
-                frames: 2,
-                gap_frames: 0,
+                    prefix: "03-ws0-immediately",
+                    frames: 2,
+                    gap_frames: 0,
                 },
                 Action::Wait(1),
                 Action::Snapshot("03-ws0-again"),
@@ -2654,15 +2666,15 @@ fn build_scenarios() -> Vec<Scenario> {
                 // remainder the idle timer clears.
                 Action::MouseWheel { dx: 0.0, dy: -8.0 },
                 Action::SnapshotSequence {
-                prefix: "detent-1",
-                frames: 12,
-                gap_frames: 1,
+                    prefix: "detent-1",
+                    frames: 12,
+                    gap_frames: 1,
                 },
                 Action::MouseWheel { dx: 0.0, dy: -8.0 },
                 Action::SnapshotSequence {
-                prefix: "detent-2",
-                frames: 12,
-                gap_frames: 1,
+                    prefix: "detent-2",
+                    frames: 12,
+                    gap_frames: 1,
                 },
             ],
         },
@@ -2678,21 +2690,21 @@ fn build_scenarios() -> Vec<Scenario> {
                 // capture there tips one way or the other and shows neither
                 // state clearly.
                 Action::DragWheelRim {
-                dy: -PER_WORKSPACE_PX * 0.35,
-                steps: 10,
+                    dy: -PER_WORKSPACE_PX * 0.35,
+                    steps: 10,
                 },
                 Action::Snapshot("01-part-way"),
                 Action::MouseRelease,
                 Action::Wait(45),
                 // One, two, three workspaces, each captured while still held.
                 Action::DragWheelRim {
-                dy: -PER_WORKSPACE_PX,
-                steps: 14,
+                    dy: -PER_WORKSPACE_PX,
+                    steps: 14,
                 },
                 Action::Snapshot("02-one-workspace-held"),
                 Action::DragWheelRim {
-                dy: -PER_WORKSPACE_PX,
-                steps: 14,
+                    dy: -PER_WORKSPACE_PX,
+                    steps: 14,
                 },
                 Action::Snapshot("03-two-workspaces-held"),
                 Action::MouseRelease,
@@ -2705,13 +2717,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 // to coast the length of the list and decelerate, which is
                 // the entire claim about weight.
                 Action::DragWheelRim {
-                dy: PER_WORKSPACE_PX * 1.6,
-                steps: 5,
+                    dy: PER_WORKSPACE_PX * 1.6,
+                    steps: 5,
                 },
                 Action::MouseRelease,
                 Action::SampleWheelSettle {
-                prefix: "05-coast",
-                at_ms: SETTLE_SAMPLES,
+                    prefix: "05-coast",
+                    at_ms: SETTLE_SAMPLES,
                 },
                 Action::Wait(60),
                 Action::Snapshot("06-landed"),
@@ -2725,8 +2737,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 // Downward from the first workspace is off the top of the
                 // list. 90 px asks for 13.5°; resistance gives back far less.
                 Action::DragWheelRim {
-                dy: 90.0,
-                steps: 12,
+                    dy: 90.0,
+                    steps: 12,
                 },
                 Action::Snapshot("01-pulled"),
                 // More than three times the pull, for nowhere near three
@@ -2735,14 +2747,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 // comes up, or the release is routed to whatever is under
                 // it instead and the gesture never ends.
                 Action::DragWheelRim {
-                dy: 200.0,
-                steps: 20,
+                    dy: 200.0,
+                    steps: 20,
                 },
                 Action::Snapshot("02-pulled-hard"),
                 Action::MouseRelease,
                 Action::SampleWheelSettle {
-                prefix: "03-returning",
-                at_ms: SETTLE_SAMPLES,
+                    prefix: "03-returning",
+                    at_ms: SETTLE_SAMPLES,
                 },
                 Action::Wait(60),
                 Action::Snapshot("04-back-at-the-end"),
@@ -2780,17 +2792,17 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::SUPER),
                 Action::Key(Key::Named(NamedKey::Tab)),
                 Action::SnapshotSequence {
-                prefix: "01-enter",
-                frames: 26,
-                gap_frames: 1,
+                    prefix: "01-enter",
+                    frames: 26,
+                    gap_frames: 1,
                 },
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Snapshot("02-overview"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::SnapshotSequence {
-                prefix: "03-leave",
-                frames: 26,
-                gap_frames: 1,
+                    prefix: "03-leave",
+                    frames: 26,
+                    gap_frames: 1,
                 },
                 Action::Snapshot("04-desktop"),
             ],
@@ -2840,8 +2852,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(18),
                 Action::OpenWindow {
-                app_id: "org.libreoffice.LibreOffice",
-                surface_id: 9_201,
+                    app_id: "org.libreoffice.LibreOffice",
+                    surface_id: 9_201,
                 },
                 Action::SeedAgentScreenExposure { surface_id: 9_201 },
                 Action::Wait(4),
@@ -2913,19 +2925,19 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(18),
                 Action::OpenWindow {
-                app_id: "org.example.Sheets",
-                surface_id: 9_101,
+                    app_id: "org.example.Sheets",
+                    surface_id: 9_101,
                 },
                 Action::OpenWindow {
-                app_id: "org.example.Calendar",
-                surface_id: 9_102,
+                    app_id: "org.example.Calendar",
+                    surface_id: 9_102,
                 },
                 Action::Wait(5),
                 Action::Relayout,
                 Action::SeedForeignAppWork {
-                app_id: "org.example.Sheets",
-                action: "Reconciling",
-                resource: "Q3 forecast",
+                    app_id: "org.example.Sheets",
+                    action: "Reconciling",
+                    resource: "Q3 forecast",
                 },
                 Action::Wait(2),
                 Action::ClickNamed("tab:Sheets"),
@@ -3015,8 +3027,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(2),
                 Action::Snapshot("01-first-tab-typed"),
                 Action::AddHostedTab {
-                app: "Notes",
-                title: "Notes",
+                    app: "Notes",
+                    title: "Notes",
                 },
                 Action::Wait(20),
                 Action::Snapshot("02-second-tab-opened"),
@@ -3187,8 +3199,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 // A neighbour to the right, so there is something to move.
                 Action::OpenWindow {
-                app_id: "org.example.right",
-                surface_id: 5001,
+                    app_id: "org.example.right",
+                    surface_id: 5001,
                 },
                 Action::Wait(20),
                 // Windows at a third of the display each: a capture of windows
@@ -3199,12 +3211,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("01-before"),
                 Action::OpenWindow {
-                app_id: "org.example.new",
-                surface_id: 5002,
+                    app_id: "org.example.new",
+                    surface_id: 5002,
                 },
                 Action::SampleMakeSpace {
-                prefix: "02-making-room",
-                at_ms: MAKE_SPACE_SAMPLES,
+                    prefix: "02-making-room",
+                    at_ms: MAKE_SPACE_SAMPLES,
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
@@ -3220,8 +3232,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("01-before"),
                 Action::OpenWindow {
-                app_id: "org.example.tab",
-                surface_id: 5003,
+                    app_id: "org.example.tab",
+                    surface_id: 5003,
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("02-joined-the-group"),
@@ -3234,13 +3246,13 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::LoneWindow(0),
                 Action::OpenWindow {
-                app_id: "org.example.second",
-                surface_id: 5011,
+                    app_id: "org.example.second",
+                    surface_id: 5011,
                 },
                 Action::Wait(20),
                 Action::OpenWindow {
-                app_id: "org.example.third",
-                surface_id: 5012,
+                    app_id: "org.example.third",
+                    surface_id: 5012,
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(333),
@@ -3248,12 +3260,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("01-before"),
                 Action::OpenWindow {
-                app_id: "org.example.atseam",
-                surface_id: 5013,
+                    app_id: "org.example.atseam",
+                    surface_id: 5013,
                 },
                 Action::SampleMakeSpace {
-                prefix: "02-at-seam",
-                at_ms: MAKE_SPACE_SAMPLES,
+                    prefix: "02-at-seam",
+                    at_ms: MAKE_SPACE_SAMPLES,
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
@@ -3266,13 +3278,13 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::LoneWindow(0),
                 Action::OpenWindow {
-                app_id: "org.example.second",
-                surface_id: 5021,
+                    app_id: "org.example.second",
+                    surface_id: 5021,
                 },
                 Action::Wait(20),
                 Action::OpenWindow {
-                app_id: "org.example.third",
-                surface_id: 5022,
+                    app_id: "org.example.third",
+                    surface_id: 5022,
                 },
                 Action::Wait(20),
                 // Full width: the border after the window you are looking at
@@ -3283,12 +3295,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("01-before"),
                 Action::OpenWindow {
-                app_id: "org.example.nextseam",
-                surface_id: 5023,
+                    app_id: "org.example.nextseam",
+                    surface_id: 5023,
                 },
                 Action::SampleMakeSpace {
-                prefix: "02-next-seam",
-                at_ms: MAKE_SPACE_SAMPLES,
+                    prefix: "02-next-seam",
+                    at_ms: MAKE_SPACE_SAMPLES,
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
@@ -3301,18 +3313,18 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::LoneWindow(0),
                 Action::SelectGroup(Some(0)),
                 Action::OpenHostedWindow {
-                app: "Files",
-                title: "Files",
+                    app: "Files",
+                    title: "Files",
                 },
                 Action::SelectGroup(Some(1)),
                 Action::OpenHostedWindow {
-                app: "Terminal",
-                title: "Terminal",
+                    app: "Terminal",
+                    title: "Terminal",
                 },
                 Action::SelectGroup(Some(2)),
                 Action::OpenHostedWindow {
-                app: "Browser",
-                title: "Browser",
+                    app: "Browser",
+                    title: "Browser",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(333),
@@ -3327,8 +3339,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-search-result"),
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::SampleMakeSpace {
-                prefix: "02-making-room",
-                at_ms: MAKE_SPACE_SAMPLES,
+                    prefix: "02-making-room",
+                    at_ms: MAKE_SPACE_SAMPLES,
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(333),
@@ -3360,8 +3372,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(2),
                 Action::Snapshot("01-one-window"),
                 Action::OpenHostedWindow {
-                app: "Files",
-                title: "Files",
+                    app: "Files",
+                    title: "Files",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
@@ -3369,8 +3381,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("02-two-windows"),
                 Action::OpenHostedWindow {
-                app: "Terminal",
-                title: "Terminal",
+                    app: "Terminal",
+                    title: "Terminal",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
@@ -3378,8 +3390,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("03-three-windows"),
                 Action::OpenHostedWindow {
-                app: "Editor",
-                title: "Editor",
+                    app: "Editor",
+                    title: "Editor",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
@@ -3399,7 +3411,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::StripPan(-10_000.0),
                 Action::EndStripPan,
                 Action::Wait(PAN_SETTLE_FRAMES),
-                Action::Snapshot("08-panned-back")
+                Action::Snapshot("08-panned-back"),
             ],
         },
         Scenario {
@@ -3417,8 +3429,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
                 Action::Wait(2),
                 Action::OpenHostedWindow {
-                app: "Files",
-                title: "Files",
+                    app: "Files",
+                    title: "Files",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
@@ -3426,8 +3438,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("01-two-groups"),
                 Action::OpenHostedWindow {
-                app: "Terminal",
-                title: "Terminal",
+                    app: "Terminal",
+                    title: "Terminal",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
@@ -3441,13 +3453,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SelectGroup(Some(0)),
                 Action::Wait(2),
                 Action::AddHostedTab {
-                app: "Editor",
-                title: "Editor",
+                    app: "Editor",
+                    title: "Editor",
                 },
                 Action::Wait(4),
                 Action::AddHostedTab {
-                app: "Notes",
-                title: "Shipping notes for the demo",
+                    app: "Notes",
+                    title: "Shipping notes for the demo",
                 },
                 Action::Wait(6),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
@@ -3466,8 +3478,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-idle"),
                 Action::MoveCursorNamed("tab:Files"),
                 Action::SampleTabReveal {
-                prefix: "02-opening",
-                at_ms: REVEAL_SAMPLES,
+                    prefix: "02-opening",
+                    at_ms: REVEAL_SAMPLES,
                 },
                 Action::Wait(12),
                 Action::Snapshot("03-open"),
@@ -3478,8 +3490,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 // the whole strip and confuse what this is measuring.
                 Action::MoveCursor(Point::new(800.0, 500.0)),
                 Action::SampleTabReveal {
-                prefix: "04-closing",
-                at_ms: REVEAL_SAMPLES,
+                    prefix: "04-closing",
+                    at_ms: REVEAL_SAMPLES,
                 },
                 Action::Wait(12),
                 Action::Snapshot("05-idle-again"),
@@ -3496,39 +3508,39 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
                 Action::Wait(2),
                 Action::OpenHostedWindow {
-                app: "Files",
-                title: "Files",
+                    app: "Files",
+                    title: "Files",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
                 Action::SelectGroup(Some(1)),
                 Action::Wait(4),
                 Action::OpenHostedWindow {
-                app: "Terminal",
-                title: "Terminal",
+                    app: "Terminal",
+                    title: "Terminal",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
                 Action::SelectGroup(Some(0)),
                 Action::Wait(2),
                 Action::AddHostedTab {
-                app: "Editor",
-                title: "Editor",
+                    app: "Editor",
+                    title: "Editor",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::AddHostedTab {
-                app: "Settings",
-                title: "Settings",
+                    app: "Settings",
+                    title: "Settings",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::AddHostedTab {
-                app: "Browser",
-                title: "Browser",
+                    app: "Browser",
+                    title: "Browser",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::AddHostedTab {
-                app: "Notes",
-                title: "Document",
+                    app: "Notes",
+                    title: "Document",
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
@@ -3537,15 +3549,15 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-idle"),
                 Action::MoveCursorNamed("tab:Editor"),
                 Action::SampleTabReveal {
-                prefix: "02-opening",
-                at_ms: REVEAL_SAMPLES,
+                    prefix: "02-opening",
+                    at_ms: REVEAL_SAMPLES,
                 },
                 Action::Wait(12),
                 Action::Snapshot("03-open"),
                 Action::MoveCursor(Point::new(800.0, 500.0)),
                 Action::SampleTabReveal {
-                prefix: "04-closing",
-                at_ms: REVEAL_SAMPLES,
+                    prefix: "04-closing",
+                    at_ms: REVEAL_SAMPLES,
                 },
                 Action::Wait(12),
                 Action::Snapshot("05-idle-again"),
@@ -3874,7 +3886,8 @@ mod tests {
     fn collaboration_product_proof_keeps_states_distinct_and_backed_by_claims() {
         // Phase `collaboration_product_proof_keeps_invitation_presence_and_recovery_distinct`.
         {
-            let scenario = lookup("collaboration_product_proof").expect("collaboration_product_proof in catalogue");
+            let scenario = lookup("collaboration_product_proof")
+                .expect("collaboration_product_proof in catalogue");
             let snapshots: Vec<_> = scenario
                 .actions
                 .iter()
@@ -3918,7 +3931,12 @@ mod tests {
                 forward_revert_is_announced: false,
                 ada_is_active_in_files: false,
             };
-            run(&mut driver, &lookup("collaboration_product_proof").expect("collaboration_product_proof in catalogue"), &mut sink);
+            run(
+                &mut driver,
+                &lookup("collaboration_product_proof")
+                    .expect("collaboration_product_proof in catalogue"),
+                &mut sink,
+            );
             assert!(
                 sink.pending_invite_is_durable,
                 "the pending-invite frame must show both durable access and non-live presence"
@@ -4062,7 +4080,11 @@ mod tests {
     fn strip_scroll_scenario_opens_four_hosted_windows_side_by_side() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = NullSink;
-        run(&mut d, &lookup("strip_scroll_across_apps").expect("strip_scroll_across_apps in catalogue"), &mut sink);
+        run(
+            &mut d,
+            &lookup("strip_scroll_across_apps").expect("strip_scroll_across_apps in catalogue"),
+            &mut sink,
+        );
 
         let st = d.chrome();
         let tree = st.tree();
@@ -4113,7 +4135,11 @@ mod tests {
     fn strip_scroll_scenario_pans_the_strip_and_back() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = StripScrollSink { seen: Vec::new() };
-        run(&mut d, &lookup("strip_scroll_across_apps").expect("strip_scroll_across_apps in catalogue"), &mut sink);
+        run(
+            &mut d,
+            &lookup("strip_scroll_across_apps").expect("strip_scroll_across_apps in catalogue"),
+            &mut sink,
+        );
 
         let at = |name: &str| -> (f64, f64, f64) {
             let (_, sx, mx, pan_mx) = sink

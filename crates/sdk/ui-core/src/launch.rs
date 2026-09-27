@@ -582,7 +582,6 @@ impl LaunchSpec {
     }
 }
 
-
 /// One named screenshot pose for a legacy app that is not yet on
 /// [`crate::framework::ResourceApp`]: a label for `--scenario` and the
 /// factory that builds that pose.

@@ -55,7 +55,9 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout, ShotScenario, build_shot_scenario};
+use ui::launch::{
+    LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout, ShotScenario, build_shot_scenario,
+};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -153,8 +155,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // screenshot deterministic and prevents a docked wide canvas from
             // hiding the overlay case.
             .shot_viewport(|args| {
-                let narrow = args.has("--narrow")
-                    || args.scenario.as_deref() == Some("narrow");
+                let narrow = args.has("--narrow") || args.scenario.as_deref() == Some("narrow");
                 if narrow && args.viewport.is_none() {
                     (560, DEFAULT_SHOTS_VIEWPORT.1)
                 } else {
@@ -316,7 +317,9 @@ fn shot_narrow(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 )]
 fn shot_route(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let route = args.value("--route").unwrap_or("home");
-    Ok(Box::new(shot_app(args).with_route_shot(route_from_spec(route))))
+    Ok(Box::new(
+        shot_app(args).with_route_shot(route_from_spec(route)),
+    ))
 }
 
 #[allow(
