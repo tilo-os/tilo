@@ -1,16 +1,19 @@
 //! Files provider — searches the home directory for files and directories.
 //!
-//! Two backends: an in-memory boot-time walk of `~` for name/fuzzy queries,
-//! and a persistent tantivy index (see [`super::super::files_index`]) over
-//! file contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
-//! background. Enter routes a hit through [`crate::shell::doc_open`], which
-//! resolves the extension to the installed package that opens it.
+//! Two backends: an in-memory walk of `~` for name/fuzzy queries, and a
+//! persistent tantivy index (see [`super::super::files_index`]) over file
+//! contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
+//! background. Neither starts at session construction — the first palette
+//! query (or an explicit [`FilesProvider::rescan`]) opens the index and
+//! kicks the walk, so OverlayHost boot does not pay for file search. Enter
+//! routes a hit through [`crate::shell::doc_open`], which resolves the
+//! extension to the installed package that opens it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -218,18 +221,17 @@ pub struct FilesProvider {
     /// A tiny publication lock protects only swapping/cloning the immutable
     /// index `Arc`; no query copies the corpus or holds it through ranking.
     name_index: Arc<Mutex<Arc<NameIndex>>>,
-    tantivy: Option<crate::shell::search::files_index::FilesIndex>,
+    /// Opened on first [`Self::ensure_ready`]. `None` means open failed.
+    tantivy: OnceLock<Option<crate::shell::search::files_index::FilesIndex>>,
+    /// Set once the home walk has been kicked and tantivy open attempted.
+    /// Test helpers that inject an index pre-set this so a walk never runs.
+    ready: OnceLock<()>,
     /// Entries examined by the most recent query — the per-keystroke cost,
     /// and what the narrowing test asserts on (unlike wall-clock time).
     last_scanned: AtomicUsize,
     ranked_queries: Mutex<RankedQueryCache>,
     ranked_query_epoch: AtomicU64,
-    rank_mailbox: Arc<Mutex<Option<RankRequest>>>,
-    rank_notify: mpsc::SyncSender<()>,
-    #[cfg(test)]
-    active_rank_workers: Arc<AtomicUsize>,
-    #[cfg(test)]
-    peak_rank_workers: Arc<AtomicUsize>,
+    rank: OnceLock<RankWorker>,
 }
 
 struct RankedQuery {
@@ -362,42 +364,50 @@ impl FilesProvider {
         }
     }
 
-    /// Kicks off the background name-index walk and returns immediately.
-    /// Users who query before it finishes get only the tantivy content index.
+    /// Cheap construction: no home walk, no tantivy open, no rank worker.
+    /// [`Self::ensure_ready`] runs those on the first query or [`Self::rescan`].
     pub fn new() -> Self {
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files search constructor");
         let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
         let name_index: Arc<Mutex<Arc<NameIndex>>> =
             Arc::new(Mutex::new(Arc::new(NameIndex::default())));
-        {
-            let name_index = Arc::clone(&name_index);
-            let home = home.clone();
+        Self {
+            home,
+            name_index,
+            tantivy: OnceLock::new(),
+            ready: OnceLock::new(),
+            last_scanned: AtomicUsize::new(0),
+            ranked_queries: Mutex::new(RankedQueryCache::default()),
+            ranked_query_epoch: AtomicU64::new(0),
+            rank: OnceLock::new(),
+        }
+    }
+
+    /// Open the content index and kick the background name walk once.
+    /// Users who query before the walk finishes get only the tantivy content index.
+    fn ensure_ready(&self) {
+        self.ready.get_or_init(|| {
+            #[cfg(test)]
+            crate::shell::test_support::ambient_start("Files search constructor");
+            let _ = self.rank.get_or_init(Self::rank_worker);
+            let name_index = Arc::clone(&self.name_index);
+            let home = self.home.clone();
             thread::Builder::new()
                 .name("tilo-search-files-walk".into())
                 .spawn(move || walk_home(&home, &name_index))
                 .ok();
-        }
-        let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
-        let rank_worker = Self::rank_worker();
-        Self {
-            home,
-            name_index,
-            tantivy,
-            last_scanned: AtomicUsize::new(0),
-            ranked_queries: Mutex::new(RankedQueryCache::default()),
-            ranked_query_epoch: AtomicU64::new(0),
-            rank_mailbox: rank_worker.mailbox,
-            rank_notify: rank_worker.notify,
-            #[cfg(test)]
-            active_rank_workers: rank_worker.active,
-            #[cfg(test)]
-            peak_rank_workers: rank_worker.peak,
-        }
+            let _ = self.tantivy.set(
+                crate::shell::search::files_index::FilesIndex::open_or_create(&self.home).ok(),
+            );
+        });
+    }
+
+    fn rank_worker_handles(&self) -> &RankWorker {
+        self.rank.get_or_init(Self::rank_worker)
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
     pub fn rescan(&self) {
+        self.ensure_ready();
         #[cfg(test)]
         crate::shell::test_support::ambient_start("Files search rescan");
         let name_index = Arc::clone(&self.name_index);
@@ -418,7 +428,7 @@ impl FilesProvider {
         seen: &HashSet<PathBuf>,
         out: &mut Vec<SearchResult>,
     ) {
-        let Some(idx) = self.tantivy.as_ref() else {
+        let Some(idx) = self.tantivy.get().and_then(Option::as_ref) else {
             return;
         };
         let content_hits = idx.query(needle, MAX_RESULTS);
@@ -519,12 +529,13 @@ impl FilesProvider {
             cancelled: Arc::clone(&cancelled),
             sender,
         };
-        if let Ok(mut mailbox) = self.rank_mailbox.lock() {
+        let rank = self.rank_worker_handles();
+        if let Ok(mut mailbox) = rank.mailbox.lock() {
             *mailbox = Some(request);
             // A full wake slot means the single worker is either active or
             // already scheduled; in both cases it will take this newest
             // mailbox value next. Never create another worker for a key.
-            let _ = self.rank_notify.try_send(());
+            let _ = rank.notify.try_send(());
             cache.pending = Some(PendingRankedQuery {
                 generation,
                 needle,
@@ -810,6 +821,7 @@ impl SearchProvider for FilesProvider {
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
     ) -> SearchPage {
+        self.ensure_ready();
         // Name lookup owns all continuation pages.  Tantivy already has its
         // own retained inverted index and returns a bounded top-K; append it
         // only to the first page so scrolling never repeats content rows.
@@ -1900,19 +1912,37 @@ mod tests {
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
         let home = PathBuf::from("/home/tester");
-        let rank_worker = FilesProvider::rank_worker();
+        let rank = OnceLock::new();
+        let _ = rank.set(FilesProvider::rank_worker());
+        let ready = OnceLock::new();
+        let _ = ready.set(());
+        let tantivy = OnceLock::new();
+        let _ = tantivy.set(None);
         FilesProvider {
             home,
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
-            tantivy: None,
+            tantivy,
+            ready,
             last_scanned: AtomicUsize::new(0),
             ranked_queries: Mutex::new(RankedQueryCache::default()),
             ranked_query_epoch: AtomicU64::new(0),
-            rank_mailbox: rank_worker.mailbox,
-            rank_notify: rank_worker.notify,
-            active_rank_workers: rank_worker.active,
-            peak_rank_workers: rank_worker.peak,
+            rank,
         }
+    }
+
+
+    #[test]
+    fn constructing_files_provider_starts_no_ambient_file_search() {
+        let guard = crate::shell::test_support::DenyAmbientStarts::new();
+        let provider = FilesProvider::new();
+        assert!(
+            provider.ready.get().is_none(),
+            "home walk and tantivy must wait for the first query"
+        );
+        assert!(provider.rank.get().is_none(), "rank worker must wait for first use");
+        assert_eq!(guard.attempts(), 0);
+        drop(guard);
+        drop(provider);
     }
 
     fn ctx_for<'a>(
@@ -2444,7 +2474,7 @@ mod tests {
             );
             assert!(page.results.is_empty());
             assert_eq!(p.last_scanned.load(Ordering::Relaxed), 0);
-            assert!(p.active_rank_workers.load(Ordering::Relaxed) <= 1);
+            assert!(p.rank.get().expect("rank worker").active.load(Ordering::Relaxed) <= 1);
         }
         let page = eventually_page(|| {
             p.query_page(
@@ -2454,7 +2484,7 @@ mod tests {
             )
         });
         assert_eq!(page.results[0].title, "needlestick-current.md");
-        assert_eq!(p.peak_rank_workers.load(Ordering::Relaxed), 1);
+        assert_eq!(p.rank.get().expect("rank worker").peak.load(Ordering::Relaxed), 1);
         let cache = p.ranked_queries.lock().unwrap();
         assert!(cache.ready.iter().all(|plan| plan.needle == "needlestick"));
         assert!(
