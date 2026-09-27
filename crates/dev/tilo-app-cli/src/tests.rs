@@ -5361,3 +5361,63 @@ fn ui_path_accepts_either_sdk_crate() {
         );
     }
 }
+
+/// The dev loop supplies a runtime host only to an outside app that has none,
+/// and finds it in the checkout the app's `tilo-app` dependency resolves to.
+#[test]
+fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    };
+    assert!(wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "GNOME")]),
+        false
+    ));
+    assert!(
+        !wants_runtime_host(env(&[]), true),
+        "a workspace member builds its own"
+    );
+    assert!(!wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "tilo")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_BINARY", "/opt/host")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "1")]),
+        false
+    ));
+    assert!(wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "0")]),
+        false
+    ));
+
+    let checkout = tempfile::tempdir().expect("checkout");
+    let tilo_app = checkout.path().join("crates/sdk/tilo-app/Cargo.toml");
+    let runtime = checkout
+        .path()
+        .join("crates/runtime/tilo-runtime/Cargo.toml");
+    for manifest in [&tilo_app, &runtime] {
+        std::fs::create_dir_all(manifest.parent().expect("parent")).expect("crate dir");
+        std::fs::write(manifest, "[package]\n").expect("manifest");
+    }
+    let metadata = serde_json::json!({"packages": [
+        {"name": "tilo-ui", "manifest_path": "/elsewhere/crates/sdk/ui-core/Cargo.toml"},
+        {"name": "tilo-app", "manifest_path": tilo_app},
+    ]});
+    assert_eq!(
+        sdk_root_from_metadata(&metadata).as_deref(),
+        Some(checkout.path())
+    );
+    let without = serde_json::json!({"packages": [
+        {"name": "tilo-app", "manifest_path": "/registry/tilo-app-0.1.0/Cargo.toml"},
+    ]});
+    assert_eq!(sdk_root_from_metadata(&without), None);
+}
