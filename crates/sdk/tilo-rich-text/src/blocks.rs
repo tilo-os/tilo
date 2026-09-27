@@ -209,7 +209,7 @@ mod tests {
             },
         ];
         fill_under(&mut doc, &root, &blocks).unwrap();
-        let shown = blocks_under(&mut doc, &root).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
         let strip = |blocks: &[BlockContent]| -> Vec<BlockContent> {
             blocks
                 .iter()
@@ -240,9 +240,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = field(&mut doc);
         fill_under(&mut doc, &root, &[]).unwrap();
-        assert_eq!(blocks_under(&mut doc, &root).unwrap().len(), 1);
+        assert_eq!(blocks_under(&doc, &root).unwrap().len(), 1);
         let missing = doc.put_object(ROOT, "other", ObjType::Map).unwrap();
         assert!(fill_under(&mut doc, &missing, &[]).is_err());
-        assert!(blocks_under(&mut doc, &missing).is_err());
+        assert!(blocks_under(&doc, &missing).is_err());
     }
 }

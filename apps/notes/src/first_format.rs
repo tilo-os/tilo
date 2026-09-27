@@ -3,7 +3,6 @@
 //! notes_order}` maps, formatted by native `notes.inline.*` text marks.
 //! [`NotesDoc::upgrade`](crate::doc::NotesDoc::upgrade) is the only reader.
 
-use automerge::marks::Mark as NativeMark;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
@@ -11,6 +10,14 @@ use ui::widget::{BlockContent, BlockKind};
 use crate::model::PageId;
 
 const MARK_PREFIX: &str = "notes.inline.";
+
+/// A mark on the first format's text, as it was stored.
+struct NativeMark {
+    name: String,
+    value: ScalarValue,
+    start: usize,
+    end: usize,
+}
 
 /// The byte offset of character `character` in `text`.
 fn byte_of(text: &str, character: usize) -> Option<usize> {
@@ -85,10 +92,18 @@ pub(crate) fn blocks(doc: &AutoCommit, list: &ObjId) -> Vec<BlockContent> {
                 .as_ref()
                 .and_then(|text| doc.text(text).ok())
                 .unwrap_or_default();
-            let native = text_obj
+            let native: Vec<NativeMark> = text_obj
                 .as_ref()
                 .and_then(|text| doc.marks(text).ok())
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mark| NativeMark {
+                    name: mark.name.to_string(),
+                    value: mark.value.clone(),
+                    start: mark.start,
+                    end: mark.end,
+                })
+                .collect();
             let mut marks: Vec<MarkSpan> = native
                 .iter()
                 .filter_map(|mark| editor_mark(&text, mark))
