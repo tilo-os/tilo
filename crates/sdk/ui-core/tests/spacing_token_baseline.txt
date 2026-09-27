@@ -17,7 +17,7 @@ apps/calculator/src/app.rs pixel_const 5
 apps/calculator/src/engine.rs pixel_const 1
 apps/calculator/src/graph2d.rs pixel_const 11
 apps/calculator/src/graph3d.rs pixel_const 12
-apps/calculator/src/keypad.rs pixel_const 4
+apps/calculator/src/keypad.rs pixel_const 9
 apps/calculator/src/mathfield/mod.rs pixel_const 3
 apps/calculator/src/zoom.rs pixel_const 1
 apps/calendar/src/agenda.rs pixel_const 12

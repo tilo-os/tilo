@@ -36,23 +36,30 @@ const SIDEBAR_W_MAX: f64 = 380.0;
 /// Overlay drawer width when the sidebar floats over the keypad.
 const SIDEBAR_OVERLAY_W: f64 = 320.0;
 /// The shortest a key gets before the chrome around the pad gives way.
-const KEY_MIN_H: f64 = 28.0;
+const KEY_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+/// The narrowest a key column gets beside the display.
+const KEY_MIN_W: f64 = ui::tokens::Spacing::BASE.s12 as f64;
+// Display card: status line, expression line and result line in their fonts.
 const DISPLAY_H: f64 = 124.0;
-/// The display without its status line: expression and result only.
+// The display without its status line: the expression and result lines at
+// their short font sizes.
 const DISPLAY_SHORT_H: f64 = 72.0;
-const MEM_H: f64 = 44.0;
+const MEM_H: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
+// The memory row beside a short display, between the pointer minimum and a row.
 const MEM_SHORT_H: f64 = 36.0;
+// Fits the widest memory label ("MR") with room for its press state.
 const MEM_BTN_W: f64 = 64.0;
-const MEM_GAP: f64 = 8.0;
+const MEM_GAP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 /// The narrowest a memory button gets in a short window.
-const MEM_BTN_MIN_W: f64 = 44.0;
+const MEM_BTN_MIN_W: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
+// The sidebar toggle pill's width, which `SidebarDrawer::draw_toggle` does not expose.
 const TOGGLE_W: f64 = 46.0;
-const CHROME_GAP: f64 = 12.0;
+const CHROME_GAP: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 /// The narrowest column beside the pad: display over four narrowed memory
 /// buttons and the sidebar toggle.
 const SIDE_CHROME_MIN_W: f64 = 4.0 * MEM_BTN_MIN_W + 3.0 * MEM_GAP + CHROME_GAP + TOGGLE_W;
 /// The narrowest a four-column pad beside the display may be.
-const SIDE_PAD_MIN_W: f64 = 4.0 * 48.0 + 3.0 * 8.0;
+const SIDE_PAD_MIN_W: f64 = 4.0 * KEY_MIN_W + 3.0 * MEM_GAP;
 
 pub struct CalcScreen {
     keys: Vec<Key>,
