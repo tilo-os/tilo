@@ -68,6 +68,7 @@ rustfft.workspace = true
 gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
+workspace-hack = { version = "0.1" }
 
 # Native audio streams — only linked under `--features pipewire`. Same pin as
 # the shell's screen-cast producer so one copy resolves; `v0_3_50` exposes the

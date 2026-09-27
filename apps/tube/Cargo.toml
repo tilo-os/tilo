@@ -64,6 +64,7 @@ runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optiona
 sha2 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 wire-frame = { path = "../../crates/system/wire-frame", optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Encoding-level assertions for the video-surface test; version matches `vello`.

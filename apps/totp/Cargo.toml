@@ -53,6 +53,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # Host-native screenshot/photo selection uses the XDG file portal.
 # `zeroize` clears decrypted vault plaintext and derived HMAC keys.
 zeroize.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests stage key files through the vault's own private-file checks.

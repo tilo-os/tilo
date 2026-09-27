@@ -117,6 +117,18 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// The JSON Schema of [`Action`](Self::Action)'s serde form, published as
+    /// the schema of the generic [`APPLY`] operation's argument (and of the
+    /// `apply` members of [`GROUP`](crate::GROUP)), so agents and scripts can
+    /// read the edit vocabulary from the descriptor and binding refuses a
+    /// malformed edit by name. Return `Some(<Self::Action as
+    /// JsonSchema>::json_schema())` for an action type deriving
+    /// [`JsonSchema`](crate::JsonSchema); `#[resource]` describes its
+    /// operations from their declarations. The default publishes no schema.
+    fn action_schema() -> Option<serde_json::Value> {
+        None
+    }
+
     /// Resources nested inside this one (a track's clips, a list's items),
     /// each exporting actions with their arguments already bound. Published
     /// beneath the root resource for the palette, agents and scripts.
@@ -298,17 +310,75 @@ fn spec_from<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     spec
 }
 
+/// The parameter of [`APPLY`]: one action value, described by
+/// [`Resource::action_schema`] when the resource has one.
+fn apply_param<R: Resource>() -> ActionParam {
+    let param = ActionParam::required_owned(
+        APPLY_PARAM,
+        ParamType::Object,
+        format!("A {} action, as JSON", R::LABEL),
+    );
+    match R::action_schema() {
+        Some(schema) => param.with_schema(schema),
+        None => param,
+    }
+}
+
+/// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's
+/// declared actions and of [`APPLY`], each checked as it would be alone.
+fn group_param<R: Resource>() -> ActionParam {
+    use crate::schema::{
+        Reading, args_schema, array, constant, describe, nullable, object, one_of, undescribed,
+    };
+
+    // A member may leave its arguments out when none is required.
+    let args = |schema: serde_json::Value, required: bool| {
+        let schema = if required { schema } else { nullable(schema) };
+        ("args", schema, required)
+    };
+    let mut members: Vec<serde_json::Value> = R::declarations()
+        .iter()
+        .map(|decl| {
+            let required = decl.params.iter().any(|param| param.required);
+            let member = object(vec![
+                ("action", constant(decl.id), true),
+                args(args_schema(&decl.params, Reading::Bound), required),
+            ]);
+            describe(member, &decl.label)
+        })
+        .collect();
+    // The documented action schema is published on `apply` itself; the copy
+    // here keeps its shape, so a group is checked as strictly without
+    // repeating every description.
+    let action = R::action_schema().map_or_else(
+        || serde_json::json!({"type": "object"}),
+        |schema| undescribed(&schema),
+    );
+    members.push(describe(
+        object(vec![
+            ("action", constant(APPLY), true),
+            args(object(vec![(APPLY_PARAM, action, true)]), true),
+        ]),
+        &format!("One {} action, as `{APPLY}` takes it", R::LABEL),
+    ));
+    ActionParam::required_owned(
+        crate::GROUP_PARAM,
+        ParamType::Array,
+        format!(
+            "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+            R::LABEL
+        ),
+    )
+    .with_schema(array(one_of(members)))
+}
+
 fn apply_spec<R: Resource>() -> ActionSpec {
     ActionSpec::typed(
         APPLY,
         format!("Apply {} edit", R::LABEL),
         "Action as JSON",
         ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            APPLY_PARAM,
-            ParamType::Object,
-            format!("A {} action, as JSON", R::LABEL),
-        )],
+        vec![apply_param::<R>()],
         |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
                 return refused::<R>("missing action");
@@ -343,14 +413,7 @@ fn group_spec<R: Resource>() -> ActionSpec {
         format!("Apply several {} edits as one", R::LABEL),
         "Invocations as JSON",
         ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            crate::GROUP_PARAM,
-            ParamType::Array,
-            format!(
-                "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
-                R::LABEL
-            ),
-        )],
+        vec![group_param::<R>()],
         |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
             Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
                 .unwrap_or_else(|error| refused::<R>(&error.to_string())),
@@ -364,10 +427,10 @@ fn group_spec<R: Resource>() -> ActionSpec {
     .programmatic()
     // As consequential as its most consequential member.
     .with_risk(|args| {
-        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
-            tilo_actions::RiskLevel::Low,
-            |group| tilo_actions::Action::risk(&group),
-        )
+        crate::group::build_group::<R>(&args.to_json(), 0)
+            .map_or(tilo_actions::RiskLevel::Low, |group| {
+                tilo_actions::Action::risk(&group)
+            })
     })
 }
 

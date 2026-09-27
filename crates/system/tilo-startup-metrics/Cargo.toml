@@ -13,6 +13,7 @@ web-time = { version = "1", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

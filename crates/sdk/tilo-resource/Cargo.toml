@@ -23,6 +23,7 @@ uuid.workspace = true
 web-time = "1"
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource-macros = { path = "../tilo-resource-macros" }
+workspace-hack = { version = "0.1" }
 
 [[test]]
 name = "it"

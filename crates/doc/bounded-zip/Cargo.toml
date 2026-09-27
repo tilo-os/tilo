@@ -15,6 +15,7 @@ epub = ["dep:roxmltree"]
 zip.workspace = true
 thiserror.workspace = true
 roxmltree = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

@@ -1906,7 +1906,9 @@ pub enum ShortcutConfigError {
     ReservedSystemKey,
     InvalidChord,
     Conflict(ShortcutAction),
-    /// The chord is one of the shell's own fixed chords, named here.
+    /// The chord belongs to the desktop shortcut with this
+    /// [`crate::keyboard_shortcuts::FixedShortcut::id`], which nothing may
+    /// rebind.
     Fixed(&'static str),
     /// The chord already runs another published action.
     TakenByAction,
@@ -1920,58 +1922,13 @@ impl std::fmt::Display for ShortcutConfigError {
             }
             Self::InvalidChord => f.write_str("that chord is not supported"),
             Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
-            Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
+            Self::Fixed(id) => write!(f, "the chord is the desktop's fixed shortcut `{id}`"),
             Self::TakenByAction => f.write_str("the chord already runs another action"),
         }
     }
 }
 
 impl std::error::Error for ShortcutConfigError {}
-
-/// The shell's own chords that no setting can rebind, with what they do.
-/// Configurable [`ShortcutAction`] chords are not listed: they move when
-/// rebound.
-#[must_use]
-pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
-    fn chord(modifiers: &[&str], key: &str) -> KeyChord {
-        KeyChord {
-            modifiers: modifiers.iter().map(|m| (*m).to_string()).collect(),
-            key: key.to_string(),
-        }
-    }
-    let mut fixed = vec![
-        ("Switch windows", chord(&["Alt"], "tab")),
-        ("Switch windows", chord(&["Alt", "Shift"], "tab")),
-        ("Switch windows of the app", chord(&["Alt"], "`")),
-        ("Close tab", chord(&["Alt"], "f4")),
-        ("Close tab", chord(&["Super"], "w")),
-        ("Previous workspace", chord(&["Super"], "pageup")),
-        ("Next workspace", chord(&["Super"], "pagedown")),
-        ("Lock", chord(&["Super"], "l")),
-        ("Global search", chord(&["Super"], "space")),
-        ("New window", chord(&["Super"], "n")),
-        ("Add tab here", chord(&["Super"], "t")),
-        ("Duplicate tab", chord(&["Super"], "d")),
-        ("Workspace wheel", chord(&["Super"], "s")),
-        ("Workspace activity", chord(&["Super"], "h")),
-        ("Workspace activity", chord(&["Super", "Shift"], "h")),
-        ("Wireless display", chord(&["Super"], "p")),
-        ("Picture in picture", chord(&["Super", "Shift"], "p")),
-        ("Save recent replay", chord(&["Super", "Shift"], "r")),
-        ("Capture screenshot", chord(&["Super", "Shift"], "s")),
-        ("Open terminal", chord(&["Super"], "enter")),
-        ("Desktop help", chord(&[], "f1")),
-        ("Screenshot", chord(&[], "printscreen")),
-        ("Dismiss", chord(&[], "escape")),
-    ];
-    for key in ["h", "j", "k", "l"] {
-        fixed.push(("Vim navigation", chord(&["Super", "Ctrl"], key)));
-    }
-    for key in ["h", "l"] {
-        fixed.push(("Vim navigation", chord(&["Super", "Ctrl", "Shift"], key)));
-    }
-    fixed
-}
 
 impl Default for ShortcutConfig {
     #[allow(
@@ -2169,11 +2126,8 @@ impl ShortcutConfig {
         if !chord.is_valid_configurable() {
             return Err(ShortcutConfigError::InvalidChord);
         }
-        if let Some((label, _)) = fixed_shell_chords()
-            .into_iter()
-            .find(|(_, fixed)| fixed == chord)
-        {
-            return Err(ShortcutConfigError::Fixed(label));
+        if let Some(fixed) = crate::keyboard_shortcuts::desktop_owner(chord) {
+            return Err(ShortcutConfigError::Fixed(fixed.id));
         }
         if let Some((action, _)) = self.bindings.iter().find(|(_, bound)| *bound == chord) {
             return Err(ShortcutConfigError::Conflict(*action));
@@ -2223,10 +2177,15 @@ impl ShortcutConfig {
         self.actions.iter().find(|bound| bound.chord == *chord)
     }
 
+    /// Move `action` to `chord`. A chord that already belongs to someone
+    /// else is refused, naming the holder, rather than taken from it.
+    ///
     /// # Errors
     ///
     /// Returns an error without changing this binding when `chord` is invalid,
-    /// system-reserved, or already belongs to another action.
+    /// system-reserved, or already belongs to another action, to a fixed
+    /// desktop shortcut (other than one `action` shares by default), or to a
+    /// published action.
     pub fn set(
         &mut self,
         action: ShortcutAction,
@@ -2250,6 +2209,13 @@ impl ShortcutConfig {
             .find(|(a, c)| **a != action && **c == chord)
         {
             return Err(ShortcutConfigError::Conflict(*other));
+        }
+        // Some defaults are also fixed chords (Super+Page Up changes the
+        // workspace either way); an action may always return to its own.
+        if defaults.bindings.get(&action) != Some(&chord)
+            && let Some(fixed) = crate::keyboard_shortcuts::desktop_owner(&chord)
+        {
+            return Err(ShortcutConfigError::Fixed(fixed.id));
         }
         if self.actions.iter().any(|bound| bound.chord == chord) {
             return Err(ShortcutConfigError::TakenByAction);
@@ -2797,7 +2763,7 @@ mod tests {
                 target("shortcuts.shortcut:b"),
                 "Run B"
             ),
-            Err(ShortcutConfigError::Fixed("Switch windows"))
+            Err(ShortcutConfigError::Fixed("fixed-switch-windows"))
         );
         assert_eq!(
             cfg.set_action(

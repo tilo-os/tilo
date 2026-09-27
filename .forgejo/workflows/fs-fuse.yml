@@ -62,6 +62,8 @@ on:
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/workspace-hack/**"
+      - "vendor/wayland-backend/**"
       - "crates/system/fs/**"
       - "crates/system/cloud-source/**"
       - "crates/system/cloud-source-dav/**"

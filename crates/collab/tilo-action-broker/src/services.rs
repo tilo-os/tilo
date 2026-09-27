@@ -241,6 +241,50 @@ pub trait ShortcutLibraryServices: Send + Sync {
     ///
     /// Returns why no runtime is available.
     fn runtime(&self) -> Result<tokio::runtime::Handle, String>;
+    /// What the desktop calls its fixed shortcut `fixed`, in the person's
+    /// language: named when a keyboard trigger would take its chord.
+    fn fixed_shortcut_label(
+        &self,
+        fixed: &settings_store::keyboard_shortcuts::FixedShortcut,
+    ) -> String {
+        fixed.id.to_string()
+    }
+}
+
+/// The device's own keyboard shortcuts, described and changed by the host
+/// that owns their labels. The broker loads and saves the keymap, offers
+/// the catalogue only to callers on this machine, and checks each action
+/// against the caller's policy under [`Self::app_id`].
+pub trait KeyboardShortcutServices: Send + Sync {
+    /// The application id keyboard shortcut actions are checked against.
+    fn app_id(&self) -> &str;
+    /// Whether `resource` is the shortcut catalogue or one of its entries.
+    fn is_resource(&self, resource: &str) -> bool;
+    /// The catalogue rows under workspace provider `provider` for `keymap`.
+    fn catalogue_rows(
+        &self,
+        provider: &str,
+        keymap: &settings_store::hardware::ShortcutConfig,
+    ) -> Vec<tilo_actions::remote::CatalogueRow>;
+    /// The action `address` names in `keymap`, when there is one.
+    fn descriptor(
+        &self,
+        keymap: &settings_store::hardware::ShortcutConfig,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::ActionDescriptor>;
+    /// Decode `argument` for `address` and apply it to `keymap`: its output,
+    /// and whether `keymap` changed and must be saved.
+    ///
+    /// # Errors
+    ///
+    /// Why the arguments are malformed or the change cannot be made, such
+    /// as the chord another shortcut holds.
+    fn apply(
+        &self,
+        keymap: &mut settings_store::hardware::ShortcutConfig,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
 }
 
 pub trait ContinuationServices: Send + Sync {
@@ -469,6 +513,9 @@ pub struct HostServices {
     pub launcher: Option<Arc<dyn LauncherServices>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
+    /// The device's keyboard shortcuts on the action door. Without it
+    /// they are not offered.
+    pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,

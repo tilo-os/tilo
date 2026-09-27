@@ -38,6 +38,7 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 wgpu.workspace = true
+workspace-hack = { version = "0.1" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

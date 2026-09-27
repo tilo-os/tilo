@@ -30,6 +30,7 @@ tar.workspace = true
 thiserror.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

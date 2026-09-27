@@ -45,6 +45,7 @@ tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", 
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 # Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
 tokio-rustls.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

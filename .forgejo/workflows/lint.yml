@@ -23,7 +23,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:21849904f25c17f500394710ac8e080cc16e88a897248fcf5c2d106e3648c9c3
     env:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.
@@ -52,6 +52,7 @@ jobs:
           rustfmt --version
           cargo deny --version
           cargo machete --version
+          cargo hakari --version
 
       - name: Check formatting of changed Rust files
         shell: bash
@@ -71,6 +72,18 @@ jobs:
 
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph
+
+      # crates/workspace-hack unifies third-party features across members; a
+      # dependency change that is not regenerated splits the shared builds again.
+      - name: Workspace-hack matches the dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
+            exit 1
+          fi
+          cargo hakari verify
 
       - name: cargo machete
         run: >-

@@ -22,6 +22,7 @@ use ui::widget::{TextInput, TextInputKind, Widget};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::paint_context::PaintContext;
+use crate::text_offsets::byte_to_char;
 
 /// Classic 1× bar height, the floor of the measured [`FindMetrics::bar_h`].
 pub(crate) const HEIGHT: f64 = 42.0;
@@ -851,11 +852,6 @@ impl FindBar {
         Widget::draw_overlay(&mut self.query, scene, transform, tr, theme, presence);
         Widget::draw_overlay(&mut self.replacement, scene, transform, tr, theme, presence);
     }
-}
-
-fn byte_to_char(text: &str, byte_offset: usize) -> usize {
-    text.get(..byte_offset)
-        .map_or(0, |prefix| prefix.chars().count())
 }
 
 fn is_word_match(chars: &[char], start: usize, end: usize) -> bool {

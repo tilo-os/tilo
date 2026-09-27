@@ -24,6 +24,52 @@ pub struct Caret {
     pub offset: usize,
 }
 
+/// Order a caret/anchor pair in document order using block indices.
+///
+/// Shared by the editing model (CRDT block order) and the page widget (its
+/// cached `BlockView` list), so draw-time and mutation-time selection cannot
+/// disagree on the comparison rule.
+pub(crate) fn ordered_selection_span(
+    anchor: Option<&Caret>,
+    caret: &Caret,
+    block_index: impl Fn(&str) -> Option<usize>,
+) -> Option<(Caret, Caret)> {
+    let anchor = anchor?;
+    if anchor == caret {
+        return None;
+    }
+    match (block_index(&anchor.block), block_index(&caret.block)) {
+        (Some(pa), Some(pc)) => {
+            if (pa, anchor.offset) <= (pc, caret.offset) {
+                Some((anchor.clone(), caret.clone()))
+            } else {
+                Some((caret.clone(), anchor.clone()))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Per-block `(id, start, end)` char ranges spanning an ordered selection.
+pub(crate) fn selection_block_ranges(
+    start: &Caret,
+    end: &Caret,
+    block_index: impl Fn(&str) -> Option<usize>,
+    block_at: impl Fn(usize) -> Option<(String, usize)>,
+) -> Vec<(String, usize, usize)> {
+    let (Some(si), Some(ei)) = (block_index(&start.block), block_index(&end.block)) else {
+        return vec![];
+    };
+    (si..=ei)
+        .filter_map(|i| {
+            let (id, blen) = block_at(i)?;
+            let s = if i == si { start.offset } else { 0 };
+            let e = if i == ei { end.offset } else { blen };
+            Some((id, s, e))
+        })
+        .collect()
+}
+
 pub use qdoc_rich_text::ClipBlock;
 
 /// One entry of the document outline / navigation pane: a heading block's id,
@@ -261,22 +307,16 @@ impl WordProcessor {
 
     /// Selection endpoints in document order, if non-empty.
     pub fn selection_span(&self, state: &AutoCommit) -> Option<(Caret, Caret)> {
-        let anchor = self.selection_anchor.clone()?;
-        if anchor == self.caret {
+        // Bail before `ordered_blocks`: a lone caret must not scan the body
+        // list (see `framework_host` keystroke-cost test).
+        let anchor = self.selection_anchor.as_ref()?;
+        if anchor == &self.caret {
             return None;
         }
         let blocks = self.ordered_blocks(state);
-        let pos = |c: &Caret| blocks.iter().position(|b| b == &c.block);
-        match (pos(&anchor), pos(&self.caret)) {
-            (Some(pa), Some(pc)) => {
-                if (pa, anchor.offset) <= (pc, self.caret.offset) {
-                    Some((anchor, self.caret.clone()))
-                } else {
-                    Some((self.caret.clone(), anchor))
-                }
-            }
-            _ => None,
-        }
+        ordered_selection_span(Some(anchor), &self.caret, |id| {
+            blocks.iter().position(|b| b == id)
+        })
     }
 
     /// Per-block selected ranges `(block, start, end)` spanning the selection.
@@ -285,21 +325,15 @@ impl WordProcessor {
             return vec![];
         };
         let blocks = self.ordered_blocks(state);
-        let (Some(si), Some(ei)) = (
-            blocks.iter().position(|b| b == &start.block),
-            blocks.iter().position(|b| b == &end.block),
-        ) else {
-            return vec![];
-        };
-        (si..=ei)
-            .filter_map(|i| {
+        selection_block_ranges(
+            &start,
+            &end,
+            |id| blocks.iter().position(|b| b == id),
+            |i| {
                 let b = blocks.get(i)?;
-                let blen = self.block_len(state, b);
-                let s = if i == si { start.offset } else { 0 };
-                let e = if i == ei { end.offset } else { blen };
-                Some((b.clone(), s, e))
-            })
-            .collect()
+                Some((b.clone(), self.block_len(state, b)))
+            },
+        )
     }
 
     /// The selected text, joining blocks with newlines.

@@ -54,6 +54,7 @@ zeroize.workspace = true
 # compiled into an older pinned application image.
 reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 getrandom.workspace = true

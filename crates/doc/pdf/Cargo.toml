@@ -58,6 +58,7 @@ typst = { version = "0.15", optional = true }
 typst-pdf = { version = "0.15", optional = true }
 typst-layout = { version = "0.15", optional = true }
 typst-assets = { version = "0.15", features = ["fonts"], optional = true }
+workspace-hack = { version = "0.1" }
 
 [[example]]
 name = "gen_fixtures"

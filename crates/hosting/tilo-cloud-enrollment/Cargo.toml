@@ -19,3 +19,4 @@ serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 uuid.workspace = true
+workspace-hack = { version = "0.1" }

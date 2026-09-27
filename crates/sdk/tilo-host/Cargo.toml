@@ -54,6 +54,7 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 # without the `portal` feature). Unix builds with `portal` hand URIs to the
 # OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
+workspace-hack = { version = "0.1" }
 
 # The app runtime and full tokio the native backends run on. The browser
 # (wasm32) build has neither; it installs its own host services.

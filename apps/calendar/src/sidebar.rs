@@ -1,11 +1,13 @@
 //! Responsive sidebar chrome.
 //!
-//! This component owns the drawer's presentation state and geometry together
-//! with the controls that operate that state. Calendar-specific lists and
+//! Presentation state and geometry come from the shared
+//! [`ui::widget::SidebarDrawer`] (docked-vs-overlay, open/collapse memory,
+//! content inset). Calendar-specific header controls stay here; lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{SidebarDrawer, SplitLayout};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -17,6 +19,8 @@ use crate::model::View;
 use ui::surface::card;
 
 const WIDTH: f64 = 252.0;
+/// Matches the shared drawer family's wide dock threshold used across apps
+/// that keep a full calendar column beside the rail.
 const PERSISTENT_MIN: f64 = 900.0;
 const FULLSCREEN_MAX: f64 = 560.0;
 /// At large accessibility text sizes a 252px dock cannot provide usable
@@ -28,6 +32,15 @@ const LARGE_TEXT_DRAWER_SCALE: f32 = 1.35;
 pub(crate) enum Mode {
     Persistent,
     Overlay,
+}
+
+impl Mode {
+    fn from_layout(layout: SplitLayout) -> Self {
+        match layout {
+            SplitLayout::Docked => Mode::Persistent,
+            SplitLayout::Overlay => Mode::Overlay,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,20 +58,19 @@ pub(crate) struct Chrome {
 }
 
 pub(crate) struct Sidebar {
-    mode: Mode,
-    open: bool,
-    collapsed: bool,
-    rect: Rect,
+    drawer: SidebarDrawer,
     text_scale: f32,
 }
 
 impl Sidebar {
     pub(crate) fn new() -> Self {
         Self {
-            mode: Mode::Persistent,
-            open: false,
-            collapsed: false,
-            rect: Rect::ZERO,
+            drawer: SidebarDrawer::new()
+                .left()
+                .docked_width(WIDTH)
+                .overlay_width(WIDTH)
+                .breakpoint(PERSISTENT_MIN)
+                .rail_width(0.0),
             text_scale: 1.0,
         }
     }
@@ -66,24 +78,29 @@ impl Sidebar {
     /// Recompute the responsive drawer and return the x coordinate at which
     /// the calendar content begins.
     pub(crate) fn layout(&mut self, window: Rect) -> f64 {
-        self.mode = if window.width() >= PERSISTENT_MIN && self.text_scale < LARGE_TEXT_DRAWER_SCALE
-        {
-            Mode::Persistent
+        let large_text = self.text_scale >= LARGE_TEXT_DRAWER_SCALE;
+        // Force overlay when large text needs the full primary column, even on
+        // a wide window — same policy as before, expressed as a breakpoint the
+        // shared drawer cannot satisfy at this width.
+        let breakpoint = if large_text {
+            window.width() + 1.0
         } else {
-            Mode::Overlay
+            PERSISTENT_MIN
         };
-        let width = if self.mode == Mode::Overlay
-            && (window.width() < FULLSCREEN_MAX || self.text_scale >= LARGE_TEXT_DRAWER_SCALE)
-        {
+        let overlay_width = if window.width() < FULLSCREEN_MAX || large_text {
             window.width()
         } else {
             WIDTH
         };
-        self.rect = Rect::new(window.x0, window.y0, window.x0 + width, window.y1);
-        match self.mode {
-            Mode::Persistent if !self.collapsed => window.x0 + WIDTH,
-            _ => window.x0,
-        }
+        self.drawer.set_breakpoint(breakpoint);
+        self.drawer.set_docked_width(WIDTH);
+        self.drawer.set_overlay_width(overlay_width);
+        self.drawer.resolve(window);
+        // Calendar chrome toggles snap; never tick the eased reveal here so
+        // layout stays deterministic for tests and `--shots`.
+        let open = self.drawer.is_open();
+        self.drawer.snap(open);
+        self.drawer.resolve(window).x0
     }
 
     /// The current theme scale belongs to layout, not durable sidebar state.
@@ -96,42 +113,47 @@ impl Sidebar {
     }
 
     pub(crate) fn mode(&self) -> Mode {
-        self.mode
+        Mode::from_layout(self.drawer.layout())
     }
 
     pub(crate) fn rect(&self) -> Rect {
-        self.rect
+        self.drawer.sidebar_rect()
     }
 
+    /// Overlay-flap open flag (unchecked while docked).
     pub(crate) fn is_open(&self) -> bool {
-        self.open
+        self.mode() == Mode::Overlay && self.drawer.is_open()
     }
 
     pub(crate) fn set_open(&mut self, open: bool) {
-        self.open = open;
+        if open {
+            self.drawer.open();
+        } else {
+            self.drawer.close();
+        }
+        self.drawer.snap(open);
     }
 
+    /// Docked-rail collapsed flag (false while overlay).
     pub(crate) fn is_collapsed(&self) -> bool {
-        self.collapsed
+        self.mode() == Mode::Persistent && !self.drawer.is_open()
     }
 
     pub(crate) fn set_collapsed(&mut self, collapsed: bool) {
-        self.collapsed = collapsed;
+        self.set_open(!collapsed);
     }
 
     pub(crate) fn visible(&self) -> bool {
-        match self.mode {
-            Mode::Persistent => !self.collapsed,
-            Mode::Overlay => self.open,
-        }
+        self.drawer.is_open()
     }
 
     pub(crate) fn toggle_open(&mut self) {
-        self.open = !self.open;
+        self.drawer.toggle();
+        self.drawer.snap(self.drawer.is_open());
     }
 
     pub(crate) fn toggle_collapsed(&mut self) {
-        self.collapsed = !self.collapsed;
+        self.toggle_open();
     }
 
     #[allow(
@@ -156,7 +178,7 @@ impl Sidebar {
         }
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        let overlay = self.mode == Mode::Overlay;
+        let overlay = self.mode() == Mode::Overlay;
         if overlay && (content.area() > 0.0 || detail.area() > 0.0) {
             let behind = if content.area() > 0.0 {
                 content
@@ -167,7 +189,7 @@ impl Sidebar {
             hits.push((behind, Action::Dismiss));
         }
 
-        let rect = self.rect;
+        let rect = self.rect();
         if overlay {
             // The drawer's elevation over the dimmed content: the theme's
             // shadow token, not a literal black band.

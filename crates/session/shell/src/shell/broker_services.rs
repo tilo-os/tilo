@@ -361,6 +361,48 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
     fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
         crate::session_runtime::runtime().map(|runtime| runtime.handle().clone())
     }
+    fn fixed_shortcut_label(
+        &self,
+        fixed: &settings_store::keyboard_shortcuts::FixedShortcut,
+    ) -> String {
+        super::i18n::t(fixed.label_key)
+    }
+}
+
+/// The device's keyboard shortcuts on the action door, described in the
+/// desktop's language.
+pub struct NativeKeyboardShortcuts;
+impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardShortcuts {
+    fn app_id(&self) -> &str {
+        super::keyboard_shortcuts::APP_ID
+    }
+    fn is_resource(&self, resource: &str) -> bool {
+        super::keyboard_shortcuts::is_resource(resource)
+    }
+    fn catalogue_rows(
+        &self,
+        provider: &str,
+        keymap: &settings_store::hardware::ShortcutConfig,
+    ) -> Vec<tilo_actions::remote::CatalogueRow> {
+        super::keyboard_shortcuts::catalogue_rows(provider, keymap)
+    }
+    fn descriptor(
+        &self,
+        keymap: &settings_store::hardware::ShortcutConfig,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        super::keyboard_shortcuts::descriptor_at(keymap, address)
+    }
+    fn apply(
+        &self,
+        keymap: &mut settings_store::hardware::ShortcutConfig,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>> {
+        let operation = super::keyboard_shortcuts::decode(keymap, address, argument)?;
+        let output = super::keyboard_shortcuts::apply(keymap, &operation)?;
+        Ok((output, operation.changes()))
+    }
 }
 
 /// Workspace governance (permission profiles) applied under the shell's
@@ -801,6 +843,7 @@ pub fn native_services(
         launcher: Some(Arc::new(NativeLauncher)),
         workspace_governance: governance,
         shortcut_library,
+        keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         continuations: Some(Arc::new(NativeContinuations)),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
@@ -840,6 +883,7 @@ pub(crate) fn test_broker_with_membership(
         launcher: Some(Arc::new(NativeLauncher)),
         workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership.clone()))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
+        keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
         ..Default::default()
     };

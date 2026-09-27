@@ -23,6 +23,7 @@ rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 serde_json.workspace = true
