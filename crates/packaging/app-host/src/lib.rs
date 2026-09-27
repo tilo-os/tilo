@@ -62,7 +62,7 @@ pub mod transport;
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
 pub mod app_host_capnp {
-    include!(concat!(env!("OUT_DIR"), "/app_host_capnp.rs"));
+    include!("generated/app_host_capnp.rs");
 }
 
 pub use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};

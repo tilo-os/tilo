@@ -26,7 +26,7 @@
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
 pub mod format_router_capnp {
-    include!(concat!(env!("OUT_DIR"), "/format_router_capnp.rs"));
+    include!("generated/format_router_capnp.rs");
 }
 pub mod registry;
 pub mod router;
