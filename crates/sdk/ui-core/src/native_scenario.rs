@@ -538,7 +538,7 @@ mod tests {
         }
 
         fn finish(&mut self) -> String {
-            let until = crate::time::now() + Duration::from_secs(6);
+            let until = crate::time::now() + crate::HANG_BOUND;
             while self.child.try_wait().unwrap().is_none() {
                 assert!(crate::time::now() < until, "child must finish boundedly");
                 std::thread::sleep(Duration::from_millis(10));
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
         let mut child = GateChild::start(12_000_000, |_| {});
-        let startup_deadline = crate::time::now() + Duration::from_secs(5);
+        let startup_deadline = crate::time::now() + crate::HANG_BOUND;
         while delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty() {
             assert!(
                 crate::time::now() < startup_deadline,

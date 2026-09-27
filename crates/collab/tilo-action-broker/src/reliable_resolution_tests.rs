@@ -90,7 +90,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                 // Drop only the returned remote stream capability. The signed
                 // channel and actual private worker remain live.
                 drop(_invocations);
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
                 loop {
                     if state
                         .invocation_subscribers

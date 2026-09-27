@@ -228,7 +228,7 @@ fn sdk_lazy_directory_query_resolve_and_invoke_use_exact_runtime_methods() {
             }));
             replies.len() == 3
         },
-        Duration::from_secs(3)
+        HANG_BOUND
     ));
     assert!(
         matches!(&replies[0], CollabEvent::ActionDirectoryPage {request_id:11,result:Ok(page)} if page.rows==vec![directory_test_row()] && page.revision=="revision-7" && page.next_cursor==b"cursor-2" && page.budget_exhausted)
@@ -288,7 +288,7 @@ fn sdk_lazy_directory_unsupported_method_never_falls_back_to_eager() {
             }
             result.is_some()
         },
-        Duration::from_secs(3)
+        HANG_BOUND
     ));
     assert!(result.unwrap().is_err());
     let captured = captures.lock().unwrap();

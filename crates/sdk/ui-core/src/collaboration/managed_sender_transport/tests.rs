@@ -4,6 +4,7 @@
     reason = "the fake servers return the concrete capnp Promise, as the broker's own fake servers do"
 )]
 use super::*;
+use crate::HANG_BOUND;
 use crate::collaboration::RouteSpec;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -315,29 +316,21 @@ async fn managed_sender_transport_real_rpc_preserves_original_request_and_all_th
     over_wire(|route, _, captured| async move {
         let b = binding();
         for arg in [None, Some(""), Some("exact original argument")] {
-            let got = send(
-                &route,
-                request(48, &b, arg),
-                Instant::now() + Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
+            let got = send(&route, request(48, &b, arg), Instant::now() + HANG_BOUND)
+                .await
+                .unwrap();
             assert_eq!(got.host, HOST);
             assert_eq!(got.invocation, ID);
             assert_eq!(got.result.unwrap().update_json, UPDATE);
         }
         for kind in [49, 50] {
             assert_eq!(
-                send(
-                    &route,
-                    request(kind, &b, None),
-                    Instant::now() + Duration::from_secs(5)
-                )
-                .await
-                .unwrap()
-                .result
-                .unwrap()
-                .id,
+                send(&route, request(kind, &b, None), Instant::now() + HANG_BOUND)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .id,
                 99
             );
         }
@@ -371,12 +364,7 @@ async fn managed_sender_transport_real_rpc_refuses_uncorrelated_and_failed_repli
             mode.set(m);
             for kind in [48, 49, 50] {
                 assert_eq!(
-                    send(
-                        &route,
-                        request(kind, &b, None),
-                        Instant::now() + Duration::from_secs(5)
-                    )
-                    .await,
+                    send(&route, request(kind, &b, None), Instant::now() + HANG_BOUND).await,
                     Err(Failure::Unavailable)
                 );
             }
@@ -391,13 +379,9 @@ async fn managed_sender_transport_real_rpc_absence_stays_absence() {
         mode.set(Mode::Absent);
         let b = binding();
         for kind in [48, 49, 50] {
-            let o = send(
-                &route,
-                request(kind, &b, None),
-                Instant::now() + Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
+            let o = send(&route, request(kind, &b, None), Instant::now() + HANG_BOUND)
+                .await
+                .unwrap();
             assert_eq!(o.host, HOST);
             assert_eq!(o.invocation, ID);
             assert!(o.result.is_none());

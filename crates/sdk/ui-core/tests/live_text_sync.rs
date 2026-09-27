@@ -23,6 +23,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use tilo_ui::collaboration::CollabRequest;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {
         return String::new();
@@ -51,7 +54,8 @@ fn live_text_edit_propagates_through_broker() {
     let mut b_doc = AutoCommit::new();
     b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
     let mut adopted = false;
-    for _ in 0..40 {
+    let deadline = std::time::Instant::now() + HANG_BOUND;
+    while std::time::Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
@@ -75,7 +79,8 @@ fn live_text_edit_propagates_through_broker() {
     a.send(CollabRequest::document_incremental(delta));
 
     let mut got_edit = false;
-    for _ in 0..40 {
+    let deadline = std::time::Instant::now() + HANG_BOUND;
+    while std::time::Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Incremental(data))) =

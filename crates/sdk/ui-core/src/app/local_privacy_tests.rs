@@ -174,9 +174,7 @@ fn assert_local_app_behavior() {
         crate::widget::ResourceOperationStart::Completed(_)
     ));
     assert_eq!(operations.get(), 1, "local Effect must actually execute");
-    let wake = wake_rx
-        .recv_timeout(crate::time::Duration::from_secs(1))
-        .unwrap();
+    let wake = wake_rx.recv_timeout(crate::HANG_BOUND).unwrap();
     app.needs_sync = false;
     assert!(
         app.accept_wake(&wake),

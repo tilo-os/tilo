@@ -1543,7 +1543,7 @@ mod owner_commit_tests {
                         .get()
                         .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
                     let response = tokio::task::spawn_local(request.send().promise);
-                    let pending = tokio::time::timeout(Duration::from_secs(1), f.mailbox.recv())
+                    let pending = tokio::time::timeout(crate::HANG_BOUND, f.mailbox.recv())
                         .await
                         .expect("native enrolled document bypassed the actual owner service")
                         .unwrap();
@@ -1600,7 +1600,7 @@ mod owner_commit_tests {
             };
             let expected = request.clone();
             let result = tokio::spawn(async move { publisher.commit_owner(request).await });
-            let pending = tokio::time::timeout(Duration::from_secs(1), mailbox.recv())
+            let pending = tokio::time::timeout(crate::HANG_BOUND, mailbox.recv())
                 .await
                 .expect("offline commit bypassed owner")
                 .unwrap();
@@ -1697,7 +1697,7 @@ mod owner_commit_tests {
                 let completion = tokio::task::spawn_local(async move {
                     state.commit_effect_before_terminal(&pending, &update).await
                 });
-                let commit = tokio::time::timeout(Duration::from_secs(1), f.mailbox.recv())
+                let commit = tokio::time::timeout(crate::HANG_BOUND, f.mailbox.recv())
                     .await
                     .expect("enrolled native effect bypassed owner receipt")
                     .unwrap();

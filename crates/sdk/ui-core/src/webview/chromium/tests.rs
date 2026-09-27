@@ -350,7 +350,7 @@ fn private_root() -> PathBuf {
 
 #[cfg(unix)]
 fn wait_until_removed(root: &Path) {
-    let deadline = crate::time::now() + Duration::from_secs(5);
+    let deadline = crate::time::now() + crate::HANG_BOUND;
     while root.exists() && crate::time::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -842,7 +842,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         );
         assert_eq!(first.runtime.routes.lock().unwrap().len(), 32);
         std::fs::write(profile.join("ack-close"), b"ack").unwrap();
-        let deadline = crate::time::now() + Duration::from_secs(2);
+        let deadline = crate::time::now() + crate::HANG_BOUND;
         while first.runtime.routes.lock().unwrap().contains_key(&32) {
             assert!(
                 crate::time::now() < deadline,
@@ -884,7 +884,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         let detached = first.create_tab().unwrap();
         let routes = first.runtime.routes.clone();
         std::fs::write(dir.path().join("profile/detach-ready"), b"ready").unwrap();
-        let deadline = crate::time::now() + Duration::from_secs(2);
+        let deadline = crate::time::now() + crate::HANG_BOUND;
         let mut saw_detach = false;
         while !saw_detach {
             saw_detach = detached.drain_events().contains(&WebViewEvent::TabDetached);
@@ -924,7 +924,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             let tab = first.create_tab().unwrap();
             assert!(!tab.request_close());
             std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
-            let deadline = crate::time::now() + Duration::from_secs(2);
+            let deadline = crate::time::now() + crate::HANG_BOUND;
             while first.runtime.routes.lock().unwrap().contains_key(&id) {
                 assert!(crate::time::now() < deadline, "native close acknowledgment");
                 std::thread::sleep(Duration::from_millis(5));

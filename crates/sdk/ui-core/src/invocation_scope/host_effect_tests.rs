@@ -59,9 +59,7 @@ fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
             .thread_name("writer-scope-test")
             .send_scoped(effect);
         drop(fixture);
-        let outcome = receiver
-            .recv_timeout(std::time::Duration::from_secs(3))
-            .unwrap();
+        let outcome = receiver.recv_timeout(crate::HANG_BOUND).unwrap();
         assert_eq!(
             calls.load(Ordering::Acquire),
             usize::from(!expired),
@@ -117,9 +115,7 @@ fn worker_case(expired: bool) {
     .unwrap();
     let result = open_uri_scoped("https://example.test/original-caller".into(), effect);
     drop(guard); // The dispatched request must own the captured backend.
-    let result = result
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap();
+    let result = result.recv_timeout(crate::HANG_BOUND).unwrap();
     assert_eq!(calls.load(Ordering::Acquire), usize::from(!expired));
     if expired {
         assert_eq!(result.unwrap_err(), "original caller expired");

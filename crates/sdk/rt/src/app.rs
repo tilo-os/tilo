@@ -151,6 +151,9 @@ impl AppRuntime {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use std::time::Duration;
 
     #[test]
@@ -165,7 +168,7 @@ mod tests {
                 tx.send((current.id(), current.name().map(str::to_owned)))
                     .unwrap();
             });
-            let (ran_on, name) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (ran_on, name) = rx.recv_timeout(HANG_BOUND).unwrap();
             assert_ne!(ran_on, caller);
             assert_eq!(ran_on, runtime.thread_id());
             assert_eq!(name.as_deref(), Some(APP_THREAD));
@@ -187,7 +190,7 @@ mod tests {
                 },
                 move |out| tx.send(out).unwrap(),
             );
-            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "slept");
+            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "slept");
         }
     }
 

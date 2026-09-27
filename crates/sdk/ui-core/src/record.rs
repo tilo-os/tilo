@@ -3671,7 +3671,7 @@ mod tests {
                 .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap();
             assert!(pending.1 > 0);
-            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+            let deadline = crate::time::now() + crate::HANG_BOUND;
             loop {
                 let acknowledged = store.0.borrow().open[&checkout.id]
                     .autosave

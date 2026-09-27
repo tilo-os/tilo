@@ -88,7 +88,7 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while !matches!(client.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
     .await
@@ -97,7 +97,7 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), client.recv_action())
+        tokio::time::timeout(crate::HANG_BOUND, client.recv_action())
             .await
             .unwrap(),
         Some(EnvelopeV2::ActionsReady { .. })
@@ -108,7 +108,7 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
     client
 }
 async fn reply(client: &RelayClient, id: Uuid) -> ActionMessage {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         loop {
             match client.recv_action().await.unwrap() {
                 EnvelopeV2::Delivered { action, .. } if action.request_id == id => {
@@ -182,7 +182,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        let catalogue = tokio::time::timeout(Duration::from_secs(5), async { loop {
+        let catalogue = tokio::time::timeout(crate::HANG_BOUND, async { loop {
             let id = send(
                 &caller,
                 room,
@@ -262,7 +262,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let signed_delivery = signed.try_recv().expect("real application signed mutation admitted");
         assert_eq!(postcard::from_bytes::<SignedOp>(&signed_delivery.op_bytes).unwrap(), mutation);
         session.publish_retained_delta([7; 32], signed_delivery.op_bytes).unwrap();
-        let Envelope::Delta { delta: payload, .. } = tokio::time::timeout(Duration::from_secs(5), caller.recv()).await.unwrap().unwrap() else { panic!("signed resulting state missing") };
+        let Envelope::Delta { delta: payload, .. } = tokio::time::timeout(crate::HANG_BOUND, caller.recv()).await.unwrap().unwrap() else { panic!("signed resulting state missing") };
         let Some(tilo_relay::CoeditPayload::RetainedDelta { body, .. }) = tilo_relay::CoeditPayload::decode(&payload) else { panic!("retained signed state missing") };
         assert_eq!(postcard::from_bytes::<SignedOp>(&body).unwrap(), mutation);
 
@@ -349,7 +349,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = reopened.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        tokio::time::timeout(Duration::from_secs(5), async { loop {
+        tokio::time::timeout(crate::HANG_BOUND, async { loop {
             let id = send(
                 &caller,
                 room,
@@ -369,9 +369,9 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         reopened.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
         let mut blocked = request.clone(); blocked.invocation = tilo_actions::InvocationId::new();
         let refused = send(&caller, room, 52, invoke(&blocked));
-        assert!(tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap().is_err());
+        assert!(tokio::time::timeout(crate::HANG_BOUND, server).await.unwrap().unwrap().is_err());
         let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: blocked.invocation });
-        tokio::time::timeout(Duration::from_secs(5), async { loop {
+        tokio::time::timeout(crate::HANG_BOUND, async { loop {
             match caller.recv_action().await {
                 Some(EnvelopeV2::Delivered { action, .. }) if action.request_id == refused => assert!(matches!(action.message, ActionMessage::Rejected { .. })),
                 Some(EnvelopeV2::Unavailable { request_id, .. }) if request_id == unavailable => break,
@@ -552,7 +552,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                     completed.set(completed.get() + 1);
                 });
             }
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(crate::HANG_BOUND, async {
                 while entered.get() != 32 {
                     tokio::task::yield_now().await;
                 }
@@ -567,7 +567,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             assert_eq!(completed.get(), 0);
 
             releases.borrow_mut().pop_front().unwrap().send(()).unwrap();
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(crate::HANG_BOUND, async {
                 while completed.get() != 1 {
                     tokio::task::yield_now().await;
                 }
@@ -590,7 +590,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                 tokio::task::spawn_local(
                     async move { more.request_for_test(Some(evidence)).await },
                 );
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(crate::HANG_BOUND, async {
                 while entered.get() != 33 {
                     tokio::task::yield_now().await;
                 }

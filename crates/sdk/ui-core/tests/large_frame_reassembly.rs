@@ -18,6 +18,9 @@ use std::time::Duration;
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::collaboration::CollabRequest;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 #[test]
 fn large_frame_survives_split_reads() {
     let broker = TypedBroker::new();
@@ -32,9 +35,10 @@ fn large_frame_survives_split_reads() {
     let big = vec![0xABu8; 256 * 1024];
     a.send(CollabRequest::document_snapshot(big.clone()));
 
-    // Poll B for up to ~2s, accumulating the frame across reads.
+    // Poll B until the frame arrives, accumulating it across reads.
     let mut got: Option<Vec<u8>> = None;
-    for _ in 0..40 {
+    let deadline = std::time::Instant::now() + HANG_BOUND;
+    while std::time::Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()

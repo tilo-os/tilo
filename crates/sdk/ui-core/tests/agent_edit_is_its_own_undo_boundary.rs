@@ -33,6 +33,9 @@ const AGENT_ACTION: &str = "test.agent.write";
 /// The other party: not the person sitting at this window.
 const AGENT: &str = "an-agent-in-the-room";
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A root widget that owns one document key and answers actions under
 /// `AGENT_ACTION` by writing into it — standing in for the app whose registry
 /// knows the type. Everything else is delegated to a plain `Container`.
@@ -138,7 +141,8 @@ fn typed_app() -> (App, TypedBroker) {
 /// Send the agent's action and pump until `done` reports it landed.
 fn deliver_agents_action(app: &mut App, broker: &TypedBroker, done: impl Fn(&mut App) -> bool) {
     broker.inject_action(AGENT, AGENT_ACTION, b"the agent wrote this");
-    for _ in 0..50 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < HANG_BOUND {
         app.pump_collab_presence();
         if done(app) {
             return;

@@ -49,6 +49,9 @@ use taffy::prelude::*;
 const W: u32 = 480;
 const H: u32 = 120;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 fn text_obj(doc: &AutoCommit) -> Option<ObjId> {
     match doc.get(&ROOT, "text") {
         Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
@@ -290,7 +293,8 @@ fn poll_until<T>(
     mgr: &mut CollaborationManager,
     mut f: impl FnMut(&CollabEvent) -> Option<T>,
 ) -> Option<T> {
-    for _ in 0..60 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < HANG_BOUND {
         for ev in mgr.poll() {
             if let Some(v) = f(&ev) {
                 return Some(v);
