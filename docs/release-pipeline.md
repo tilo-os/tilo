@@ -353,8 +353,10 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   `registry: registry.tilo.so`, `username: ${{ github.actor }}` and
   `password: ${{ secrets.GITHUB_TOKEN }}` (or `podman`/`skopeo login` with the
   same values). The registry's token service checks the job token against the
-  forge. Board (Lenovo) images and firmware carry private firmware and stay on
-  the forge's private registry at `code.tilo.so`.
+  forge. Board (Lenovo) images and firmware use `code.tilo.so`. An explicit
+  `allow_public_lenovo_firmware` dispatch may publish them under the public
+  `tilo` owner while the board release is being brought up; other runs still
+  require a private owner.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and manual dispatches from `main`. Their
   audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
