@@ -7,9 +7,7 @@ name: CI / affected packages
 # Manual dispatch validates the complete workspace on both native architectures.
 on:
   push:
-    # Temporary branch triggers while desktop packaging and ARM support are being
-    # validated without changing main.
-    branches: ["main", "codex/package-desktop-release", "codex/arm64-platform-support"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -133,10 +131,9 @@ jobs:
       - name: Fetch comparison base
         shell: bash
         run: |
-          if [ '${{ github.event_name }}' = workflow_dispatch ] || \
-             [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
-            # Refresh main explicitly so the release gate always compares the
-            # complete branch diff against the current integration branch.
+          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
+            # Refresh main explicitly so a dispatch always compares against the
+            # current integration branch.
             git fetch origin \
               +refs/heads/main:refs/remotes/origin/main
           else
@@ -172,12 +169,6 @@ jobs:
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
-            base=origin/main
-            selection_args+=(--full)
-          elif [ "$GITHUB_REF" = 'refs/heads/codex/package-desktop-release' ]; then
-            # Every iteration must cover the complete release diff. Comparing
-            # only with github.event.before would forget changes from earlier
-            # branch pushes and could produce a misleading exact-SHA receipt.
             base=origin/main
             selection_args+=(--full)
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
@@ -840,8 +831,7 @@ jobs:
         id: receipt-checkout
         if: >-
           always() &&
-          (github.ref == 'refs/heads/main' ||
-           github.ref == 'refs/heads/codex/package-desktop-release')
+          github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
