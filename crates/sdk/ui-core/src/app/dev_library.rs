@@ -7,11 +7,13 @@
 // widget root; a second copy of `ui` is refused and the running root stays.
 
 use std::cell::RefCell;
+#[cfg(all(unix, any(feature = "native", test)))]
 use std::ffi::CStr;
 
 use crate::widget::AppWidget;
 
 /// One window the process already has open.
+#[cfg(any(feature = "native", test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DevWindowSlot {
     pub id: String,
@@ -22,6 +24,7 @@ pub(crate) struct DevWindowSlot {
 
 /// What a successful load produced. The caller installs `root` into the
 /// windows it already has; a `None` root leaves those widgets alone.
+#[cfg(any(feature = "native", test))]
 pub(crate) struct DevReload {
     pub windows: Vec<DevWindowSlot>,
     pub root: Option<Box<dyn AppWidget>>,
@@ -35,7 +38,7 @@ pub fn dev_stamp_addr() -> *const () {
 
 thread_local! {
     static DEV_ROOT: RefCell<Option<Box<dyn AppWidget>>> = const { RefCell::new(None) };
-    #[cfg(unix)]
+    #[cfg(all(unix, any(feature = "native", test)))]
     static LOADED_LIBS: RefCell<Vec<*mut libc::c_void>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -49,10 +52,14 @@ pub fn take_dev_root() -> Option<Box<dyn AppWidget>> {
     DEV_ROOT.with(|slot| slot.borrow_mut().take())
 }
 
+#[cfg(any(feature = "native", test))]
 type ApplyFn = unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut u8, usize) -> isize;
+#[cfg(any(feature = "native", test))]
 type LinkedFn = unsafe extern "C" fn() -> *const ();
+#[cfg(any(feature = "native", test))]
 type PublishFn = unsafe extern "C" fn() -> i32;
 
+#[cfg(any(feature = "native", test))]
 struct DevFns {
     apply: ApplyFn,
     linked_ui: Option<LinkedFn>,
@@ -63,7 +70,7 @@ struct DevFns {
 ///
 /// On `Err`, the caller keeps every window as it was. A loaded library stays
 /// mapped: the widgets it built point into it.
-#[cfg(unix)]
+#[cfg(all(unix, any(feature = "native", test)))]
 pub(crate) fn reload_from_library(
     path: &Path,
     windows: &[DevWindowSlot],
@@ -103,7 +110,7 @@ pub(crate) fn reload_from_library(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), any(feature = "native", test)))]
 pub(crate) fn reload_from_library(
     _path: &Path,
     _windows: &[DevWindowSlot],
@@ -111,6 +118,7 @@ pub(crate) fn reload_from_library(
     Err("in-place reload loads a shared library on unix".to_owned())
 }
 
+#[cfg(any(feature = "native", test))]
 fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, String> {
     let mut root = None;
     if let (Some(linked_ui), Some(publish)) = (fns.linked_ui, fns.publish) {
@@ -180,7 +188,7 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, Str
 
 /// # Safety
 /// `handle` is an open `dlopen` handle. `name` is a nul-terminated C string.
-#[cfg(unix)]
+#[cfg(all(unix, any(feature = "native", test)))]
 unsafe fn load_symbol<T>(handle: *mut libc::c_void, name: &[u8]) -> Option<T> {
     let found = unsafe { libc::dlsym(handle, name.as_ptr().cast()) };
     if found.is_null() {
@@ -194,7 +202,7 @@ unsafe fn load_symbol<T>(handle: *mut libc::c_void, name: &[u8]) -> Option<T> {
     Some(unsafe { std::mem::transmute_copy(&found) })
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(feature = "native", test)))]
 fn last_dlerror(what: &str) -> String {
     let err = unsafe { libc::dlerror() };
     if err.is_null() {
