@@ -472,6 +472,7 @@ log = { version = "0.4", default-features = false, features = ["max_level_debug"
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
+object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
@@ -510,6 +511,7 @@ log = { version = "0.4", default-features = false, features = ["max_level_debug"
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
+object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
@@ -548,6 +550,7 @@ log = { version = "0.4", default-features = false, features = ["max_level_debug"
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
+object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
@@ -586,6 +589,7 @@ log = { version = "0.4", default-features = false, features = ["max_level_debug"
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
+object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
