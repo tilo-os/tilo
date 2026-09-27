@@ -17,20 +17,28 @@
 //!
 //! The order is what makes a move lossless:
 //!
-//! 1. Read the source record as its writer last made it durable, rehome it
-//!    into the destination under a fresh id, and give the old instance's
-//!    presentation to the new one.
-//! 2. Stage the continuity resume projection and launch the new instance
+//! 1. Ask the running old instance for a checkpoint
+//!    ([`ui::collaboration::handoff`]): it makes what it shows durable now.
+//! 2. Read the source record as durable, rehome it into the destination
+//!    under a fresh id, and give the old instance's presentation to the new
+//!    one.
+//! 3. Stage the continuity resume projection and launch the new instance
 //!    into a new tab in the destination. If it never produces a window,
 //!    everything rolls back: the new tab goes, the imported record is retired
 //!    unopened, and the old window was never touched.
-//! 3. Once the new window exists, a **Move** asks the old one to close. When
-//!    its process has let go of the record, whatever it wrote after step 1 is
-//!    merged into the destination (a CRDT merge, so nothing is lost and the
-//!    order cannot matter) and the source record is retired. If the new
+//! 4. Once the new window exists, a **Move** asks the old instance to stamp
+//!    its document retired. That stamp is an ordinary change published over
+//!    the record's own route, so every collaborator holding the record learns
+//!    it moved, by whom and to where; their windows stop editing it and their
+//!    desktops say so. Only then is the old window asked to close.
+//! 5. When its process has let go of the record, whatever it wrote after
+//!    step 2 and before its stamp is merged into the destination (a CRDT
+//!    merge, so nothing is lost and the order cannot matter). If the new
 //!    instance already holds the destination record, it is restarted around
-//!    the merge, and the person is told their last edits came over.
-//! 4. A **Copy** stops after step 2: the source keeps its window and record,
+//!    the merge, and the person is told their last edits came over. An
+//!    instance that never answers — it crashed, or predates handoff — is
+//!    retired at rest by the shell instead.
+//! 6. A **Copy** stops after step 3: the source keeps its window and record,
 //!    and the two histories diverge from there.
 //!
 //! A native app without records keeps one document for itself in the room
@@ -53,6 +61,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::oneshot;
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
+use ui::collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
 use ui::record::transfer::{self, Origin, Retirement, TransferError};
 use ui::record::{RecordCheckout, RecordId};
 
@@ -72,6 +81,11 @@ use crate::shell::window_actions::MoveTabError;
 /// How long a new instance may take to show a window before the transfer
 /// rolls back, or before a restart around late edits gives up.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long an old instance may take to answer a handoff step before the
+/// transfer goes on without it: reading what it last saved, or stamping its
+/// document retired at rest once it has gone.
+const HANDOFF_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How often a transfer waiting on a process is looked at again.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -151,6 +165,9 @@ struct Carried {
     source_root: PathBuf,
     destination_root: PathBuf,
     instance: u64,
+    /// The source document's heads from just before its own app stamped it
+    /// retired: the end of what still has to come along.
+    retired_at: Option<Vec<ChangeHash>>,
 }
 
 impl Carried {
@@ -166,6 +183,21 @@ impl Carried {
 
 enum Phase {
     Consent(oneshot::Receiver<WindowTransferDecision>),
+    /// Waiting for the old instance to make what it shows durable, so the
+    /// transfer reads it as the person left it.
+    Checkpointing {
+        mode: TransferMode,
+        token: u64,
+        since: Instant,
+    },
+    /// Waiting for the old instance to stamp its document retired over its
+    /// own route, now that the new window exists.
+    Retiring {
+        tab: TabId,
+        carried: Box<Carried>,
+        token: u64,
+        since: Instant,
+    },
     /// Waiting for the destination instance to show a window.
     Opening {
         mode: TransferMode,
@@ -208,8 +240,89 @@ pub struct WindowTransfers {
     queue: Option<PortalDialogQueue>,
     attended: Box<dyn Fn() -> bool>,
     data_home: Option<PathBuf>,
+    handoff: Option<Box<dyn HandoffLink>>,
+    /// Reports taken in this round, until a transfer claims them.
+    notes: Vec<HandoffNote>,
     next: u64,
     polled: Option<Instant>,
+}
+
+/// Reaches one application instance by its primary route with a handoff
+/// request ([`ui::collaboration::handoff`]). Its answer comes back through
+/// [`report_handoff`].
+pub trait HandoffLink {
+    fn request(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest);
+}
+
+/// The session broker's reach to one instance's primary route.
+pub struct BrokerHandoff(crate::shell::collab_broker::SessionFollowDispatcher);
+
+impl BrokerHandoff {
+    pub fn new(dispatcher: crate::shell::collab_broker::SessionFollowDispatcher) -> Self {
+        Self(dispatcher)
+    }
+}
+
+impl HandoffLink for BrokerHandoff {
+    fn request(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest) {
+        self.0
+            .request_handoff(&room.to_string(), app_id, instance, request);
+    }
+}
+
+/// One instance's handoff report, as the broker delivered it.
+struct HandoffNote {
+    room: RoomId,
+    app_id: String,
+    instance: u64,
+    report: HandoffReport,
+}
+
+fn handoff_inbox() -> &'static std::sync::Mutex<std::collections::VecDeque<HandoffNote>> {
+    static INBOX: std::sync::Mutex<std::collections::VecDeque<HandoffNote>> =
+        std::sync::Mutex::new(std::collections::VecDeque::new());
+    &INBOX
+}
+
+/// Take in one instance's handoff report. Called from the broker for the
+/// instance's own certified primary route, so `room`, `app_id` and
+/// `instance` are its own; the report is picked up on the next frame.
+///
+/// # Errors
+/// A report that is not well-formed.
+pub fn report_handoff(
+    room: RoomId,
+    app_id: String,
+    instance: u64,
+    message: &[u8],
+) -> Result<(), String> {
+    let report = HandoffReport::decode(message).ok_or("malformed handoff report")?;
+    let mut inbox = handoff_inbox()
+        .lock()
+        .map_err(|_| "handoff inbox unavailable".to_string())?;
+    // Bounded: a flood of reports must not grow without limit.
+    if inbox.len() >= 256 {
+        inbox.pop_front();
+    }
+    inbox.push_back(HandoffNote {
+        room,
+        app_id,
+        instance,
+        report,
+    });
+    drop(inbox);
+    Ok(())
+}
+
+fn take_handoff_notes() -> Vec<HandoffNote> {
+    handoff_inbox()
+        .lock()
+        .map(|mut inbox| inbox.drain(..).collect())
+        .unwrap_or_default()
+}
+
+fn handoff_notes_waiting() -> bool {
+    handoff_inbox().lock().is_ok_and(|inbox| !inbox.is_empty())
 }
 
 impl std::fmt::Debug for WindowTransfers {
@@ -228,6 +341,8 @@ impl Default for WindowTransfers {
             queue: None,
             attended: Box::new(crate::shell::app_action_consent::session_attended),
             data_home: None,
+            handoff: None,
+            notes: Vec::new(),
             next: 0,
             polled: None,
         }
@@ -255,9 +370,50 @@ impl WindowTransfers {
         self.data_home = Some(data_home);
     }
 
-    /// Whether any transfer is in flight, including one waiting on its sheet.
+    /// Reach application instances through `link` for the handoff steps.
+    /// Without one, a transfer reads what an instance last saved and leaves
+    /// the retirement to the shell.
+    pub fn set_handoff_link(&mut self, link: Box<dyn HandoffLink>) {
+        self.handoff = Some(link);
+    }
+
+    /// Whether any transfer is in flight, including one waiting on its
+    /// sheet, or an instance has reported something to act on.
     pub fn is_pending(&self) -> bool {
-        !self.active.is_empty()
+        !self.active.is_empty() || handoff_notes_waiting()
+    }
+
+    fn ask(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest) {
+        if let Some(link) = self.handoff.as_ref() {
+            link.request(room, app_id, instance, request);
+        }
+    }
+
+    fn next_token(&mut self) -> u64 {
+        self.next = self.next.wrapping_add(1);
+        self.next
+    }
+
+    /// Claim the report answering `token` from `instance` of `app_id` in `room`.
+    fn claim(
+        &mut self,
+        room: RoomId,
+        app_id: &str,
+        instance: u64,
+        token: u64,
+    ) -> Option<HandoffReport> {
+        let index = self.notes.iter().position(|note| {
+            note.room == room
+                && note.app_id == app_id
+                && note.instance == instance
+                && matches!(
+                    &note.report,
+                    HandoffReport::Done { token: answered, .. }
+                        | HandoffReport::Failed { token: answered, .. }
+                        if *answered == token
+                )
+        })?;
+        Some(self.notes.remove(index).report)
     }
 
     /// Whether a transfer is waiting on something no input announces — a
@@ -664,20 +820,101 @@ pub fn request(
 
 /// Advance every transfer in flight. The frame loop calls this each round.
 pub fn tick(st: &mut ChromeState) {
-    if st.window_transfers.active.is_empty() {
+    let notes = take_handoff_notes();
+    if st.window_transfers.active.is_empty() && notes.is_empty() {
         return;
     }
     let mut transfers = std::mem::take(&mut st.window_transfers);
     transfers.polled = Some(Instant::now());
+    transfers.notes.extend(notes);
     let active = std::mem::take(&mut transfers.active);
     for transfer in active {
         if let Some(next) = advance(st, &mut transfers, transfer) {
             transfers.active.push(next);
         }
     }
+    // Reports no transfer here was waiting for: a document someone else
+    // moved, arriving in a window of this desktop.
+    for note in std::mem::take(&mut transfers.notes) {
+        if let HandoffReport::Retired { successor } = &note.report {
+            moved_away(st, &note, successor);
+        }
+    }
     // Anything queued while this ran (a nested request) is kept.
     transfers.active.append(&mut st.window_transfers.active);
     st.window_transfers = transfers;
+}
+
+/// Tell the person that the document a window of theirs shows was moved to
+/// another workspace, and by whom. Where it went is named only when they
+/// are in that workspace too.
+fn moved_away(st: &mut ChromeState, note: &HandoffNote, successor: &Successor) {
+    let (window, person, destination) = {
+        let tree = st.tree();
+        let source = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room == note.room);
+        let window = source
+            .and_then(|ws| {
+                ws.strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| {
+                        client(&tab.tile).is_some_and(|(app, tile_app, _)| {
+                            app == note.app_id
+                                && instance_of(&tree, tab.id, ws.room, &tile_app, &app)
+                                    == Some(note.instance)
+                        })
+                    })
+                    .map(|tab| tab.title.clone())
+            })
+            .unwrap_or_else(|| crate::shell::tab_binding::tab_label_for_foreign(&note.app_id));
+        let person = source
+            .and_then(|ws| {
+                let me = crate::shell::state::local_user_id_for_room(&ws.room);
+                tilo_desktop::overview::room_people(
+                    ws,
+                    &tree.desktop,
+                    &crate::shell::overview::ShellOverview::for_user(&me),
+                    tilo_clock::unix_now(),
+                )
+                .into_iter()
+                .find(|person| person.id == successor.by)
+                .map(|person| person.name)
+            })
+            .unwrap_or_else(|| successor.by.clone());
+        let destination = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room.to_string() == successor.room)
+            .map(|ws| ws.name.clone());
+        drop(tree);
+        (window, person, destination)
+    };
+    let body = match destination {
+        Some(to) => t_args(
+            "window-transfer-moved-away-to",
+            &[
+                ("person", person.as_str().into()),
+                ("to", to.as_str().into()),
+            ],
+        ),
+        None => t_args(
+            "window-transfer-moved-away-elsewhere",
+            &[("person", person.as_str().into())],
+        ),
+    };
+    st.push_notification(
+        t_args(
+            "window-transfer-moved-away-title",
+            &[("window", window.as_str().into())],
+        ),
+        body,
+    );
 }
 
 fn tab_tile(st: &ChromeState, tab: TabId) -> Option<TileContent> {
@@ -722,8 +959,45 @@ fn advance(
                 open_fresh(st, &plan);
                 None
             }
-            Ok(WindowTransferDecision::Move) => begin(st, transfers, &plan, TransferMode::Move),
-            Ok(WindowTransferDecision::Copy) => begin(st, transfers, &plan, TransferMode::Copy),
+            Ok(WindowTransferDecision::Move) => {
+                checkpoint(st, transfers, &plan, TransferMode::Move, source_lost)
+            }
+            Ok(WindowTransferDecision::Copy) => {
+                checkpoint(st, transfers, &plan, TransferMode::Copy, source_lost)
+            }
+        },
+        Phase::Checkpointing { mode, token, since } => {
+            let answered = transfers
+                .claim(plan.source.room, &plan.app_id, instance(&plan), token)
+                .is_some();
+            // An answer either way, the old instance gone, or no answer in
+            // time: read what is durable now. Anything written after that
+            // still comes along once the old instance lets go.
+            if answered || source_lost || since.elapsed() >= HANDOFF_TIMEOUT {
+                begin(st, transfers, &plan, mode)
+            } else {
+                Some(Phase::Checkpointing { mode, token, since })
+            }
+        }
+        Phase::Retiring {
+            tab,
+            mut carried,
+            token,
+            since,
+        } => match transfers.claim(plan.source.room, &plan.app_id, carried.instance, token) {
+            Some(report) => {
+                carried.retired_at = report.heads();
+                close_source(st, &plan, tab, carried, source_lost)
+            }
+            None if source_lost || since.elapsed() >= HANDOFF_TIMEOUT => {
+                close_source(st, &plan, tab, carried, source_lost)
+            }
+            None => Some(Phase::Retiring {
+                tab,
+                carried,
+                token,
+                since,
+            }),
         },
         Phase::Opening {
             mode,
@@ -731,7 +1005,9 @@ fn advance(
             carried,
             since,
         } => match tab_tile(st, tab) {
-            Some(TileContent::Foreign { .. }) => opened(st, &plan, mode, tab, carried, source_lost),
+            Some(TileContent::Foreign { .. }) => {
+                opened(st, transfers, &plan, mode, tab, carried, source_lost)
+            }
             Some(TileContent::LocalApp { note, .. })
                 if note == crate::shell::peer_windows::OPENING
                     && since.elapsed() < OPEN_TIMEOUT =>
@@ -992,6 +1268,44 @@ fn import(
     Ok((target, known))
 }
 
+/// The continuity instance a plan carries, or 0 when it carries nothing.
+fn instance(plan: &Plan) -> u64 {
+    match &plan.carry {
+        Carry::Record { instance, .. } => *instance,
+        Carry::Nothing => 0,
+    }
+}
+
+/// Ask a running old instance to make what it shows durable before the
+/// record is read; without one, read what it last saved.
+fn checkpoint(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    mode: TransferMode,
+    source_lost: bool,
+) -> Option<Phase> {
+    if matches!(plan.carry, Carry::Record { .. })
+        && plan.surface.is_some()
+        && !source_lost
+        && transfers.handoff.is_some()
+    {
+        let token = transfers.next_token();
+        transfers.ask(
+            plan.source.room,
+            &plan.app_id,
+            instance(plan),
+            HandoffRequest::Checkpoint { token },
+        );
+        return Some(Phase::Checkpointing {
+            mode,
+            token,
+            since: Instant::now(),
+        });
+    }
+    begin(st, transfers, plan, mode)
+}
+
 /// Bring the record over and start the destination instance.
 fn begin(
     st: &mut ChromeState,
@@ -1054,6 +1368,7 @@ fn begin(
         source_root,
         destination_root,
         instance,
+        retired_at: None,
     });
     let Some(strip) = destination_strip(st, plan.destination.workspace) else {
         roll_back(
@@ -1161,7 +1476,7 @@ fn roll_back(
             &plan.app_id,
             destination.workspace_id(),
             &Origin::Record(carried.target.clone()),
-            Retirement::Abandoned,
+            &Retirement::Abandoned,
         );
     }
     failed(st, plan, reason);
@@ -1171,12 +1486,35 @@ fn roll_back(
 /// window to close and waits for it to let go of the record.
 fn opened(
     st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
     plan: &Plan,
     mode: TransferMode,
     tab: TabId,
     carried: Box<Carried>,
     source_lost: bool,
 ) -> Option<Phase> {
+    // A running old instance stamps its own document retired, over the
+    // route everyone holding it listens on, before it is asked to close.
+    if mode == TransferMode::Move
+        && plan.surface.is_some()
+        && !source_lost
+        && transfers.handoff.is_some()
+    {
+        let token = transfers.next_token();
+        let successor = successor(plan, &carried);
+        transfers.ask(
+            plan.source.room,
+            &plan.app_id,
+            carried.instance,
+            HandoffRequest::Retire { token, successor },
+        );
+        return Some(Phase::Retiring {
+            tab,
+            carried,
+            token,
+            since: Instant::now(),
+        });
+    }
     match mode {
         TransferMode::Copy => {
             receipt(
@@ -1195,28 +1533,44 @@ fn opened(
             );
             None
         }
-        TransferMode::Move => {
-            // The old tab's continuity binding names the same instance the
-            // new tab now runs as; closing it must not take the new
-            // instance's reports with it.
-            if let Ok(mut registry) =
-                crate::shell::personal_continuity_registry::global_registry().lock()
-            {
-                registry.forget_local_binding(AppInstanceId(plan.tab));
+        TransferMode::Move => close_source(st, plan, tab, carried, source_lost),
+    }
+}
+
+/// Where the moved document went and who moved it, as its retirement says.
+fn successor(plan: &Plan, carried: &Carried) -> Successor {
+    Successor {
+        room: plan.destination.room.to_string(),
+        record: carried.target.id.as_str().to_owned(),
+        by: crate::shell::state::local_user_id_for_room(&plan.source.room),
+    }
+}
+
+/// Ask the old window to close, now that the new one exists and the old
+/// document says where it went, and wait for it to let go of the record.
+fn close_source(
+    st: &mut ChromeState,
+    plan: &Plan,
+    tab: TabId,
+    carried: Box<Carried>,
+    source_lost: bool,
+) -> Option<Phase> {
+    // The old tab's continuity binding names the same instance the new tab
+    // now runs as; closing it must not take the new instance's reports with it.
+    if let Ok(mut registry) = crate::shell::personal_continuity_registry::global_registry().lock() {
+        registry.forget_local_binding(AppInstanceId(plan.tab));
+    }
+    match plan.surface {
+        Some(surface) if !source_lost => st.request_surface_close(surface),
+        _ => {
+            let mut tree = st.tree_mut();
+            if crate::shell::tab_binding::remove_tab(&mut tree, plan.tab) {
+                tree.flush_to_disk();
             }
-            match plan.surface {
-                Some(surface) if !source_lost => st.request_surface_close(surface),
-                _ => {
-                    let mut tree = st.tree_mut();
-                    if crate::shell::tab_binding::remove_tab(&mut tree, plan.tab) {
-                        tree.flush_to_disk();
-                    }
-                }
-            }
-            st.bump();
-            release(st, plan, tab, carried, source_lost)
         }
     }
+    st.bump();
+    release(st, plan, tab, carried, source_lost)
 }
 
 fn profiles(plan: &Plan, carried: &Carried) -> Option<(NativeProfile, NativeProfile)> {
@@ -1256,12 +1610,24 @@ fn release(
             return None;
         }
     }
-    let last = match transfer::read(
-        source.store(),
-        &plan.app_id,
-        source.workspace_id(),
-        &carried.origin,
-    ) {
+    // What the old instance wrote before it stamped its document retired is
+    // what still comes along; the stamp itself stays with the source.
+    let last = match &carried.retired_at {
+        Some(heads) => transfer::read_until(
+            source.store(),
+            &plan.app_id,
+            source.workspace_id(),
+            &carried.origin,
+            heads,
+        ),
+        None => transfer::read(
+            source.store(),
+            &plan.app_id,
+            source.workspace_id(),
+            &carried.origin,
+        ),
+    };
+    let last = match last {
         Ok(last) => last,
         Err(error) => {
             failed(st, plan, &transfer_reason(&error));
@@ -1398,7 +1764,7 @@ fn finish_move(
             &plan.app_id,
             source.workspace_id(),
             &carried.origin,
-            Retirement::Moved,
+            &Retirement::Moved(Some(successor(plan, carried))),
         )
     {
         tracing::warn!(%error, app = %plan.app_id, "moved record could not be retired in its source room");

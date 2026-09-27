@@ -762,6 +762,15 @@ impl ContinuationServices for NativeContinuations {
             );
         Ok(())
     }
+    fn handoff(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: String,
+        instance: u64,
+        message: Vec<u8>,
+    ) -> Result<(), String> {
+        super::window_transfer::report_handoff(room, app, instance, &message)
+    }
 }
 
 /// The native identity selector and fleet remain native service dependencies.

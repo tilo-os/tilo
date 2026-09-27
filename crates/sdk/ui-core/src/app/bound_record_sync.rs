@@ -6,13 +6,13 @@ use crate::collaboration::PrimaryRouteWitness;
 use crate::state::DocumentFrontier;
 
 pub(super) struct BoundRecordSync {
-    binding: CallbackBinding,
+    pub(super) binding: CallbackBinding,
     route: PrimaryRouteWitness,
     frontier: DocumentFrontier,
 }
 
 impl App {
-    fn prepare_primary_document(&mut self) -> Result<bool, String> {
+    pub(super) fn prepare_primary_document(&mut self) -> Result<bool, String> {
         fn visit(
             widget: &dyn Widget,
             route: Option<&PrimaryRouteWitness>,

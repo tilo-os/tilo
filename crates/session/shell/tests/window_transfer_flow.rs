@@ -20,10 +20,13 @@ use shell::shell::state::{
     Workspace, WorkspaceId, WorkspaceTree,
 };
 use shell::shell::window_actions::{MoveOutcome, transfer_tab_to_workspace};
-use shell::shell::window_transfer::{TransferLauncher, TransferMode, tick};
+use shell::shell::window_transfer::{
+    HandoffLink, TransferLauncher, TransferMode, report_handoff, tick,
+};
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
-use ui::record::transfer::{self, TransferError};
+use ui::collaboration::handoff::{HandoffReport, HandoffRequest};
+use ui::record::transfer::{self, Retirement, TransferError};
 use ui::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore,
 };
@@ -811,4 +814,170 @@ fn an_app_without_records_carries_the_document_it_keeps_in_the_room() {
         transfer::read(home.store(), APP, home.workspace_id(), &origin),
         Err(TransferError::Open(RecordOpenError::Retired))
     ));
+}
+
+type Asked = Rc<RefCell<Vec<(RoomId, String, u64, HandoffRequest)>>>;
+
+/// The instances' primary routes, as the broker reaches them.
+struct Routes(Asked);
+
+impl HandoffLink for Routes {
+    fn request(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest) {
+        self.0
+            .borrow_mut()
+            .push((room, app_id.to_owned(), instance, request));
+    }
+}
+
+fn answer(f: &Fixture, report: &HandoffReport) {
+    report_handoff(f.home_room, APP.into(), INSTANCE, &report.encode()).unwrap();
+    tick(&mut f.chrome.borrow_mut());
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one move, followed step by step through both handoff steps"
+)]
+fn a_move_checkpoints_first_and_the_old_instance_retires_its_own_document() {
+    let (f, old) = Fixture::new(true, false);
+    let old = old.unwrap();
+    let asked: Asked = Rc::default();
+    f.chrome
+        .borrow_mut()
+        .window_transfers
+        .set_handoff_link(Box::new(Routes(Rc::clone(&asked))));
+    f.ask(TransferMode::Move);
+    f.answer("Move");
+
+    // Nothing is read before the running instance has made its work durable.
+    let token = match asked.borrow().as_slice() {
+        [(room, app, INSTANCE, HandoffRequest::Checkpoint { token })]
+            if *room == f.home_room && app == APP =>
+        {
+            *token
+        }
+        other => panic!("expected one checkpoint request, got {other:?}"),
+    };
+    assert!(f.launched.borrow().is_empty());
+    assert!(f.tabs_in(f.elsewhere).is_empty());
+
+    // The instance flushes the edit it was holding in memory, and answers.
+    old.with(&f.record.id, |doc| {
+        doc.put(ROOT, "body", "Groceries: milk, eggs").unwrap();
+    })
+    .unwrap();
+    old.try_flush().unwrap();
+    answer(&f, &HandoffReport::done(token, &[]));
+    assert_eq!(f.launched.borrow().len(), 1);
+    let (destination, _, carried) = f.arrived(INSTANCE);
+    let arrived = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .unwrap();
+    assert_eq!(
+        body(&arrived).as_deref(),
+        Some("Groceries: milk, eggs"),
+        "the checkpoint is what was read"
+    );
+
+    // The new window binds; the old instance is asked to retire what it shows.
+    f.bind(NEW_SURFACE);
+    tick(&mut f.chrome.borrow_mut());
+    let (token, successor) = match asked.borrow().last() {
+        Some((_, _, INSTANCE, HandoffRequest::Retire { token, successor })) => {
+            (*token, successor.clone())
+        }
+        other => panic!("expected a retire request, got {other:?}"),
+    };
+    assert_eq!(successor.room, f.elsewhere_room.to_string());
+    assert_eq!(successor.record, carried.id.as_str());
+    assert!(
+        f.close_requests().is_empty(),
+        "the old window stays until its document says where it went"
+    );
+
+    // It stamps the retirement on its own document, which is what travels to
+    // everyone holding the record, and answers with the heads before it.
+    let before = old
+        .with(&f.record.id, |doc| {
+            let before = doc.get_heads();
+            transfer::stamp_retired(doc, &Retirement::Moved(Some(successor.clone()))).unwrap();
+            before
+        })
+        .unwrap();
+    old.try_flush().unwrap();
+    answer(&f, &HandoffReport::done(token, &before));
+    assert_eq!(f.close_requests(), [SURFACE]);
+    f.destroy(SURFACE);
+    drop(old);
+    tick(&mut f.chrome.borrow_mut());
+    assert!(!f.chrome.borrow().window_transfers.is_pending());
+
+    let arrived = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .unwrap();
+    assert!(
+        !transfer::is_retired(&arrived),
+        "the source's retirement never comes along into its successor"
+    );
+    assert_eq!(body(&arrived).as_deref(), Some("Groceries: milk, eggs"));
+    let source = f.profile(f.home_room);
+    let retired = transfer::read_until(
+        source.store(),
+        APP,
+        source.workspace_id(),
+        &transfer::Origin::Record(f.record.clone()),
+        &before,
+    );
+    assert!(retired.is_ok(), "the history before the stamp is intact");
+    assert!(matches!(
+        read_record(source.store(), APP, source.workspace_id(), &f.record),
+        Err(TransferError::Open(RecordOpenError::Retired))
+    ));
+    assert!(
+        !f.notifications().iter().any(|n| n.contains("last edits")),
+        "nothing arrived late: {:?}",
+        f.notifications()
+    );
+}
+
+#[test]
+fn a_collaborator_is_told_who_moved_their_document_and_where_if_they_can_see_it() {
+    let (f, _) = Fixture::new(false, false);
+    global_registry()
+        .lock()
+        .unwrap()
+        .bind_tab(AppInstanceId(TAB), AppInstanceId(INSTANCE));
+    let moved = |room: String| HandoffReport::Retired {
+        successor: transfer::Successor {
+            room,
+            record: "uuid:elsewhere".into(),
+            by: "person:ada".into(),
+        },
+    };
+    answer(&f, &moved(f.elsewhere_room.to_string()));
+    assert!(
+        f.notifications()
+            .iter()
+            .any(|n| n.contains("“Notes” was moved") && n.contains("to Elsewhere")),
+        "{:?}",
+        f.notifications()
+    );
+    answer(&f, &moved(uuid::Uuid::new_v4().to_string()));
+    assert!(
+        f.notifications()
+            .iter()
+            .any(|n| n.contains("a workspace you're not in")),
+        "a workspace the person is not in is not named: {:?}",
+        f.notifications()
+    );
+    assert!(!f.chrome.borrow().window_transfers.is_pending());
 }

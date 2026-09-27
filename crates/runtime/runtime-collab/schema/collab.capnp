@@ -230,6 +230,12 @@ interface ChannelHandle {
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
 
+  # The application's answer to a `ChannelContext.handoff` request, or its
+  # report that the document it shows arrived retired. Bound to this
+  # certified primary route like reportContinuation, and never relayed to
+  # peers. The JSON vocabulary is `ui::collaboration::handoff`.
+  handoff @53 (appId :Text, message :Data) -> ();
+
   # Open a session-local bridge to the shell's existing authenticated surface
   # stream and input firewall. The target is the exact 32-byte certified Iroh
   # endpoint identity. Opening never grants control; the returned stream stays
@@ -790,6 +796,12 @@ struct ChannelContext {
   # Directed control frame for one selected document holder. Ordinary context
   # snapshots and follow controls leave this false.
   snapshotRequested @4 :Bool;
+  # Session-local handoff control for exactly one application instance,
+  # addressed by its primary route: the shell asking it to make its document
+  # durable, or to record that its window moved to another workspace. The
+  # JSON vocabulary is `ui::collaboration::handoff`. Empty on every other
+  # frame; never relayed to peers.
+  handoff @5 :Data;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

@@ -45,6 +45,7 @@ mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
+mod handoff;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
