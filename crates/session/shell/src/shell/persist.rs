@@ -20,8 +20,8 @@ pub enum StateNotice {
 impl StateNotice {
     pub fn title(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => "Your workspaces were not opened".into(),
-            Self::Unreadable { .. } => "Your workspaces could not be read".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-title"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-title"),
         }
     }
 
@@ -29,10 +29,8 @@ impl StateNotice {
     /// that must survive the trim is "your work is still there".
     pub fn body(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => {
-                "Saved by a newer version of Tilo. Nothing was changed.".into()
-            }
-            Self::Unreadable { .. } => "The file could not be read. Nothing was changed.".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-body"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-body"),
         }
     }
 
@@ -42,19 +40,20 @@ impl StateNotice {
                 path,
                 found,
                 understood,
-            } => format!(
-                "{} was written by a newer version of Tilo (layout {found}; this \
-                 one understands {understood}). It has not been changed, and \
-                 nothing has been written over it — this session runs without \
-                 saving, so it cannot be. Update again, or roll forward, to get \
-                 back to your own workspaces.",
-                path.display()
+            } => crate::shell::i18n::t_args(
+                "state-notice-newer-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("found", (*found).into()),
+                    ("understood", (*understood).into()),
+                ],
             ),
-            Self::Unreadable { path, error } => format!(
-                "{} exists but could not be read ({error}). It has not been \
-                 changed, and this session runs without saving, so it cannot \
-                 be.",
-                path.display()
+            Self::Unreadable { path, error } => crate::shell::i18n::t_args(
+                "state-notice-unreadable-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.as_str().into()),
+                ],
             ),
         }
     }

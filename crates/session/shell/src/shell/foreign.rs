@@ -1920,10 +1920,10 @@ impl ForeignSurfaceWidget {
     /// *buffer* couldn't be shown stays in [`ForeignFrameStore::last_error`] for whoever is debugging, not on this card.
     fn unshowable_text(&self) -> (String, String) {
         let detail = match store().last_error(self.surface_id) {
-            Some(_) => "This window can't be shown.",
-            None => "This app isn't responding.",
+            Some(_) => crate::shell::i18n::t("foreign-window-unshowable"),
+            None => crate::shell::i18n::t("foreign-window-not-responding"),
         };
-        (self.display_name().to_string(), detail.to_string())
+        (self.display_name().to_string(), detail)
     }
 
     fn draw_collaboration_overlay(

@@ -281,7 +281,13 @@ impl HostedTileInputs {
                 Err(error) => HostedDocumentState::Unavailable {
                     provider_id: app.package_id,
                     path: reference.path.clone(),
-                    reason: format!("{} is unavailable: {error}", reference.path.display()),
+                    reason: crate::shell::i18n::t_args(
+                        "hosted-document-unavailable",
+                        &[
+                            ("path", reference.path.display().to_string().into()),
+                            ("error", error.to_string().into()),
+                        ],
+                    ),
                 },
             };
             self.documents.borrow_mut().insert(tab, state);

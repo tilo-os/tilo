@@ -120,9 +120,10 @@ pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
 pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
 pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
 
-/// What a role is called on screen. One mapping shared by every surface
-/// that shows a role, so it can't be spelled two different ways.
-pub fn role_label(role: CapRole) -> &'static str {
+/// A role's stable name, as a collaborator row records it
+/// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
+/// through [`role_from_id`]; it is never shown as is.
+pub fn role_id(role: CapRole) -> &'static str {
     match role {
         CapRole::Owner => "owner",
         CapRole::Editor => "editor",
@@ -132,6 +133,20 @@ pub fn role_label(role: CapRole) -> &'static str {
         // directory, and a row that said nothing would read as ordinary.
         CapRole::Denied => "blocked",
     }
+}
+
+/// The role a [`role_id`] names, or `None` for a name this model does not
+/// define.
+pub fn role_from_id(id: &str) -> Option<CapRole> {
+    [
+        CapRole::Owner,
+        CapRole::Editor,
+        CapRole::Commenter,
+        CapRole::Viewer,
+        CapRole::Denied,
+    ]
+    .into_iter()
+    .find(|role| role_id(*role) == id)
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
