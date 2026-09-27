@@ -14875,6 +14875,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-agent-control-protocol",
+ "tilo-app",
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-cloud-enrollment",
