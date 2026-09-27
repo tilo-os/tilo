@@ -29,10 +29,11 @@ import android.view.inputmethod.InputMethodManager;
  * never connects to it. This one is, whenever the toolkit's focused widget is
  * a text field, and it forwards what the input method does to that field.
  *
- * <p>The toolkit does not publish the field's text, so each connection keeps
- * its own copy of what was typed since the field took the keyboard; that copy
- * is what the input method reads back for suggestions, autocorrection and
- * deletion. Anything outside it is answered as absent.
+ * <p>Each connection keeps its own copy of the field's text, which the input
+ * method reads back for suggestions, autocorrection and deletion. The copy
+ * starts from the text around the caret that the toolkit last reported and
+ * follows the connection's own edits; a change the toolkit makes by itself
+ * reaches the input method with the next connection.
  */
 public final class TiloTextInput extends View {
     private static final int PURPOSE_PASSWORD = 1;
@@ -45,6 +46,10 @@ public final class TiloTextInput extends View {
     private final Rect mCaret = new Rect();
     private boolean mEnabled;
     private int mPurpose;
+    /** The field's text around its selection, in UTF-16 offsets. */
+    private String mSurrounding = "";
+    private int mSurroundingAnchor;
+    private int mSurroundingFocus;
     private Connection mConnection;
 
     private TiloTextInput(Context context) {
@@ -83,7 +88,10 @@ public final class TiloTextInput extends View {
             final int y,
             final int width,
             final int height,
-            final boolean restart) {
+            final boolean restart,
+            final String surrounding,
+            final int anchor,
+            final int focus) {
         final TiloTextInput view = sInstance;
         if (view == null) {
             return;
@@ -91,6 +99,10 @@ public final class TiloTextInput extends View {
         view.post(new Runnable() {
             @Override
             public void run() {
+                int length = surrounding.length();
+                view.mSurrounding = surrounding;
+                view.mSurroundingAnchor = Math.max(0, Math.min(anchor, length));
+                view.mSurroundingFocus = Math.max(0, Math.min(focus, length));
                 view.apply(enabled, purpose, x, y, width, height, restart);
             }
         });
@@ -190,9 +202,12 @@ public final class TiloTextInput extends View {
                         | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
                 break;
         }
-        info.initialSelStart = 0;
-        info.initialSelEnd = 0;
-        mConnection = new Connection();
+        mConnection = new Connection(mSurrounding, mSurroundingAnchor, mSurroundingFocus);
+        info.initialSelStart = Selection.getSelectionStart(mConnection.getEditable());
+        info.initialSelEnd = Selection.getSelectionEnd(mConnection.getEditable());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            info.setInitialSurroundingText(mConnection.getEditable());
+        }
         return mConnection;
     }
 
@@ -210,13 +225,14 @@ public final class TiloTextInput extends View {
     }
 
     private final class Connection extends BaseInputConnection {
-        private final Editable mText = Editable.Factory.getInstance().newEditable("");
+        private final Editable mText;
         private int mBatch;
         private boolean mMonitorCursor;
 
-        Connection() {
+        Connection(String text, int anchor, int focus) {
             super(TiloTextInput.this, true);
-            Selection.setSelection(mText, 0);
+            mText = Editable.Factory.getInstance().newEditable(text);
+            Selection.setSelection(mText, anchor, focus);
         }
 
         /** Input methods keep calling a connection after it was replaced. */
