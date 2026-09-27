@@ -372,6 +372,33 @@ that Cargo can discover the libraries with:
 pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 ```
 
+### Android app host
+
+[`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
+cross-compiled with Android NDK r29. `rcargo`'s builder and the Fedora 44
+development image (`dist/dev/Containerfile.fedora44`) carry it, with the
+`CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
+that point Cargo at its clang. Elsewhere, install the same release and set
+those variables as the image does, plus:
+
+```bash
+rustup target add aarch64-linux-android x86_64-linux-android
+```
+
+`tools/ci/install-android-ndk.sh` does both in a CI or image build.
+
+The Java side and the packaging use the Android SDK at `$ANDROID_HOME`
+(default `~/Android/Sdk`), a JDK 17 or newer for `javac` and `keytool`, and
+`zip`:
+
+```bash
+sdkmanager 'build-tools;36.1.0' 'platforms;android-36'
+```
+
+An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
+`llvm-strip` that drops DWARF from the packaged library. Testing needs `adb`
+(`platform-tools`) and an `x86_64` emulator image or a device.
+
 ### Native Windows development
 
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host

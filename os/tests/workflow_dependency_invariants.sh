@@ -69,10 +69,9 @@ fi
 
 if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
-     "$rpm_snapshot_workflow" \
-   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' "$rpm_snapshot_workflow" \
-   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow" \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-fingerprint.py' "$rpm_snapshot_workflow" \
+   && grep -Fq './os/dev/resolve-rpm-snapshot.sh' "$rpm_snapshot_workflow" \
+   && grep -Fq 'workflow_call:' "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
@@ -117,7 +116,7 @@ fi
 
 relay_workflow="$workflows/tilo-relay.yaml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability, ensure-rpms]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2

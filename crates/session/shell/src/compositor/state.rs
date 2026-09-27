@@ -1131,11 +1131,20 @@ impl State {
         //    global leaves it with none, and EGL dies before mapping a toplevel.
         // 2. **Only formats we can composite.** `foreign::import_dmabuf_rgba`
         //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
+        //    10-bit RGB, half float and P010 are converted there too, so
+        //    HDR clients (PQ swapchains, 10-bit video) can hand them over.
         let dmabuf_formats: Vec<Format> = [
             Fourcc::Argb8888,
             Fourcc::Xrgb8888,
             Fourcc::Abgr8888,
             Fourcc::Xbgr8888,
+            Fourcc::Abgr2101010,
+            Fourcc::Xbgr2101010,
+            Fourcc::Argb2101010,
+            Fourcc::Xrgb2101010,
+            Fourcc::Abgr16161616f,
+            Fourcc::Xbgr16161616f,
+            Fourcc::P010,
         ]
         .into_iter()
         .map(|code| Format {
@@ -2956,8 +2965,13 @@ impl State {
                 return (ForeignCommitCapture::NoBuffer, None);
             };
             if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
+                let colorimetry = states
+                    .data_map
+                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
+                    .map(|(colorimetry, _)| colorimetry);
                 if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf)
+                    .prepare_dmabuf_capture(surface_id, client, dmabuf, colorimetry)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it

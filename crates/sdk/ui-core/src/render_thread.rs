@@ -18,6 +18,9 @@
 //! On `exiting`, the App sends `RenderRequest::Shutdown` and `join()`s the
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
+//! On `suspended` the worker drops only the surface and hands its context
+//! and renderer back ([`RenderThreadHandle::shutdown_keeping_renderer`]), so
+//! the next surface does not open a device and compile pipelines again.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the GPU render worker is a dedicated thread"
@@ -111,7 +114,32 @@ pub enum RenderRequest {
     },
     /// Drain the channel and exit the worker loop. Sent from
     /// `AppHandler::exiting`; the App then `join()`s the handle.
-    Shutdown,
+    Shutdown { keep_renderer: bool },
+}
+
+/// A device and a renderer whose pipelines are compiled for it, with no
+/// surface yet.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "only the native event-loop runner takes a renderer back to reuse"
+    )
+)]
+pub(crate) struct PreparedRenderer {
+    pub(crate) context: RenderContext,
+    pub(crate) device_id: usize,
+    pub(crate) renderer: Renderer,
+}
+
+impl PreparedRenderer {
+    #[cfg(feature = "native")]
+    pub(crate) fn device_lost(&self) -> bool {
+        self.context
+            .devices
+            .get(self.device_id)
+            .is_none_or(|device| device.loss_monitor().reason().is_some())
+    }
 }
 
 #[path = "render_retry.rs"]
@@ -147,7 +175,7 @@ pub struct RenderThreadHandle {
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
     pub(crate) retry: retry::RenderRetryState,
-    join: Option<JoinHandle<()>>,
+    join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
 /// One atomic reservation preserves both buffers across an aborted redraw.
@@ -264,12 +292,23 @@ impl RenderThreadHandle {
     /// returns — it must die before the `Window` it was created against,
     /// or wgpu may panic on Vulkan backends.
     pub fn shutdown_and_join(&mut self) {
+        let _ = self.stop(false);
+    }
+
+    /// [`Self::shutdown_and_join`], taking back the worker's context and
+    /// renderer if it was still running.
+    #[cfg(feature = "native")]
+    pub(crate) fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
+        self.stop(true)
+    }
+
+    fn stop(&mut self, keep_renderer: bool) -> Option<PreparedRenderer> {
         // Best-effort: the worker may already have crashed and dropped the
         // receiver, in which case the send errors and join yields immediately.
-        let _ = self.render_tx.send(RenderRequest::Shutdown);
-        if let Some(handle) = self.join.take() {
-            let _ = handle.join();
-        }
+        let _ = self
+            .render_tx
+            .send(RenderRequest::Shutdown { keep_renderer });
+        self.join.take()?.join().ok().flatten()
     }
 }
 
@@ -319,6 +358,7 @@ pub fn spawn_render_thread(
             };
             let mut target_valid = false;
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
+            let mut keep_renderer = false;
             loop {
                 let (message, receive_bounds) =
                     timing::around(native_timing.is_some(), || rx.recv());
@@ -351,7 +391,12 @@ pub fn spawn_render_thread(
                         full_redraw,
                         cpu_frame_id,
                     ),
-                    RenderRequest::Shutdown => break,
+                    RenderRequest::Shutdown {
+                        keep_renderer: keep,
+                    } => {
+                        keep_renderer = keep;
+                        break;
+                    }
                 };
                 let worker_timing = present_origin.map(|origin| (origin, crate::time::now()));
                 if let Some(observer) = native_timing {
@@ -488,9 +533,22 @@ pub fn spawn_render_thread(
             // the early resize-failure path that cannot recycle its scene.
             drop(pool_tx);
             notify_buffer_waiter(&waiting, wake.as_ref());
-            // Worker exits — `surface`, `renderer`, `render_cx` drop here in
-            // that order, which is the order wgpu requires (surface first
-            // releases the swapchain on the instance `render_cx` owns).
+            // The surface goes first: it releases its swapchain on the
+            // instance `render_cx` owns.
+            let device_id = surface.dev_id;
+            drop(damage_cache);
+            drop(surface);
+            if keep_renderer {
+                Some(PreparedRenderer {
+                    context: render_cx,
+                    device_id,
+                    renderer,
+                })
+            } else {
+                drop(renderer);
+                drop(render_cx);
+                None
+            }
         })
         .map_err(|e| format!("could not spawn the ui-render thread: {e}"))?;
     Ok(RenderThreadHandle {

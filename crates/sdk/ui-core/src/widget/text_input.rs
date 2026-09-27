@@ -3126,6 +3126,7 @@ impl TextInput {
                 let _ = state.splice_text(obj_id, char_idx, 0, s);
             }
             self.cursor_pos = self.cursor_pos.saturating_add(s.len());
+            self.selection_anchor = None;
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
@@ -5238,6 +5239,10 @@ impl TextInput {
             return;
         }
         match element_state {
+            // The tap the toolkit synthesises when a finger lifts: that
+            // finger's own touch already pressed, and a second press would
+            // count as a double click.
+            ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered => {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }

@@ -4,6 +4,11 @@
 //! two dumb buffers ping-ponged via `page_flip`, falling back to `dirty_framebuffer/set_crtc`.
 //! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
 //! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
+//!
+//! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
+//! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
+//! direct path renders into imported GBM buffers; the readback path swaps in a second pair of
+//! `XBGR2101010` dumb buffers and encodes on the CPU. Any refusal falls back to 8-bit SDR.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -16,7 +21,7 @@ use smithay::reexports::drm as drm_re;
 use smithay::reexports::rustix::fs::OFlags;
 
 use drm_re::Device as BasicDevice;
-use drm_re::buffer::{Buffer as _, DrmFourcc};
+use drm_re::buffer::{Buffer as _, DrmFourcc, DrmModifier, PlanarBuffer};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
     ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, PageFlipFlags,
@@ -30,10 +35,52 @@ use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
 
+use super::output_signal::{
+    AdaptiveSync, HdrRequest, HdrSignal, OutputSignalStatus, adaptive_sync_capability,
+    device_has_adaptive_sync, find_property, hdr_capability,
+};
 use super::outputs::DrmOutputKey;
+use crate::shell::color_pipeline::SdrToPqEncoder;
+use settings_store::hardware::HdrUnavailable;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = cursor::PLANE_SIZE;
+
+/// The pixel formats an output's scanout buffers can use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanoutFormat {
+    /// 8-bit SDR, the default.
+    Xrgb8888,
+    /// 10-bit PQ BT.2020, the preferred HDR format: every HDR-capable
+    /// display engine scans it out and it costs no more memory than SDR.
+    Xbgr2101010,
+    /// Half-float, used for HDR only when a 10-bit buffer cannot be made.
+    Abgr16161616f,
+}
+
+impl ScanoutFormat {
+    /// HDR formats in order of preference.
+    pub const HDR_PREFERENCE: [Self; 2] = [Self::Xbgr2101010, Self::Abgr16161616f];
+
+    pub fn fourcc(self) -> DrmFourcc {
+        match self {
+            Self::Xrgb8888 => DrmFourcc::Xrgb8888,
+            Self::Xbgr2101010 => DrmFourcc::Xbgr2101010,
+            Self::Abgr16161616f => DrmFourcc::Abgr16161616f,
+        }
+    }
+
+    pub fn bytes_per_pixel(self) -> u32 {
+        match self {
+            Self::Xrgb8888 | Self::Xbgr2101010 => 4,
+            Self::Abgr16161616f => 8,
+        }
+    }
+
+    pub fn is_hdr(self) -> bool {
+        !matches!(self, Self::Xrgb8888)
+    }
+}
 
 /// Whether a connected DRM connector is a display sink. `DisplayPort` Alt Mode
 /// over USB-C is reported by KMS as [`connector::Interface::DisplayPort`],
@@ -103,12 +150,15 @@ pub struct GbmScanoutSlot<'a> {
 }
 
 impl GbmScanoutBuffers {
-    fn new(card: Card, width: u32, height: u32) -> Result<Self, String> {
+    fn new(card: Card, width: u32, height: u32, format: ScanoutFormat) -> Result<Self, String> {
         let device = GbmDevice::new(card).map_err(|error| format!("gbm_create_device: {error}"))?;
         let usage = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING;
         let implicit_linear_usage = usage | GbmBufferFlags::LINEAR;
-        if !device.is_format_supported(gbm::Format::Xrgb8888, implicit_linear_usage) {
-            return Err("GBM does not support linear XRGB8888 scanout+rendering".to_owned());
+        let fourcc = format.fourcc();
+        if !device.is_format_supported(fourcc, implicit_linear_usage) {
+            return Err(format!(
+                "GBM does not support linear {fourcc:?} scanout+rendering"
+            ));
         }
         let allocate = |index: usize| {
             // With an explicit modifier, the modifier list owns the layout
@@ -120,18 +170,13 @@ impl GbmScanoutBuffers {
             match device.create_buffer_object_with_modifiers2::<()>(
                 width,
                 height,
-                gbm::Format::Xrgb8888,
+                fourcc,
                 std::iter::once(gbm::Modifier::Linear),
                 usage,
             ) {
                 Ok(buffer) => Ok(buffer),
                 Err(explicit_error) => device
-                    .create_buffer_object::<()>(
-                        width,
-                        height,
-                        gbm::Format::Xrgb8888,
-                        implicit_linear_usage,
-                    )
+                    .create_buffer_object::<()>(width, height, fourcc, implicit_linear_usage)
                     .map_err(|implicit_error| {
                         format!(
                             "GBM scanout buffer[{index}]: explicit linear allocation: \
@@ -142,7 +187,7 @@ impl GbmScanoutBuffers {
         };
         let buffers = [allocate(0)?, allocate(1)?];
         for (index, buffer) in buffers.iter().enumerate() {
-            validate_gbm_scanout_buffer(buffer, width, height)
+            validate_gbm_scanout_buffer(buffer, width, height, format)
                 .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))?;
         }
         let dma_fds = [
@@ -213,6 +258,11 @@ struct DirectScanoutState {
 pub struct DirectScanoutTargets {
     imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
     buffers: GbmScanoutBuffers,
+    format: ScanoutFormat,
+    /// The CRTC was modeset onto one of these buffers. A legacy page flip
+    /// cannot change the framebuffer format, so HDR targets become visible
+    /// through one `set_crtc` before flips take over.
+    crtc_bound: bool,
     state: DirectScanoutState,
     /// Complete scene revision last copied into each independent scanout
     /// image. Sparse Vello rendering retains its own source texture, but a
@@ -225,8 +275,12 @@ pub struct DirectScanoutTargets {
 #[derive(Debug)]
 pub enum DirectSubmit {
     Queued,
+    /// Shown by a modeset rather than a flip: no page-flip event follows.
+    Presented,
     Busy,
     Failed(String),
+    /// The first HDR frame could not be shown; the output must return to SDR.
+    HdrFailed(HdrUnavailable, String),
 }
 
 /// A successfully queued direct flip is not retired when the ioctl returns:
@@ -258,8 +312,17 @@ impl DirectScanoutTargets {
     ///
     /// Fails when GBM cannot allocate the scanout buffers or the renderer
     /// cannot import either of them.
-    pub fn new(scanout: &DrmScanout, bridge: &VelloDrmBridge) -> Result<Self, String> {
-        let buffers = scanout.allocate_gbm_scanout_buffers()?;
+    pub fn new(
+        scanout: &DrmScanout,
+        bridge: &VelloDrmBridge,
+        format: ScanoutFormat,
+    ) -> Result<Self, String> {
+        let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
+        let fourcc = match format {
+            ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
+            ScanoutFormat::Xbgr2101010 => media::dmabuf::DRM_FORMAT_XBGR2101010,
+            ScanoutFormat::Abgr16161616f => media::dmabuf::DRM_FORMAT_ABGR16161616F,
+        };
         let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
             let slot = buffers
                 .slot(index)
@@ -270,9 +333,9 @@ impl DirectScanoutTargets {
                 stride: slot.stride,
             };
             bridge
-                .import_bgra8_target(&ui::dmabuf_import::DmabufRef {
+                .import_scanout_target(&ui::dmabuf_import::DmabufRef {
                     planes: &[plane],
-                    fourcc: media::dmabuf::DRM_FORMAT_XRGB8888,
+                    fourcc,
                     modifier: slot.modifier,
                     width: slot.width,
                     height: slot.height,
@@ -284,12 +347,18 @@ impl DirectScanoutTargets {
         Ok(Self {
             imported,
             buffers,
+            format,
+            crtc_bound: false,
             // The dumb-buffer front remains visible until the first complete
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
             revisions: [None, None],
         })
+    }
+
+    pub fn format(&self) -> ScanoutFormat {
+        self.format
     }
 
     pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
@@ -339,6 +408,16 @@ impl DirectScanoutState {
         true
     }
 
+    /// A modeset showed `slot` directly: it is the front at once, with no
+    /// flip event to wait for.
+    fn present_immediately(&mut self, slot: usize) -> bool {
+        if self.render_slot() != Some(slot) {
+            return false;
+        }
+        self.front = slot;
+        true
+    }
+
     /// Retire the queued flip.  Only now is the old front released back to the
     /// renderer and the queued target promoted to the visible front.
     fn complete(&mut self) -> bool {
@@ -354,6 +433,7 @@ fn validate_gbm_scanout_buffer(
     buffer: &gbm::BufferObject<()>,
     width: u32,
     height: u32,
+    format: ScanoutFormat,
 ) -> Result<(), String> {
     if buffer.width() != width || buffer.height() != height {
         return Err(format!(
@@ -362,8 +442,12 @@ fn validate_gbm_scanout_buffer(
             buffer.height()
         ));
     }
-    if buffer.format() != gbm::Format::Xrgb8888 {
-        return Err(format!("format {:?} is not XRGB8888", buffer.format()));
+    if buffer.format() != format.fourcc() {
+        return Err(format!(
+            "format {:?} is not {:?}",
+            buffer.format(),
+            format.fourcc()
+        ));
     }
     if buffer.plane_count() != 1 || buffer.offset(0) != 0 {
         return Err(format!(
@@ -373,7 +457,7 @@ fn validate_gbm_scanout_buffer(
         ));
     }
     let minimum_stride = width
-        .checked_mul(4)
+        .checked_mul(format.bytes_per_pixel())
         .ok_or_else(|| "row size overflows u32".to_owned())?;
     if buffer.stride_for_plane(0) < minimum_stride {
         return Err(format!(
@@ -799,6 +883,19 @@ impl CardHandle {
         crate::wayland::edid::parse_monitor_identity(&edid)
     }
 
+    /// The sink's HDR description, when its EDID advertises the PQ transfer
+    /// Tilo signals. `None` for an SDR sink or an unreadable EDID.
+    pub fn read_hdr_display_info(
+        &self,
+        connector_name: &str,
+    ) -> Option<crate::wayland::edid::HdrDisplayInfo> {
+        let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
+        let info = crate::wayland::edid::parse_hdr_display_info(&edid);
+        info.supported_transfers
+            .contains(&crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084)
+            .then_some(info)
+    }
+
     /// `/sys/class/drm/<cardN>-<connector>`.
     pub fn connector_sysfs(&self, connector_name: &str) -> std::path::PathBuf {
         let card_name = self
@@ -831,17 +928,20 @@ impl CardHandle {
     }
 
     /// Describe every physically connected sink using the live KMS mode
-    /// table. The result is published to Settings; it intentionally reports
-    /// HDR/VRR as unavailable until this XRGB8888 scanout path can set the
-    /// corresponding DRM properties. EDID support alone is not an applicable
-    /// compositor capability.
+    /// table. The result is published to Settings. Sink support alone is not
+    /// an applicable compositor capability: HDR also needs the connector's
+    /// HDR properties and adaptive sync the driver's CRTC property, and a
+    /// feature the driver refused at runtime is reported unavailable, with
+    /// the reason.
     pub fn display_capabilities(
         &self,
         connectors: &[ConnectorSnapshot],
         profiles: &BTreeMap<String, String>,
+        signal_status: &BTreeMap<String, OutputSignalStatus>,
     ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
         use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
 
+        let driver_adaptive_sync = device_has_adaptive_sync(&self.card);
         let mut outputs = Vec::new();
         for snapshot in connectors {
             let connector = &snapshot.connector_name;
@@ -863,19 +963,22 @@ impl CardHandle {
                 height: u32::from(height),
                 refresh_mhz: mode_refresh_mhz(&snapshot.mode),
             };
-            let sysfs = self.connector_sysfs(connector);
-            let sink_hdr = std::fs::read(sysfs.join("edid")).ok().is_some_and(|edid| {
-                crate::wayland::edid::parse_hdr_display_info(&edid)
-                    .supported_transfers
-                    .iter()
-                    .any(|transfer| transfer.is_hdr())
-            });
+            let sink_hdr = self.read_hdr_display_info(connector).is_some();
+            let (hdr, hdr_unavailable_reason) = hdr_capability(
+                sink_hdr,
+                HdrSignal::probe(&self.card, snapshot.handle).missing(),
+                signal_status.get(&snapshot.config_key),
+            );
             // `vrr_capable` is a standard DRM connector property exported by
             // modern amdgpu/i915 kernels. Absence is unknown/not usable, never
             // interpreted as support.
-            let sink_vrr = std::fs::read_to_string(sysfs.join("vrr_capable"))
-                .ok()
-                .is_some_and(|value| value.trim() == "1");
+            let sink_vrr = find_property(&self.card, snapshot.handle, "vrr_capable")
+                .is_some_and(|(_, value, _)| value == 1);
+            let (vrr, vrr_unavailable_reason) = adaptive_sync_capability(
+                sink_vrr,
+                driver_adaptive_sync,
+                signal_status.get(&snapshot.config_key),
+            );
             let builtin = is_builtin_connector(connector);
             outputs.push(DisplayOutputSnapshot {
                 descriptor: OutputDescriptor {
@@ -885,26 +988,17 @@ impl CardHandle {
                     connector: snapshot.config_key.clone(),
                     connector_label: connector.clone(),
                     modes,
-                    // This backend currently presents XRGB8888 dumb buffers
-                    // and does not set HDR_OUTPUT_METADATA / Colorspace.
-                    hdr: false,
-                    // Likewise it does not set the CRTC VRR_ENABLED property.
-                    vrr: false,
+                    hdr,
+                    vrr,
                     color_profiles: profiles.keys().cloned().collect(),
                     monitor: snapshot.monitor.clone(),
                 },
                 current_mode,
                 builtin,
                 sink_hdr,
-                hdr_unavailable_reason: sink_hdr.then(|| {
-                    "Display supports HDR, but the active XRGB8888 scanout path cannot signal HDR safely"
-                        .into()
-                }),
+                hdr_unavailable_reason,
                 sink_vrr,
-                vrr_unavailable_reason: sink_vrr.then(|| {
-                    "Display supports adaptive sync, but the active scanout path cannot enable the CRTC VRR property"
-                        .into()
-                }),
+                vrr_unavailable_reason,
                 color_profile_labels: profiles.clone(),
             });
         }
@@ -948,6 +1042,7 @@ impl CardHandle {
                 config_key: snapshot.config_key.clone(),
                 physical_mm: snapshot.physical_mm,
                 monitor: snapshot.monitor.clone(),
+                hdr_display: self.read_hdr_display_info(&snapshot.connector_name),
                 crtc,
                 scanout,
             }),
@@ -1344,6 +1439,51 @@ pub struct DrmScanout {
     xrgb_scanout_epoch: Option<u64>,
     xrgb_software_cursor: [Option<FineDamageRect>; 2],
     xrgb_damage_requested: bool,
+    /// The CRTC's adaptive-sync property and what was last written to it.
+    adaptive_sync: AdaptiveSync,
+    /// Pixel format of `buffers`. HDR swaps in a 10-bit pair.
+    format: ScanoutFormat,
+    /// The dumb-buffer pair not in use: the SDR pair while HDR dumb buffers
+    /// are scanned out.
+    standby: Option<DumbPair>,
+    /// The connector's HDR properties and whether the HDR signal is on.
+    hdr_signal: HdrSignal,
+    /// HDR is wanted on this output, with the sink's metadata.
+    hdr_request: Option<HdrRequest>,
+    /// CPU encoder for the readback path and the software cursor in HDR.
+    hdr_encoder: Option<std::sync::Arc<SdrToPqEncoder>>,
+}
+
+/// Two dumb buffers and their framebuffers, in one pixel format.
+struct DumbPair {
+    buffers: [DumbBuffer; 2],
+    fbs: [framebuffer::Handle; 2],
+}
+
+/// A dumb buffer described for `ADDFB2`, which takes an explicit fourcc:
+/// legacy `ADDFB` maps depth 30 to `XRGB2101010`, not the `XBGR2101010`
+/// layout the renderer writes.
+struct PlanarDumb<'a>(&'a DumbBuffer);
+
+impl PlanarBuffer for PlanarDumb<'_> {
+    fn size(&self) -> (u32, u32) {
+        self.0.size()
+    }
+    fn format(&self) -> DrmFourcc {
+        self.0.format()
+    }
+    fn modifier(&self) -> Option<DrmModifier> {
+        None
+    }
+    fn pitches(&self) -> [u32; 4] {
+        [self.0.pitch(), 0, 0, 0]
+    }
+    fn handles(&self) -> [Option<drm_re::buffer::Handle>; 4] {
+        [Some(self.0.handle()), None, None, None]
+    }
+    fn offsets(&self) -> [u32; 4] {
+        [0; 4]
+    }
 }
 
 impl DrmScanout {
@@ -1376,7 +1516,7 @@ impl DrmScanout {
     /// Whether the current scanout has a non-wrapping destination-history epoch.
     #[doc(hidden)]
     pub fn xrgb_damage_available(&self) -> bool {
-        self.xrgb_damage_requested && self.xrgb_scanout_epoch.is_some()
+        self.xrgb_damage_requested && self.xrgb_scanout_epoch.is_some() && !self.format.is_hdr()
     }
 
     /// Open `card_path` and become DRM master; split from [`Self::new`] so a
@@ -1500,6 +1640,9 @@ impl DrmScanout {
             mode_refresh_mhz(&mode),
         );
 
+        let adaptive_sync = AdaptiveSync::probe(&card, crtc, connector);
+        let hdr_signal = HdrSignal::probe(&card, connector);
+
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
             super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
@@ -1549,6 +1692,12 @@ impl DrmScanout {
             xrgb_software_cursor: [None, None],
             xrgb_damage_requested: std::env::var("TILO_DRM_XRGB_DAMAGE")
                 .is_ok_and(|value| value == "1"),
+            adaptive_sync,
+            format: ScanoutFormat::Xrgb8888,
+            standby: None,
+            hdr_signal,
+            hdr_request: None,
+            hdr_encoder: None,
         })
     }
 
@@ -1674,8 +1823,246 @@ impl DrmScanout {
     /// Allocate the two off-screen GBM targets used by the direct presenter.
     /// The current dumb-buffer CRTC remains untouched until a completed frame
     /// is explicitly submitted.
-    fn allocate_gbm_scanout_buffers(&self) -> Result<GbmScanoutBuffers, String> {
-        GbmScanoutBuffers::new(self.card.try_clone()?, self.width, self.height)
+    fn allocate_gbm_scanout_buffers(
+        &self,
+        format: ScanoutFormat,
+    ) -> Result<GbmScanoutBuffers, String> {
+        GbmScanoutBuffers::new(self.card.try_clone()?, self.width, self.height, format)
+    }
+
+    /// Pixel format of the dumb buffers scanned out on the readback path.
+    pub fn format(&self) -> ScanoutFormat {
+        self.format
+    }
+
+    /// The driver piece HDR signalling lacks on this connector, if any.
+    pub fn hdr_driver_missing(&self) -> Option<HdrUnavailable> {
+        self.hdr_signal.missing()
+    }
+
+    /// The HDR signal is on: the connector announces PQ BT.2020.
+    pub fn hdr_active(&self) -> bool {
+        self.hdr_signal.enabled()
+    }
+
+    pub fn hdr_request(&self) -> Option<&HdrRequest> {
+        self.hdr_request.as_ref()
+    }
+
+    /// The CPU SDR → PQ encoder for the current request.
+    pub fn hdr_encoder(&self) -> Option<std::sync::Arc<SdrToPqEncoder>> {
+        self.hdr_encoder.clone()
+    }
+
+    /// Ask for HDR (with the sink's metadata and SDR white) or for SDR.
+    /// Turning HDR off returns the output to 8-bit SDR at once; turning it
+    /// on takes effect with the next frame the presenter renders.
+    pub fn set_hdr_request(&mut self, request: Option<HdrRequest>) {
+        if self.hdr_request == request {
+            return;
+        }
+        let white_changed = self.hdr_request.as_ref().map(|r| r.sdr_white_nits)
+            != request.as_ref().map(|r| r.sdr_white_nits);
+        self.hdr_request = request;
+        if white_changed {
+            self.hdr_encoder = self
+                .hdr_request
+                .as_ref()
+                .map(|request| std::sync::Arc::new(SdrToPqEncoder::new(request.sdr_white_nits)));
+        }
+        if self.hdr_request.is_none() {
+            self.leave_hdr();
+        }
+    }
+
+    /// Allocate one pair of dumb buffers in `format`, cleared to black
+    /// (which is also PQ black), with `ADDFB2` framebuffers.
+    fn allocate_dumb_pair(&self, format: ScanoutFormat) -> Result<DumbPair, String> {
+        let bpp = format.bytes_per_pixel().saturating_mul(8);
+        let make = |index: usize| -> Result<(DumbBuffer, framebuffer::Handle), String> {
+            let mut buffer = self
+                .card
+                .create_dumb_buffer((self.width, self.height), format.fourcc(), bpp)
+                .map_err(|error| format!("create {format:?} dumb buffer[{index}]: {error}"))?;
+            if let Ok(mut map) = self.card.map_dumb_buffer(&mut buffer) {
+                map.as_mut().fill(0);
+            }
+            let fb = self
+                .card
+                .add_planar_framebuffer(&PlanarDumb(&buffer), FbCmd2Flags::empty())
+                .map_err(|error| format!("add {format:?} framebuffer[{index}]: {error}"))?;
+            Ok((buffer, fb))
+        };
+        let (buf0, fb0) = make(0)?;
+        let (buf1, fb1) = match make(1) {
+            Ok(second) => second,
+            Err(error) => {
+                let _ = self.card.destroy_framebuffer(fb0);
+                return Err(error);
+            }
+        };
+        Ok(DumbPair {
+            buffers: [buf0, buf1],
+            fbs: [fb0, fb1],
+        })
+    }
+
+    /// Readback-path HDR: scan out a 10-bit dumb pair with the HDR signal
+    /// on. The SDR pair waits in standby; every failure leaves the output as
+    /// it was, in SDR.
+    ///
+    /// # Errors
+    ///
+    /// The reason HDR could not be shown, for Settings, and the detail.
+    pub fn enter_hdr_readback(&mut self) -> Result<(), (HdrUnavailable, String)> {
+        if self.format.is_hdr() {
+            return Ok(());
+        }
+        let Some(request) = self.hdr_request.clone() else {
+            return Err((
+                HdrUnavailable::DriverRejected,
+                "no HDR request for this output".to_owned(),
+            ));
+        };
+        if let Some(missing) = self.hdr_signal.missing() {
+            return Err((missing, "connector lacks HDR properties".to_owned()));
+        }
+        let pair = self
+            .allocate_dumb_pair(ScanoutFormat::Xbgr2101010)
+            .map_err(|error| (HdrUnavailable::FormatUnsupported, error))?;
+        if let Err(error) = self
+            .hdr_signal
+            .enable(&self.card, self.connector, &request.display)
+        {
+            self.destroy_pair(&pair);
+            return Err((HdrUnavailable::DriverRejected, error));
+        }
+        if let Err(error) = self.card.set_crtc(
+            self.crtc,
+            pair.fbs.first().copied(),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            let _ = self.hdr_signal.disable(&self.card, self.connector);
+            self.destroy_pair(&pair);
+            self.force_flush_via_set_crtc();
+            return Err((
+                HdrUnavailable::FormatUnsupported,
+                format!("set_crtc (XBGR2101010): {error}"),
+            ));
+        }
+        let mut pair = pair;
+        std::mem::swap(&mut self.buffers, &mut pair.buffers);
+        std::mem::swap(&mut self.fbs, &mut pair.fbs);
+        self.standby = Some(pair);
+        self.format = ScanoutFormat::Xbgr2101010;
+        self.front = 0;
+        self.flip_pending = false;
+        self.flip_queued_at = None;
+        self.invalidate_xrgb_history();
+        eprintln!(
+            "tilo compositor: DRM HDR on connector={} path=readback format=XBGR2101010",
+            u32::from(self.connector),
+        );
+        Ok(())
+    }
+
+    /// Return to 8-bit SDR: signal off, SDR dumb pair back on the CRTC.
+    pub fn leave_hdr(&mut self) {
+        let was_active = self.hdr_signal.enabled() || self.format.is_hdr();
+        if let Err(error) = self.hdr_signal.disable(&self.card, self.connector) {
+            tracing::warn!(%error, "DRM scanout: restoring SDR signalling was refused");
+        }
+        if let Some(mut pair) = self.standby.take() {
+            std::mem::swap(&mut self.buffers, &mut pair.buffers);
+            std::mem::swap(&mut self.fbs, &mut pair.fbs);
+            self.format = ScanoutFormat::Xrgb8888;
+            self.front = 0;
+            self.flip_pending = false;
+            self.flip_queued_at = None;
+            self.force_flush_via_set_crtc();
+            self.destroy_pair(&pair);
+            self.invalidate_xrgb_history();
+        }
+        if was_active {
+            eprintln!(
+                "tilo compositor: DRM HDR off connector={}",
+                u32::from(self.connector),
+            );
+        }
+    }
+
+    fn destroy_pair(&self, pair: &DumbPair) {
+        for fb in pair.fbs {
+            let _ = self.card.destroy_framebuffer(fb);
+        }
+    }
+
+    /// The dumb-buffer front is what the CRTC shows: make the connector's
+    /// signal match its encoding.
+    fn match_signal_to_dumb_front(&mut self) {
+        if self.format.is_hdr() {
+            if self.hdr_signal.needs(true)
+                && let Some(request) = self.hdr_request.clone()
+                && let Err(error) =
+                    self.hdr_signal
+                        .enable(&self.card, self.connector, &request.display)
+            {
+                tracing::warn!(%error, "DRM scanout: re-enabling the HDR signal was refused");
+            }
+        } else if self.hdr_signal.needs(false)
+            && let Err(error) = self.hdr_signal.disable(&self.card, self.connector)
+        {
+            tracing::warn!(%error, "DRM scanout: restoring SDR signalling was refused");
+        }
+    }
+
+    /// Sink and driver both support adaptive sync on this output.
+    pub fn adaptive_sync_supported(&self) -> bool {
+        self.adaptive_sync.supported()
+    }
+
+    /// Adaptive sync is enabled on the CRTC right now.
+    pub fn adaptive_sync_active(&self) -> bool {
+        self.adaptive_sync.active()
+    }
+
+    /// The driver refused to enable adaptive sync.
+    pub fn adaptive_sync_rejected(&self) -> bool {
+        self.adaptive_sync.rejected()
+    }
+
+    /// Ask for adaptive sync on or off. The property is written between
+    /// flips: now when none is queued, otherwise just before the next one.
+    pub fn set_adaptive_sync(&mut self, on: bool) {
+        self.adaptive_sync.want(on);
+        if !self.flip_pending {
+            self.apply_adaptive_sync();
+        }
+    }
+
+    fn apply_adaptive_sync(&mut self) {
+        let (Some(value), Some(property)) = (
+            self.adaptive_sync.pending_write(),
+            self.adaptive_sync.property(),
+        ) else {
+            return;
+        };
+        let result = self
+            .card
+            .set_property(self.crtc, property, u64::from(value));
+        if let Err(error) = &result {
+            tracing::warn!(%error, crtc = ?self.crtc, value, "DRM scanout: VRR_ENABLED write refused");
+        }
+        // Durable and machine-readable, like the modeset line: a hardware
+        // check must tell a refused property from one never requested.
+        eprintln!(
+            "tilo compositor: DRM adaptive sync crtc={} enabled={value} accepted={}",
+            u32::from(self.crtc),
+            result.is_ok(),
+        );
+        self.adaptive_sync.record_write(value, result.is_ok());
     }
 
     /// The crtc this scanout drives, so hotplug can pick one still free.
@@ -1712,6 +2099,12 @@ impl DrmScanout {
                 "DRM scanout: front buffer index out of range on resume; skipping re-modeset"
             );
         }
+        // Another DRM master may have left adaptive sync and the HDR signal
+        // either way.
+        self.adaptive_sync.forget_applied();
+        self.apply_adaptive_sync();
+        self.hdr_signal.forget();
+        self.match_signal_to_dumb_front();
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
         if self.hw_cursor_active
             && let Some(buf) = self.cursor_buffer.as_ref()
@@ -1990,7 +2383,21 @@ impl DrmScanout {
                 && let Some((px, py)) = cursor
                 && let Some(bitmap) = cursor_bitmap.as_deref()
             {
-                draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                match (self.format.is_hdr(), self.hdr_encoder.as_deref()) {
+                    (true, Some(encoder)) => cursor::composite_xbgr2101010(
+                        dst,
+                        pitch,
+                        dw,
+                        dh,
+                        (pixel_coord(px), pixel_coord(py)),
+                        bitmap,
+                        encoder,
+                    ),
+                    (true, None) => {}
+                    (false, _) => {
+                        draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                    }
+                }
             }
         }
 
@@ -2028,6 +2435,7 @@ impl DrmScanout {
 
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
+        self.apply_adaptive_sync();
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
@@ -2074,6 +2482,7 @@ impl DrmScanout {
 
     /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
     fn flush_dirty(&mut self, idx: usize) -> bool {
+        self.apply_adaptive_sync();
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
             return false;
@@ -2199,6 +2608,10 @@ impl DrmScanout {
         if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
             return DirectSubmit::Busy;
         }
+        self.apply_adaptive_sync();
+        if targets.format.is_hdr() && !targets.crtc_bound {
+            return self.bind_hdr_target(targets, index);
+        }
         let Some(framebuffer) = targets.framebuffer(index) else {
             return DirectSubmit::Failed(format!(
                 "direct scanout slot {index} has no KMS framebuffer"
@@ -2234,6 +2647,59 @@ impl DrmScanout {
         }
     }
 
+    /// Show the first frame of HDR direct targets: signal on, then a modeset
+    /// onto the 10-bit (or half-float) framebuffer. Undone on any refusal.
+    fn bind_hdr_target(
+        &mut self,
+        targets: &mut DirectScanoutTargets,
+        index: usize,
+    ) -> DirectSubmit {
+        let Some(framebuffer) = targets.framebuffer(index) else {
+            return DirectSubmit::Failed(format!(
+                "direct scanout slot {index} has no KMS framebuffer"
+            ));
+        };
+        let Some(request) = self.hdr_request.clone() else {
+            return DirectSubmit::HdrFailed(
+                HdrUnavailable::DriverRejected,
+                "HDR targets without an HDR request".to_owned(),
+            );
+        };
+        if self.hdr_signal.needs(true)
+            && let Err(error) = self
+                .hdr_signal
+                .enable(&self.card, self.connector, &request.display)
+        {
+            return DirectSubmit::HdrFailed(HdrUnavailable::DriverRejected, error);
+        }
+        if let Err(error) = self.card.set_crtc(
+            self.crtc,
+            Some(framebuffer),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            let _ = self.hdr_signal.disable(&self.card, self.connector);
+            self.force_flush_via_set_crtc();
+            return DirectSubmit::HdrFailed(
+                HdrUnavailable::FormatUnsupported,
+                format!("set_crtc ({:?}): {error}", targets.format),
+            );
+        }
+        if !targets.state.present_immediately(index) {
+            return DirectSubmit::Failed(format!(
+                "direct scanout slot {index} lost ownership before the HDR modeset"
+            ));
+        }
+        targets.crtc_bound = true;
+        eprintln!(
+            "tilo compositor: DRM HDR on connector={} path=direct format={:?}",
+            u32::from(self.connector),
+            targets.format,
+        );
+        DirectSubmit::Presented
+    }
+
     /// Retire the imported target for this output after its page-flip event.
     pub fn mark_direct_flip_complete(
         &mut self,
@@ -2267,6 +2733,7 @@ impl DrmScanout {
     pub fn restore_legacy_front(&mut self) {
         self.flip_pending = false;
         self.force_flush_via_set_crtc();
+        self.match_signal_to_dumb_front();
         self.invalidate_xrgb_history();
     }
 
@@ -2294,6 +2761,7 @@ impl DrmScanout {
             } else {
                 tracing::info!("DRM scanout: display restored (DPMS on)");
             }
+            self.match_signal_to_dumb_front();
         } else {
             // Blank: detach the CRTC so nothing is scanned out.
             if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
@@ -2336,7 +2804,11 @@ impl Drop for DrmScanout {
         // handles.  Explicit teardown matters for hotplug and rapid developer
         // compositor replacement; otherwise each cycle leaks two IDs until
         // the DRM fd finally closes.
-        for fb in self.fbs {
+        let standby = self
+            .standby
+            .as_ref()
+            .map_or([None, None], |pair| pair.fbs.map(Some));
+        for fb in self.fbs.into_iter().chain(standby.into_iter().flatten()) {
             if let Err(error) = self.card.destroy_framebuffer(fb) {
                 tracing::debug!(?fb, %error, "failed to destroy DRM framebuffer during teardown");
             }
@@ -2358,6 +2830,8 @@ pub struct ScanoutBuild {
     pub physical_mm: Option<(u32, u32)>,
     /// EDID identity of the monitor on this connector, when it has one.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
+    /// The sink's HDR description, when its EDID advertises PQ.
+    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
