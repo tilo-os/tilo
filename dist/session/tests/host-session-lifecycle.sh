@@ -73,13 +73,19 @@ fi
 # journald. Drain it so the real flight recorder never hits a broken pipe.
 cat >/dev/null
 SH
+cat >"$work/loginctl" <<'SH'
+#!/bin/sh
+printf 'loginctl %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+exit 0
+SH
 cp "$repo_root/dist/session/tilo-flight-recorder.py" "$work/tilo-flight-recorder"
-chmod 0755 "$work/systemctl" "$work/systemd-cat" \
+chmod 0755 "$work/systemctl" "$work/systemd-cat" "$work/loginctl" \
     "$work/dbus-update-activation-environment" "$work/shell" "$work/tilo-flight-recorder"
 tilo_stage_script "$repo_root/dist/session/tilo-session-runner" "$work/tilo-session" \
     SYSTEMCTL="$work/systemctl" \
     SYSTEMD_CAT="$work/systemd-cat" \
     DBUS_UPDATE="$work/dbus-update-activation-environment" \
+    LOGINCTL="$work/loginctl" \
     FLIGHT_RECORDER="$work/tilo-flight-recorder"
 
 # The shared runner is an internal package component, but it still fails
@@ -214,12 +220,14 @@ grep -Fqx 'shell-term' "$log"
 # importantly, target/environment teardown happens exactly once rather than
 # being killed alongside `loginctl terminate-session self`.
 : >"$log"
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session" "$work/shell"
+XDG_SESSION_ID=fixture-42 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 \
+    "$work/tilo-session" "$work/shell"
 ! grep -Fq 'compositor exited without a logout request' "$log"
 grep -Fqx 'systemctl --user stop tilo-graphical-session.target' "$log"
 grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
 grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
 [[ $(grep -Fc 'systemctl --user stop tilo-graphical-session.target' "$log") == 1 ]]
+grep -Fqx 'loginctl terminate-session fixture-42' "$log"
 if find "$XDG_RUNTIME_DIR/tilo-session" -name 'logout-request-*' -print -quit | grep -q .; then
     echo 'logout request leaked after wrapper cleanup' >&2
     exit 1

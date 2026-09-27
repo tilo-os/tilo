@@ -74,6 +74,16 @@ cat >"$lifecycle" <<'SH'
 case "${1:-}" in /*) ;; *) exit 73 ;; esac
 test -x "$1" || exit 74
 env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
+test -n "${TILO_DEV_SESSION_ATTESTATION:-}" || exit 75
+attest_tmp=$TILO_DEV_SESSION_ATTESTATION.$$
+{
+    printf 'runner_pid=%s\n' "$$"
+    printf 'compositor_pid=%s\n' "$$"
+    sed -n '/^path=/p;/^sha256=/p;/^revision=/p;/^source_state=/p' \
+        "$TILO_DEV_SESSION_ATTESTATION"
+} >"$attest_tmp"
+chmod 0600 "$attest_tmp"
+mv -f "$attest_tmp" "$TILO_DEV_SESSION_ATTESTATION"
 printf 'managed %s ::' "$1"
 shift
 if (( $# )); then
@@ -156,6 +166,9 @@ fi
 attest=$test_runtime/tilo-app-session/active
 if [[ -r $attest ]] \
     && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
+    && grep -Eq '^runner_pid=[0-9]+$' "$attest" \
+    && grep -Eq '^compositor_pid=[0-9]+$' "$attest" \
+    && ! grep -q '^pid=' "$attest" \
     && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
     echo "ok: developer launch records a protected binary attestation"
     pass=$((pass + 1))
