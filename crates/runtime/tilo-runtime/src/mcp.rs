@@ -1,15 +1,13 @@
 //! Transport-independent MCP projection of the production action broker.
-use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::remote_actions::BrokerActionHost;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost as _, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
+    ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 
-pub struct McpServer {
-    broker: AppActionBroker,
+pub struct McpServer<H> {
+    host: H,
     room: String,
     actor: String,
 }
@@ -81,14 +79,10 @@ fn tool_result(result: Result<Value, String>) -> Value {
         Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
 }
-impl McpServer {
+impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
-    pub fn new(broker: AppActionBroker, room: String, actor: String) -> Self {
-        Self {
-            broker,
-            room,
-            actor,
-        }
+    pub fn new(host: H, room: String, actor: String) -> Self {
+        Self { host, room, actor }
     }
     pub async fn handle(&mut self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -338,8 +332,8 @@ impl McpServer {
         }
     }
     /// The action host every caller shares; this bridge is one more caller.
-    fn host(&self) -> BrokerActionHost {
-        BrokerActionHost::new(self.broker.clone())
+    const fn host(&self) -> &H {
+        &self.host
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
