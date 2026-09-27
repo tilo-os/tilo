@@ -11282,6 +11282,15 @@ impl ShellOverlayHost {
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
                     t("guide-rebind-reserved")
                 }
+                settings_store::hardware::ShortcutConfigError::FixedShortcut(id) => t_args(
+                    "guide-rebind-in-use",
+                    &[(
+                        "action",
+                        settings_store::keyboard_shortcuts::fixed_shortcut(id)
+                            .map_or_else(|| id.to_string(), |fixed| t(fixed.label_key))
+                            .into(),
+                    )],
+                ),
                 settings_store::hardware::ShortcutConfigError::InvalidChord
                 | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
                     t("guide-rebind-unsupported")
@@ -11393,7 +11402,8 @@ impl ShellOverlayHost {
                 }
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey
                 | settings_store::hardware::ShortcutConfigError::InvalidChord
-                | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
+                | settings_store::hardware::ShortcutConfigError::Fixed(_)
+                | settings_store::hardware::ShortcutConfigError::FixedShortcut(_) => {
                     t("guide-reset-invalid")
                 }
             });
