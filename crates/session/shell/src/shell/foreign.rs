@@ -1379,7 +1379,9 @@ impl ForeignFrameStore {
             .capture_protection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.surfaces.contains(&id) || guard.apps.values().any(|app| app == app_id)
+        guard.surfaces.contains(&id)
+            || guard.apps.values().any(|app| app == app_id)
+            || crate::shell::capture_protection::holds_secrets(app_id)
     }
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.

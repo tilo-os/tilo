@@ -9,7 +9,8 @@
 //!
 //! Protected content is:
 //!
-//! - every surface of an app that asked for protection over its
+//! - every surface of an app known to hold secrets ([`holds_secrets`]),
+//!   and of an app that asked for protection over its
 //!   authenticated shell-ui connection (password managers, authenticator
 //!   apps), recorded per surface in [`ForeignFrameStore`], plus the popups
 //!   those windows open;
@@ -29,6 +30,30 @@ use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
+
+/// Apps known to show secrets — password managers and authenticator codes.
+/// Their windows are protected whether or not they ask, since most cannot:
+/// only apps built on the Tilo toolkit speak the shell-ui request. Matched
+/// against the Wayland app id, ignoring case.
+const SECRET_HOLDING_APP_IDS: &[&str] = &[
+    "so.tilo.passwords",
+    "so.tilo.totp",
+    "org.keepassxc.keepassxc",
+    "com.bitwarden.desktop",
+    "bitwarden",
+    "1password",
+    "org.gnome.world.secrets",
+    "org.gnome.seahorse.application",
+    "com.belmoussaoui.authenticator",
+];
+
+/// Whether windows of `app_id` are protected for what the app is, before
+/// any request.
+pub fn holds_secrets(app_id: &str) -> bool {
+    SECRET_HOLDING_APP_IDS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(app_id))
+}
 
 thread_local! {
     static CAPTURE_PAINT: Cell<bool> = const { Cell::new(false) };
