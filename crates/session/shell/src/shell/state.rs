@@ -3023,21 +3023,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.set_task_status_at(task_id, status, actor, now))
+            .cloned()
         else {
             return false;
         };
-        if task.status == status {
-            return false;
-        }
-        task.status = status;
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
@@ -3063,17 +3053,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.append_task_audit_at(task_id, actor, summary, now))
+            .cloned()
         else {
             return false;
         };
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: summary.into(),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
