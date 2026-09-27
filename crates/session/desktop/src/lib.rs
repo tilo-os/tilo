@@ -24,6 +24,7 @@ pub mod i18n;
 pub mod intents;
 pub mod records;
 pub mod resolver;
+pub mod search;
 pub mod session_commands;
 pub mod topbar;
 
