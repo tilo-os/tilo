@@ -4993,12 +4993,8 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
         "settings.section",
         "Keyboard Shortcuts",
     );
-    section = portable::attach_portable_preferences(
-        section,
-        Category::KeyboardShortcuts,
-        doc,
-        &prefs,
-    );
+    section =
+        portable::attach_portable_preferences(section, Category::KeyboardShortcuts, doc, &prefs);
     for (key, shortcut_label) in crate::panes::keyboard_shortcuts::resource_entries() {
         // Resource action ids are stable, readable derivatives of their
         // durable key rather than a hand-maintained subset of the recorder
@@ -5724,14 +5720,12 @@ mod tests {
         for pref in PORTABLE_PREFERENCES {
             let mut doc = AutoCommit::new();
             let (ok, bad) = match pref.pref_type() {
-                PortablePrefType::Bool => (
-                    SettingValue::Bool(true),
-                    SettingValue::Text("nope".into()),
-                ),
-                PortablePrefType::Text => (
-                    SettingValue::Text("value".into()),
-                    SettingValue::Bool(true),
-                ),
+                PortablePrefType::Bool => {
+                    (SettingValue::Bool(true), SettingValue::Text("nope".into()))
+                }
+                PortablePrefType::Text => {
+                    (SettingValue::Text("value".into()), SettingValue::Bool(true))
+                }
             };
             assert!(
                 SettingsAction::SetSetting {
