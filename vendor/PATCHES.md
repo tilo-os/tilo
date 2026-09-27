@@ -46,15 +46,13 @@ The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 
-## Git forks (`vendor/git`)
+## Git forks
 
-Some patches live in forks on code.tilo.so rather than in this tree.
-`[patch.crates-io]` names each fork and revision, and Cargo.lock records them,
-but the repositories are private, so CI, image builds and remote builders
-can't fetch them. `.cargo/config.toml` replaces those exact revisions with the
-copies in `vendor/git`. `tools/vendor-git-forks.sh` regenerates the copies
-from the forks with `cargo vendor`. Don't edit them by hand; change the fork
-instead.
+Some patches live in public forks on code.tilo.so rather than in this tree.
+`[patch.crates-io]` names each fork and revision over https, and Cargo.lock
+records them, so CI, image builds and apps outside this repository all fetch
+the same revisions. To change one, push to the fork and move the revision in
+`[patch.crates-io]` (and `.config/hakari.toml` for rustypipe).
 
 | Fork | Branch | Revision | Crates | Change | Upstream contribution |
 |---|---|---|---|---|---|
@@ -62,8 +60,8 @@ instead.
 | [tilo/atspi](https://code.tilo.so/tilo/atspi) | `optional-async-io-v0.29` | `9183f58d` | atspi 0.29.0, atspi-common 0.13.0, atspi-proxies 0.13.0 | `async-io`/`tokio` features select zbus's backend instead of async-io always | [atspi-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/atspi-optional-async-io) |
 | [tilo/rustypipe](https://code.tilo.so/tilo/rustypipe) | `reqwest-0.13-v0.11.4` | `aeb292fb` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16 | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
 
-Remove a row, its `[patch.crates-io]` and `[source]` entries and its
-`vendor/git` directories once upstream releases the change.
+Remove a row and its `[patch.crates-io]` entries once upstream releases the
+change.
 
 ## Vello changes
 
