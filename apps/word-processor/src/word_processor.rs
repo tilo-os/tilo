@@ -24,7 +24,6 @@ pub struct Caret {
     pub offset: usize,
 }
 
-
 /// Order a caret/anchor pair in document order using block indices.
 ///
 /// Shared by the editing model (CRDT block order) and the page widget (its
