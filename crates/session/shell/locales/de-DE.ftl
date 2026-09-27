@@ -1196,6 +1196,9 @@ bluetooth-prompt-cancel = Abbrechen
 bluetooth-prompt-accept-match = Sie stimmen überein
 bluetooth-prompt-accept-allow = Erlauben
 bluetooth-prompt-accept-pair = Koppeln
+bluetooth-prompt-code-label = Auf dem Gerät angezeigter Code
+bluetooth-prompt-pin-label = PIN für das Gerät
+bluetooth-prompt-a11y-code = Code { $code }
 
 # Portal-Voreinstellungen: Dateiauswahl-Schaltflächen, Standardaktion von Benachrichtigungen, unbenannte Apps, Aufnahmequellen
 portal-file-save = Speichern
@@ -1478,6 +1481,8 @@ search-action-display-change-keep = Bildschirmeinstellungen behalten
 search-action-display-change-keep-subtitle = Die gerade angewendete Bildschirmanordnung bestätigen
 search-action-display-change-revert = Bildschirmeinstellungen zurücksetzen
 search-action-display-change-revert-subtitle = Die Bildschirmanordnung von vor der letzten Änderung wiederherstellen
+search-action-bluetooth-pairing-decline = Bluetooth-Kopplung ablehnen
+search-action-bluetooth-pairing-decline-subtitle = Die angezeigte Kopplungsanfrage ablehnen oder die Kopplung beenden, deren Code angezeigt wird
 search-action-capture-open = Bildschirmbereich aufnehmen oder schweben lassen
 search-action-capture-open-subtitle = Bildschirmfoto, Aufnahme oder Bild-im-Bild aus einem oder mehreren Bereichen
 search-action-collaborators-open = Mitwirkende anzeigen
