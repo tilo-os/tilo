@@ -136,6 +136,11 @@ struct Mount {
     gpu: Option<Gpu>,
     pending: bool,
     viewport: ViewportState,
+    /// The scale of Winit's last `ScaleFactorChanged`. `devicePixelRatio`
+    /// changes a frame before the canvas's physical size follows it; pairing
+    /// the live ratio with the old size would lay one frame out at the wrong
+    /// logical width.
+    scale: f64,
     hidden: bool,
     generation: u64,
     frames: u64,
@@ -360,6 +365,9 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                        m.scale = scale_factor;
+                    }
                     if m.peer_suspended {
                         return;
                     }
@@ -661,6 +669,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             height: size.height,
             dpr,
         }),
+        scale: dpr,
         hidden: false,
         generation: 1,
         frames: 0,
@@ -769,6 +778,7 @@ fn begin_desktop(
             height: size.height,
             dpr,
         }),
+        scale: dpr,
         hidden: false,
         generation: 1,
         frames: 0,
@@ -946,7 +956,7 @@ impl Mount {
         let changed = self.viewport.request(Viewport {
             width: size.width,
             height: size.height,
-            dpr: self.window.scale_factor(),
+            dpr: self.scale,
         });
         self.pending |= changed;
         changed
