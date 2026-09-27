@@ -1,6 +1,7 @@
 package so.tilo.android;
 
 import android.app.NativeActivity;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
@@ -55,6 +56,22 @@ public class TiloActivity extends NativeActivity {
         // winit's event loop and the toolkit's process state can start only once per process; a
         // later launch must get a fresh one.
         System.exit(0);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (!TiloActivityResults.onActivityResult(requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        if (!TiloActivityResults.onRequestPermissionsResult(
+                requestCode, permissions, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        }
     }
 
     private String libraryName() {
