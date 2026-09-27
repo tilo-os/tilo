@@ -67,18 +67,33 @@ the app's own.
 `build-web-core.sh` builds `-p tilo-browser-runtime --features dylink` (with
 the collection, as above):
 
-- `build.rs` passes `--export-all --export-table --growable-table` to the
-  cdylib link, so the core exports every symbol, its function table (growable)
-  and its stack pointer. The core is non-PIE; std is shared (apps import
-  `__rust_alloc` and friends).
+- Everything is compiled at `opt-level = "z"` (`TILO_WEB_OPT_LEVEL`), which
+  also makes rustc share generic instantiations across crates: an app links
+  against the core's copy of, say, `Vec<u32>::dedup_by` instead of carrying
+  its own.
+- `build.rs` passes `--export-table --growable-table --export=__stack_pointer`
+  (and `--export-all`, for a core linked without these scripts). The core is
+  non-PIE; std is shared (apps import `__rust_alloc` and friends).
 - `scripts/web-runtime/tilo-wasm-ld` is rustc's linker for it: the objects of
   the toolkit crates (`tilo_app`, `tilo_ui`, `tilo_resource`, `tilo_actions`)
   are linked whole, so an app may call any of their functions, not only those
-  the core itself uses. This is the superset rule `runtime-dylib` states for
-  native thin apps.
+  the core itself uses (the superset rule `runtime-dylib` states for native
+  thin apps). It keeps the link's inputs, and the script links the core again
+  with an explicit export list instead of `--export-all`: every function and
+  datum the toolkit crates define for other crates (their public surface),
+  plus every symbol the collection's apps import from any other crate (found
+  by linking each of them first). Everything else is dead-code eliminated;
+  `--export-all` kept every function of every linked object alive. At
+  `opt-level = "z"` the toolkit crates also export every instantiation of a
+  foreign generic they made; those are left out unless the collection imports
+  them (a third of the core). `TILO_WEB_EXPORT_GENERICS=1` keeps them all, for
+  a core serving apps outside the collection that reuse them; `runtime.json`
+  records which (`exports`). A third-party app that needs a symbol the core
+  does not export is refused at build time with the symbol named, and joins
+  the collection (or the core keeps the instantiations).
 - `src/side_module.rs` exports `tilo_dl_alloc` (memory for a side module's
   data) and `tilo_runtime_register_app(&'static ApplicationDefinition)`.
-- The mangled wasm-bindgen internals `--export-all` exposed (items of the
+- The mangled wasm-bindgen internals the toolkit surface exports (items of the
   bindgen crates, `WasmDescribe` impls) are removed
   (`wasm-tools.mjs strip-bindgen-internals`); a generic of another crate that
   was merely instantiated in `wasm_bindgen` stays, since apps link against it.
@@ -86,8 +101,20 @@ the collection, as above):
   wasm-bindgen's descriptor interpreter cannot follow, so
   `wasm-opt --simplify-globals --precompute` folds those first. Then
   `wasm-bindgen --keep-lld-exports`, `wasm-opt -Oz`, and the ABI id section.
-- `build/core-profile.txt` lists code size by crate and the largest functions
-  (from the name section, before `wasm-opt` drops it).
+- The glue is made self-contained (`bundle-glue.mjs` inlines its
+  `snippets/`), so it can also run from a verified object URL.
+- `build/core-profile.txt` lists size by crate (code and data) and the
+  largest functions and data, from a second link with one data segment per
+  symbol.
+
+What the browser toolkit leaves out of tilo-ui, kept natively:
+
+- ICU's dictionary/LSTM segmentation models (about 2 MB, nearly
+  incompressible): in wasm32 lines and words break by the Unicode rules alone,
+  so Thai, Lao, Khmer and Myanmar lose dictionary word boundaries.
+- Hyphenation patterns other than English and German (about 1 MB).
+- two-face's code-editor grammars (0.9 MB, feature `syntax-definitions`,
+  implied by `native`): code blocks show as plain text.
 
 ## Runtime ABI id
 
@@ -188,10 +215,44 @@ const mount = await mountDesktop(element, {app: 'so.tilo.ebook', resolveApp});
   It checks the module against `app.json`'s size and SHA-256; it verifies no
   signature.
 
-The registry client (`registry-client.mjs`, from the registry side) supplies
-verified modules through the same `resolveApp` shape. Signature verification
-of snapshots and tapps belongs to its verification crate; once that lands it
-can be linked into the core behind a feature, and the resolver is its hook.
+- `web/core-loader.mjs`: compiles the core module itself, reads its ABI id
+  from that module and instantiates it through the glue's
+  `init({module_or_path})`; nothing depends on glue internals.
+
+By default the core is `pkg/` next to `host.mjs`. A page that fetched and
+verified a core elsewhere runs it instead with `configureRuntime({glue,
+module})` before its first mount: `glue` is the self-contained glue (its
+namespace, or a URL such as the object URL of a verified asset; `blob:` URLs
+are re-typed as JavaScript), `module` the core module; either may be a
+promise, so the core and the apps can be fetched in one batch.
+`runtimeAbiId()` reports the loaded core's id.
+
+## Loading from a registry
+
+The registry client (`crates/browser/web-registry-client`) verifies the
+snapshot, tapps and blobs against a pinned owner key and caches them in
+Cache Storage; `resolveRuntime()` returns the core as `{module, abi, assets}`
+with the glue among the assets, and `resolveApp` plugs into `setAppResolver`.
+`registry.html` in the dev output does exactly that: the core and the session
+(`?apps=a,b`, default every published app) in one registry batch, then mounts
+the first app. A returning visit costs one snapshot request (304 when
+unchanged); everything else comes from Cache Storage. Fonts still come from
+the page's directory.
+
+Locally, in WSL (three terminals; page and registry are different origins):
+
+```sh
+crates/browser/tilo-browser-runtime/scripts/build-web-dev.sh ~/tb-scratch/out
+# a fresh signed registry on http://127.0.0.1:8787 with the core and every app
+# of the build, CORS for the page's origin; writes ~/tb-scratch/out/registry.json
+tools/web/local-registry.sh --origin http://localhost:4321 ~/tb-scratch/out
+python3 -m http.server 4321 --bind 127.0.0.1 -d ~/tb-scratch/out
+```
+
+Then open `http://localhost:4321/registry.html` in Chrome on Windows (WSL
+forwards localhost). `http://localhost:4321/` is the same core and apps from
+the directory. Each registry run makes new keys, so reload the page after
+restarting it.
 
 ## Fonts
 
@@ -209,31 +270,57 @@ Books + Writer, no `cloud`):
 
 | module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
 |---|---:|---:|---:|---:|
-| core | 56.93 MiB | 13.35 MiB | 41.32 MiB | 12.00 MiB |
-| Books (`so.tilo.ebook`) | 1.68 MiB | 407 KiB | 1.31 MiB | 380 KiB |
-| Writer (`so.tilo.word-processor`) | 3.43 MiB | 774 KiB | 2.73 MiB | 743 KiB |
+| core | 31.46 MiB | 4.75 MiB | 16.00 MiB | 3.59 MiB |
+| Books (`so.tilo.ebook`) | 1.49 MiB | 286 KiB | 849 KiB | 247 KiB |
+| Writer (`so.tilo.word-processor`) | 4.86 MiB | 637 KiB | 2.00 MiB | 570 KiB |
 
 | fonts | count | raw | brotli |
 |---|---:|---:|---:|
 | eager (mount barrier) | 5 | 3.51 MiB | 1.43 MiB |
 | lazy (on text demand) | 10 | 38.28 MiB | 16.18 MiB |
 
-The same core graph linked as an ordinary cdylib (no `dylink`, no whole
-crates) is 15.5 MB after `-Oz`, 5.2 MB brotli. Dynamic linking therefore costs
-the core about 28 MB (7 MB brotli): `--export-all` keeps every function of every
-linked object alive, and the toolkit crates are linked whole. `build/core-profile.txt`
-lists what that keeps; beyond the toolkit itself it is mostly crates `tilo_ui`
-reaches (`tilo_peer_state`, `openmls`, `tilo_delivery_protocol`,
-`tilo_agent_control_protocol`, the `image` decoders, `regex`). The next step is to
-export the toolkit crates plus only what the collection's apps import, instead
-of everything, under the same superset rule that already governs features.
+The linked core still carries its name and debug sections, which `-Oz` drops.
+How the core got there from 41.3 MiB / 12.0 MiB (`-Oz`, brotli):
+
+| step | `-Oz` | brotli |
+|---|---:|---:|
+| `--export-all`, `opt-level = 3` | 41.3 MiB | 12.0 MiB |
+| export the toolkit surface and the collection's imports | 24.2 MiB | 7.6 MiB |
+| no ICU models, two hyphenation languages, no grammars; `opt-level = "z"` | 24.0 MiB | 3.85 MiB |
+| toolkit items only, not their instantiations of foreign generics | 16.0 MiB | 3.59 MiB |
+
+`opt-level = "z"` alone makes the core slightly larger raw but lets apps reuse
+the core's generic instantiations (Books 1.31 MiB to 849 KiB). For comparison,
+the same crates linked as an ordinary cdylib with no dynamic linking at all
+come to 15.5 MB / 5.2 MB at `opt-level = 3`.
+
+Largest contributors to the linked core (`build/core-profile.txt`; generics
+count toward the crate that defines the item, so `core`/`alloc` are standard
+library code instantiated for toolkit types; "other" is anonymous data: the
+spell-check word list Writer needs, 691 KiB, hyphenation patterns, vello's
+shaders):
+
+| # | crate | KiB | | # | crate | KiB |
+|---:|---|---:|---|---:|---|---:|
+| 1 | other (data) | 3662 | | 11 | hexane | 381 |
+| 2 | tilo_ui | 3161 | | 12 | harfrust | 327 |
+| 3 | core | 1511 | | 13 | regex_automata | 283 |
+| 4 | alloc | 1401 | | 14 | std | 273 |
+| 5 | read_fonts | 758 | | 15 | serde | 268 |
+| 6 | taffy | 652 | | 16 | tilo_actions | 163 |
+| 7 | skrifa | 511 | | 17 | image | 131 |
+| 8 | automerge | 428 | | 18 | zune_jpeg | 107 |
+| 9 | hashbrown | 418 | | 19 | image_webp | 103 |
+| 10 | serde_json | 387 | | 20 | regex_syntax | 102 |
 
 ## Tests
 
 ```sh
 node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
+  crates/browser/tilo-browser-runtime/web/core-loader.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-installer.test.mjs \
-  crates/browser/tilo-browser-runtime/web/app-directory.test.mjs
+  crates/browser/tilo-browser-runtime/web/app-directory.test.mjs \
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
 # after build-web-dev.sh: links every app into the core in Node, checks that
 # each registers and that a module stamped for another ABI is refused
