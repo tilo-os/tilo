@@ -182,6 +182,7 @@ members = [
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
+    "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
