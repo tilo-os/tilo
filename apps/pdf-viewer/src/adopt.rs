@@ -162,14 +162,8 @@ pub fn parse_pdf_date(date: &str) -> Option<i64> {
     }
     let (year, month, day) = (field(0, 4, 1970), field(4, 2, 1), field(6, 2, 1));
     let (hour, minute, second) = (field(8, 2, 0), field(10, 2, 0), field(12, 2, 0));
-    // Days from civil (Howard Hinnant), proleptic Gregorian.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let days =
+        ui::date::days_from_civil(year, u32::try_from(month).ok()?, u32::try_from(day).ok()?);
     Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000)
 }
 
