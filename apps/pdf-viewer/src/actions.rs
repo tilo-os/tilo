@@ -60,18 +60,13 @@ pub const SEARCH_RESULT_RESOURCE_LIMIT: usize = 32;
 /// different result set.  This is deliberately an address token rather than a
 /// display value; the original query remains in the operation payload.
 pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in query
-        .trim()
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain([u8::from(whole_word), u8::from(case_sensitive)])
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, query.trim().as_bytes());
+    std::hash::Hasher::write(
+        &mut hasher,
+        &[u8::from(whole_word), u8::from(case_sensitive)],
+    );
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// Return the stable resource id for one source-PDF outline entry.
@@ -92,21 +87,15 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
             prior_title == title && prior_page == page && prior_level == level
         })
         .count();
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in title
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain([0])
-        .chain(page.to_string().bytes())
-        .chain([0])
-        .chain(level.to_string().bytes())
-        .chain([0])
-        .chain(occurrence.to_string().bytes())
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, title.as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, page.to_string().as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, level.to_string().as_bytes());
+    std::hash::Hasher::write_u8(&mut hasher, 0);
+    std::hash::Hasher::write(&mut hasher, occurrence.to_string().as_bytes());
+    let hash = std::hash::Hasher::finish(&hasher);
     Some(format!("pdf.outline:{}:{hash:016x}", ctx.doc_id))
 }
 

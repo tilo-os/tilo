@@ -149,12 +149,9 @@ pub struct Article {
 pub type TagKey = u64;
 
 pub fn tag_key(tag: &str) -> TagKey {
-    tag.trim()
-        .to_lowercase()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, tag.trim().to_lowercase().as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// Which subset of articles the list pane is showing.
