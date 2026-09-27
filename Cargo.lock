@@ -13105,6 +13105,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",

@@ -8,10 +8,8 @@
 //! the field's [`FieldWeight`]. [`fuzzy_score`] breaks ties between hits of
 //! the same tier and lets scattered subsequence matches surface at all.
 
-use std::ops::Range;
-
 use super::provider::SearchResult;
-use tilo_search::{fold as fold_search_text, fold_char};
+use tilo_search::fold as fold_search_text;
 
 pub use tilo_search::{FieldWeight, MAX_FIELD_RANK, MatchTier, SPANNING_RANK};
 
@@ -53,46 +51,6 @@ pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
         }
     }
     found.then_some(MatchTier::Contains)
-}
-
-/// Find `query` in raw `text` under the default folding, returning the
-/// tier and the byte range of the best occurrence *in `text`* — the first
-/// one starting a word, else the first — so a caller can quote the match
-/// without keeping a folded copy of the text.
-#[must_use]
-pub fn locate(query: &str, text: &str) -> Option<(MatchTier, Range<usize>)> {
-    let query = fold_search_text(query.trim());
-    if query.is_empty() {
-        return None;
-    }
-    // Folded text alongside the raw byte offset each folded byte came from.
-    let mut folded = String::with_capacity(text.len());
-    let mut origin = Vec::with_capacity(text.len());
-    for (offset, scalar) in text.char_indices() {
-        fold_char(scalar, &mut |part| {
-            folded.push(part);
-            origin.resize(folded.len(), offset);
-        });
-    }
-    let tier = match_tier(&query, &folded)?;
-    let at = match tier {
-        MatchTier::Exact | MatchTier::Prefix => 0,
-        MatchTier::WordPrefix => folded
-            .match_indices(query.as_str())
-            .map(|(at, _)| at)
-            .find(|&at| {
-                folded
-                    .get(..at)
-                    .and_then(|before| before.chars().next_back())
-                    .is_none_or(|previous| !previous.is_alphanumeric())
-            })?,
-        MatchTier::Contains => folded.find(query.as_str())?,
-    };
-    // The match covers every raw scalar that contributed a folded byte to it.
-    let start = *origin.get(at)?;
-    let last = *origin.get(at.saturating_add(query.len()).saturating_sub(1))?;
-    let last_len = text.get(last..)?.chars().next()?.len_utf8();
-    Some((tier, start..last.saturating_add(last_len)))
 }
 
 /// Rank of a query that is only a subsequence of a full-weight field. A
@@ -344,23 +302,6 @@ mod tests {
         // Only a full-weight field matches as a subsequence.
         assert_eq!(field_rank("sprdsht", &fields), None);
         assert_eq!(field_rank("calc zebra", &fields), None);
-    }
-
-    #[test]
-    fn locate_reports_the_raw_range_of_a_folded_match() {
-        let text = "Le Café Crème, déjà vu";
-        let (tier, range) = locate("creme", text).unwrap();
-        assert_eq!(tier, MatchTier::WordPrefix);
-        assert_eq!(&text[range], "Crème");
-        let (tier, range) = locate("afé", text).unwrap();
-        assert_eq!(tier, MatchTier::Contains);
-        assert_eq!(&text[range], "afé");
-        assert_eq!(
-            locate("le", text).map(|(tier, _)| tier),
-            Some(MatchTier::Prefix)
-        );
-        assert_eq!(locate("zzz", text), None);
-        assert_eq!(locate("", text), None);
     }
 
     #[test]
