@@ -5,6 +5,7 @@ use super::{
     canvas::PreviewCanvas,
 };
 use crate::{
+    i18n::I18nManager,
     presence::PresenceCtx,
     text_render::TextRenderer,
     theme::Theme,
@@ -157,7 +158,7 @@ impl HistoryHost {
         };
         let unavailable = Text::new(match registration.sources.first() {
             Some(HistorySourceRegistration::Unversioned { reason, .. }) => reason,
-            _ => "Historical content unavailable",
+            _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
         let clicked = request.clone();
@@ -333,7 +334,9 @@ impl HistoryHost {
         }
         self.invalid_owner = true;
         self.pending_controls
-            .invalidate_owner("History owner is no longer available");
+            .invalidate_owner(&crate::i18n::I18nManager::lookup_plain(
+                "history-mode-owner-gone",
+            ));
         self.assets.cancel();
         self.review = None;
         self.review_request = None;
@@ -603,7 +606,9 @@ impl HistoryHost {
             self.pending_controls.capture(
                 super::pending_controls::PendingControlOrigin::Component(sealed.target),
                 sealed.invocation,
-                Err("The original component custody could not be recovered during History".into()),
+                Err(crate::i18n::I18nManager::lookup_plain(
+                    "history-mode-custody-lost",
+                )),
             );
         }
         // Chrome is prepared while raw maps are cleared. Registered custody
@@ -1158,17 +1163,17 @@ impl HistoryHost {
                 let label = pages
                     .iter()
                     .find(|(id, _)| Some(id) == current.as_ref())
-                    .map_or("Page", |(_, title)| title.as_str());
+                    .map_or("history-mode-page", |(_, title)| title.as_str());
                 toolbar = toolbar.push(Box::new(Text::new(label))).push(Box::new(
                     Row::new()
                         .push(Box::new(self.command_button(
                             "history-previous-page",
-                            "Previous page",
+                            "history-mode-previous-page",
                             Command::PreviousPage,
                         )))
                         .push(Box::new(self.command_button(
                             "history-next-page",
-                            "Next page",
+                            "history-mode-next-page",
                             Command::NextPage,
                         ))),
                 ));
@@ -1189,13 +1194,13 @@ impl HistoryHost {
             .definition
             .scopes
             .get(self.active_scope)
-            .map_or("History", |scope| scope.title);
+            .map_or("history-mode-title", |scope| scope.title);
         let mut toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
             .with_intrinsic_height();
         if self.invalid_owner {
-            self.toolbar = toolbar.push(Box::new(Text::new("History unavailable")));
+            self.toolbar = toolbar.push(Box::new(Text::new("history-mode-unavailable")));
             return;
         }
         if self.selected.is_empty() {
@@ -1203,24 +1208,33 @@ impl HistoryHost {
             toolbar = toolbar.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("history-open", "History", None)
+                        Button::new("history-open", "history-mode-title", None)
                             .fit_content(32.0)
                             .on_click(move || clicked.set(true)),
                     ))
                     .push(Box::new(Text::new(title))),
             ));
             for review in self.pending_controls.review() {
-                let mut row = Row::new().push(Box::new(Text::new(&format!(
-                    "Pending #{} from {}: {} arguments {}",
-                    review.id.value(),
-                    review.owner,
-                    review.invocation.address.encode(),
-                    serde_json::Value::Object(review.invocation.arguments.clone())
+                let mut row = Row::new().push(Box::new(Text::new(&I18nManager::format(
+                    "history-mode-pending",
+                    &[
+                        ("id", review.id.value().to_string().into()),
+                        ("owner", review.owner.to_string().into()),
+                        ("action", review.invocation.address.encode().into()),
+                        (
+                            "arguments",
+                            serde_json::Value::Object(review.invocation.arguments.clone())
+                                .to_string()
+                                .into(),
+                        ),
+                    ],
                 ))));
                 let label = match review.status {
-                    super::pending_controls::PendingControlStatus::Ready => Some("Continue"),
+                    super::pending_controls::PendingControlStatus::Ready => {
+                        Some("history-mode-continue")
+                    }
                     super::pending_controls::PendingControlStatus::NeedsConfirmation => {
-                        Some("Confirm")
+                        Some("history-mode-confirm")
                     }
                     super::pending_controls::PendingControlStatus::Suspended
                     | super::pending_controls::PendingControlStatus::Consumed => None,
@@ -1244,7 +1258,7 @@ impl HistoryHost {
                                 phrase.clone()
                             }
                             Ok(tilo_actions::ConfirmationPolicy::None) => {
-                                "confirmation unavailable".to_owned()
+                                I18nManager::lookup_plain("history-mode-confirmation-unavailable")
                             }
                             Err(reason) => reason.clone(),
                         };
@@ -1256,7 +1270,10 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&format!("Type {expected} to confirm"))
+                                .with_placeholder(&I18nManager::format(
+                                    "history-mode-type-to-confirm",
+                                    &[("phrase", expected.into())],
+                                ))
                                 .on_change(move |value| {
                                     changed.borrow_mut().replace_range(.., value)
                                 }),
@@ -1304,7 +1321,7 @@ impl HistoryHost {
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
-                        Button::new(&cancel_id, "Cancel", None)
+                        Button::new(&cancel_id, "history-mode-cancel", None)
                             .fit_content(32.0)
                             .on_click(move || callback.invoke()),
                     ));
@@ -1319,24 +1336,29 @@ impl HistoryHost {
             if self.width < 600.0 && !self.activity_page {
                 header = header.push(Box::new(self.command_button(
                     "history-activity",
-                    "Back to activity",
+                    "history-mode-back-to-activity",
                     Command::Activity,
                 )));
             }
             header = header.push(Box::new(self.command_button(
                 "history-back-live",
-                "Back to live",
+                "history-mode-back-to-live",
                 Command::Live,
             )));
             let mut compare = Row::new();
             for (id, label, command, side) in [
                 (
                     "history-before",
-                    "Before",
+                    "history-mode-before",
                     Command::Before,
                     PreviewSide::Before,
                 ),
-                ("history-after", "After", Command::After, PreviewSide::After),
+                (
+                    "history-after",
+                    "history-mode-after",
+                    Command::After,
+                    PreviewSide::After,
+                ),
             ] {
                 let mut button = self.command_button(id, label, command);
                 if self.side == side {
@@ -1345,9 +1367,9 @@ impl HistoryHost {
                 compare = compare.push(Box::new(button));
             }
             compare = compare.push(Box::new(Text::new(if self.side == PreviewSide::Before {
-                "Historical: Before"
+                "history-mode-showing-before"
             } else {
-                "Historical: After"
+                "history-mode-showing-after"
             })));
             if self
                 .registration
@@ -1370,7 +1392,7 @@ impl HistoryHost {
             {
                 compare = compare.push(Box::new(self.command_button(
                     "history-restore",
-                    "Restore…",
+                    "history-mode-restore",
                     Command::Review(review::ReviewCommand::Open),
                 )));
             }
@@ -1389,7 +1411,7 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates)
         {
             toolbar = toolbar.push(Box::new(
-                Text::new("Live content has updates").with_live(crate::a11y::Politeness::Polite),
+                Text::new("history-mode-live-updates").with_live(crate::a11y::Politeness::Polite),
             ));
         }
         if self.registration.definition.scopes.len() > 1 {

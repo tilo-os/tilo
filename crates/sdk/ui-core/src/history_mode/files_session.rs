@@ -17,6 +17,7 @@ use std::{
 };
 
 use crate::background::Background;
+use crate::i18n::I18nManager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
@@ -127,7 +128,7 @@ impl FileController {
             review_operation: None,
             confirmation: uuid::Uuid::new_v4(),
             restore: FileRestoreSession::default(),
-            message: "Loading file history".into(),
+            message: I18nManager::lookup_plain("history-files-loading"),
             activity_recovery_message: None,
             preview_changed: false,
             presentation_invalidated: false,
@@ -204,7 +205,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
-        self.message = "Loading file history".into();
+        self.message = I18nManager::lookup_plain("history-files-loading");
         self.next_poll = self.background.now();
         self.load();
     }
@@ -226,7 +227,7 @@ impl FileController {
         self.before = None;
         self.preview_changed = true;
         self.activity_recovery_message = None;
-        self.message = "Loading immutable version".into();
+        self.message = I18nManager::lookup_plain("history-files-loading-version");
         self.run(move |transport| {
             Reply::Selection(read_selection(transport.as_ref(), version, parent))
         });
@@ -237,7 +238,7 @@ impl FileController {
         self.review = None;
         self.review_changed = true;
         self.activity_recovery_message = None;
-        self.message = "Checking current file permissions and frontier".into();
+        self.message = I18nManager::lookup_plain("history-files-checking-permissions");
         self.run(move |transport| Reply::Review(operation, transport.review()));
     }
     pub fn cancel_review(&mut self) {
@@ -259,10 +260,10 @@ impl FileController {
         self.review_changed = true;
         self.reporting = false;
         let Ok(request) = self.restore.prepare(review, operation) else {
-            self.message = "An earlier restore is still pending; check its exact result".into();
+            self.message = I18nManager::lookup_plain("history-files-earlier-pending");
             return;
         };
-        self.message = "Submitting checked restore".into();
+        self.message = I18nManager::lookup_plain("history-files-submitting");
         self.run(move |transport| Reply::Outcome(request, transport.submit(request)));
     }
     pub fn retry(&self) {
@@ -341,13 +342,16 @@ impl FileController {
                     self.message = message;
                 } else if self.after.is_none() && self.restore.outcome.is_none() && !self.reporting
                 {
-                    self.message = format!("{} immutable versions", self.versions.len());
+                    self.message = I18nManager::format(
+                        "history-files-version-count",
+                        &[("count", self.versions.len().into())],
+                    );
                 }
             }
             Ok(_) => {
                 self.activity_recovery_message = None;
                 self.hide();
-                self.message = "File binding changed; reopen History for the current file".into();
+                self.message = I18nManager::lookup_plain("history-files-binding-changed");
             }
             Err(error) => {
                 if error == Error::NotVisible {
@@ -358,7 +362,7 @@ impl FileController {
                 {
                     self.activity_recovery_message = Some(self.message.clone());
                 }
-                self.message = read_message(error).into();
+                self.message = read_message(error);
             }
         }
     }
@@ -398,8 +402,7 @@ impl FileController {
                     self.next_poll = self.background.now();
                 } else {
                     self.activity_recovery_message = None;
-                    self.message =
-                        "Invalid backend result; the exact request remains unresolved".into();
+                    self.message = I18nManager::lookup_plain("history-files-invalid-result");
                 }
                 continue;
             }
@@ -416,7 +419,7 @@ impl FileController {
                 Reply::Unavailable => {
                     self.refreshing = false;
                     self.schedule_poll();
-                    self.message = "File history is unavailable on this host".into();
+                    self.message = I18nManager::lookup_plain("history-files-unavailable-host");
                 }
                 Reply::Activity(result) => self.apply_activity(result),
                 Reply::Selection(result) => match result {
@@ -432,12 +435,13 @@ impl FileController {
                         self.after = Some(after);
                         self.before = before;
                         self.preview_changed = true;
-                        self.message = "Historical version".into();
+                        self.message =
+                            I18nManager::lookup_plain("history-files-historical-version");
                     }
                     Ok(_) => {
                         self.activity_recovery_message = None;
                         self.hide();
-                        self.message = "History response belongs to another file".into();
+                        self.message = I18nManager::lookup_plain("history-files-foreign-response");
                     }
                     Err(error) => {
                         self.activity_recovery_message = None;
@@ -447,7 +451,7 @@ impl FileController {
                             self.hide();
                         }
                         self.preview_changed = true;
-                        self.message = read_message(error).into();
+                        self.message = read_message(error);
                     }
                 },
                 Reply::Review(operation, result) => {
@@ -467,12 +471,14 @@ impl FileController {
                             }
                             self.activity_recovery_message = None;
                             self.review = Some((review, operation));
-                            self.message="Restore creates a new file revision and preserves existing history".into();
+                            self.message =
+                                I18nManager::lookup_plain("history-files-restore-explainer");
                         }
                         Ok(_) => {
                             self.activity_recovery_message = None;
                             self.hide();
-                            self.message = "Review belongs to another file or mount".into();
+                            self.message =
+                                I18nManager::lookup_plain("history-files-foreign-review");
                         }
                         Err(outcome) => {
                             self.activity_recovery_message = None;
@@ -655,55 +661,50 @@ fn read_snapshot(
         content,
     })
 }
-pub(super) fn read_message(error: Error) -> &'static str {
-    match error {
-        Error::Stale => "File history changed; refresh activity and retry this version",
-        Error::NotVisible => "This file is no longer visible",
-        Error::MissingVersion => "This immutable version is unavailable",
-        Error::InvalidRequest => "Invalid history response",
-        Error::Unavailable => "File history is temporarily unavailable",
-        Error::TooLarge => "Historical preview exceeds the supported size",
-        Error::NoContent => "This version has no recorded content reference",
-    }
+pub(super) fn read_message(error: Error) -> String {
+    I18nManager::lookup_plain(match error {
+        Error::Stale => "history-files-error-stale",
+        Error::NotVisible => "history-files-not-visible",
+        Error::MissingVersion => "history-files-error-missing-version",
+        Error::InvalidRequest => "history-files-error-invalid",
+        Error::Unavailable => "history-files-error-unavailable",
+        Error::TooLarge => "history-files-error-too-large",
+        Error::NoContent => "history-files-error-no-content",
+    })
 }
 pub(super) fn outcome_message(outcome: &Outcome) -> String {
     match outcome {
-        Outcome::Applied { receipt } => format!(
-            "Restored revision {} (intent {}). Current converged file content is shown separately. Prior reference: {}.",
-            receipt.restored_revision.version_id.0,
-            receipt.intent_id,
+        Outcome::Applied { receipt } => I18nManager::format(
             match receipt.prior_reference {
-                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision =>
-                    "observed revision",
-                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative =>
-                    "legacy content representative; prior authorship unknown",
-            }
+                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision => {
+                    "history-files-outcome-applied"
+                }
+                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative => {
+                    "history-files-outcome-applied-legacy"
+                }
+            },
+            &[
+                (
+                    "revision",
+                    receipt.restored_revision.version_id.0.to_string().into(),
+                ),
+                ("intent", receipt.intent_id.to_string().into()),
+            ],
         ),
-        Outcome::Unchanged { .. } => {
-            "Selected content already matches; no new revision or undo entry".into()
-        }
+        Outcome::Unchanged { .. } => I18nManager::lookup_plain("history-files-outcome-unchanged"),
         Outcome::RecoveryPending { .. } => {
-            "Restore is pending. Check result or retry the same intent".into()
+            I18nManager::lookup_plain("history-files-outcome-pending")
         }
-        Outcome::ReviewRequired => {
-            "Live file changed. Refresh review; the selected old version remains pinned".into()
-        }
-        Outcome::NotVisible => "This file is no longer visible".into(),
-        Outcome::ReadOnly => {
-            "This file is read-only; restore and compensation are unavailable".into()
-        }
-        Outcome::PendingWrites => {
-            "Pending file edits must settle before restore; buffered content is preserved".into()
-        }
-        Outcome::UnsupportedOwner { mapping } => {
-            format!("Unsupported checked content owner: {mapping}")
-        }
-        Outcome::Unavailable => {
-            "Restore acknowledgement is unavailable. Keep this intent and check its result".into()
-        }
-        Outcome::InvalidRequest => {
-            "Invalid checked restore request; no legacy fallback is available".into()
-        }
+        Outcome::ReviewRequired => I18nManager::lookup_plain("history-files-outcome-review"),
+        Outcome::NotVisible => I18nManager::lookup_plain("history-files-not-visible"),
+        Outcome::ReadOnly => I18nManager::lookup_plain("history-files-outcome-read-only"),
+        Outcome::PendingWrites => I18nManager::lookup_plain("history-files-outcome-pending-writes"),
+        Outcome::UnsupportedOwner { mapping } => I18nManager::format(
+            "history-files-outcome-unsupported-owner",
+            &[("mapping", mapping.to_string().into())],
+        ),
+        Outcome::Unavailable => I18nManager::lookup_plain("history-files-outcome-unavailable"),
+        Outcome::InvalidRequest => I18nManager::lookup_plain("history-files-outcome-invalid"),
     }
 }
 

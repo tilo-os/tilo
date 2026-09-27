@@ -35,6 +35,100 @@ history-review-no-clock = Die aktuelle Uhrzeit ist nicht verfügbar. Die Wiederh
 history-restore-unsupported = Diese Version kann mit dem Inhaltsformat dieser App nicht sicher wiederhergestellt werden.
 history-preview-description = { $resource } in dieser Version
 
+# The History host's own controls and status, beside the live app.
+history-mode-title = Verlauf
+history-mode-unavailable = Verlauf nicht verfügbar
+history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
+history-mode-back-to-activity = Zurück zur Aktivität
+history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-before = Vorher
+history-mode-after = Nachher
+history-mode-showing-before = Frühere Version: Vorher
+history-mode-showing-after = Frühere Version: Nachher
+history-mode-restore = Wiederherstellen…
+history-mode-live-updates = Der aktuelle Inhalt wurde geändert
+history-mode-page = Seite
+history-mode-previous-page = Vorherige Seite
+history-mode-next-page = Nächste Seite
+history-mode-pending = Ausstehend #{ $id } von { $owner }: { $action } mit Argumenten { $arguments }
+history-mode-continue = Fortfahren
+history-mode-confirm = Bestätigen
+history-mode-cancel = Abbrechen
+history-mode-confirmation-unavailable = Bestätigung nicht verfügbar
+history-mode-type-to-confirm = Gib { $phrase } ein, um zu bestätigen
+history-mode-owner-gone = Der Besitzer des Verlaufs ist nicht mehr verfügbar
+history-mode-custody-lost = Die ursprüngliche Komponente konnte während des Verlaufs nicht wiederhergestellt werden
+history-mode-control-owner-closed = Der ursprünglich registrierte Besitzer des Steuerelements ist geschlossen
+history-mode-loading-media = Frühere Medien werden geladen
+history-media-too-many = Die früheren Medien überschreiten die Vorschaugrenze von 4096 Dateien
+history-media-too-large = Die früheren Medien sind zu groß
+history-media-over-limit = Die früheren Medien überschreiten die Vorschaugrenze von 128 MiB
+history-media-hash-mismatch = Die früheren Medien stimmen nicht mit ihrem gespeicherten Inhalts-Hash überein
+history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
+history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
+history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
+history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
+
+# File history in the History host.
+history-files-select-file = Wähle eine Datei mit versioniertem Verlauf
+history-files-choose-parent = Wähle für „Vorher“ eine tatsächliche Vorgängerversion
+history-files-no-earlier = Keine frühere Version
+history-files-checking-compensation = Datei: { $file }
+
+    Eine neue Prüfung zum Rückgängigmachen läuft
+history-files-refresh-activity = Aktivität aktualisieren
+history-files-check-restore = Ergebnis der Wiederherstellung prüfen
+history-files-retry-restore = Dieselbe Wiederherstellung erneut versuchen
+history-files-redo-restore = Dateiwiederherstellung wiederholen…
+history-files-undo-restore = Dateiwiederherstellung rückgängig machen…
+history-files-current-unavailable = Aktuelle Dateiversion nicht verfügbar
+history-files-current-revision = Aktuelle Dateiversion: { $revision }
+history-files-live-updates = Die aktuelle Datei wurde geändert; die ausgewählte unveränderliche Version bleibt angeheftet
+history-files-before-parent = Vorgänger { $revision }
+history-files-showing-parent = Vorgänger: { $revision }
+history-files-created = Erstellt
+history-files-edited = Bearbeitet
+history-files-renamed = Umbenannt
+history-files-moved = Verschoben
+history-files-deleted = Gelöscht
+history-files-restored = Wiederhergestellt
+history-files-conflict-resolved = Konflikt gelöst
+history-files-unknown-author = Unbekannte Person
+history-files-author = Person { $identity }
+history-files-loading = Dateiverlauf wird geladen
+history-files-loading-version = Unveränderliche Version wird geladen
+history-files-checking-permissions = Aktuelle Dateiberechtigungen und Stand werden geprüft
+history-files-earlier-pending = Eine frühere Wiederherstellung steht noch aus; prüfe ihr genaues Ergebnis
+history-files-submitting = Geprüfte Wiederherstellung wird übermittelt
+history-files-version-count = { $count ->
+        [one] { $count } unveränderliche Version
+       *[other] { $count } unveränderliche Versionen
+    }
+history-files-binding-changed = Die Dateizuordnung hat sich geändert; öffne den Verlauf für die aktuelle Datei erneut
+history-files-unavailable-host = Der Dateiverlauf ist auf diesem Host nicht verfügbar
+history-files-historical-version = Frühere Version
+history-files-foreign-response = Die Verlaufsantwort gehört zu einer anderen Datei
+history-files-restore-explainer = Die Wiederherstellung erzeugt eine neue Dateiversion und behält den bisherigen Verlauf
+history-files-foreign-review = Die Prüfung gehört zu einer anderen Datei oder Einbindung
+history-files-invalid-result = Ungültiges Ergebnis vom Backend; die genaue Anfrage bleibt offen
+history-files-not-visible = Diese Datei ist nicht mehr sichtbar
+history-files-error-stale = Der Dateiverlauf hat sich geändert; aktualisiere die Aktivität und versuche diese Version erneut
+history-files-error-missing-version = Diese unveränderliche Version ist nicht verfügbar
+history-files-error-invalid = Ungültige Verlaufsantwort
+history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verfügbar
+history-files-error-too-large = Die frühere Vorschau überschreitet die unterstützte Größe
+history-files-error-no-content = Diese Version hat keinen gespeicherten Inhaltsverweis
+history-files-outcome-applied = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: beobachtete Version.
+history-files-outcome-applied-legacy = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: älterer Inhaltsvertreter; frühere Urheberschaft unbekannt.
+history-files-outcome-unchanged = Der ausgewählte Inhalt stimmt bereits überein; keine neue Version und kein Rückgängig-Eintrag
+history-files-outcome-pending = Die Wiederherstellung steht aus. Prüfe das Ergebnis oder versuche denselben Vorgang erneut
+history-files-outcome-review = Die aktuelle Datei hat sich geändert. Aktualisiere die Prüfung; die ausgewählte alte Version bleibt angeheftet
+history-files-outcome-read-only = Diese Datei ist schreibgeschützt; Wiederherstellen und Rückgängigmachen sind nicht verfügbar
+history-files-outcome-pending-writes = Ausstehende Dateiänderungen müssen abgeschlossen sein, bevor wiederhergestellt wird; gepufferter Inhalt bleibt erhalten
+history-files-outcome-unsupported-owner = Nicht unterstützter Inhaltsbesitzer: { $mapping }
+history-files-outcome-unavailable = Die Bestätigung der Wiederherstellung ist nicht verfügbar. Behalte diesen Vorgang und prüfe sein Ergebnis
+history-files-outcome-invalid = Ungültige geprüfte Wiederherstellungsanfrage; es gibt keinen älteren Ausweichweg
+
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?
 close-save-failed = Änderungen konnten nicht gespeichert werden
