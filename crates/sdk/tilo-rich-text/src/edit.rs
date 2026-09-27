@@ -677,6 +677,25 @@ mod tests {
     }
 
     #[test]
+    fn a_table_keeps_its_source_and_how_it_shows() {
+        let (mut doc, mut replica) = document("| a | b |");
+        for visual in [true, false] {
+            let presented = shown(&mut replica, &mut doc);
+            let mut edited = presented.clone();
+            edited[0].kind = BlockKind::Table { visual };
+            commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+            let after = shown(&mut replica, &mut doc);
+            assert_eq!(after[0].kind, BlockKind::Table { visual });
+            assert_eq!(after[0].text, "| a | b |");
+        }
+        let presented = shown(&mut replica, &mut doc);
+        let mut edited = presented.clone();
+        edited[0].kind = BlockKind::Paragraph;
+        commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+        assert_eq!(shown(&mut replica, &mut doc)[0].kind, BlockKind::Paragraph);
+    }
+
+    #[test]
     fn marking_a_range_sets_only_that_range() {
         let (mut doc, mut replica) = document("make this bold");
         let presented = shown(&mut replica, &mut doc);
