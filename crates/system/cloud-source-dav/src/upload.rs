@@ -60,27 +60,16 @@ pub struct SinglePut {
     source: DavSource,
     id: ItemId,
     condition: Condition,
-    replaced: Option<Revision>,
     size: u64,
     offset: u64,
 }
 
 impl SinglePut {
-    /// `replaced` is the revision the write overwrites, where the source
-    /// has to make sure the overwrite yields a new one (see
-    /// `new_nextcloud_revision`).
-    pub fn new(
-        source: &DavSource,
-        id: ItemId,
-        condition: Condition,
-        replaced: Option<Revision>,
-        size: u64,
-    ) -> Self {
+    pub fn new(source: &DavSource, id: ItemId, condition: Condition, size: u64) -> Self {
         Self {
             source: source.clone(),
             id,
             condition,
-            replaced,
             size,
             offset: 0,
         }
@@ -128,8 +117,24 @@ impl UploadSession for SinglePut {
         if self.offset < self.size {
             return Err(Error::InvalidResponse("upload finished early"));
         }
-        let item = self.source.stat(&self.id)?;
-        new_nextcloud_revision(&self.source, &self.id, self.replaced.as_ref(), item)
+        let mut item = self.source.stat(&self.id)?;
+        if self.source.config.is_nextcloud()
+            && matches!(&self.condition, Condition::Match(Some(before)) if item.revision.as_ref() == Some(before))
+        {
+            // Nextcloud's file cache can report the old metadata immediately
+            // after a successful overwrite. Its GET path notices a changed
+            // on-disk size and refreshes that cache before serving the file.
+            // Do not hand the old revision back to a caller as the new one.
+            drop(self.source.read(&self.id, Some(0..1), None)?);
+            item = self.source.stat(&self.id)?;
+            if matches!(&self.condition, Condition::Match(Some(before)) if item.revision.as_ref() == Some(before))
+            {
+                return Err(Error::InvalidResponse(
+                    "stale Nextcloud revision after overwrite",
+                ));
+            }
+        }
+        Ok(item)
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
@@ -142,8 +147,6 @@ struct ChunkedState {
     transfer: String,
     id: ItemId,
     condition: Condition,
-    #[serde(default)]
-    replaced: Option<Revision>,
     size: u64,
     chunks: u32,
     offset: u64,
@@ -156,20 +159,13 @@ pub struct Chunked {
 }
 
 impl Chunked {
-    pub fn begin(
-        source: &DavSource,
-        id: ItemId,
-        condition: Condition,
-        replaced: Option<Revision>,
-        size: u64,
-    ) -> Result<Self> {
+    pub fn begin(source: &DavSource, id: ItemId, condition: Condition, size: u64) -> Result<Self> {
         let chunked = Self {
             source: source.clone(),
             state: ChunkedState {
                 transfer: format!("tilo-{}", uuid::Uuid::new_v4().simple()),
                 id,
                 condition,
-                replaced,
                 size,
                 chunks: 0,
                 offset: 0,
@@ -313,15 +309,7 @@ impl UploadSession for Chunked {
             )
             .map_err(|_| Error::Offline)?;
         match response.status() {
-            status if status.is_success() => {
-                let item = self.source.stat(&self.state.id)?;
-                new_nextcloud_revision(
-                    &self.source,
-                    &self.state.id,
-                    self.state.replaced.as_ref(),
-                    item,
-                )
-            }
+            status if status.is_success() => self.source.stat(&self.state.id),
             StatusCode::PRECONDITION_FAILED => Err(self.state.condition.failed()),
             StatusCode::NOT_FOUND => Err(Error::SessionExpired),
             _ => Err(self.source.status_error(&response)),
@@ -340,56 +328,4 @@ impl UploadSession for Chunked {
             Err(self.source.status_error(&response))
         }
     }
-}
-
-/// Make an overwrite of `replaced` end at a new revision.
-///
-/// Nextcloud keeps a file's `ETag` when an overwrite lands in the same
-/// second as the write before it: its scanner reuses the cached `ETag` while
-/// the storage mtime is unchanged, even though the content changed. Handing
-/// that `ETag` back as the new revision would let a later `If-Match` on the
-/// old content pass. Setting the mtime one second past the stale one makes
-/// Nextcloud issue a fresh `ETag`; the touch is itself conditional on the
-/// stale `ETag`, so it never lands on someone else's newer write.
-pub(crate) fn new_nextcloud_revision(
-    source: &DavSource,
-    id: &ItemId,
-    replaced: Option<&Revision>,
-    item: Item,
-) -> Result<Item> {
-    let Some(replaced) = replaced else {
-        return Ok(item);
-    };
-    if item.revision.as_ref() != Some(replaced) {
-        return Ok(item);
-    }
-    let mtime = item
-        .modified
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_secs());
-    let body = format!(
-        "<?xml version=\"1.0\"?><d:propertyupdate xmlns:d=\"DAV:\"><d:set><d:prop>\
-         <d:lastmodified>{}</d:lastmodified></d:prop></d:set></d:propertyupdate>",
-        mtime.saturating_add(1)
-    );
-    let response = source
-        .client()?
-        .send(
-            "PROPPATCH",
-            source.url(id, false)?,
-            &[("Content-Type", "application/xml; charset=utf-8")],
-            Body::Bytes(body.into_bytes()),
-            Precondition::IfMatch(replaced.as_str()),
-        )
-        .map_err(|_| Error::Offline)?;
-    if !response.status().is_success() && response.status() != StatusCode::PRECONDITION_FAILED {
-        return Err(source.status_error(&response));
-    }
-    let item = source.stat(id)?;
-    if item.revision.as_ref() == Some(replaced) {
-        return Err(Error::InvalidResponse(
-            "stale Nextcloud revision after overwrite",
-        ));
-    }
-    Ok(item)
 }
