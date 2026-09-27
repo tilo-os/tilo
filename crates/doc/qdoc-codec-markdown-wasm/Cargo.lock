@@ -206,6 +206,7 @@ name = "format-provider-abi"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -379,6 +380,7 @@ dependencies = [
  "tilo-content",
  "tilo-resource",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -399,6 +401,7 @@ dependencies = [
  "qdoc",
  "thiserror",
  "tilo-content",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -631,6 +634,7 @@ dependencies = [
  "blake3",
  "thiserror",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -646,6 +650,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-resource-macros",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -655,6 +660,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -798,6 +804,12 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beffa227304dbaea3ad6a06ac674f9bc83a3dec3b7f63eeb442de37e7cb6bb01"
 
 [[package]]
 name = "zlib-rs"

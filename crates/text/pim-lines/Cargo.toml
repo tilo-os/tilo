@@ -8,6 +8,7 @@ description = "RFC 5545/6350 content-line codec shared by iCalendar and vCard: f
 
 # Pure string handling; no dependencies.
 [dependencies]
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

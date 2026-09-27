@@ -249,6 +249,7 @@ accesskit_winit = { version = "0.34.0", optional = true, default-features = fals
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../../system/tts" }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).

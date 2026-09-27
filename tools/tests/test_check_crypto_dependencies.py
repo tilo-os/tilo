@@ -91,6 +91,34 @@ class CryptoDependencyTests(unittest.TestCase):
             self.crate("apps/tube", "tube", '[dependencies]\nsnow = "0.9"\nopenmls = "0.9"\n')
             self.assertEqual(checker.violations(self.root), [])
 
+    def test_the_hakari_package_may_name_primitives_only_while_it_has_no_code(self) -> None:
+        def hack(lib: str) -> None:
+            self.doCleanups()
+            self.setUp()
+            self.workspace(["crates/workspace-hack", "apps/vault"])
+            self.write(".config/hakari.toml", 'hakari-package = "workspace-hack"\n')
+            self.crate(
+                "crates/workspace-hack",
+                "workspace-hack",
+                '[dependencies]\nchacha20poly1305 = "0.10"\ncurve25519-dalek = "4"\n',
+            )
+            self.write("crates/workspace-hack/build.rs", "// Needed for build-dependencies.\nfn main() {}\n")
+            self.write("crates/workspace-hack/src/lib.rs", lib)
+            self.crate("apps/vault", "vault", '[dependencies]\nworkspace-hack = "0.1"\n')
+
+        with self.subTest(phase='comment-only feature crate is exempt'):
+            hack("//! Feature unification, managed by cargo hakari.\n")
+            self.assertEqual(checker.violations(self.root), [])
+        with self.subTest(phase='feature crate with code is checked like any crate'):
+            hack("pub use chacha20poly1305::ChaCha20Poly1305;\n")
+            errors = checker.violations(self.root)
+            self.assertEqual(len(errors), 2, errors)
+            self.assertTrue(all("crates/workspace-hack" in error for error in errors))
+        with self.subTest(phase='without a hakari config the name earns nothing'):
+            hack("//! Feature unification, managed by cargo hakari.\n")
+            (self.root / ".config/hakari.toml").unlink()
+            self.assertEqual(len(checker.violations(self.root)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

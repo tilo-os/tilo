@@ -26,6 +26,7 @@ runtime-portal   = { path = "../runtime-portal" }
 xdg-paths        = { path = "../../system/xdg-paths" }
 
 anyhow.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 # Direct service-FD access is a Unix capability. Native Windows callers keep

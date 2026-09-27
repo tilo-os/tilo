@@ -251,6 +251,9 @@ members = [
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
     "crates/windows/windows-vm",
+
+    # Feature unification for third-party dependencies (cargo hakari)
+    "crates/workspace-hack",
 ]
 resolver = "2"
 
@@ -259,6 +262,10 @@ resolver = "2"
 [workspace.package]
 license = "AGPL-3.0-only"
 publish = false
+
+# workspace-hack is never named in code: it only unifies third-party features.
+[workspace.metadata.cargo-machete]
+ignored = ["workspace-hack"]
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -689,6 +696,9 @@ wayland-backend = { path = "vendor/wayland-backend" }
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
+# Members depend on `workspace-hack = "0.1"`; this workspace builds the local
+# crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
+workspace-hack = { path = "crates/workspace-hack" }
 # Git forks on code.tilo.so. Cargo reads these revisions from `vendor/git`
 # (see `.cargo/config.toml` and `vendor/PATCHES.md`); upstream contributions
 # are prepared in tilo/upstream-contribs. Drop the entries once upstream
