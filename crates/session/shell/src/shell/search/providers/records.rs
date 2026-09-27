@@ -21,6 +21,7 @@ use std::rc::Rc;
 use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::i18n::{t, t_args};
 use crate::shell::room_records::{KnownRecord, RoomRecords};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -72,6 +73,10 @@ impl SearchProvider for RecordsProvider {
     }
     fn name(&self) -> &'static str {
         "Records"
+    }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-records")
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Record]
@@ -269,7 +274,7 @@ fn bring_into_this_room(
         crate::shell::doc_open::report_open_failure(
             chrome,
             &path,
-            "the file this record names is no longer there",
+            &t("search-record-file-missing"),
             Some("Records"),
         );
         return;
@@ -298,7 +303,7 @@ fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
 /// one is a guess.
 fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, String)]) -> String {
     let where_it_lives = if here.is_some_and(|h| record.is_in(h)) {
-        "In this workspace".to_string()
+        t("search-record-in-this-workspace")
     } else {
         let named = record
             .rooms()
@@ -311,10 +316,10 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
                     .map(|(_, name)| name.clone())
             });
         match named {
-            Some(name) => format!("In {name}"),
+            Some(name) => t_args("search-record-in-workspace", &[("workspace", name.into())]),
             // No workspace for this room (deleted, or minted on a peer):
             // say so rather than print a uuid.
-            None => "In another workspace".to_string(),
+            None => t("search-record-in-another-workspace"),
         }
     };
     match record.id.file_path() {

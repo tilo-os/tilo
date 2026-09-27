@@ -76,8 +76,9 @@ pub fn required_capability(
             )
         }),
 
-        // Unclassified: treat as an act, fail closed.
-        ResourceKind::Custom(_) => Some((
+        // Window actions and unclassified results: treat as an act, fail
+        // closed.
+        ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),

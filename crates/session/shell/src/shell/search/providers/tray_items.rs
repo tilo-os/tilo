@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::tray::{Tray, TrayItem, TrayRequest};
@@ -68,8 +69,11 @@ fn row(
         provider_id: PROVIDER_ID.into(),
         id,
         title,
-        subtitle: Some(format!("{} in the top bar", item.title)),
-        badge: Some("Tray".into()),
+        subtitle: Some(t_args(
+            "search-tray-in-top-bar",
+            &[("item", item.title.as_str().into())],
+        )),
+        badge: Some(t("search-badge-tray")),
         score,
         params: Vec::new(),
         contract: Some(tilo_actions::ActionContract {
@@ -93,6 +97,10 @@ impl SearchProvider for TrayItemsProvider {
         "Tray"
     }
 
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-tray")
+    }
+
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
@@ -105,14 +113,18 @@ impl SearchProvider for TrayItemsProvider {
         let mut out = Vec::new();
         for item in self.tray.snapshot() {
             let open_id = activate_id(&item.key);
+            let open_title = t_args("search-tray-open", &[("item", item.title.as_str().into())]);
             if !item.item_is_menu
-                && let Some(score) = matches(&needle, &[&item.title, &item.id, "open", &open_id])
+                && let Some(score) = matches(
+                    &needle,
+                    &[&item.title, &item.id, "open", &open_title, &open_id],
+                )
             {
                 out.push(row(
                     &self.tray,
                     &item,
                     open_id,
-                    format!("Open {}", item.title),
+                    open_title,
                     score,
                     TrayRequest::Activate { x: 0, y: 0 },
                 ));
@@ -122,10 +134,14 @@ impl SearchProvider for TrayItemsProvider {
                 let Some(score) = matches(&needle, &[&item.title, &entry.label, &entry_id]) else {
                     continue;
                 };
+                let args: [(&str, ui::i18n::ArgValue); 2] = [
+                    ("item", item.title.as_str().into()),
+                    ("entry", entry.label.as_str().into()),
+                ];
                 let title = match entry.toggled {
-                    Some(true) => format!("{}: {} (on)", item.title, entry.label),
-                    Some(false) => format!("{}: {} (off)", item.title, entry.label),
-                    None => format!("{}: {}", item.title, entry.label),
+                    Some(true) => t_args("search-tray-entry-on", &args),
+                    Some(false) => t_args("search-tray-entry-off", &args),
+                    None => t_args("search-tray-entry", &args),
                 };
                 out.push(row(
                     &self.tray,

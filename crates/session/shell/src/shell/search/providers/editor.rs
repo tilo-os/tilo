@@ -41,6 +41,10 @@ impl SearchProvider for EditorProvider {
     fn name(&self) -> &'static str {
         "Editor"
     }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-editor")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[KIND]
     }

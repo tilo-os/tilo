@@ -12,6 +12,8 @@ use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::TextRenderer;
+
+use crate::shell::i18n::{t, t_args};
 use ui::theme::Theme;
 
 /// A transport request emitted by the overlay.
@@ -224,7 +226,7 @@ impl PeerSyncOverlay {
     pub fn prompt_connect(&mut self) {
         self.state.invite_name = None;
         self.state.connect_input = Some(String::new());
-        self.state.status = Some("Paste or type the invite token".to_string());
+        self.state.status = Some(t("peer-sync-paste-token"));
     }
 
     pub fn issue_invite_request(&self) -> PeerSyncRequest {
@@ -255,7 +257,7 @@ impl PeerSyncOverlay {
             }
             (PeerSyncRequest::ExportIdentity, Ok(PeerSyncResponse::Message(card))) => {
                 ui::text_selection::clipboard_copy(&card);
-                self.state.status = Some("Identity copied — send it to the inviter".to_string());
+                self.state.status = Some(t("peer-sync-identity-copied"));
             }
             (
                 PeerSyncRequest::IssueInviteFor { name, .. },
@@ -266,24 +268,34 @@ impl PeerSyncOverlay {
             (PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
-                self.state.status = Some(format!("Invite failed: {error}"));
+                self.state.status = Some(t_args(
+                    "peer-sync-invite-failed",
+                    &[("error", error.into())],
+                ));
             }
             (PeerSyncRequest::ExportIdentity, Err(error)) => {
-                self.state.status = Some(format!("Identity unavailable: {error}"));
+                self.state.status = Some(t_args(
+                    "peer-sync-identity-unavailable",
+                    &[("error", error.into())],
+                ));
             }
             (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::Message(room))) => {
                 self.state.connect_input = None;
-                self.state.status = Some(format!("Joined room {room}"));
+                self.state.status = Some(t_args("peer-sync-joined-room", &[("room", room.into())]));
             }
             (PeerSyncRequest::AcceptInvite(_), Err(error)) => {
-                self.state.status = Some(format!("Refused: {error}"));
+                self.state.status =
+                    Some(t_args("peer-sync-join-refused", &[("error", error.into())]));
             }
             (
                 PeerSyncRequest::ListPendingInvitations,
                 Ok(PeerSyncResponse::PendingInvitations(rows)),
             ) => self.state.pending_invitations = rows,
             (PeerSyncRequest::ListPendingInvitations, Err(error)) => {
-                self.state.status = Some(format!("Pending invites unavailable: {error}"));
+                self.state.status = Some(t_args(
+                    "peer-sync-pending-unavailable",
+                    &[("error", error.into())],
+                ));
             }
             (PeerSyncRequest::ResendInvitation(id), Ok(PeerSyncResponse::Message(token))) => {
                 let name = self
@@ -295,16 +307,22 @@ impl PeerSyncOverlay {
                 self.finish_invite(token, name, true);
             }
             (PeerSyncRequest::ResendInvitation(_), Err(error)) => {
-                self.state.status = Some(format!("Could not resend: {error}"));
+                self.state.status = Some(t_args(
+                    "peer-sync-resend-failed",
+                    &[("error", error.into())],
+                ));
             }
             (PeerSyncRequest::CancelInvitation(_), Ok(PeerSyncResponse::Message(_))) => {
-                self.state.status = Some("Invite canceled".to_string());
+                self.state.status = Some(t("peer-sync-invite-canceled"));
             }
             (PeerSyncRequest::CancelInvitation(_), Err(error)) => {
-                self.state.status = Some(format!("Could not cancel: {error}"));
+                self.state.status = Some(t_args(
+                    "peer-sync-cancel-failed",
+                    &[("error", error.into())],
+                ));
             }
             (_, Ok(_)) => {
-                self.state.status = Some("Unexpected collaboration response".to_string());
+                self.state.status = Some(t("peer-sync-unexpected-response"));
             }
         }
     }
@@ -479,8 +497,10 @@ impl PeerSyncOverlay {
                     self.state.invite_name = Some(person.name.clone());
                     self.state.invite_recipient_key = Some(person.user_public_key);
                     self.state.invite_recipient_path = InviteRecipientPath::Known;
-                    self.state.status =
-                        Some(format!("Using verified identity · {}", person.verification));
+                    self.state.status = Some(t_args(
+                        "peer-sync-using-verified-identity",
+                        &[("verification", person.verification.as_str().into())],
+                    ));
                 }
                 EventOutcome::consumed()
             }
@@ -488,8 +508,7 @@ impl PeerSyncOverlay {
                 self.state.invite_recipient_path = InviteRecipientPath::New;
                 self.state.invite_name = Some(String::new());
                 self.state.invite_recipient_key = None;
-                self.state.status =
-                    Some("Ask them to send their Tilo identity, then paste it here.".to_string());
+                self.state.status = Some(t("peer-sync-ask-for-identity"));
                 EventOutcome::consumed()
             }
             Button::Join => self.submit_connect(),
@@ -538,12 +557,11 @@ impl PeerSyncOverlay {
         };
         let name = name.trim().to_string();
         if name.is_empty() {
-            self.state.status = Some("Say who this invite is for".to_string());
+            self.state.status = Some(t("peer-sync-name-required"));
             return EventOutcome::consumed();
         }
         let Some(recipient_user_public_key) = self.state.invite_recipient_key else {
-            self.state.status =
-                Some("Paste their Tilo identity key so the invite cannot be stolen".to_string());
+            self.state.status = Some(t("peer-sync-identity-required"));
             return EventOutcome::consumed();
         };
         EventOutcome::request(
@@ -562,14 +580,11 @@ impl PeerSyncOverlay {
             return EventOutcome::ignored();
         };
         if name.trim().is_empty() {
-            self.state.status = Some("Say who this invite is for".to_string());
+            self.state.status = Some(t("peer-sync-name-required"));
             return EventOutcome::consumed();
         }
         if self.state.invite_recipient_key.is_none() {
-            self.state.status = Some(
-                "Choose a verified person or paste their Tilo identity so the invite cannot be stolen"
-                    .to_string(),
-            );
+            self.state.status = Some(t("peer-sync-recipient-required"));
             return EventOutcome::consumed();
         }
         self.state.invite_review_open = true;
@@ -592,7 +607,7 @@ impl PeerSyncOverlay {
             return;
         };
         ui::text_selection::clipboard_copy(token);
-        self.state.status = Some("Copied".to_string());
+        self.state.status = Some(t("peer-sync-copied"));
     }
 
     fn paste_invite_token(&mut self) {
@@ -605,29 +620,28 @@ impl PeerSyncOverlay {
         match pasted {
             Some(token) => {
                 self.state.connect_input = Some(token);
-                self.state.status = Some("Pasted — press Enter to join".to_string());
+                self.state.status = Some(t("peer-sync-pasted"));
             }
-            None => self.state.status = Some("Nothing on the clipboard to paste".to_string()),
+            None => self.state.status = Some(t("peer-sync-clipboard-empty")),
         }
     }
 
     fn paste_recipient_identity(&mut self) {
         self.state.invite_recipient_path = InviteRecipientPath::New;
         let Some(raw) = ui::text_selection::clipboard_paste() else {
-            self.state.status = Some("Nothing on the clipboard to paste".to_string());
+            self.state.status = Some(t("peer-sync-clipboard-empty"));
             return;
         };
         match parse_recipient_identity(&raw) {
             Some(key) => {
                 self.state.invite_recipient_key = Some(key);
-                self.state.status =
-                    Some(format!("Identity bound · {}", identity_fingerprint(&key)));
+                self.state.status = Some(t_args(
+                    "peer-sync-identity-bound",
+                    &[("fingerprint", identity_fingerprint(&key).into())],
+                ));
             }
             None => {
-                self.state.status = Some(
-                    "That is not a Tilo identity key (expected 64 hexadecimal characters)"
-                        .to_string(),
-                );
+                self.state.status = Some(t("peer-sync-identity-invalid"));
             }
         }
     }
@@ -698,18 +712,18 @@ impl PeerSyncOverlay {
         let body_size = tokens.typography.scale.xs.max(10.0);
         let name_size = tokens.typography.scale.sm.max(12.0);
         let avail = rect.width() - pad * 2.0;
-        let title = if self.state.invite_review_open {
-            "Review invitation"
+        let title = t(if self.state.invite_review_open {
+            "peer-sync-title-review"
         } else if self.state.invite_name.is_some() {
-            "Invite someone"
+            "peer-sync-title-invite"
         } else if self.state.connect_input.is_some() {
-            "Join a workspace"
+            "peer-sync-title-join"
         } else {
-            "Workspace invite"
-        };
+            "peer-sync-title-workspace-invite"
+        });
         text_renderer.draw_text(
             scene,
-            title,
+            &title,
             title_size,
             colors.text_primary,
             transform.pre_translate((rect.x0 + pad, y).into()),
@@ -772,18 +786,21 @@ impl PeerSyncOverlay {
         let colors = &theme.tokens.colors;
         let total = self.state.pending_invitations.len();
         let end = self.pending_offset.saturating_add(3).min(total);
-        let range = if total > 3 {
-            format!(
-                " · {}–{} of {total} · scroll",
-                self.pending_offset.saturating_add(1),
-                end
+        let heading = if total > 3 {
+            t_args(
+                "peer-sync-pending-heading-paged",
+                &[
+                    ("first", self.pending_offset.saturating_add(1).into()),
+                    ("last", end.into()),
+                    ("total", total.into()),
+                ],
             )
         } else {
-            String::new()
+            t("peer-sync-pending-heading")
         };
         text.draw_text(
             scene,
-            &format!("PENDING INVITES{range}"),
+            &heading,
             body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
@@ -808,10 +825,10 @@ impl PeerSyncOverlay {
                 ui::chrome::ChromeRole::Control.radius(theme, row.height()),
                 colors.lift(0.35),
             );
-            let detail = format!(
-                "{} · expires in {}",
-                invite.role.label(),
-                time_until(invite.expiry_unix_seconds)
+            let detail = role_and_expiry(
+                "peer-sync-role-expires",
+                invite.role,
+                invite.expiry_unix_seconds,
             );
             let shown_name = text.elide_to_width(&invite.name, body, 150.0);
             let shown_detail = text.elide_to_width(&detail, body, 190.0);
@@ -834,9 +851,14 @@ impl PeerSyncOverlay {
             let cancel = Rect::new(row.x1 - 62.0, row.y0 + 8.0, row.x1 - 8.0, row.y1 - 8.0);
             let resend = Rect::new(cancel.x0 - 68.0, cancel.y0, cancel.x0 - 6.0, cancel.y1);
             for (label, button, button_rect) in [
-                ("Copy", Button::Resend(invite.id), resend),
-                ("Cancel", Button::CancelPending(invite.id), cancel),
+                (t("peer-sync-copy"), Button::Resend(invite.id), resend),
+                (
+                    t("peer-sync-cancel"),
+                    Button::CancelPending(invite.id),
+                    cancel,
+                ),
             ] {
+                let label = label.as_str();
                 ui::surface::card(
                     scene,
                     transform,
@@ -955,7 +977,7 @@ impl PeerSyncOverlay {
         let colors = &theme.tokens.colors;
         text.draw_text(
             scene,
-            "WHO ARE YOU INVITING?",
+            &t("peer-sync-recipient-heading"),
             body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
@@ -991,7 +1013,7 @@ impl PeerSyncOverlay {
             text,
             theme,
             choice,
-            "Someone new · exchange their Tilo identity",
+            &t("peer-sync-recipient-new"),
             self.state.invite_recipient_path == InviteRecipientPath::New,
             Button::SelectNewRecipient,
             body,
@@ -1017,7 +1039,7 @@ impl PeerSyncOverlay {
         let colors = &theme.tokens.colors;
         text.draw_text(
             scene,
-            "ACCESS THEY WILL RECEIVE",
+            &t("peer-sync-role-heading"),
             body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
@@ -1025,17 +1047,14 @@ impl PeerSyncOverlay {
         );
         y += f64::from(body) + 7.0;
         let options = [
-            (crate::network::invite::InviteRole::Viewer, "Viewer", 0.0),
-            (
-                crate::network::invite::InviteRole::Commenter,
-                "Commenter",
-                1.0,
-            ),
-            (crate::network::invite::InviteRole::Editor, "Editor", 2.0),
+            (crate::network::invite::InviteRole::Viewer, 0.0),
+            (crate::network::invite::InviteRole::Commenter, 1.0),
+            (crate::network::invite::InviteRole::Editor, 2.0),
         ];
         let gap = 6.0;
         let width = (rect.width() - pad * 2.0 - gap * 2.0) / 3.0;
-        for (role, label, column) in options {
+        for (role, column) in options {
+            let label = role_label(role);
             let x0 = rect.x0 + pad + (width + gap) * column;
             let choice = Rect::new(x0, y, x0 + width, y + 32.0);
             self.draw_choice(
@@ -1044,7 +1063,7 @@ impl PeerSyncOverlay {
                 text,
                 theme,
                 choice,
-                label,
+                &label,
                 self.state.invite_role == role,
                 Button::SelectRole(role),
                 body,
@@ -1070,26 +1089,39 @@ impl PeerSyncOverlay {
         avail: f64,
     ) -> f64 {
         let colors = &theme.tokens.colors;
-        let name = self.state.invite_name.as_deref().unwrap_or("Someone");
         let key = self.state.invite_recipient_key.as_ref();
-        let workspace = if self.state.invite_context.workspace_name.trim().is_empty() {
-            "this workspace"
-        } else {
-            self.state.invite_context.workspace_name.as_str()
-        };
-        let inviter = if self.state.invite_context.inviter_name.trim().is_empty() {
-            "You"
-        } else {
-            self.state.invite_context.inviter_name.as_str()
-        };
+        let workspace = self.state.invite_context.workspace_name.as_str();
+        let inviter = self.state.invite_context.inviter_name.as_str();
         let lines = [
-            format!("Workspace · {workspace}"),
-            format!("Invited by · {inviter}"),
-            format!("Recipient · {name}"),
-            format!("Access · {}", self.state.invite_role.label()),
-            format!(
-                "Bound identity · {}",
-                key.map_or_else(|| "missing".to_string(), identity_fingerprint)
+            if workspace.trim().is_empty() {
+                t("peer-sync-review-workspace-this")
+            } else {
+                t_args(
+                    "peer-sync-review-workspace",
+                    &[("workspace", workspace.into())],
+                )
+            },
+            if inviter.trim().is_empty() {
+                t("peer-sync-review-inviter-you")
+            } else {
+                t_args("peer-sync-review-inviter", &[("inviter", inviter.into())])
+            },
+            self.state.invite_name.as_deref().map_or_else(
+                || t("peer-sync-review-recipient-unnamed"),
+                |name| t_args("peer-sync-review-recipient", &[("name", name.into())]),
+            ),
+            t_args(
+                "peer-sync-review-role",
+                &[("role", role_label(self.state.invite_role).into())],
+            ),
+            key.map_or_else(
+                || t("peer-sync-review-identity-missing"),
+                |key| {
+                    t_args(
+                        "peer-sync-review-identity",
+                        &[("fingerprint", identity_fingerprint(key).into())],
+                    )
+                },
             ),
         ];
         for (index, line) in lines.iter().enumerate() {
@@ -1111,7 +1143,7 @@ impl PeerSyncOverlay {
         }
         text.draw_text(
             scene,
-            "Only this identity can redeem the signed one-hour invite.",
+            &t("peer-sync-review-note"),
             body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y + 5.0).into()),
@@ -1195,25 +1227,25 @@ impl PeerSyncOverlay {
     ) {
         let buttons: Vec<(String, Button)> = if self.state.invite_review_open {
             vec![
-                ("Create invite".into(), Button::CreateInvite),
-                ("Back".into(), Button::BackToComposer),
-                ("Cancel".into(), Button::Cancel),
+                (t("peer-sync-create-invite"), Button::CreateInvite),
+                (t("peer-sync-back"), Button::BackToComposer),
+                (t("peer-sync-cancel"), Button::Cancel),
             ]
         } else if self.state.invite_name.is_some() {
             vec![
-                ("Review invite".into(), Button::ReviewInvite),
-                ("Paste new identity".into(), Button::PasteIdentity),
-                ("Cancel".into(), Button::Cancel),
+                (t("peer-sync-review-invite"), Button::ReviewInvite),
+                (t("peer-sync-paste-identity"), Button::PasteIdentity),
+                (t("peer-sync-cancel"), Button::Cancel),
             ]
         } else if self.state.connect_input.is_some() {
             vec![
-                ("Join".into(), Button::Join),
-                ("Cancel".into(), Button::Cancel),
-                ("Paste".into(), Button::PasteToken),
-                ("Copy my identity".into(), Button::CopyIdentity),
+                (t("peer-sync-join"), Button::Join),
+                (t("peer-sync-cancel"), Button::Cancel),
+                (t("peer-sync-paste"), Button::PasteToken),
+                (t("peer-sync-copy-identity"), Button::CopyIdentity),
             ]
         } else {
-            vec![("Copy".into(), Button::CopyToken)]
+            vec![(t("peer-sync-copy"), Button::CopyToken)]
         };
         // Shared `Button` faces (HIG §9.9) at the minimum pointer target
         // (§9.6) with the Control radius (§9.1) — the former 30 px pills
@@ -1336,17 +1368,44 @@ fn identity_fingerprint(key: &[u8; 32]) -> String {
     peer_fingerprint(&encoded)
 }
 
-fn time_until(expiry: u64) -> String {
+/// How long until `expiry`, as the unit and count the expiry messages
+/// select on.
+fn time_until(expiry: u64) -> (&'static str, u64) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     match expiry.saturating_sub(now) {
-        0 => "moments".into(),
-        s if s < 120 => format!("{s} seconds"),
-        s if s < 5400 => format!("{} minutes", s / 60),
-        s if s < 172_800 => format!("{} hours", s / 3600),
-        s => format!("{} days", s / 86_400),
+        0 => ("now", 0),
+        s if s < 120 => ("seconds", s),
+        s if s < 5400 => ("minutes", s / 60),
+        s if s < 172_800 => ("hours", s / 3600),
+        s => ("days", s / 86_400),
     }
+}
+
+/// An invite role as a label of its own (a choice, or the value after a
+/// "·" separator).
+fn role_label(role: crate::network::invite::InviteRole) -> String {
+    use crate::network::invite::InviteRole;
+    t(match role {
+        InviteRole::Viewer => "peer-sync-role-viewer",
+        InviteRole::Commenter => "peer-sync-role-commenter",
+        InviteRole::Editor => "peer-sync-role-editor",
+    })
+}
+
+/// One whole "role · expires in …" message, so each language words the
+/// expiry for its own unit and plural.
+fn role_and_expiry(key: &str, role: crate::network::invite::InviteRole, expiry: u64) -> String {
+    let (unit, count) = time_until(expiry);
+    t_args(
+        key,
+        &[
+            ("role", role_label(role).into()),
+            ("unit", unit.into()),
+            ("count", count.into()),
+        ],
+    )
 }
 
 fn elide_token(token: &str) -> String {
@@ -1387,11 +1446,11 @@ fn draw_naming(
     let colors = &theme.tokens.colors;
     text.draw_text(
         scene,
-        if recipient_path == InviteRecipientPath::Known {
-            "Selected person"
+        &t(if recipient_path == InviteRecipientPath::Known {
+            "peer-sync-selected-person"
         } else {
-            "Name the new person"
-        },
+            "peer-sync-name-new-person"
+        }),
         body,
         colors.text_dim,
         transform.pre_translate((rect.x0 + pad, y).into()),
@@ -1423,10 +1482,10 @@ fn draw_naming(
         };
     text.draw_text(
         scene,
-        if typed.is_empty() {
-            "Their name"
+        &if typed.is_empty() {
+            t("peer-sync-name-placeholder")
         } else {
-            &shown
+            shown.clone()
         },
         name,
         if typed.is_empty() {
@@ -1453,16 +1512,17 @@ fn draw_naming(
     );
     y = field.y1 + 12.0;
     let identity = recipient.map_or_else(
-        || "Choose a verified person or paste their Tilo identity.".to_string(),
-        |key| match recipient_path {
-            InviteRecipientPath::Known => {
-                format!(
-                    "Verified remembered identity · {}",
-                    identity_fingerprint(key)
-                )
-            }
-            InviteRecipientPath::New => {
-                format!("New identity bound · {}", identity_fingerprint(key))
+        || t("peer-sync-recipient-hint"),
+        |key| {
+            let fingerprint: ui::i18n::ArgValue = identity_fingerprint(key).into();
+            match recipient_path {
+                InviteRecipientPath::Known => t_args(
+                    "peer-sync-identity-remembered",
+                    &[("fingerprint", fingerprint)],
+                ),
+                InviteRecipientPath::New => {
+                    t_args("peer-sync-identity-new", &[("fingerprint", fingerprint)])
+                }
             }
         },
     );
@@ -1495,12 +1555,13 @@ fn draw_invite(
     invite_for: Option<&str>,
 ) -> f64 {
     let parsed = parse_invite(token);
-    let who = invite_for.unwrap_or("Anyone with this invite");
-    let sub = parsed.as_ref().map_or_else(String::new, |t| {
-        format!(
-            "{} · expires in {}",
-            t.role.label(),
-            time_until(t.expiry_unix_seconds)
+    let anyone = t("peer-sync-invite-anyone");
+    let who = invite_for.unwrap_or(&anyone);
+    let sub = parsed.as_ref().map_or_else(String::new, |invite| {
+        role_and_expiry(
+            "peer-sync-role-expires",
+            invite.role,
+            invite.expiry_unix_seconds,
         )
     });
     y = draw_person(
@@ -1513,14 +1574,14 @@ fn draw_invite(
         &sub,
         invite_for.is_some(),
     ) + 12.0;
-    if let Some(t) = parsed {
+    if let Some(invite) = parsed {
         y = draw_code(
             scene,
             transform,
             text,
             theme,
             Point::new(rect.x0 + pad, y),
-            &peer_fingerprint(&t.owner_peer_id),
+            &peer_fingerprint(&invite.owner_peer_id),
             avail,
         );
     }
@@ -1545,18 +1606,18 @@ fn draw_receiving(
     typed: &str,
 ) -> f64 {
     let colors = &theme.tokens.colors;
-    if let Some(t) = parse_invite(typed) {
+    if let Some(invite) = parse_invite(typed) {
         y = draw_person(
             scene,
             transform,
             text,
             theme,
             Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
-            "Invite received",
-            &format!(
-                "{} access · expires in {}",
-                t.role.label(),
-                time_until(t.expiry_unix_seconds)
+            &t("peer-sync-invite-received"),
+            &role_and_expiry(
+                "peer-sync-received-role-expires",
+                invite.role,
+                invite.expiry_unix_seconds,
             ),
             false,
         ) + 12.0;
@@ -1566,17 +1627,19 @@ fn draw_receiving(
             text,
             theme,
             Point::new(rect.x0 + pad, y),
-            &peer_fingerprint(&t.owner_peer_id),
+            &peer_fingerprint(&invite.owner_peer_id),
             avail,
         );
     }
     let line = if typed.is_empty() {
-        "Paste the invite they sent you.".to_string()
+        t("peer-sync-paste-invite-hint")
     } else {
-        format!(
-            "{} · {} characters",
-            elide_token(typed),
-            typed.chars().count()
+        t_args(
+            "peer-sync-token-characters",
+            &[
+                ("token", elide_token(typed).into()),
+                ("count", typed.chars().count().into()),
+            ],
         )
     };
     let line = text.elide_to_width(&line, name, f64_to_f32(avail));
@@ -1596,7 +1659,7 @@ fn draw_receiving(
     if !typed.is_empty() {
         text.draw_text(
             scene,
-            "Not a whole invite yet",
+            &t("peer-sync-token-incomplete"),
             body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
