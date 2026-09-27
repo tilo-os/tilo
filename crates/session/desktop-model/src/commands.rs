@@ -22,6 +22,11 @@ use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
 
+mod admission;
+mod placement;
+pub use admission::{check_owned, namespace_counter, resolve_open_app};
+pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
+
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
@@ -426,32 +431,6 @@ pub fn desktop_source_matches(
     Ok(true)
 }
 
-/// Where [`DesktopCommand::OpenApp`] opens: a new group at the end of the last
-/// strip `owns` accepts, or the first strip of an empty workspace. `owns`
-/// lets the owner keep placement inside its own topology namespace.
-///
-/// # Errors
-///
-/// Returns a description when no strip `owns` accepts can receive the tab.
-pub fn open_app_placement(
-    workspace: &Workspace,
-    owns: impl Fn(u64) -> bool,
-) -> Result<TabPlacement, String> {
-    if workspace.strips.is_empty() {
-        return Ok(TabPlacement::EmptyWorkspace);
-    }
-    workspace
-        .strips
-        .iter()
-        .rev()
-        .find(|strip| owns(strip.id.0))
-        .map(|strip| TabPlacement::NewGroup {
-            strip: strip.id.0,
-            after: None,
-        })
-        .ok_or_else(|| "no desktop strip can receive the opened application".into())
-}
-
 /// Strip, group and tab indices of one located tab.
 type TabIndex = (usize, usize, usize);
 
@@ -785,10 +764,6 @@ fn apply_shortcut_command(
 ///
 /// Returns a description when the command no longer matches the topology, a
 /// name is invalid, or `mint`/`create` refuses.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per desktop command keeps the canonical reduction in one place"
-)]
 pub fn apply_command(
     workspace: &mut Workspace,
     command: &DesktopCommand,
@@ -799,11 +774,8 @@ pub fn apply_command(
         DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => {
             apply_shortcut_command(workspace, command)?;
         }
-        DesktopCommand::OpenApp { app } => {
-            let resolved = DesktopCommand::OpenTab {
-                app: app.clone(),
-                placement: open_app_placement(workspace, |_| true)?,
-            };
+        DesktopCommand::OpenApp { .. } => {
+            let resolved = resolve_open_app(workspace, command.clone(), |_| true)?;
             return apply_command(workspace, &resolved, mint, create);
         }
         DesktopCommand::OpenTab { app, placement } => {
