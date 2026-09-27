@@ -1393,6 +1393,12 @@ impl BlockEditor {
         self.read_only
     }
 
+    /// Select every block's text, as Ctrl+A does.
+    pub fn select_all(&mut self) {
+        self.handle_document_selection_ctrl_key(&Key::Character("a".into()));
+        self.dirty = true;
+    }
+
     /// Whether a menu or popover of the editor is open and takes Escape and
     /// Enter itself (the slash menu, a link picker, find).
     #[must_use]
