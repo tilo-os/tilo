@@ -283,10 +283,6 @@ tilo-search = { path = "../../sdk/search" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# The integration tests drive the native broker harness. The dev image uses
-# the unqualified `dev-overrides` feature to target this package; a qualified
-# `shell/dev-overrides` would instead target this self dev-dependency.
-shell = { path = ".", features = ["test-support"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
