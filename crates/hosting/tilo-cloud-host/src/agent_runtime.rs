@@ -1158,7 +1158,10 @@ mod tests {
         );
         let unmounted = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
         assert!(!unmounted.required_services_ready);
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // A hang bound, not a speed limit: the retry starts after
+        // WORKER_RETRY_MIN, but mounting real workers on a loaded runner can
+        // take tens of seconds.
+        let deadline = Instant::now() + 2 * crate::agent_workers::tests::HARNESS_WAIT;
         loop {
             let state = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
             if state.publication_revision != "unavailable" {
