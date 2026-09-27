@@ -85,15 +85,38 @@ pub use validate::{
 };
 pub use verify::{Verification, verify, verify_with_trust};
 
+/// The application size ceiling, in bytes. It lives in a plain file beside
+/// this crate so the packaging scripts (`os/scripts/pack-apps.sh`,
+/// `dist/apps/package-apps.sh`) read the very same number instead of carrying
+/// a copy that can drift.
+const APP_SIZE_LIMIT_BYTES: u64 = parse_size_limit(include_str!("../max-app-bytes"));
+
+const fn parse_size_limit(text: &str) -> u64 {
+    let bytes = text.as_bytes();
+    let mut value: u64 = 0;
+    let mut index = 0;
+    while index < bytes.len() && bytes[index] != b'\n' {
+        let digit = bytes[index];
+        assert!(
+            digit.is_ascii_digit(),
+            "max-app-bytes must be a decimal byte count"
+        );
+        value = value * 10 + (digit - b'0') as u64;
+        index += 1;
+    }
+    assert!(value > 0, "max-app-bytes must be positive");
+    value
+}
+
 /// Maximum wire size of an application `.tapp`. Large shared dependencies
 /// belong in a versioned runtime bundle; user documents and downloadable
 /// content are resources, not application payload.
-pub const MAX_APP_TAPP_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_APP_TAPP_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
 /// Materialized application payload budget. Collection entries may legally
 /// share one content-addressed blob; count every reference so deduplication
 /// cannot turn a tiny tapp into an arbitrarily large install.
-pub const MAX_APP_UNPACKED_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_APP_UNPACKED_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
 /// Bound filesystem work/inodes independently of bytes. Empty files are not
 /// allowed to bypass the materialized-byte limit indefinitely.
@@ -111,8 +134,9 @@ mod size_tests {
     use super::*;
 
     #[test]
-    fn app_limit_is_five_mib_and_runtime_bundles_are_separate() {
-        assert_eq!(MAX_APP_TAPP_BYTES, 5_242_880);
+    fn app_limit_is_eight_mib_and_runtime_bundles_are_separate() {
+        assert_eq!(MAX_APP_TAPP_BYTES, 8 * 1024 * 1024);
+        assert_eq!(MAX_APP_UNPACKED_BYTES, MAX_APP_TAPP_BYTES);
         assert!(tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES));
         assert!(!tapp_size_allowed(Kind::App, MAX_APP_TAPP_BYTES + 1));
         assert!(tapp_size_allowed(Kind::Runtime, u64::MAX));
