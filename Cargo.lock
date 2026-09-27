@@ -15897,6 +15897,7 @@ dependencies = [
  "threshold-identity",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-resource",
  "tilo-ui",
  "vello",
  "wgpu",
