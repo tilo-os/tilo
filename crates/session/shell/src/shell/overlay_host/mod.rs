@@ -6007,43 +6007,18 @@ impl ShellOverlayHost {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
-        use tilo_desktop::window_switcher::SwitcherOutcome;
-        if !self.window_switcher.is_active() {
+        let outcome = self.window_switcher.route_event(
+            event,
+            modifiers.state(),
+            self.last_cursor,
+            Instant::now(),
+        );
+        let taken = self.apply_window_switcher_outcome(outcome);
+        // A modifier change settles the switcher but still reaches the rest
+        // of the shell.
+        if matches!(event, WindowEvent::ModifiersChanged(_)) {
             return false;
         }
-        let now = Instant::now();
-        let outcome = match event {
-            WindowEvent::KeyboardInput { event: key, .. } => {
-                self.window_switcher
-                    .key(&key.logical_key, key.state, modifiers.state())
-            }
-            WindowEvent::ModifiersChanged(changed) => {
-                let outcome = self.window_switcher.modifiers_changed(changed.state());
-                self.apply_window_switcher_outcome(outcome);
-                return false;
-            }
-            WindowEvent::CursorMoved { .. } => {
-                self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
-                    self.window_switcher.pointer_moved(point, now)
-                })
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
-                self.window_switcher.pointer_pressed(point, now)
-            }),
-            WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::Touch(_)
-                if self.window_switcher.is_revealed(now) =>
-            {
-                SwitcherOutcome::Consumed
-            }
-            _ => SwitcherOutcome::Ignored,
-        };
-        let taken = self.apply_window_switcher_outcome(outcome);
         if taken {
             *handled = true;
         }
@@ -11150,27 +11125,11 @@ impl ShellOverlayHost {
         // fallback even when spatial navigation is rebound in Settings.
         // This also keeps first-run discoverability consistent with other
         // Linux desktops.
-        if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            if !repeat {
-                let _ = self.begin_window_switcher(
-                    tilo_desktop::window_switcher::SwitcherScope::Workspace,
-                    shift_down,
-                );
-            }
-            *handled = true;
-            return true;
-        }
-        // Alt+` walks the focused app's windows, with the key above Tab.
-        if mstate.alt_key()
-            && !mstate.control_key()
-            && !super_down
-            && matches!(logical_key, Key::Character(text) if matches!(text.as_str(), "`" | "~"))
+        if let Some(scope) =
+            tilo_desktop::window_switcher::SwitcherScope::for_chord(logical_key, mstate)
         {
             if !repeat {
-                let _ = self.begin_window_switcher(
-                    tilo_desktop::window_switcher::SwitcherScope::FocusedApp,
-                    shift_down,
-                );
+                let _ = self.begin_window_switcher(scope, shift_down);
             }
             *handled = true;
             return true;

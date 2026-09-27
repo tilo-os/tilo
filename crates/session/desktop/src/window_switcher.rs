@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -226,6 +226,23 @@ pub enum SwitcherScope {
     Workspace,
     /// The focused window's application only (Alt+Grave).
     FocusedApp,
+}
+
+impl SwitcherScope {
+    /// The switcher chord `key` presses with `mods` held, if any: Alt+Tab
+    /// walks the workspace, Alt with the key above Tab the focused app.
+    pub fn for_chord(key: &Key, mods: ModifiersState) -> Option<Self> {
+        if !mods.alt_key() {
+            return None;
+        }
+        match key {
+            Key::Named(NamedKey::Tab) => Some(Self::Workspace),
+            key if is_grave(key) && !mods.control_key() && !mods.super_key() => {
+                Some(Self::FocusedApp)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// What the host must do after the switcher saw an input.
@@ -743,6 +760,45 @@ impl WindowSwitcher {
             // nobody chose yet.
             _ if !mods.alt_key() && !matches!(key, Key::Named(NamedKey::Alt)) => self.commit(),
             _ => SwitcherOutcome::Consumed,
+        }
+    }
+
+    /// Input while a session is open. Keys all belong to it; the pointer
+    /// (at `cursor`, in the host's coordinates) does once the panel is on
+    /// screen. A modifier change is reported but belongs to the host too.
+    pub fn route_event(
+        &mut self,
+        event: &WindowEvent,
+        mods: ModifiersState,
+        cursor: Option<Point>,
+        now: Instant,
+    ) -> SwitcherOutcome {
+        if self.session.is_none() {
+            return SwitcherOutcome::Ignored;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                self.key(&key.logical_key, key.state, mods)
+            }
+            WindowEvent::ModifiersChanged(changed) => self.modifiers_changed(changed.state()),
+            WindowEvent::CursorMoved { .. } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.pointer_moved(point, now)
+            }),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.pointer_pressed(point, now)
+            }),
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+                if self.is_revealed(now) =>
+            {
+                SwitcherOutcome::Consumed
+            }
+            _ => SwitcherOutcome::Ignored,
         }
     }
 
