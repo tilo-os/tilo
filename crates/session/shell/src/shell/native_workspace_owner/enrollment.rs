@@ -279,6 +279,7 @@ impl NativeWorkspaceOwner {
         tree.native_runtime
             .publish(path, &tree.native_authority, &next.native_authority, &bytes)
             .map_err(|e| e.to_string())?;
+        persist::save_doc_for(&next, path, &bytes);
         *tree = next;
         Ok(())
     }

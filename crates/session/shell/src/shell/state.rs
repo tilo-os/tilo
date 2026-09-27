@@ -628,7 +628,9 @@ pub struct WorkspaceTree {
     pub desktop: DesktopTree,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
     /// the source of truth for reads; this doc for peer change export.
-    /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
+    /// Not in `state.json`: saved beside it with its whole history (see
+    /// [`crate::shell::persist::state_doc_path`]), which Activity and
+    /// Replay read. Public so tests
     /// can synthesize change-blobs, but real consumers must go through
     /// [`Self::current_heads`] / [`Self::export_changes_since`] /
     /// [`Self::apply_changes`]: direct access bypasses the cache rebuild.
@@ -2293,8 +2295,9 @@ impl WorkspaceTree {
         Ok(landed)
     }
 
-    /// Seed the automerge doc from the cache. Idempotent (truncates
-    /// `workspaces` and re-fills it). Tests building literal trees
+    /// Seed the automerge doc from the cache. Idempotent and diff-aware:
+    /// it writes only what differs, so an unchanged tree adds no history
+    /// and a rename is one write. Tests building literal trees
     /// should call this to flow doc-side changes out via
     /// [`Self::export_changes_since`]. `active_strip`/`active_group`
     /// stay cache-only.
