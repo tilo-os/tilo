@@ -215,9 +215,6 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [build-dependencies]
 adblock = { version = "0.12", default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -425,9 +422,6 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-zstd = { version = "0.13", features = ["experimental"] }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "experimental", "legacy", "std", "zdict_builder"] }
-zstd-sys = { version = "2", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
