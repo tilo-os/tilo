@@ -587,6 +587,13 @@ pub(crate) struct DesktopRoot {
     /// Placeholder tabs whose local scratch record (in the desktop's own
     /// fallback store, never published) exists, so the "Opening…" tile binds.
     placeholder_records: std::collections::BTreeSet<u64>,
+    /// Alt+Tab over the active workspace's windows. Browser windows have
+    /// no live pictures, so every card shows its app mark.
+    window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
+    /// Where the pointer last was, for the switcher's cards.
+    cursor: Option<Point>,
+    /// The window the switcher settled on, focused during the next update.
+    pending_switch: Option<tilo_desktop::window_switcher::WindowAddress>,
 }
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
@@ -809,11 +816,98 @@ impl DesktopRoot {
             view_changed: false,
             admitted_tree,
             placeholder_records: Default::default(),
+            window_switcher: Default::default(),
+            cursor: None,
+            pending_switch: None,
         };
         handle.speculation.borrow_mut().set_namespace(namespace);
         root.collect_failures();
         root.refresh_navigation(true);
         Ok((root, handle))
+    }
+    /// Alt+Tab and the switcher it opens. Returns whether the event was
+    /// the switcher's.
+    fn route_window_switcher_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        use tilo_desktop::window_switcher::{PlainWindows, SwitcherOutcome, SwitcherScope};
+        use winit::event::{ElementState, WindowEvent};
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+        }
+        let now = ui::time::Instant::now();
+        if !self.window_switcher.is_active() {
+            let WindowEvent::KeyboardInput { event: key, .. } = event else {
+                return false;
+            };
+            if key.state != ElementState::Pressed || self.activity.is_some() {
+                return false;
+            }
+            let Some(scope) = SwitcherScope::for_chord(&key.logical_key, modifiers.state()) else {
+                return false;
+            };
+            if !key.repeat {
+                self.window_switcher.set_host_rect(self.surface.get_rect());
+                let began = self.handle.tree.try_borrow().is_ok_and(|tree| {
+                    self.window_switcher.begin(
+                        &tree,
+                        &PlainWindows,
+                        scope,
+                        modifiers.state().shift_key(),
+                        now,
+                    )
+                });
+                if began {
+                    (self.notify)();
+                }
+            }
+            return true;
+        }
+        let outcome = self
+            .window_switcher
+            .route_event(event, modifiers.state(), self.cursor, now);
+        match outcome {
+            SwitcherOutcome::Ignored => return false,
+            SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {}
+            SwitcherOutcome::Commit(address) => {
+                self.pending_switch = Some(address);
+                self.dirty = true;
+            }
+        }
+        (self.notify)();
+        !matches!(event, WindowEvent::ModifiersChanged(_))
+    }
+    /// Focus the window the switcher chose. A window closed while Alt was
+    /// held is skipped. Only call during update, after the runner has
+    /// captured outgoing focus.
+    fn focus_switcher_window(
+        &mut self,
+        address: tilo_desktop::window_switcher::WindowAddress,
+    ) -> bool {
+        let mut tree = self.handle.tree.borrow_mut();
+        let live = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|s| s.id == address.strip))
+            .and_then(|strip| strip.window_groups.iter().find(|g| g.id == address.group))
+            .is_some_and(|group| group.tabs.iter().any(|tab| tab.id == address.tab));
+        if !live {
+            return false;
+        }
+        self.surface.reveal_on_next_layout(address.strip);
+        Self::apply_local(
+            &self.handle,
+            &mut tree,
+            LocalViewIntent::Tab {
+                group: address.group,
+                tab: address.tab,
+            },
+        );
+        drop(tree);
+        self.view_changed = true;
+        self.reconcile()
     }
     fn image_factory(handle: &DesktopHandle) -> Rc<dyn Fn(u32) -> ui::ImageStore> {
         let images = handle.images.clone();
@@ -2063,6 +2157,9 @@ impl Widget for DesktopRoot {
             }
             changed |= self.reconcile();
         }
+        if let Some(address) = self.pending_switch.take() {
+            changed |= self.focus_switcher_window(address);
+        }
         let command = self.handle.navigation_command.borrow_mut().take();
         if let Some(command) = command {
             let result = self.navigate(command, doc, path);
@@ -2075,6 +2172,9 @@ impl Widget for DesktopRoot {
             self.launchpad_request(action);
         }
         let updated = self.surface.update(doc, path);
+        if changed && let Ok(tree) = self.handle.tree.try_borrow() {
+            self.window_switcher.observe(&tree);
+        }
         let notices = self.notification_layer.tick();
         changed || updated || notices
     }
@@ -2089,6 +2189,7 @@ impl Widget for DesktopRoot {
             || self.activity.as_ref().is_some_and(Widget::needs_redraw)
             || self.notification_layer.needs_redraw()
             || self.surface.needs_redraw()
+            || self.window_switcher.needs_frame(ui::time::Instant::now())
     }
     fn build_layout(
         &mut self,
@@ -2156,6 +2257,17 @@ impl Widget for DesktopRoot {
                 (&tree, &self.resolver.host.author),
             );
         }
+        if self.window_switcher.is_active() {
+            self.window_switcher.draw(
+                scene,
+                transform,
+                text,
+                theme,
+                self.surface.get_rect(),
+                ui::time::Instant::now(),
+                &mut tilo_desktop::window_switcher::NoThumbnails,
+            );
+        }
         self.refresh_navigation(false);
         self.capture_live();
     }
@@ -2171,6 +2283,10 @@ impl Widget for DesktopRoot {
         node: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if self.route_window_switcher_event(event, scale, modifiers) {
+            *handled = true;
+            return;
+        }
         if let Some(activity) = &mut self.activity {
             activity.handle_event(
                 event,
@@ -5832,6 +5948,67 @@ mod tests {
             4,
             "retained Writer caret is not a new focus gesture after remote rebuild"
         );
+    }
+
+    /// Alt+Tab itself belongs to the operating system in a browser, so
+    /// the chord that reaches the page walks the focused app's windows.
+    #[test]
+    fn alt_grave_switches_between_an_apps_windows_through_the_shared_switcher() {
+        let calculators = std::cell::RefCell::new(Vec::new());
+        let (root, handle, _) = fixture_with_extra_calculators(1, |tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            calculators.borrow_mut().extend(
+                strip
+                    .window_groups
+                    .iter()
+                    .filter(|group| {
+                        matches!(&group.tabs[0].tile, TileContent::AppPlaceholder {
+                            kind: AppKind::Other(app), ..
+                        } if app == "so.tilo.calculator")
+                    })
+                    .map(|group| group.id),
+            );
+            let first = calculators.borrow()[0];
+            tree.active_group.insert(strip.id, first);
+        });
+        let calculators = calculators.into_inner();
+        assert_eq!(calculators.len(), 2, "{calculators:?}");
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+        let strip = handle.tree.borrow().workspaces[0].strips[0].id;
+        assert_eq!(handle.tree.borrow().active_group[&strip], calculators[0]);
+
+        frame.set_modifiers(&["alt".into()]);
+        frame.key("`");
+        // SAFETY: `frame` retains this boxed root and no harness method runs
+        // while the temporary reference is alive.
+        assert!(unsafe { (&*root_ptr).window_switcher.is_active() });
+        frame.set_modifiers(&[]);
+        frame.relayout();
+
+        assert!(!unsafe { (&*root_ptr).window_switcher.is_active() });
+        assert_eq!(handle.tree.borrow().active_group[&strip], calculators[1]);
     }
 
     #[test]
