@@ -5779,6 +5779,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
