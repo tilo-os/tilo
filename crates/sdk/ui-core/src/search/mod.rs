@@ -31,9 +31,8 @@ pub mod rank;
 mod registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-mod tokenizer;
 
-pub use body::{BODY_CHUNK_SCALARS, BodyPiece, SearchBody, SearchBodySource};
+pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog,
@@ -45,6 +44,9 @@ pub use rank::{
     result_relevance,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
-pub use tokenizer::{SearchTokenizer, UnicodeTokenizer, default_tokenizer, fold_search_text};
+/// Fold text the way every index does: case, compatibility forms and
+/// alphabetic diacritics.
+pub use tilo_search::fold as fold_search_text;
+pub use tilo_search::fold_char;
 
 pub mod system;
