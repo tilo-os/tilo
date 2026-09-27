@@ -579,7 +579,6 @@ dependencies = [
  "bounded-command",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "clap",
  "ed25519-dalek 3.0.0",
  "futures-util",
@@ -1732,15 +1731,6 @@ dependencies = [
  "capnp",
  "capnp-futures",
  "futures",
-]
-
-[[package]]
-name = "capnpc"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13aea06b902f885cb0313b11e900e96cd57fef775e9e601a96e14e1d655f3cd3"
-dependencies = [
- "capnp",
 ]
 
 [[package]]
@@ -4299,7 +4289,6 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "format-provider-abi",
  "futures",
  "getrandom 0.4.3",
@@ -11902,7 +11891,6 @@ dependencies = [
  "cap-std",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "postcard",
  "runtime-portal",
  "rustix 1.1.4",
