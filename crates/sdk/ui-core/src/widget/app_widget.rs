@@ -1546,103 +1546,30 @@ mod component_adapter {
                 })
                 .unwrap_or(false)
         }
-        fn invoke_resource_operation(
+        fn start_operation(
             &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<bool, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn invoke_resource_operation_v2(
-            &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation_v2(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn start_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            let binding = self.component.callback_binding();
-            let result = binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.start_resource_operation(
-                        invocation,
-                        kind,
-                        type_id,
-                        payload,
-                        document,
-                        record_root,
-                    )
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()));
-            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&invocation)
-            {
-                self.component.invocations.push(invocation);
-            }
-            result
-        }
-        fn start_resource_operation_with_document(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             doc: &mut AutoCommit,
-            _path: &ObjId,
+            path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
+            // A required operation arrives inside its owner's checked record
+            // frame; it is routed without taking this component's document loan.
+            if op.is_scoped() {
+                return crate::widget::start_in_children(self, op, doc, path);
+            }
             let binding = self.component.callback_binding();
             let result = binding
                 .with_document(doc, |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return Err("component callback refused".into());
                     };
-                    root.start_resource_operation_with_document(
-                        invocation,
-                        kind,
-                        type_id,
-                        payload,
-                        document,
-                        record_root,
-                    )
+                    root.start_operation(op, document, record_root)
                 })
                 .unwrap_or_else(|_| Err("component callback refused".into()));
             if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&invocation)
+                && !self.component.invocations.contains(&op.invocation())
             {
-                self.component.invocations.push(invocation);
+                self.component.invocations.push(op.invocation());
             }
             result
         }

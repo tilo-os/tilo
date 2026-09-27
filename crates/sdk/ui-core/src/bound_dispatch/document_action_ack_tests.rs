@@ -56,15 +56,18 @@ impl Widget for Owner {
                 .into(),
         ));
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::OperationKind,
-        _: &str,
-        _: &[u8],
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Result<bool, String> {
-        Ok(true)
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        Ok(op.unscoped().map(|_| {
+            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        }))
     }
     fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(

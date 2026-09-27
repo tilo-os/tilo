@@ -1014,17 +1014,13 @@ impl<T: Widget> Widget for TileEditor<T> {
     fn has_separate_document_owner(&self) -> bool {
         false
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.0
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+        self.0.start_operation(op, doc, path)
     }
     fn build_layout(
         &mut self,
@@ -1996,13 +1992,15 @@ fn admit(
     doc: &mut automerge::AutoCommit,
 ) {
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            RETAINED_LIFECYCLE_OPERATION,
-            &[],
+        tile.start_operation(
+            &crate::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                RETAINED_LIFECYCLE_OPERATION,
+                &[]
+            ),
             doc,
-            &ROOT,
+            &ROOT
         )
         .unwrap(),
         Some(crate::widget::ResourceOperationStart::Accepted)
@@ -2184,16 +2182,21 @@ impl Widget for RetainedLifecycleProbe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.handles.emitter.borrow_mut().take()
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         use automerge::ReadDoc;
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            type_id,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != RETAINED_LIFECYCLE_OPERATION {
             return Ok(None);
         }
@@ -2351,15 +2354,20 @@ impl Widget for ReleasableLifecycleProbe {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            type_id,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != RETAINED_LIFECYCLE_OPERATION {
             return Ok(None);
         }
@@ -3152,11 +3160,13 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
     let invocation = tilo_actions::InvocationId::new();
     assert!(matches!(
         unsafe {
-            (*tile_pointer).start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                RETAINED_LIFECYCLE_OPERATION,
-                &[],
+            (*tile_pointer).start_operation(
+                &crate::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    RETAINED_LIFECYCLE_OPERATION,
+                    &[],
+                ),
                 &mut driver.state_mut().doc,
                 &ROOT,
             )

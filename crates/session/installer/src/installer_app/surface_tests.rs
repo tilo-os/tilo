@@ -264,11 +264,13 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         .unwrap();
         let encoded = next.build_json(&serde_json::Map::new()).unwrap();
         let started = app
-            .start_resource_operation_with_document(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
+            .start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
                 &mut doc,
                 &automerge::ROOT,
             )
@@ -289,11 +291,13 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             target: "/dev/sda".into(),
         })
         .unwrap();
-        let refused = app.start_resource_operation_with_document(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            op::OPERATION_TYPE,
-            &stale,
+        let refused = app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                op::OPERATION_TYPE,
+                &stale,
+            ),
             &mut doc,
             &automerge::ROOT,
         );
