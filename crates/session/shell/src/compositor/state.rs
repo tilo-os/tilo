@@ -1240,8 +1240,10 @@ impl State {
     }
 
     /// Switch the seat to input source `index`; clients learn the new group
-    /// through the ordinary modifiers event.
+    /// through the ordinary modifiers event, and every key name the shell
+    /// shows from now on follows the new layout's keycaps.
     pub(crate) fn activate_keyboard_source(&mut self, index: usize) {
+        ui::keycaps::set_active(self.applied_keyboard.keycaps(index));
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -1277,7 +1279,14 @@ impl State {
         };
         match compiled {
             Ok(()) => {
-                self.activate_keyboard_source(settings.active_index);
+                tracing::info!(
+                    sources = ?settings.source_ids,
+                    active = settings.active_index,
+                    "Wayland seat: applied per-user XKB sources"
+                );
+                let active = settings.active_index;
+                self.applied_keyboard = settings;
+                self.activate_keyboard_source(active);
                 let (delay, rate) =
                     crate::compositor::backend::drm::input_config::InputSettings::load()
                         .key_repeat_params();
@@ -1286,12 +1295,6 @@ impl State {
                     i32::try_from(rate).unwrap_or(i32::MAX),
                     i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
                 );
-                tracing::info!(
-                    sources = ?settings.source_ids,
-                    active = settings.active_index,
-                    "Wayland seat: applied per-user XKB sources"
-                );
-                self.applied_keyboard = settings;
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,
@@ -6059,5 +6062,54 @@ mod tick_hook_tests {
             assert!(!state.session_lock.take_lock_requested());
             assert!(!state.session_lock.has_pending_locker());
         }
+    }
+}
+
+#[cfg(test)]
+mod keycap_layout_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn write_input(settings: &std::path::Path, active: &str) {
+        let document = serde_json::json!({
+            "input": {"keyboard_layout": active, "keyboard_layouts": ["us", "de"]},
+        });
+        std::fs::write(settings, document.to_string()).expect("settings");
+    }
+
+    #[test]
+    fn key_names_follow_every_layout_switch_live() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", temp.path());
+        let settings = settings_store::settings_path().expect("settings path");
+        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
+        write_input(&settings, "us");
+
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let power = settings_store::hardware::KeyChord::parse("Ctrl+Alt+Delete").expect("chord");
+        let label = || crate::shell::keyboard_shortcuts::chord_text(&power);
+        assert_eq!(label(), "Ctrl+Alt+Delete", "the session starts on US");
+
+        // The input-source chord switches the seat's group in place.
+        state.activate_keyboard_source(1);
+        assert_eq!(label(), "Strg+Alt+Entf");
+        assert_eq!(
+            crate::compositor::pointer_lock::release_chord_label(),
+            "Strg+Alt+Esc"
+        );
+
+        // A choice made in Settings arrives through the settings reload.
+        write_input(&settings, "us");
+        state.reload_keyboard_settings();
+        assert_eq!(label(), "Ctrl+Alt+Delete");
+        write_input(&settings, "de");
+        state.reload_keyboard_settings();
+        assert_eq!(label(), "Strg+Alt+Entf");
+        // The stored chord never changed.
+        assert_eq!(power.display(), "Ctrl+Alt+Delete");
     }
 }

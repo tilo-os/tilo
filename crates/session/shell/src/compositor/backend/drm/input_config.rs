@@ -79,6 +79,14 @@ impl KeyboardSettings {
         Self::from_section(&settings_store::load_section(SECTION))
     }
 
+    /// The legends printed on the keys of XKB group `index`, which the
+    /// shell names keys and modifiers in.
+    pub fn keycaps(&self, index: usize) -> ui::Keycaps {
+        let layout = self.layouts.split(',').nth(index).unwrap_or_default();
+        let variant = self.variants.split(',').nth(index).unwrap_or_default();
+        ui::Keycaps::from_xkb(layout, variant)
+    }
+
     /// The person-facing name of source `index` — XKB's own description
     /// ("English (US)", "German (no dead keys)") — falling back to the
     /// source id when the keymap cannot be compiled.
