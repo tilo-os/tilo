@@ -26,19 +26,21 @@
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{
-    InputDeviceKind, InputHardwareSnapshot, TouchpadClickMethod, TouchpadScrollMethod,
+    InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, ShortcutAction,
+    StylusButtonAction, TouchpadClickMethod, TouchpadScrollMethod,
 };
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::i18n::ArgValue;
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, setting_row_described};
@@ -196,6 +198,210 @@ fn id_dropdown(
     dropdown
 }
 
+/// The Map-to choice for spanning every display.
+pub const WHOLE_DESKTOP: &str = "desktop";
+/// Pad buttons Settings offers a shortcut for; pads have far fewer.
+pub const MAX_PAD_BUTTONS: u32 = 32;
+/// The Pad-button choice for a button that does nothing.
+const PAD_BUTTON_NONE: &str = "none";
+
+/// Resource id of a tablet's card and actions.
+pub fn tablet_resource_id(device: &str) -> String {
+    format!("settings.tablet:{device}")
+}
+
+/// Resource id of a tablet pad's card and actions.
+pub fn pad_resource_id(device: &str) -> String {
+    format!("settings.tablet-pad:{device}")
+}
+
+/// Map-to choices: the whole desktop, then each connected display by the
+/// name a person recognises.
+pub fn tablet_output_choices() -> Vec<(String, String)> {
+    let mut choices = vec![(WHOLE_DESKTOP.to_string(), t("input-tablet-whole-desktop"))];
+    if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
+        for placement in &snapshot.layout {
+            let label = snapshot
+                .outputs
+                .iter()
+                .find(|output| output.descriptor.connector == placement.connector)
+                .map_or_else(
+                    || placement.connector.clone(),
+                    |output| {
+                        output
+                            .descriptor
+                            .monitor
+                            .as_ref()
+                            .map(settings_store::hardware::MonitorIdentity::display_name)
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| output.descriptor.label().to_string())
+                    },
+                );
+            choices.push((placement.connector.clone(), label));
+        }
+    }
+    choices
+}
+
+/// The saved output for a Map-to choice id: `Some(None)` spans the desktop,
+/// `None` names a display that is not connected.
+pub fn tablet_output_for_id(id: &str) -> Option<Option<String>> {
+    if id == WHOLE_DESKTOP {
+        return Some(None);
+    }
+    tablet_output_choices()
+        .into_iter()
+        .any(|(choice, _)| choice == id)
+        .then(|| Some(id.to_string()))
+}
+
+fn shortcut_id(action: ShortcutAction) -> String {
+    let name = serde_json::to_value(action)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    format!("shortcut:{name}")
+}
+
+fn shortcut_for_id(id: &str) -> Option<ShortcutAction> {
+    let name = id.strip_prefix("shortcut:")?;
+    serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
+}
+
+fn shortcut_choices() -> impl Iterator<Item = (String, String)> {
+    crate::panes::keyboard_shortcuts::shortcut_actions()
+        .into_iter()
+        .map(|(action, label)| (shortcut_id(action), label.to_string()))
+}
+
+/// Stylus button choices as `(id, label key, action)`, before the shortcuts.
+const STYLUS_BUTTON_CHOICES: [(&str, &str, StylusButtonAction); 7] = [
+    (
+        "default",
+        "input-pen-button-default",
+        StylusButtonAction::Default,
+    ),
+    ("left", "input-pen-button-left", StylusButtonAction::Left),
+    (
+        "middle",
+        "input-pen-button-middle",
+        StylusButtonAction::Middle,
+    ),
+    ("right", "input-pen-button-right", StylusButtonAction::Right),
+    ("back", "input-pen-button-back", StylusButtonAction::Back),
+    (
+        "forward",
+        "input-pen-button-forward",
+        StylusButtonAction::Forward,
+    ),
+    (
+        "disabled",
+        "input-pen-button-disabled",
+        StylusButtonAction::Disabled,
+    ),
+];
+
+/// What a pen button can do: a mouse button, nothing, or any shortcut.
+pub fn stylus_button_choices() -> Vec<(String, String)> {
+    localized_choices(&STYLUS_BUTTON_CHOICES)
+        .into_iter()
+        .chain(shortcut_choices())
+        .collect()
+}
+
+pub fn stylus_button_id(action: StylusButtonAction) -> String {
+    match action {
+        StylusButtonAction::Shortcut(shortcut) => shortcut_id(shortcut),
+        other => STYLUS_BUTTON_CHOICES
+            .iter()
+            .find(|(_, _, value)| *value == other)
+            .map_or("default", |(id, _, _)| id)
+            .to_string(),
+    }
+}
+
+pub fn stylus_button_for_id(id: &str) -> Option<StylusButtonAction> {
+    STYLUS_BUTTON_CHOICES
+        .iter()
+        .find(|(choice, _, _)| *choice == id)
+        .map(|(_, _, value)| *value)
+        .or_else(|| shortcut_for_id(id).map(StylusButtonAction::Shortcut))
+}
+
+/// What a pad button can do: nothing, or any shortcut.
+pub fn pad_button_choices() -> Vec<(String, String)> {
+    std::iter::once((PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")))
+        .chain(shortcut_choices())
+        .collect()
+}
+
+pub fn pad_button_id(shortcut: Option<ShortcutAction>) -> String {
+    shortcut.map_or_else(|| PAD_BUTTON_NONE.to_string(), shortcut_id)
+}
+
+/// `Some(None)` clears the button; `None` is not a choice.
+pub fn pad_button_for_id(id: &str) -> Option<Option<ShortcutAction>> {
+    if id == PAD_BUTTON_NONE {
+        return Some(None);
+    }
+    shortcut_for_id(id).map(Some)
+}
+
+/// A tablet or pad device's card title: its name without the kernel's
+/// ` Pen` / ` Pad` suffix, which the rows already make clear.
+fn device_title(device: &InputDeviceSnapshot) -> String {
+    let name = device.name.trim();
+    let base = name
+        .strip_suffix(" Pen")
+        .or_else(|| name.strip_suffix(" Pad"))
+        .unwrap_or(name);
+    match device.kind {
+        InputDeviceKind::TabletPad => t_args("input-pad-title", &[("name", ArgValue::from(base))]),
+        _ => base.to_string(),
+    }
+}
+
+/// A dropdown over stable ids for one of a tablet's or pad's actions. It is
+/// shown disabled if the device vanished between listing and binding.
+fn device_dropdown(
+    resource: &str,
+    action: &str,
+    choices: Vec<(String, String)>,
+    selected: &str,
+    accessible_name: &str,
+) -> Dropdown {
+    let mut dropdown = Dropdown::from_state(
+        choices.iter().map(|(id, _)| id.clone()).collect(),
+        &ui::LocalState::new(selected.to_string()),
+    )
+    .with_id(&format!("{resource}.{action}"))
+    .with_accessible_name(accessible_name);
+    dropdown = match crate::actions::tablet_text_binding(resource, action) {
+        Some(binding) => dropdown.on_action(binding),
+        None => dropdown.with_enabled(false),
+    };
+    dropdown.set_value_options(choices);
+    dropdown
+}
+
+fn device_toggle(resource: &str, action: &str, on: bool) -> Toggle {
+    let toggle =
+        Toggle::from_state(&ui::LocalState::new(on)).with_id(&format!("{resource}.{action}"));
+    match crate::actions::tablet_bool_binding(resource, action) {
+        Some(binding) => toggle.on_action(binding),
+        None => toggle.with_enabled(false),
+    }
+}
+
+fn device_slider(resource: &str, action: &str, value: f64) -> Slider {
+    let slider =
+        Slider::from_state(&ui::LocalState::new(value)).with_id(&format!("{resource}.{action}"));
+    match crate::actions::tablet_number_binding(resource, action) {
+        Some(binding) => slider.on_action(binding),
+        None => slider.with_enabled(false),
+    }
+}
+
 /// Which pointer sections apply to the attached hardware. Without a live
 /// device snapshot (no compositor, a headless render) every section shows:
 /// hiding a setting because nobody told us about a device is worse than
@@ -260,6 +466,9 @@ pub struct MouseKeyboardPane {
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     /// Which sections the attached devices call for.
     sections: InputSections,
+    /// Attached drawing tablets and pads, one card each.
+    tablets: Vec<InputDeviceSnapshot>,
+    pads: Vec<InputDeviceSnapshot>,
     /// Whether the sections come from a live compositor snapshot; a pane
     /// built without one (tests, headless renders) never polls for one.
     poll_devices: bool,
@@ -324,7 +533,7 @@ impl MouseKeyboardPane {
             .get(ui::text_assistance::AUTO_CORRECT_KEY)
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
-        Self {
+        let mut pane = Self {
             initial: prefs.clone(),
             last: prefs,
             initial_check_spelling: check_spelling,
@@ -334,7 +543,9 @@ impl MouseKeyboardPane {
             catalog: installed_catalog(),
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            sections: InputSections::for_devices(InputHardwareSnapshot::load().as_ref()),
+            sections: InputSections::for_devices(None),
+            tablets: Vec::new(),
+            pads: Vec::new(),
             poll_devices: true,
             next_device_poll: None,
             needs_seed: true,
@@ -342,7 +553,10 @@ impl MouseKeyboardPane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
-        }
+        };
+        pane.observe_devices(InputHardwareSnapshot::load().as_ref());
+        pane.structure_dirty = false;
+        pane
     }
 
     /// Test constructor with a deterministic installed-source catalogue.
@@ -360,6 +574,8 @@ impl MouseKeyboardPane {
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             sections: InputSections::for_devices(None),
+            tablets: Vec::new(),
+            pads: Vec::new(),
             poll_devices: false,
             next_device_poll: None,
             needs_seed: true,
@@ -408,7 +624,8 @@ impl MouseKeyboardPane {
             cards.push(self.pointer_options_card());
         }
         if self.sections.tablet {
-            cards.push(Self::pen_card());
+            cards.extend(self.tablet_cards());
+            cards.extend(self.pad_cards());
         }
         crate::widgets::cards(cards)
     }
@@ -424,9 +641,24 @@ impl MouseKeyboardPane {
             return;
         }
         self.next_device_poll = Some(now + DEVICE_POLL_INTERVAL);
-        let sections = InputSections::for_devices(InputHardwareSnapshot::load().as_ref());
-        if sections != self.sections {
+        self.observe_devices(InputHardwareSnapshot::load().as_ref());
+    }
+
+    /// Take in which devices are attached; rebuild when that changes what
+    /// the page shows.
+    fn observe_devices(&mut self, snapshot: Option<&InputHardwareSnapshot>) {
+        let sections = InputSections::for_devices(snapshot);
+        let owned = |kind| {
+            snapshot
+                .map(|snapshot| snapshot.of_kind(kind).into_iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        let tablets: Vec<InputDeviceSnapshot> = owned(InputDeviceKind::Tablet);
+        let pads: Vec<InputDeviceSnapshot> = owned(InputDeviceKind::TabletPad);
+        if sections != self.sections || tablets != self.tablets || pads != self.pads {
             self.sections = sections;
+            self.tablets = tablets;
+            self.pads = pads;
             self.structure_dirty = true;
         }
     }
@@ -860,13 +1092,122 @@ impl MouseKeyboardPane {
         card("Input sources", rows(source_rows))
     }
 
-    fn pen_card() -> Box<dyn Widget> {
-        card(
-            "Pen & tablet",
-            rows(vec![caption(
-                "A pen maps across every display, or onto the display set for it. Apps with tablet support receive pressure and tilt; other apps see the pen as a pointer, with the tip as the primary button.",
-            )]),
-        )
+    fn tablet_config(
+        &self,
+        device: &InputDeviceSnapshot,
+    ) -> settings_store::hardware::TabletConfig {
+        self.last
+            .tablets
+            .get(&device.key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// One card per attached drawing tablet. Settings are stored per device
+    /// identity, so each tablet keeps its own mapping, feel and buttons.
+    fn tablet_cards(&self) -> Vec<El> {
+        let outputs = tablet_output_choices();
+        self.tablets
+            .iter()
+            .map(|device| {
+                let config = self.tablet_config(device);
+                let resource = tablet_resource_id(&device.key);
+                let mapped = config
+                    .output
+                    .clone()
+                    .filter(|output| outputs.iter().any(|(id, _)| id == output))
+                    .unwrap_or_else(|| WHOLE_DESKTOP.to_string());
+                card(
+                    &device_title(device),
+                    rows(vec![
+                        choice_row(
+                            &t("input-tablet-map-to"),
+                            Box::new(device_dropdown(
+                                &resource,
+                                "map-to",
+                                outputs.clone(),
+                                &mapped,
+                                &t("input-tablet-map-to"),
+                            )),
+                        ),
+                        setting_row_described(
+                            &t("input-tablet-keep-aspect"),
+                            &t("input-tablet-keep-aspect-description"),
+                            Box::new(device_toggle(&resource, "keep-aspect", config.keep_aspect)),
+                        ),
+                        setting_row_described(
+                            &t("input-tablet-left-handed"),
+                            &t("input-tablet-left-handed-description"),
+                            Box::new(device_toggle(&resource, "left-handed", config.left_handed)),
+                        ),
+                        setting_row_described(
+                            &t("input-tablet-tip-feel"),
+                            &t("input-tablet-tip-feel-description"),
+                            Box::new(device_slider(
+                                &resource,
+                                "tip-feel",
+                                settings_store::hardware::feel_for_pressure_curve(
+                                    config.pressure_curve,
+                                ),
+                            )),
+                        ),
+                        choice_row(
+                            &t("input-tablet-lower-button"),
+                            Box::new(device_dropdown(
+                                &resource,
+                                "lower-button",
+                                stylus_button_choices(),
+                                &stylus_button_id(config.lower_button),
+                                &t("input-tablet-lower-button"),
+                            )),
+                        ),
+                        choice_row(
+                            &t("input-tablet-upper-button"),
+                            Box::new(device_dropdown(
+                                &resource,
+                                "upper-button",
+                                stylus_button_choices(),
+                                &stylus_button_id(config.upper_button),
+                                &t("input-tablet-upper-button"),
+                            )),
+                        ),
+                    ]),
+                )
+            })
+            .collect()
+    }
+
+    /// One card per tablet pad: a shortcut for each of its buttons.
+    fn pad_cards(&self) -> Vec<El> {
+        self.pads
+            .iter()
+            .map(|device| {
+                let config = self.tablet_config(device);
+                let resource = pad_resource_id(&device.key);
+                let mut items: Vec<El> = (0..device.pad_buttons.min(MAX_PAD_BUTTONS))
+                    .map(|button| {
+                        let label = t_args(
+                            "input-pad-button",
+                            &[("number", ArgValue::from(i64::from(button) + 1))],
+                        );
+                        choice_row(
+                            &label,
+                            Box::new(device_dropdown(
+                                &resource,
+                                &format!("button-{button}"),
+                                pad_button_choices(),
+                                &pad_button_id(config.pad_buttons.get(&button).copied()),
+                                &label,
+                            )),
+                        )
+                    })
+                    .collect();
+                if items.is_empty() {
+                    items.push(caption(&t("input-pad-no-buttons")));
+                }
+                card(&device_title(device), rows(items))
+            })
+            .collect()
     }
 
     /// Load prefs fresh, apply `f` to the input section, persist.
@@ -1526,6 +1867,87 @@ mod tests {
 
         let pad_only = InputSections::for_devices(Some(&with(&[InputDeviceKind::TabletPad])));
         assert!(pad_only.tablet);
+    }
+
+    #[test]
+    fn tablet_and_pad_choices_travel_as_stable_ids() {
+        let actions = [
+            StylusButtonAction::Default,
+            StylusButtonAction::Right,
+            StylusButtonAction::Disabled,
+            StylusButtonAction::Shortcut(ShortcutAction::Search),
+        ];
+        for action in actions {
+            assert_eq!(
+                stylus_button_for_id(&stylus_button_id(action)),
+                Some(action)
+            );
+        }
+        assert_eq!(
+            stylus_button_id(StylusButtonAction::Shortcut(
+                ShortcutAction::WorkspaceOverview
+            )),
+            "shortcut:workspace_overview"
+        );
+        assert_eq!(stylus_button_for_id("Right click"), None);
+        let choices = stylus_button_choices();
+        assert_eq!(choices[3], ("right".into(), "Right click".into()));
+        assert!(
+            choices.iter().any(|(id, _)| id == "shortcut:search"),
+            "every listed shortcut can go on a pen button"
+        );
+
+        assert_eq!(pad_button_for_id("none"), Some(None));
+        assert_eq!(
+            pad_button_for_id(&pad_button_id(Some(ShortcutAction::Lock))),
+            Some(Some(ShortcutAction::Lock))
+        );
+        assert_eq!(pad_button_for_id("left"), None, "a pad runs shortcuts only");
+
+        assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Some(None));
+        assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
+    }
+
+    #[test]
+    fn a_card_appears_for_each_attached_tablet_and_pad() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let device =
+            |kind, name: &str, pad_buttons| settings_store::hardware::InputDeviceSnapshot {
+                key: settings_store::hardware::input_device_key(0x056a, 0x0374, name),
+                name: name.into(),
+                kind,
+                pad_buttons,
+            };
+        let snapshot = InputHardwareSnapshot {
+            devices: vec![
+                device(InputDeviceKind::Tablet, "Wacom Intuos S Pen", 0),
+                device(InputDeviceKind::TabletPad, "Wacom Intuos S Pad", 4),
+                device(InputDeviceKind::Mouse, "Mouse", 0),
+            ],
+            ..Default::default()
+        };
+        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+        pane.observe_devices(Some(&snapshot));
+        assert!(pane.take_structure_dirty(), "new devices rebuild the page");
+        assert_eq!(pane.tablets.len(), 1);
+        assert_eq!(pane.pads.len(), 1);
+        assert_eq!(device_title(&pane.tablets[0]), "Wacom Intuos S");
+        assert_eq!(device_title(&pane.pads[0]), "Wacom Intuos S buttons");
+        assert_eq!(pane.tablet_cards().len(), 1);
+        assert_eq!(pane.pad_cards().len(), 1);
+        pane.observe_devices(Some(&snapshot));
+        assert!(
+            !pane.take_structure_dirty(),
+            "nothing changed, nothing rebuilt"
+        );
+
+        let mut theme_taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut theme_taffy, &Theme::dark(), &mut node_map);
+
+        pane.observe_devices(Some(&InputHardwareSnapshot::default()));
+        assert!(pane.take_structure_dirty(), "unplugging removes the cards");
+        assert!(pane.tablets.is_empty() && pane.pads.is_empty());
     }
 
     #[test]
