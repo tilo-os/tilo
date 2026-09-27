@@ -49,6 +49,10 @@ on:
         description: "Space-separated disk formats: qcow2 (UTM, libvirt), vhdx (Hyper-V)."
         required: false
         default: "qcow2"
+      validate_boot:
+        description: "auto: native boot proof for signed bases, candidate only for tilo-ci; true requires usable KVM; false publishes only an unvalidated candidate."
+        required: false
+        default: "auto"
 
 concurrency:
   # One request per tag, source and architecture set at a time; different
@@ -71,6 +75,7 @@ jobs:
       checkpoint: ${{ steps.plan.outputs.checkpoint }}
       trust: ${{ steps.plan.outputs.trust }}
       channel: ${{ steps.plan.outputs.channel }}
+      validate_boot: ${{ steps.plan.outputs.validate_boot }}
     steps:
       - name: Resolve source, base image, tag and native lanes
         id: plan
@@ -81,6 +86,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           INPUT_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           INPUT_FORMATS: ${{ github.event.inputs.formats }}
+          INPUT_VALIDATE_BOOT: ${{ github.event.inputs.validate_boot }}
         run: |
           set -euo pipefail
           source=${INPUT_SOURCE:-$GITHUB_SHA}
@@ -131,6 +137,11 @@ jobs:
             echo "::error::a tilo-ci base publishes only -ci tags, not $tag"
             exit 1
           }
+          case ${INPUT_VALIDATE_BOOT:-auto} in
+            auto) [[ $trust == release ]] && validate_boot=true || validate_boot=false ;;
+            true|false) validate_boot=$INPUT_VALIDATE_BOOT ;;
+            *) echo '::error::validate_boot must be auto, true or false'; exit 1 ;;
+          esac
           # Only main and release tags advance `latest`; other refs publish
           # addressable tags without moving the channel.
           if [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/v* ]]; then
@@ -175,11 +186,12 @@ jobs:
             echo "checkpoint=$checkpoint"
             echo "trust=$trust"
             echo "channel=$channel"
+            echo "validate_boot=$validate_boot"
             echo "architectures=${architectures[*]}"
             echo "formats=${formats[*]}"
             echo "matrix=$(jq -c '{include:.}' <<< "$include")"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::tilo-vm:$tag from $base ($trust trust) at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
+          echo "::notice::tilo-vm:$tag from $base ($trust trust) at $source (${architectures[*]}; ${formats[*]}; channel=$channel; validate_boot=$validate_boot)"
 
   build:
     needs: plan
@@ -446,6 +458,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             os/dev/disk-image.sh
+            os/dev/export-direct-boot-bundle.sh
             os/dev/hold-loop-partition-nodes.py
             os/dev/private_disk_image.py
             os/dev/check-dev-vm.sh
@@ -467,7 +480,7 @@ jobs:
           # build-image.sh and disk-image.sh both source _common.sh. Install
           # the reviewed helper with the reviewed disk script, after the dev
           # image was built from the unmodified OS source.
-          for file in disk-image.sh hold-loop-partition-nodes.py private_disk_image.py \
+          for file in disk-image.sh export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
                        check-dev-vm.sh diagnose-boot-failure.sh publish-dev-disk-candidate.sh \
                        publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"
@@ -515,6 +528,7 @@ jobs:
         run: ./os/dev/publish-dev-disk-candidate.sh
 
       - name: Boot the disk and reach tilo-vmd over SSH
+        if: needs.plan.outputs.validate_boot == 'true'
         timeout-minutes: 45
         env:
           TILO_DISTROBOX: ""
@@ -527,6 +541,13 @@ jobs:
           TILO_BOOT_WAIT_ATTEMPTS: "600"
         run: |
           set -euo pipefail
+          # A validation request must use native acceleration. TCG on Kata
+          # spent 20 minutes in UEFI without entering Linux; the candidate is
+          # already published for a WHPX or native-KVM proof instead.
+          python3 os/dev/probe-kvm.py "$ARCH" || {
+            echo '::error::boot validation requires usable native KVM; dispatch validate_boot=false for an unvalidated disk candidate'
+            exit 1
+          }
           # Boot a throwaway overlay so the published disk is never first-booted.
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
@@ -543,7 +564,7 @@ jobs:
           ./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"
 
       - name: Upload failed boot framebuffer
-        if: failure()
+        if: failure() && needs.plan.outputs.validate_boot == 'true'
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: dev-disk-boot-failure-${{ matrix.arch }}
@@ -553,6 +574,7 @@ jobs:
       # This architecture publishes on its own; another lane of the same tag
       # adds its child to the index and its own manifest whenever it lands.
       - name: Publish this architecture's dev image and disk
+        if: needs.plan.outputs.validate_boot == 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
