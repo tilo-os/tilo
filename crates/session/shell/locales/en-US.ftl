@@ -2685,3 +2685,14 @@ workspace-settings-stat-app-rules = { $count ->
     [one] app rule
    *[other] app rules
 }
+search-action-public-room-create = Create a public room
+search-action-public-room-create-subtitle = A signed, unencrypted room anyone joins with its standing invitation; copies the new room's id
+search-action-public-room-invite-issue = Mint this public room's standing invitation
+search-action-public-room-invite-issue-subtitle = Anyone holding it joins as a Commenter; copies the invitation
+search-action-public-room-invite-revoke = Revoke a standing invitation
+search-action-public-room-invite-revoke-subtitle = No one joins with it any more; people it admitted stay
+search-action-room-editor-grant = Make someone an Editor of this public room
+search-action-room-editor-grant-subtitle = Lets a teammate edit and triage here
+public-room-governance-done = Public room updated
+public-room-governance-copied = Copied to the clipboard
+public-room-governance-failed = The public room did not change

@@ -248,6 +248,83 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+const PUBLIC_ROOM_CREATE_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "name",
+    ParamType::Text,
+    "What the public room is called (for the community: Tilo Community).",
+)];
+
+const STANDING_INVITE_ISSUE_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "role",
+        ParamType::Text,
+        "viewer or commenter (the default, and the most a standing invitation grants).",
+    ),
+    ActionParam::optional(
+        "expires_in_days",
+        ParamType::Integer,
+        "End the invitation after this many days; without it, it lasts until revoked.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation: anyone holding this invitation can join the room.",
+    ),
+];
+
+const STANDING_INVITE_REVOKE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "invite_id",
+        ParamType::Text,
+        "The standing invitation's 64-character id.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation that no one may join with this invitation any more.",
+    ),
+];
+
+const ROOM_EDITOR_GRANT_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "person",
+        ParamType::Text,
+        "The person's id (their 64-character user key).",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation that this person may edit and triage in the room.",
+    ),
+];
+
+/// The public room this session administers: the active workspace, when it
+/// is a public room and the local person may administer it.
+fn active_public_room_admin(state: &ChromeState) -> Result<String, ActionError> {
+    let (workspace_id, room, _) = active_admin_workspace(state)?;
+    let public = state.tree().desktop.workspaces.iter().any(|workspace| {
+        workspace.id == workspace_id
+            && workspace.channel_class == collab_types::ChannelClass::Public
+    });
+    if !public {
+        return Err(ActionError::Refused(
+            "the active workspace is not a public room".into(),
+        ));
+    }
+    Ok(room.to_string())
+}
+
+fn push_community(
+    state: &mut ChromeState,
+    request: crate::shell::peer_sync_overlay::CommunityRequest,
+    copy: Option<&'static str>,
+) {
+    state.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Community {
+        request,
+        copy,
+    });
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -274,7 +351,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open" => {
             contract = ActionContract::view();
         }
-        "identity.connect" | "identity.select" | "identity.device.revoke" => {
+        "identity.connect"
+        | "identity.select"
+        | "identity.device.revoke"
+        | "public-room.invite.issue"
+        | "public-room.invite.revoke"
+        | "room.editor.grant" => {
             contract.permission = PermissionRequirement::Admin;
             contract.risk = RiskLevel::Privileged;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -1467,6 +1549,123 @@ impl Action {
         // next to a caret this room's capabilities gate. Recorded by the
         // inviter into the room document, the same place capability grants
         // live; the peer id stays the identity, the name is just a label.
+        // Public-room governance: how the owner of a public room (the Tilo
+        // team, for the community room) creates it, mints and revokes its
+        // standing invitation and makes teammates Editors, in a release
+        // desktop. `scripts/community-ops/tilo-community` names these rows.
+        Action {
+            id: "public-room.create",
+            label: "search-action-public-room-create",
+            subtitle: "search-action-public-room-create-subtitle",
+            params: PUBLIC_ROOM_CREATE_PARAMS,
+            apply: |st, args| {
+                let name = args.text("name").unwrap_or_default().trim().to_string();
+                if name.is_empty() {
+                    return Err(ActionError::Refused("a public room needs a name".into()));
+                }
+                push_community(
+                    st,
+                    crate::shell::peer_sync_overlay::CommunityRequest::CreatePublicRoom { name },
+                    Some("room"),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "public-room.invite.issue",
+            label: "search-action-public-room-invite-issue",
+            subtitle: "search-action-public-room-invite-issue-subtitle",
+            params: STANDING_INVITE_ISSUE_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "mint a standing invitation")?;
+                let room = active_public_room_admin(st)?;
+                let role = match args.text("role").map_or("commenter", str::trim) {
+                    "" | "commenter" => crate::network::invite::InviteRole::Commenter,
+                    "viewer" => crate::network::invite::InviteRole::Viewer,
+                    other => {
+                        return Err(ActionError::Refused(format!(
+                            "a standing invitation is viewer or commenter, not {other:?}"
+                        )));
+                    }
+                };
+                let expires_in_seconds = match args.integer("expires_in_days") {
+                    None => None,
+                    Some(days) => match u64::try_from(days) {
+                        Ok(days) if days >= 1 => Some(days.saturating_mul(86_400)),
+                        _ => {
+                            return Err(ActionError::Refused(
+                                "expires_in_days must be at least one day".into(),
+                            ));
+                        }
+                    },
+                };
+                push_community(
+                    st,
+                    crate::shell::peer_sync_overlay::CommunityRequest::IssueStandingInvite {
+                        room,
+                        role,
+                        expires_in_seconds,
+                    },
+                    Some("invite"),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "public-room.invite.revoke",
+            label: "search-action-public-room-invite-revoke",
+            subtitle: "search-action-public-room-invite-revoke-subtitle",
+            params: STANDING_INVITE_REVOKE_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "revoke a standing invitation")?;
+                let room = active_public_room_admin(st)?;
+                let invite_id = args
+                    .text("invite_id")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if invite_id.len() != 64 || !invite_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(ActionError::Refused(
+                        "invite_id is the invitation's 64-character id".into(),
+                    ));
+                }
+                push_community(
+                    st,
+                    crate::shell::peer_sync_overlay::CommunityRequest::RevokeStandingInvite {
+                        room,
+                        invite_id,
+                    },
+                    None,
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "room.editor.grant",
+            label: "search-action-room-editor-grant",
+            subtitle: "search-action-room-editor-grant-subtitle",
+            params: ROOM_EDITOR_GRANT_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "make someone an Editor")?;
+                let room = active_public_room_admin(st)?;
+                let person = args.text("person").unwrap_or_default().trim().to_string();
+                if person.len() != 64 || !person.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(ActionError::Refused(
+                        "person is the person's 64-character id".into(),
+                    ));
+                }
+                push_community(
+                    st,
+                    crate::shell::peer_sync_overlay::CommunityRequest::GrantRole {
+                        room,
+                        person,
+                        role: crate::network::invite::InviteRole::Editor,
+                    },
+                    None,
+                );
+                Ok(())
+            },
+        },
         Action {
             id: "peer.invite.named",
             label: "search-action-peer-invite-named",
@@ -2617,7 +2816,12 @@ impl SearchProvider for ActionsProvider {
         let mut out = Vec::new();
         for action in Action::ALL {
             // A session not running peer sync has nothing to invite into.
-            if action.id.starts_with("peer.") && !ctx.chrome.peer_sync_enabled {
+            // Public rooms are served over peer sync too.
+            if (action.id.starts_with("peer.")
+                || action.id.starts_with("public-room.")
+                || action.id.starts_with("room.editor."))
+                && !ctx.chrome.peer_sync_enabled
+            {
                 continue;
             }
             // Needs a room to record the capability in and a working
@@ -3853,6 +4057,134 @@ mod tests {
 
     /// Row titles and subtitles are catalogue keys, which the source scan
     /// cannot see through the table; every one must resolve in every locale.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario: every refusal, then each accepted request in order"
+    )]
+    fn public_room_governance_needs_confirmation_a_public_room_and_its_administrator() {
+        use crate::shell::overlay_host::PeerSyncAction;
+        use crate::shell::peer_sync_overlay::CommunityRequest;
+        let args = |pairs: &[(&str, serde_json::Value)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect::<serde_json::Map<_, _>>()
+        };
+        let person = "ab".repeat(32);
+        let chrome = chrome_with_room();
+        let mut st = chrome.borrow_mut();
+        for (id, arguments) in [
+            ("public-room.invite.issue", args(&[])),
+            (
+                "room.editor.grant",
+                args(&[("person", person.clone().into())]),
+            ),
+        ] {
+            let refused = apply(&mut st, id, &arguments);
+            assert!(refused.is_err(), "{id} ran without confirmation");
+        }
+        let confirmed = args(&[("confirm", true.into())]);
+        assert!(
+            matches!(
+                apply(&mut st, "public-room.invite.issue", &confirmed),
+                Err(ActionError::Refused(reason)) if reason.contains("not a public room")
+            ),
+            "an encrypted team room has no standing invitation"
+        );
+        assert!(st.take_peer_sync_requests().is_empty());
+
+        let room = {
+            let mut tree = st.tree_mut();
+            let active = tree.desktop.active;
+            if let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == active)
+            {
+                workspace.channel_class = collab_types::ChannelClass::Public;
+            }
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.room)
+        }
+        .expect("an active room");
+        apply(&mut st, "public-room.invite.issue", &confirmed).unwrap();
+        apply(
+            &mut st,
+            "public-room.invite.revoke",
+            &args(&[
+                ("invite_id", "cd".repeat(32).into()),
+                ("confirm", true.into()),
+            ]),
+        )
+        .unwrap();
+        apply(
+            &mut st,
+            "room.editor.grant",
+            &args(&[("person", person.clone().into()), ("confirm", true.into())]),
+        )
+        .unwrap();
+        apply(
+            &mut st,
+            "public-room.create",
+            &args(&[("name", "Tilo Community".into())]),
+        )
+        .unwrap();
+        assert_eq!(
+            st.take_peer_sync_requests(),
+            vec![
+                PeerSyncAction::Community {
+                    request: CommunityRequest::IssueStandingInvite {
+                        room: room.to_string(),
+                        role: crate::network::invite::InviteRole::Commenter,
+                        expires_in_seconds: None,
+                    },
+                    copy: Some("invite"),
+                },
+                PeerSyncAction::Community {
+                    request: CommunityRequest::RevokeStandingInvite {
+                        room: room.to_string(),
+                        invite_id: "cd".repeat(32),
+                    },
+                    copy: None,
+                },
+                PeerSyncAction::Community {
+                    request: CommunityRequest::GrantRole {
+                        room: room.to_string(),
+                        person,
+                        role: crate::network::invite::InviteRole::Editor,
+                    },
+                    copy: None,
+                },
+                PeerSyncAction::Community {
+                    request: CommunityRequest::CreatePublicRoom {
+                        name: "Tilo Community".into(),
+                    },
+                    copy: Some("room"),
+                },
+            ]
+        );
+        for id in [
+            "public-room.invite.issue",
+            "public-room.invite.revoke",
+            "room.editor.grant",
+        ] {
+            let contract = shell_action_contract(id);
+            assert_eq!(
+                contract.permission,
+                tilo_actions::PermissionRequirement::Admin,
+                "{id}"
+            );
+            assert_eq!(
+                contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm,
+                "{id}"
+            );
+        }
+    }
+
     #[test]
     fn every_action_row_resolves_to_real_copy() {
         for action in Action::ALL {

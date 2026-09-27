@@ -2692,3 +2692,14 @@ workspace-settings-stat-app-rules = { $count ->
     [one] App-Regel
    *[other] App-Regeln
 }
+search-action-public-room-create = Öffentlichen Raum erstellen
+search-action-public-room-create-subtitle = Ein signierter, unverschlüsselter Raum, dem alle mit seiner Dauereinladung beitreten; kopiert die Kennung des neuen Raums
+search-action-public-room-invite-issue = Dauereinladung dieses öffentlichen Raums ausstellen
+search-action-public-room-invite-issue-subtitle = Wer sie hat, tritt als Kommentierende Person bei; kopiert die Einladung
+search-action-public-room-invite-revoke = Dauereinladung widerrufen
+search-action-public-room-invite-revoke-subtitle = Niemand tritt mehr damit bei; wer schon beigetreten ist, bleibt
+search-action-room-editor-grant = Jemanden zur bearbeitenden Person dieses öffentlichen Raums machen
+search-action-room-editor-grant-subtitle = Erlaubt einem Teammitglied, hier zu bearbeiten und zu sichten
+public-room-governance-done = Öffentlicher Raum geändert
+public-room-governance-copied = In die Zwischenablage kopiert
+public-room-governance-failed = Der öffentliche Raum wurde nicht geändert

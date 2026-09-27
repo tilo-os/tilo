@@ -957,6 +957,14 @@ pub enum PeerSyncAction {
     /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+    /// A public-room governance operation the palette validated (a room
+    /// this person administers, explicit confirmation). The outcome is told
+    /// in a notification; `copy` names the answer field put on the
+    /// clipboard (the new room's id, a minted standing invitation).
+    Community {
+        request: crate::shell::peer_sync_overlay::CommunityRequest,
+        copy: Option<&'static str>,
+    },
 }
 
 /// Rows the palette asks the registry for, shared round-robin between the
@@ -3846,6 +3854,33 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                PeerSyncAction::Community { request, copy } => {
+                    let outcome = self.community_request(request);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        let mut chrome = chrome.borrow_mut();
+                        match outcome {
+                            Ok(answer) => {
+                                let copied = copy
+                                    .and_then(|field| answer.get(field))
+                                    .and_then(serde_json::Value::as_str);
+                                if let Some(value) = copied {
+                                    ui::text_selection::clipboard_copy(value);
+                                }
+                                chrome.push_notification(
+                                    t("public-room-governance-done"),
+                                    if copied.is_some() {
+                                        t("public-room-governance-copied")
+                                    } else {
+                                        answer.to_string()
+                                    },
+                                );
+                            }
+                            Err(error) => {
+                                chrome.push_notification(t("public-room-governance-failed"), error);
+                            }
+                        }
+                    }
+                }
                 #[expect(
                     clippy::unreachable,
                     reason = "the palette queues a tracked request around one plain action, never another tracked one"
