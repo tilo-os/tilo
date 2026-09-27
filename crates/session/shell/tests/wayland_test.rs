@@ -82,8 +82,9 @@ fn test_wayland_handshake_fixed() {
         let mut server_state =
             WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(10) {
+        // Serve for as long as the test may wait on the client below.
+        let serve_until = tilo_test_env::hang_deadline();
+        while Instant::now() < serve_until {
             // Must dispatch clients manually if not using a source.
             let _ = display.dispatch_clients(&mut server_state);
             let _ = display.flush_clients();
@@ -94,7 +95,7 @@ fn test_wayland_handshake_fixed() {
         }
     });
 
-    let socket_name = tilo_test_env::recv("Server failed to start", &started_rx);
+    let socket_name = tilo_test_env::recv("the handshake server's socket name", &started_rx);
     let log_dir = tempfile::tempdir().unwrap();
 
     // The workspace's own Wayland client, not a terminal emulator off the
@@ -141,6 +142,6 @@ fn test_wayland_handshake_fixed() {
     let _ = child.wait();
     assert!(
         event_received,
-        "Wayland server received no events. Check debug log above."
+        "the Wayland server received no events from the client within the hang bound. Check debug log above."
     );
 }

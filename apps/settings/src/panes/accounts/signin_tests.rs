@@ -3,7 +3,6 @@
 //! root.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use account_custody::OAuthCloud;
 use account_custody::icloud::{
@@ -14,8 +13,6 @@ use test_http::{Reply, Responder};
 use zeroize::Zeroizing;
 
 use super::*;
-
-const STEP: Duration = Duration::from_secs(20);
 
 /// Plays the system browser: records every URL and, when `follow` is set,
 /// walks the redirects back to the loopback listener.
@@ -107,7 +104,10 @@ fn oauth_sign_in_through_the_pane_seals_the_grant() {
         pane.needs_idle_sync(),
         "the pane keeps polling while the browser is out"
     );
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(
         !pane.sign_in_open(),
         "{:?}",
@@ -152,7 +152,10 @@ fn a_forged_redirect_saves_nothing() {
         AccountViewCommand::Add(AccountKind::Dropbox),
     );
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(pane.sign_in_open(), "the flow stays open to try again");
     assert!(
         pane.sign_in_message_for_test()
@@ -245,7 +248,10 @@ fn nextcloud_connects_through_login_flow_v2_without_a_typed_password() {
     assert!(!pane.form_open());
     pane.set_sign_in_fields_for_test("Home cloud", &server.url(), "", "");
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(
         !pane.sign_in_open(),
         "{:?}",
@@ -332,12 +338,18 @@ fn icloud_signs_in_with_a_verification_code_and_never_stores_the_password() {
     );
     pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(pane.sign_in_awaiting_code_for_test());
 
     pane.set_sign_in_code_for_test("000000");
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(
         pane.sign_in_message_for_test()
             .is_some_and(|message| message.contains("incorrect")),
@@ -348,7 +360,10 @@ fn icloud_signs_in_with_a_verification_code_and_never_stores_the_password() {
     );
     pane.set_sign_in_code_for_test("123 456");
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(
         !pane.sign_in_open(),
         "{:?}",
@@ -380,7 +395,10 @@ fn advanced_data_protection_is_explained() {
     );
     pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     let message = pane.sign_in_message_for_test().unwrap_or_default();
     assert!(message.contains("Advanced Data Protection"), "{message}");
     assert!(
