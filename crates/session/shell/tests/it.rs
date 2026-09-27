@@ -179,6 +179,8 @@ mod server_side_decorations;
 mod session_lock_e2e;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
+#[path = "shell_narration.rs"]
+mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
 #[path = "shortcuts_door.rs"]
