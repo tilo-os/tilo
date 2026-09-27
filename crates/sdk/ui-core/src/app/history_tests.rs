@@ -821,7 +821,7 @@ impl RoutedOwners {
         app.refresh_document_routes();
         // The fake broker admits each route join asynchronously, and a route
         // refuses documents until its document mode is resolved.
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !app.document_routes.owners.iter().all(|entry| {
             app.collaboration
                 .manager
@@ -1493,7 +1493,7 @@ fn remote_delivery_waits_for_pending_edits_and_recovers_overflow() {
         fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         // Resolve the broker's document mode on the new secondary route before
         // any document is eligible for publication. Production retries each frame.
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             fixture.app.publish_owned_documents();
             if fixture
@@ -3412,7 +3412,7 @@ fn native_owned_remote_merge_is_not_republished_as_an_echo() {
     commit_local(&fixture, "initial");
     // The fake broker admits the route join asynchronously; publication is
     // refused (and retried) until the route is publishable.
-    let deadline = crate::time::now() + crate::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while sent(&fixture).is_empty() {
         fixture.app.publish_owned_documents();
         assert!(
@@ -7847,7 +7847,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
 fn committed_queued_publication_failure_restores_all_producer_frontiers() {
     let mut fixture = RoutedOwners::new();
     // Actually enqueue each owner snapshot, which clears its replay obligation.
-    let deadline = crate::time::now() + crate::time::Duration::from_secs(2);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         fixture.app.publish_owned_documents();
         if fixture

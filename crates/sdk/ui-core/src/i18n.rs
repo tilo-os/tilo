@@ -296,19 +296,24 @@ impl Resolution<'_, '_> {
     }
 }
 
+/// The toolkit's own widget labels, in every language it ships.
+static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+    "en-US",
+    &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ],
+    "close-title",
+)
+.with_system_locale();
+
 impl I18nManager {
-    /// Register shared widget labels without replacing an application's
-    /// catalogs or its selected language. Standalone widgets get the same
-    /// source-locale fallback as application-hosted widgets.
+    /// Register shared widget labels in every bundled language without
+    /// replacing an application's catalogs or its selected language. A host
+    /// (the shell, an app) calls this once per thread so every toolkit widget
+    /// it draws follows the desktop's language; calling it again is free.
     pub fn register_widget_messages() {
-        const ENGLISH: &str = include_str!("../locales/en-US.ftl");
-        const GERMAN: &str = include_str!("../locales/de-DE.ftl");
-        if Self::revision() == 0 {
-            let _ = Self::install_system("en-US", &[("en-US", ENGLISH), ("de-DE", GERMAN)]);
-        } else {
-            Self::add_resource("en-US", ENGLISH.to_owned());
-            Self::add_resource("de-DE", GERMAN.to_owned());
-        }
+        WIDGET_CATALOG.ensure();
     }
 
     pub fn init(locale: &str) {
