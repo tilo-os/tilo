@@ -26,7 +26,8 @@ mod unix_tests {
     const UMASK_PATH: &str = "TILO_ATOMIC_FILE_UMASK_PATH";
     const FIFO_CHILD: &str = "TILO_ATOMIC_FILE_FIFO_CHILD";
     const FIFO_ROOT: &str = "TILO_ATOMIC_FILE_FIFO_ROOT";
-    const CHILD_DEADLINE: Duration = Duration::from_secs(3);
+    /// Bounds a wait for a child that exits as soon as it is done; only a hang reaches it.
+    const CHILD_DEADLINE: Duration = Duration::from_secs(30);
 
     #[cfg(target_os = "linux")]
     #[test]

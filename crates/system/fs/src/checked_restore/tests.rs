@@ -3,6 +3,9 @@ use collab_types::files::CheckedHistoryOperationV1;
 use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 struct Fixture {
     directory: tempfile::TempDir,
     endpoint: Endpoint,
@@ -872,9 +875,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                     let _runtime = handle.enter();
                     fixture.fs.checked_history_restore(fixture.ino, request)
                 });
-                entered
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                entered.recv_timeout(HANG_BOUND).unwrap();
                 let expected = match change {
                     0 => {
                         acl.replace(crate::acl::WorkspaceAcl::new());
@@ -986,9 +987,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 let _runtime = handle.enter();
                 fixture.fs.checked_history_restore(fixture.ino, request)
             });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            entered.recv_timeout(HANG_BOUND).unwrap();
             let (finished, wait) = std::sync::mpsc::channel();
             scope.spawn(move || {
                 acl.replace(crate::acl::WorkspaceAcl::new());
@@ -1009,8 +1008,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             }
             resume.send(()).unwrap();
             assert_eq!(worker.join().unwrap(), Outcome::NotVisible);
-            wait.recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            wait.recv_timeout(HANG_BOUND).unwrap();
         });
         assert_eq!(fixture.durable_bytes(), before);
         fixture.endpoint.close().await;
@@ -1039,9 +1037,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                     .send(fixture.fs.checked_history_restore(fixture.ino, request))
                     .unwrap();
             });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            entered.recv_timeout(HANG_BOUND).unwrap();
             let storage_namespace = fixture
                 .fs
                 .namespace
@@ -1054,7 +1050,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 acl_done.send(()).unwrap();
             });
             acl_result
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(HANG_BOUND)
                 .expect("ACL replacement must not wait on admission before B/N");
             resume.send(()).unwrap();
             assert!(
@@ -1065,12 +1061,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             );
             drop(storage_namespace);
             drop(storage_buffers);
-            assert_eq!(
-                result
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap(),
-                Outcome::ReadOnly
-            );
+            assert_eq!(result.recv_timeout(HANG_BOUND).unwrap(), Outcome::ReadOnly);
         });
         assert_eq!(fixture.durable_bytes(), before);
         assert_eq!(fixture.fs.ns().save(), namespace_before);

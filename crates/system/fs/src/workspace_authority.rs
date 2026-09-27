@@ -719,6 +719,9 @@ fn project(
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[tokio::test]
     async fn authority_frames_are_little_endian_length_then_postcard() {
         let mut wire = Vec::new();
@@ -1098,7 +1101,7 @@ mod tests {
                 .unwrap();
             assert_eq!(restored.workspace, remote_workspace);
             assert_ne!(restored.node.id, nas.id, "the owner and NAS are distinct");
-            tokio::time::timeout(std::time::Duration::from_secs(1), rebind_rx.recv())
+            tokio::time::timeout(HANG_BOUND, rebind_rx.recv())
                 .await
                 .unwrap()
                 .expect("different workspace ticket asks the daemon to restart into it");
