@@ -42,9 +42,86 @@ pub(crate) enum HistoryError {
     Unavailable,
     InvalidSelection,
     Comparison(CompareError),
+    /// The live document moved on after the restore was reviewed.
+    StaleReview,
+    /// An edit is still open; restoring would fold it into the restore.
+    PendingEdits,
+}
+
+/// One reviewed restore: the version to return to, and the exact committed
+/// frontier the person was looking at when they asked for it. Confirming is
+/// refused unless the live document is still at that frontier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RestoreReview {
+    pub(crate) entry: HistoryEntryId,
+    pub(crate) label: String,
+    target_heads: Vec<ChangeHash>,
+    reviewed_live_heads: Vec<ChangeHash>,
+    document_identity: uuid::Uuid,
+}
+
+fn sorted(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
+    heads.sort_unstable();
+    heads
+}
+
+/// Write a confirmed review into the live document as one new, undoable
+/// change attributed to `author`. The frontier is checked again here, inside
+/// the same mutation, so nothing that moved the document since confirmation
+/// can be silently reverted.
+///
+/// # Errors
+/// Refuses a replaced document, an open edit, or a moved frontier without
+/// touching the document.
+pub(crate) fn apply_restore(
+    state: &mut crate::state::State,
+    review: &RestoreReview,
+    author: Option<crate::permissions::UserId>,
+) -> Result<bool, HistoryError> {
+    if state.document_identity() != review.document_identity {
+        return Err(HistoryError::Stale);
+    }
+    if state.doc.pending_ops() > 0 {
+        return Err(HistoryError::PendingEdits);
+    }
+    if sorted(committed_heads(&state.doc)) != review.reviewed_live_heads {
+        return Err(HistoryError::StaleReview);
+    }
+    let context = tilo_actions::ActionContext {
+        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        ..tilo_actions::ActionContext::default()
+    };
+    Ok(state.restore_to_heads_with_context(&review.target_heads, None, None, author, &context))
 }
 
 impl HistoryTarget {
+    /// Restoring writes, so it needs the app's Write grant, not Read. Only an
+    /// app-owned document can be restored here; a bound record's writes belong
+    /// to its record action frame.
+    fn admit_restore(&self, context: &HistoryReadContext<'_>) -> Result<(), HistoryError> {
+        match self {
+            Self::Bound(_) => Err(HistoryError::Unavailable),
+            Self::Legacy {
+                app_id,
+                record,
+                document_identity,
+            } => {
+                if *document_identity != context.document_identity
+                    || record.as_ref() != context.active_record
+                {
+                    return Err(HistoryError::Stale);
+                }
+                if !context
+                    .permissions
+                    .check(&PermissionScope::app(app_id, Verb::Write))
+                {
+                    return Err(HistoryError::Denied);
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn read<R>(
         &self,
         context: &HistoryReadContext<'_>,
@@ -223,6 +300,62 @@ impl StandaloneHistory {
             .and_then(std::convert::identity);
         self.comparison = Some(self.checked(comparison)?);
         self.comparison.as_ref().ok_or(HistoryError::Unavailable)
+    }
+
+    /// Whether this session's document accepts a restore from this person.
+    pub(crate) fn can_restore(&self, context: &HistoryReadContext<'_>) -> bool {
+        self.invalidated.is_none() && self.target.admit_restore(context).is_ok()
+    }
+
+    /// Capture the committed state after `entry` together with the live
+    /// frontier being reviewed. Nothing is written.
+    pub(crate) fn review_restore(
+        &mut self,
+        context: &HistoryReadContext<'_>,
+        entry: HistoryEntryId,
+    ) -> Result<RestoreReview, HistoryError> {
+        self.refresh(context)?;
+        let label = self
+            .rows
+            .iter()
+            .find(|row| row.id == entry)
+            .map(|row| row.summary.clone())
+            .ok_or(HistoryError::InvalidSelection)?;
+        self.target.admit_restore(context)?;
+        let target_heads = crate::history_source::heads_for_entry(
+            &mut committed_snapshot(context.document),
+            &entry,
+        )
+        .ok_or(HistoryError::InvalidSelection)?;
+        Ok(RestoreReview {
+            entry,
+            label,
+            target_heads,
+            reviewed_live_heads: sorted(committed_heads(context.document)),
+            document_identity: context.document_identity,
+        })
+    }
+
+    /// Recheck authority and the reviewed frontier at confirmation.
+    pub(crate) fn validate_restore(
+        &self,
+        context: &HistoryReadContext<'_>,
+        review: &RestoreReview,
+    ) -> Result<(), HistoryError> {
+        if let Some(error) = &self.invalidated {
+            return Err(error.clone());
+        }
+        self.target.admit_restore(context)?;
+        if context.document_identity != review.document_identity {
+            return Err(HistoryError::Stale);
+        }
+        if context.document.pending_ops() > 0 {
+            return Err(HistoryError::PendingEdits);
+        }
+        if sorted(committed_heads(context.document)) != review.reviewed_live_heads {
+            return Err(HistoryError::StaleReview);
+        }
+        Ok(())
     }
 
     fn checked<R>(&mut self, result: Result<R, HistoryError>) -> Result<R, HistoryError> {
