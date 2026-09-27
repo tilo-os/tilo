@@ -43,6 +43,18 @@ pub struct ClipBlock {
     pub level: Option<i64>,
     pub ordered: Option<bool>,
     pub align: Option<String>,
+    /// The block's other attributes (a checklist item's `checked`, a code
+    /// line's `lang`), set as they are.
+    #[serde(default)]
+    pub attrs: std::collections::BTreeMap<String, ClipAttr>,
+}
+
+/// One block attribute a [`ClipBlock`] carries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub enum ClipAttr {
+    Bool(bool),
+    Int(i64),
+    Str(String),
 }
 
 /// The rich-text resource. See the module docs.
@@ -147,6 +159,76 @@ impl BodyOrder {
     }
 }
 
+/// How many changed paragraphs a state remembers for views catching up
+/// ([`RichTextState::changed_since`]); a view further behind reads it all.
+const CHANGE_LOG_LIMIT: usize = 4096;
+
+/// A point in a state's history of body changes, for a view that presented
+/// the body then to find what changed since ([`RichTextState::changed_since`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangeCursor {
+    read: u64,
+    order: u64,
+    at: u64,
+}
+
+/// The body paragraphs whose content changed, in the order their changes
+/// were read, since the state was read whole.
+#[derive(Clone, Debug, Default)]
+struct ChangeLog {
+    /// Which whole read this log continues; a new read starts a new one.
+    read: u64,
+    /// Bumped whenever paragraphs are added, removed, moved, or come into or
+    /// out of view: positions shown before no longer hold.
+    order: u64,
+    /// The position of `changed[0]` in the whole history.
+    base: u64,
+    changed: Vec<String>,
+}
+
+impl ChangeLog {
+    fn fresh() -> Self {
+        static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            read: READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ..Self::default()
+        }
+    }
+
+    fn content(&mut self, id: &str) {
+        if self.changed.len() >= CHANGE_LOG_LIMIT {
+            let dropped = self.changed.len() / 2;
+            self.changed.drain(..dropped);
+            self.base = self
+                .base
+                .saturating_add(u64::try_from(dropped).unwrap_or(u64::MAX));
+        }
+        self.changed.push(id.to_owned());
+    }
+
+    fn order(&mut self) {
+        self.order = self.order.wrapping_add(1);
+    }
+
+    fn cursor(&self) -> ChangeCursor {
+        ChangeCursor {
+            read: self.read,
+            order: self.order,
+            at: self
+                .base
+                .saturating_add(u64::try_from(self.changed.len()).unwrap_or(u64::MAX)),
+        }
+    }
+
+    fn since(&self, cursor: ChangeCursor) -> Option<&[String]> {
+        if cursor.read != self.read || cursor.order != self.order {
+            return None;
+        }
+        let from = usize::try_from(cursor.at.checked_sub(self.base)?).ok()?;
+        self.changed.get(from..)
+    }
+}
+
 /// What views of a rich-text document read. Cheap to clone: the parts are
 /// shared, and only the paragraphs on screen are held.
 #[derive(Clone, Debug)]
@@ -164,6 +246,9 @@ pub struct RichTextState {
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
     objects: HashMap<ObjId, tilo_resource::Path>,
+    /// The objects indexed for each paragraph, so forgetting one touches
+    /// only its own.
+    paragraph_objects: HashMap<String, Vec<ObjId>>,
     header: Rc<Vec<BlockView>>,
     footer: Rc<Vec<BlockView>>,
     notes: Rc<Vec<NoteView>>,
@@ -172,6 +257,8 @@ pub struct RichTextState {
     /// Every content address the document refers to (its images and
     /// preserved package parts); the bytes live in the caller's store.
     content: Rc<BTreeSet<String>>,
+    /// Which body paragraphs changed, for views presenting only those.
+    log: ChangeLog,
 }
 
 impl PartialEq for RichTextState {
@@ -193,6 +280,20 @@ impl RichTextState {
     /// Where the document's containers live.
     pub fn containers(&self) -> &Containers {
         &self.containers
+    }
+
+    /// Where the history of body changes is now, for [`Self::changed_since`].
+    pub fn change_cursor(&self) -> ChangeCursor {
+        self.log.cursor()
+    }
+
+    /// The body paragraphs whose content changed since `cursor`, some
+    /// possibly more than once, while the body kept its order and the same
+    /// paragraphs were read. `None` when that cannot be told (the body was
+    /// reordered, read whole again, or the view is too far behind): read it
+    /// all.
+    pub fn changed_since(&self, cursor: ChangeCursor) -> Option<&[String]> {
+        self.log.since(cursor)
     }
 
     /// The body's paragraph order. Shared: hold it across frames freely.
@@ -378,14 +479,17 @@ impl RichTextState {
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
         let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
+        self.paragraph_objects.insert(
+            id.to_owned(),
+            objects.iter().map(|(obj, _)| obj.clone()).collect(),
+        );
         self.objects.extend(objects);
     }
 
     fn forget_paragraph(&mut self, id: &str) {
-        self.objects.retain(|_, path| {
-            path.get(1)
-                .is_none_or(|(_, prop)| !matches!(prop, automerge::Prop::Map(key) if key == id))
-        });
+        for obj in self.paragraph_objects.remove(id).unwrap_or_default() {
+            self.objects.remove(&obj);
+        }
     }
 }
 
@@ -417,6 +521,16 @@ impl Resource for RichText {
     }
 
     fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        // Every paragraph demanded and every one already read: a view that
+        // shows the whole document, after an edit refreshed what it touched.
+        let everything = demand.keys.is_empty()
+            && demand
+                .ranges
+                .iter()
+                .any(|range| range.start == 0 && range.end >= state.body.len());
+        if everything && state.loaded.len() == state.body.len() {
+            return Ok(());
+        }
         let mut wanted: HashSet<String> = demand
             .positions(state.body.len())
             .filter_map(|position| state.body.id_at(position).map(str::to_owned))
@@ -442,6 +556,9 @@ impl Resource for RichText {
             .into_iter()
             .filter(|id| !state.loaded.contains_key(id))
             .collect();
+        if !evicted.is_empty() || !missing.is_empty() {
+            state.log.order();
+        }
         if !missing.is_empty() {
             for view in model::materialize_blocks(doc, &state.containers, &missing) {
                 let id = view.id.clone();
@@ -555,6 +672,7 @@ impl RichText {
             featured: Rc::new(featured),
             loaded: HashMap::new(),
             objects: HashMap::new(),
+            paragraph_objects: HashMap::new(),
             header: Rc::new(model::materialize_region(doc, &c, Region::Header)),
             footer: Rc::new(model::materialize_region(doc, &c, Region::Footer)),
             notes: Rc::new(model::materialize_notes(doc, &c)),
@@ -563,6 +681,7 @@ impl RichText {
             content: Rc::new(model::referenced_content(doc, &c)),
             root_path: path_to(doc, &c.root),
             containers: c,
+            log: ChangeLog::fresh(),
         })
     }
 
@@ -652,8 +771,12 @@ impl RichText {
             match &entry {
                 Some(entry) if placed.as_deref() != Some(entry.order.as_slice()) => {
                     Rc::make_mut(&mut state.body).insert(id, &entry.order);
+                    state.log.order();
                 }
-                None if placed.is_some() => Rc::make_mut(&mut state.body).remove(id),
+                None if placed.is_some() => {
+                    Rc::make_mut(&mut state.body).remove(id);
+                    state.log.order();
+                }
                 _ => {}
             }
             // Its content, when on screen or in the outline. A paragraph
@@ -669,6 +792,9 @@ impl RichText {
                 .is_some_and(|entry| RichTextState::is_featured(&entry.kind));
             let on_screen = state.loaded.contains_key(id);
             if entry.is_none() {
+                if state.loaded.contains_key(id) {
+                    state.log.order();
+                }
                 state.loaded.remove(id);
                 state.forget_paragraph(id);
                 if was_featured {
@@ -686,7 +812,12 @@ impl RichText {
             // value, so views can tell a changed paragraph by pointer.
             let view = match state.loaded.get(id).or_else(|| state.featured.get(id)) {
                 Some(old) if **old == view => Rc::clone(old),
-                _ => Rc::new(view),
+                _ => {
+                    if on_screen {
+                        state.log.content(id);
+                    }
+                    Rc::new(view)
+                }
             };
             if RichTextState::is_featured(&view.kind) {
                 Rc::make_mut(&mut state.featured).insert(id.to_owned(), Rc::clone(&view));

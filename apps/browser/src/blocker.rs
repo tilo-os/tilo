@@ -384,14 +384,11 @@ fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), Stri
 
 /// FNV-1a over the concatenated source lists — the cache version tag.
 fn source_version(texts: &[String]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut hasher = fnv::FnvHasher::default();
     for t in texts {
-        for &b in t.as_bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        std::hash::Hasher::write(&mut hasher, t.as_bytes());
     }
-    h
+    std::hash::Hasher::finish(&hasher)
 }
 
 #[cfg(test)]

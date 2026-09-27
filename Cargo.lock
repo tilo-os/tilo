@@ -579,7 +579,6 @@ dependencies = [
  "bounded-command",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "clap",
  "ed25519-dalek 3.0.0",
  "futures-util",
@@ -1441,6 +1440,7 @@ dependencies = [
  "base64",
  "blake3",
  "bounded-zip",
+ "fnv",
  "host-info",
  "pollster",
  "private-fs",
@@ -1570,6 +1570,7 @@ dependencies = [
  "automerge",
  "chrono",
  "chrono-tz",
+ "fnv",
  "mail",
  "pim-lines",
  "qdoc-rich-text",
@@ -1733,15 +1734,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "capnpc"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13aea06b902f885cb0313b11e900e96cd57fef775e9e601a96e14e1d655f3cd3"
-dependencies = [
- "capnp",
-]
-
-[[package]]
 name = "cbc"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1899,6 +1891,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "emoji",
+ "fnv",
  "hex",
  "image",
  "iroh",
@@ -3240,6 +3233,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3279,9 +3273,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3628,6 +3644,8 @@ dependencies = [
  "miniz_oxide",
  "serde",
  "serde_json",
+ "tilo-search",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -3938,6 +3956,7 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
+ "fnv",
  "hex",
  "quick-xml 0.41.0",
  "reqwest",
@@ -4293,7 +4312,6 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "format-provider-abi",
  "futures",
  "getrandom 0.4.3",
@@ -6478,6 +6496,7 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "crc32fast",
  "hex",
  "libc",
  "reqwest",
@@ -6609,6 +6628,7 @@ dependencies = [
  "app-registry",
  "clap",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "getrandom 0.4.3",
  "hex",
  "package-store",
@@ -7429,6 +7449,7 @@ dependencies = [
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "hex",
  "landlock",
  "libc",
@@ -8048,11 +8069,13 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "futures-util",
  "hex",
  "lettre",
  "mail-builder",
  "mail-parser",
+ "md-5",
  "pim-lines",
  "qdoc-codecs",
  "qdoc-rich-text",
@@ -8105,6 +8128,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "fnv",
  "hex",
  "reqwest",
  "runtime-dylib",
@@ -8427,6 +8451,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "gstreamer",
  "hex",
  "host-info",
@@ -9582,6 +9607,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "option-operations"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9930,6 +9961,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "fnv",
  "image",
  "runtime-dylib",
  "serde",
@@ -11345,6 +11377,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
+dependencies = [
+ "getrandom 0.2.17",
+ "libredox",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11889,7 +11932,6 @@ dependencies = [
  "cap-std",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "postcard",
  "runtime-portal",
  "rustix 1.1.4",
@@ -13031,7 +13073,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fluent",
- "fs",
+ "fnv",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
@@ -13120,6 +13162,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -13651,6 +13694,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssip-client"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5349534527378e1e24486a9b361127c0a044b0311857f778ec1ec2953c5ffbbf"
+dependencies = [
+ "dirs",
+ "log",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13767,6 +13823,12 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+
+[[package]]
+name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
@@ -13781,6 +13843,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros 0.28.0",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -14881,6 +14956,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "fluent",
+ "fnv",
  "hex",
  "notes",
  "serde",
@@ -15241,6 +15317,7 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
+ "fnv",
  "hex",
  "neighbour-wire",
  "postcard",
@@ -15479,18 +15556,27 @@ name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
+ "fs",
  "libc",
  "runtime-fs",
  "runtime-identity",
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-action-broker",
  "tilo-actions",
+ "tilo-automerge-isolate",
+ "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "workspace-hack",
 ]
@@ -15513,6 +15599,17 @@ dependencies = [
  "thiserror 2.0.18",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-search"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "tantivy",
+ "tracing",
+ "unicode-normalization",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15559,6 +15656,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
+ "fnv",
  "form_urlencoded",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -15609,6 +15707,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui-graph",
@@ -15620,7 +15719,6 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
- "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -16406,6 +16504,8 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "rustix 1.1.4",
+ "ssip-client",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "workspace-hack",
@@ -16422,6 +16522,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "flate2",
+ "fnv",
  "hex",
  "media",
  "private-fs",
@@ -17108,6 +17209,7 @@ dependencies = [
  "atomic-file",
  "bounded-command",
  "collab-types",
+ "fnv",
  "landlock",
  "libc",
  "runtime-portal",
@@ -17338,6 +17440,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "collab-types",
+ "fnv",
  "media",
  "runtime-dylib",
  "serde",
@@ -18812,6 +18915,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "fnv",
  "qdoc",
  "qdoc-codecs",
  "qdoc-pdf",
@@ -18827,6 +18931,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-resource",
+ "tilo-rich-text",
  "tilo-test-env",
  "vello",
  "winit",
@@ -18914,7 +19019,6 @@ dependencies = [
  "guillotiere",
  "half",
  "harfrust",
- "hashbrown 0.15.5",
  "hashbrown 0.16.1",
  "hashbrown 0.17.1",
  "hayro-syntax",
@@ -19025,6 +19129,7 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syntect",
+ "tantivy",
  "thiserror 2.0.18",
  "time",
  "time-macros",

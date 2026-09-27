@@ -238,16 +238,13 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
 /// (globally unique) header into the 128-bit id space means the same server
 /// message always resolves to the same local id, so a re-fetch dedupes instead
 /// of duplicating. Uses the message body's own FNV-1a hash folded into 128 bits
-/// — no crate needed, and stable across processes and machines.
+/// — stable across processes and machines.
 pub fn stable_message_id(message_id: &str) -> Uuid {
     // Two independent 64-bit FNV-1a passes (different seeds) fill the 128 bits.
-    fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
-        const PRIME: u64 = 0x0000_0100_0000_01B3;
-        for &b in bytes {
-            hash ^= u64::from(b);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash
+    fn fnv1a(bytes: &[u8], key: u64) -> u64 {
+        let mut hasher = fnv::FnvHasher::with_key(key);
+        std::hash::Hasher::write(&mut hasher, bytes);
+        std::hash::Hasher::finish(&hasher)
     }
     let norm = message_id
         .trim()

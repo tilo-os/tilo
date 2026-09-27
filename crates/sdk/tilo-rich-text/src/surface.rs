@@ -1,20 +1,39 @@
 //! The block editor taking part in rich text.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
 use qdoc::snapshot::BlockView;
-use qdoc_rich_text::{RichText, RichTextAction, RichTextState};
+use qdoc_rich_text::{ChangeCursor, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ChangeHash, ObjId};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
-use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EventCtx, Widget};
+use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EditScope, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
 use crate::convert::content_of;
 use crate::edit::{self, Host};
 use crate::source::{Hosted, RichTextField, RichTextSource};
+
+/// The key that sends what an embedded field holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitKey {
+    /// Enter sends; Shift+Enter breaks the line (a chat composer).
+    Enter,
+    /// Ctrl+Enter (Cmd+Enter) sends; Enter starts a paragraph (a comment).
+    ModEnter,
+}
+
+/// How the person finished with an embedded field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldOutcome {
+    /// They sent what they wrote.
+    Submit,
+    /// They let it go (Escape).
+    Cancel,
+}
 
 /// The toolkit's [`BlockEditor`] showing rich text and editing it through
 /// the document's own actions.
@@ -33,14 +52,39 @@ use crate::source::{Hosted, RichTextField, RichTextSource};
 pub struct RichTextSurface<S = Hosted> {
     editor: BlockEditor,
     source: S,
+    /// Set for a field embedded in a form or a thread: the key that sends
+    /// what was written, with Escape cancelling.
+    submit: Option<SubmitKey>,
+    outcome: Option<FieldOutcome>,
     /// What the editor was last shown, and the paragraph each entry was
     /// read from: an entry is converted again only when its paragraph
     /// changed.
     presented: Vec<BlockContent>,
     sources: Vec<Rc<BlockView>>,
+    /// Where the document's change history stood when it was presented:
+    /// the next presentation converts only the paragraphs changed since.
+    cursor: Option<ChangeCursor>,
     revision: Option<u64>,
     keyed: bool,
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Blocks compared with what was presented and paragraphs presented,
+    /// for the test that pins a keystroke's work.
+    pub(crate) static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+fn count_work(compared: usize, presented: usize) {
+    WORK.with(|work| {
+        let (c, p) = work.get();
+        work.set((c.saturating_add(compared), p.saturating_add(presented)));
+    });
+}
+
+#[cfg(not(test))]
+fn count_work(_compared: usize, _presented: usize) {}
 
 impl Default for RichTextSurface {
     fn default() -> Self {
@@ -72,8 +116,11 @@ impl<S: RichTextSource> RichTextSurface<S> {
         Self {
             editor: default_editor(),
             source,
+            submit: None,
+            outcome: None,
             presented: Vec::new(),
             sources: Vec::new(),
+            cursor: None,
             revision: None,
             keyed: false,
         }
@@ -85,8 +132,82 @@ impl<S: RichTextSource> RichTextSurface<S> {
     pub fn with_editor(mut self, editor: BlockEditor) -> Self {
         self.editor = editor;
         self.revision = None;
+        self.cursor = None;
         self.keyed = false;
         self
+    }
+
+    /// Make this a field embedded in a form or a thread: `key` sends what it
+    /// holds and Escape cancels, both reported by [`Self::take_outcome`]
+    /// instead of reaching the editor.
+    #[must_use]
+    pub fn with_submit(mut self, key: SubmitKey) -> Self {
+        self.submit = Some(key);
+        self
+    }
+
+    /// Show what the source holds now, without a document: for a source that
+    /// keeps its own ([`Draft`](crate::Draft)) after it was reset.
+    pub fn present_now(&mut self) {
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+    }
+
+    /// Whether the person sent or cancelled since the last call.
+    pub fn take_outcome(&mut self) -> Option<FieldOutcome> {
+        self.outcome.take()
+    }
+
+    /// Send or cancel as if the person had, for a Send button or a click
+    /// outside.
+    pub fn finish(&mut self, outcome: FieldOutcome) {
+        self.outcome = Some(outcome);
+    }
+
+    /// What the editor shows, as the document holds it.
+    #[must_use]
+    pub fn blocks(&self) -> &[BlockContent] {
+        &self.presented
+    }
+
+    /// The outcome `event` asks for, in an embedded field.
+    fn outcome_of(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> Option<FieldOutcome> {
+        use ui::winit::event::{ElementState, KeyEvent};
+        use ui::winit::keyboard::{Key, NamedKey};
+        let key = self.submit?;
+        if !self.editor.is_focused() || self.editor.has_open_popup() {
+            return None;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(named),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let held = modifiers.state();
+        let command = held.control_key() || held.super_key();
+        match named {
+            NamedKey::Escape => Some(FieldOutcome::Cancel),
+            NamedKey::Enter => match key {
+                SubmitKey::Enter if !held.shift_key() && !command && !held.alt_key() => {
+                    Some(FieldOutcome::Submit)
+                }
+                SubmitKey::ModEnter if command => Some(FieldOutcome::Submit),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The hint an empty document shows.
@@ -104,7 +225,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
         if !self.source.read_from(doc) {
             return false;
         }
-        self.present_state();
+        self.present_state(None);
         true
     }
 
@@ -120,8 +241,10 @@ impl<S: RichTextSource> RichTextSurface<S> {
         &self.editor
     }
 
-    /// The editor, mutably.
+    /// The editor, mutably. What the caller changes through it is compared
+    /// with the document whole on the next commit.
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
+        self.editor.note_edit_anywhere();
         &mut self.editor
     }
 
@@ -137,10 +260,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
 
     /// The blocks the person changed since the last presentation: the
     /// presented range `[start, presented_end)` became the editor's
-    /// `[start, edited_end)`. `None` when nothing changed. Found by
-    /// comparing from both ends, so a keystroke costs a comparison per
-    /// paragraph and a conversion of only the one it touched.
-    fn changed(&self) -> Option<(usize, usize, usize)> {
+    /// `[start, edited_end)`. `None` when nothing changed. Only the blocks
+    /// the editor says the person may have changed are compared, so typing
+    /// in a paragraph costs a comparison of that paragraph and its
+    /// neighbours; anything else is found by comparing from both ends.
+    fn changed(&mut self) -> Option<(usize, usize, usize)> {
+        let scope = self.editor.take_edit_scope();
         let blocks = self.editor.blocks();
         let same = |block: &Block, shown: &BlockContent| {
             block.id == shown.id
@@ -150,6 +275,26 @@ impl<S: RichTextSource> RichTextSurface<S> {
                 && block.nesting == shown.nesting
                 && block.code_group == shown.code_group
         };
+        match scope {
+            EditScope::Nothing => return None,
+            EditScope::Blocks(range) if blocks.len() == self.presented.len() => {
+                let range = range.start.min(blocks.len())..range.end.min(blocks.len());
+                count_work(range.len(), 0);
+                let presented = &self.presented;
+                let differs = |index: &usize| match (blocks.get(*index), presented.get(*index)) {
+                    (Some(block), Some(shown)) => !same(block, shown),
+                    _ => true,
+                };
+                let start = range.clone().find(differs)?;
+                let end = range
+                    .rev()
+                    .find(differs)
+                    .map_or(start, |last| last.saturating_add(1));
+                return Some((start, end, end));
+            }
+            EditScope::Blocks(_) | EditScope::Anywhere => {}
+        }
+        count_work(blocks.len(), 0);
         let start = blocks
             .iter()
             .zip(&self.presented)
@@ -173,13 +318,18 @@ impl<S: RichTextSource> RichTextSurface<S> {
         ))
     }
 
-    /// Show the document as it is now.
-    fn present_state(&mut self) {
+    /// Show the document as it is now. `local` names editor blocks that may
+    /// show an edit the document did not take (a refused one), to be shown
+    /// as the document has them.
+    fn present_state(&mut self, local: Option<&Range<usize>>) {
         if !self.keyed
             && let Some(keys) = self.source.presence_keys()
         {
             self.editor.set_presence_key(keys);
             self.keyed = true;
+        }
+        if self.present_changes(local) {
+            return;
         }
         let mut previous = Previous::new(
             std::mem::take(&mut self.sources),
@@ -199,10 +349,66 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let Some((presented, sources)) = shown else {
             return;
         };
+        count_work(0, presented.len());
         self.revision = self.source.revision();
+        self.cursor = self.source.with_state(RichTextState::change_cursor);
         self.editor.present_blocks(&presented);
         self.presented = presented;
         self.sources = sources;
+    }
+
+    /// Present only the paragraphs changed since the last presentation, and
+    /// the editor blocks `local` names: `false`, presenting nothing, when
+    /// that cannot be told (the body was reordered or read again, the editor
+    /// holds other blocks) and the document must be presented whole.
+    fn present_changes(&mut self, local: Option<&Range<usize>>) -> bool {
+        let Some(cursor) = self.cursor else {
+            return false;
+        };
+        if self.editor.blocks().len() != self.presented.len()
+            || self.sources.len() != self.presented.len()
+        {
+            return false;
+        }
+        let presented = &mut self.presented;
+        let sources = &mut self.sources;
+        let found = self.source.with_state(|state: &RichTextState| {
+            let changed = state.changed_since(cursor)?;
+            if state.body().len() != presented.len() {
+                return None;
+            }
+            let mut indices = changed
+                .iter()
+                .map(|id| state.body().position(id))
+                .collect::<Option<Vec<usize>>>()?;
+            indices.extend(local.cloned().unwrap_or(0..0));
+            indices.sort_unstable();
+            indices.dedup();
+            for &index in &indices {
+                let id = state.body().id_at(index)?;
+                let view = state.block(id)?;
+                let source = sources.get_mut(index)?;
+                if !Rc::ptr_eq(source, view) {
+                    *presented.get_mut(index)? = content_of(view);
+                    *source = Rc::clone(view);
+                }
+            }
+            Some((indices, state.change_cursor()))
+        });
+        let Some(Some((indices, cursor))) = found else {
+            return false;
+        };
+        count_work(0, indices.len());
+        let changed: Vec<(usize, &BlockContent)> = indices
+            .iter()
+            .filter_map(|&index| Some((index, self.presented.get(index)?)))
+            .collect();
+        if self.editor.present_changed(&changed).is_none() {
+            return false;
+        }
+        self.revision = self.source.revision();
+        self.cursor = Some(cursor);
+        true
     }
 
     /// Apply what the person did since the last presentation, then show the
@@ -236,7 +442,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
             }
             self.source.sync(doc);
         }
-        self.present_state();
+        let local = (presented_end == edited_end).then_some(start..edited_end);
+        self.present_state(local.as_ref());
     }
 }
 
@@ -332,6 +539,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
     fn attach(&mut self, cx: SurfaceCx<RichText>) {
         self.source.attach(cx.live(), cx.dispatcher());
         self.revision = None;
+        self.cursor = None;
         self.keyed = false;
     }
 }
@@ -352,12 +560,17 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         // An edit made outside an input event (an accessibility action).
         self.commit(state);
         if self.source.revision() != self.revision {
-            self.present_state();
+            self.present_state(None);
         }
         self.editor.sync(state, path);
     }
 
     fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
+            self.outcome = Some(outcome);
+            *ctx.handled = true;
+            return;
+        }
         self.editor.handle_event(
             event,
             ctx.scale_factor,
@@ -384,5 +597,56 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
 
     fn keeps_undo_step_open(&self) -> bool {
         self.source.keeps_step_open()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qdoc_rich_text::RICH_TEXT_ACTION_TYPE;
+    use ui::automerge::ROOT;
+    use ui::headless::FrameHarness;
+    use ui::tilo_actions::Action;
+
+    /// Blocks compared and paragraphs presented while typing `typed` into
+    /// the first of `paragraphs` paragraphs.
+    fn typing_work(paragraphs: usize, typed: &str) -> (usize, usize) {
+        let mut state = ui::State::new();
+        RichText::initialize_under(&mut state.doc, &ROOT).unwrap();
+        let mut markdown = String::new();
+        for index in 0..paragraphs {
+            use std::fmt::Write as _;
+            let _ = write!(markdown, "Paragraph {index} of a long note.\n\n");
+        }
+        RichTextAction::ReplaceBody { markdown }
+            .apply(&mut state.doc)
+            .unwrap();
+        state.doc.commit();
+        let field = RichTextField::new(RICH_TEXT_ACTION_TYPE, |_| Some(ROOT), |edit| edit);
+        let surface = RichTextSurface::field(field);
+        let mut harness = FrameHarness::new(state, Box::new(surface), (800, 600));
+        harness.click_at(40.0, 10.0);
+        harness.type_text("warm ");
+        WORK.with(|work| work.set((0, 0)));
+        harness.type_text(typed);
+        WORK.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn a_keystroke_compares_and_presents_what_it_touched_not_the_document() {
+        let small = typing_work(200, "typed");
+        let large = typing_work(2000, "typed");
+        assert!(
+            small.0 > 0 && small.1 > 0,
+            "the typing reached the document: {small:?}"
+        );
+        assert_eq!(
+            small, large,
+            "blocks compared and paragraphs presented per keystroke grow with the document"
+        );
+        assert!(
+            small.0 <= 3 * 2 * "typed".len() && small.1 <= 3 * 2 * "typed".len(),
+            "a keystroke compares and presents its paragraph and neighbours: {small:?}"
+        );
     }
 }

@@ -179,6 +179,11 @@ impl FieldState {
         })
     }
 
+    /// Increases whenever the state changes.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Re-read what changed since the last read; `true` when anything did.
     ///
     /// # Errors

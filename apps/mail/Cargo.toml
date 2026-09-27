@@ -14,6 +14,8 @@ name = "mail"
 path = "src/main.rs"
 
 [dependencies]
+md-5.workspace = true
+fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
