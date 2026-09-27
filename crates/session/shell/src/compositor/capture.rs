@@ -2344,15 +2344,25 @@ mod tests {
                     .is_some_and(|group| group.complete_capture_rect().is_some()),
                 "long Notes document did not publish complete capture geometry"
             );
-            assert!(
-                frame_builder
-                    .host_mut()
-                    .group_row_mut_for_tests(strip_id)
-                    .expect("live strip row")
-                    .scroll_group_into_view(70_002),
-                "the last group must require scrolling"
-            );
+            // Focusing the last group already eases the strip toward it on
+            // the wall clock, so whether this jump still moves the strip
+            // depends on how long the frames above took. Jump to the end of
+            // that ease and check where the strip rests instead.
+            let _ = frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .scroll_group_into_view(70_002);
             frame_builder.relayout();
+            let onscreen = frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .onscreen_group_ids();
+            assert!(
+                onscreen.contains(&70_002) && !onscreen.contains(&target_group),
+                "the strip must rest on the last group with the target offscreen: {onscreen:?}"
+            );
             let clean_screen = frame_builder.paint();
             let target_group_ref = frame_builder
                 .host_mut()
