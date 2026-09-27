@@ -32,7 +32,7 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     ///
     /// Returns a description when the document no longer projects to a desktop.
     fn resync_activity_cache(&mut self) -> Result<(), String>;
-    fn replay_presentation_note(&self) -> Option<&'static str> {
+    fn replay_presentation_note(&self) -> Option<String> {
         None
     }
     fn commit_activity_change(&mut self) {}
@@ -113,8 +113,8 @@ impl ActivityTree for ActivitySnapshot {
     fn document_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
     }
-    fn replay_presentation_note(&self) -> Option<&'static str> {
-        Some("Window sizes and selected tabs were not recorded")
+    fn replay_presentation_note(&self) -> Option<String> {
+        Some(crate::i18n::t("activity-replay-layout-not-recorded"))
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         // A historical projection must not retain tabs that only exist in the
@@ -179,7 +179,7 @@ pub trait ActivityHost {
     ///
     /// Returns a description when dispatch is unavailable or refused.
     fn dispatch_task(&self, _room: &str, _task: &str) -> Result<(), String> {
-        Err("agent task dispatch is unavailable".into())
+        Err(crate::i18n::t("activity-agent-dispatch-unavailable"))
     }
     /// Launch an agent into `workspace`.
     ///
@@ -187,7 +187,7 @@ pub trait ActivityHost {
     ///
     /// Returns a description when launching is unavailable or refused.
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
-        Err("agent launching is unavailable".into())
+        Err(crate::i18n::t("activity-agent-launch-unavailable"))
     }
 }
 pub struct UnavailableActivityHost;
