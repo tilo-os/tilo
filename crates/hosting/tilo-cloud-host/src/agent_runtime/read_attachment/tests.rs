@@ -728,6 +728,11 @@ const LIST: AgentRequest = AgentRequest::List {
 /// the following read observes the change.
 #[tokio::test]
 async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
+    // A loaded runner can spend longer than the production recheck interval
+    // between the first read's locked proof and the reused read (opening the
+    // locking Store alone); what is under test is the reuse, not that bound.
+    const RECHECK: Duration = Duration::from_secs(600);
+    let _recheck = crate::agent_runtime_adapter::store_hint::TestStoreRecheck::set(RECHECK);
     let (dir, store, device) = crate::agent_owner_tests::enrolled();
     drop(store);
     let (_, first_agent) = add_agent(dir.path(), device);
@@ -755,6 +760,7 @@ async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
     let reader = std::thread::spawn({
         let (owner, provider, time) = (owner.clone(), provider.clone(), time.clone());
         move || {
+            let _recheck = crate::agent_runtime_adapter::store_hint::TestStoreRecheck::set(RECHECK);
             let result = read_current(
                 &root,
                 &owner,
@@ -769,7 +775,9 @@ async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
             (result, cache)
         }
     });
-    let finished = answered.recv_timeout(Duration::from_secs(2));
+    // A read that opens the Store blocks on the lock until this bound drops
+    // it; a reused one answers without it, however slow the runner.
+    let finished = answered.recv_timeout(Duration::from_secs(30));
     drop(lock);
     let (second, mut cache) = tokio::task::spawn_blocking(move || reader.join().unwrap())
         .await

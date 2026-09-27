@@ -300,9 +300,11 @@ fn current_binding(
 #[derive(Default)]
 pub(crate) struct ReadCache {
     entries: Vec<ReadEntry>,
+    /// Reads answered from a retained basis / from a Store open, since start.
     hits: u64,
     misses: u64,
-    reported: Option<std::time::Instant>,
+    /// Start of the current report window and the counts at its start.
+    reported: Option<(std::time::Instant, u64, u64)>,
 }
 struct ReadEntry {
     verified: crate::agent_runtime_adapter::store_hint::Verified,
@@ -355,21 +357,21 @@ impl ReadCache {
         } else {
             self.misses += 1;
         }
-        let started = *self.reported.get_or_insert_with(std::time::Instant::now);
+        let (started, hits, misses) = *self
+            .reported
+            .get_or_insert_with(|| (std::time::Instant::now(), 0, 0));
         if started.elapsed() >= Duration::from_secs(10) {
             if tilo_action_broker::agent_timing::store_spans_enabled() {
                 tracing::info!(
                     target: "tilo_cloud_host::agent_timing",
                     event = "agent_read_reuse",
-                    hits = self.hits,
-                    misses = self.misses,
+                    hits = self.hits.saturating_sub(hits),
+                    misses = self.misses.saturating_sub(misses),
                     window_ms = started.elapsed().as_millis() as u64,
                     "agent timing"
                 );
             }
-            self.hits = 0;
-            self.misses = 0;
-            self.reported = Some(std::time::Instant::now());
+            self.reported = Some((std::time::Instant::now(), self.hits, self.misses));
         }
     }
     /// The retained binding of this caller's exact burst basis, if any: the
