@@ -1698,6 +1698,10 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the shell screenshot catalogue is one data table of action lists; splitting it would only relocate rows"
+)]
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         Scenario {
