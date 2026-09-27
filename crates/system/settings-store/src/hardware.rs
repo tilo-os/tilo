@@ -1674,6 +1674,7 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
     let mut fixed = vec![
         ("Switch windows", chord(&["Alt"], "tab")),
         ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Switch windows of the app", chord(&["Alt"], "`")),
         ("Close tab", chord(&["Alt"], "f4")),
         ("Close tab", chord(&["Super"], "w")),
         ("Previous workspace", chord(&["Super"], "pageup")),

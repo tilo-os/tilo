@@ -121,6 +121,9 @@ pub struct CaptureExecutor {
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
     portal_screenshot_armed: bool,
+    /// Live window previews for the switcher and the overview, rendered
+    /// here because this is where live geometry and a GPU meet.
+    window_previews: super::window_previews::WindowPreviewRenderer,
 }
 
 struct LiveMirror {
@@ -762,6 +765,12 @@ impl CaptureExecutor {
         // This shared gate removes the blank first frame for both live PiP and
         // frozen screenshot pins.
         frame_builder.relayout();
+        // Previews render from the frame store and a live repaint of each
+        // window, never from the presented scene, so chrome over a window
+        // never shows up inside its own preview.
+        let _ = self
+            .window_previews
+            .refresh(frame_builder, std::time::Instant::now());
         // Appended only after every mirror sampled the clean desktop, so a
         // region overlapping its own PiP never feeds back recursively.
         let capture_overlays_appended = frame_builder.draw_capture_overlays(clean_screen_scene);
@@ -1679,7 +1688,7 @@ fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u
     renderer.render_rgba_resilient(scene)
 }
 
-fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {
+pub(crate) fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {
     let mut clipped = Scene::new();
     clipped.push_layer(
         Fill::NonZero,

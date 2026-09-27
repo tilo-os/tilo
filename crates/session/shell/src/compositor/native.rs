@@ -1919,6 +1919,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
+            // The Alt+Tab switcher while it is open: its windows in order,
+            // the selected one, and whether each card shows a live preview
+            // (`live`), its app mark because the app holds secrets
+            // (`withheld`), or its app mark for now (`none`).
+            "window_switcher": self.fb.host().window_switcher_state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -2751,6 +2756,11 @@ fn execute_planned_action(
             }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
             apply_modifier_mask(ctx, mask);
+            // No key event carries this change, so a gesture held open by a
+            // modifier (Alt+Tab) hears the release here.
+            if fb.host_mut().note_modifiers(mask) {
+                fb.host_mut().flush_active_tab_writeback();
+            }
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached

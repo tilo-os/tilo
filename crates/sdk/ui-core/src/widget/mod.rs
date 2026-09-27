@@ -2512,7 +2512,7 @@ pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::Dropdown;
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor};
+pub use tabs::{TabBar, TabDescriptor, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 pub mod date_indexed_scrollbar;

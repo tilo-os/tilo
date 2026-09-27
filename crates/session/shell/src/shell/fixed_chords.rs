@@ -20,6 +20,7 @@ pub enum FixedChordAction {
     Screenshot,
     SwitchWindows,
     SwitchWindowsBackwards,
+    SwitchAppWindows,
     CloseTab,
     ChangeWorkspace,
     NewWindow,
@@ -181,6 +182,12 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
         "shortcut-switch-windows-backwards",
         "Switch windows backwards",
         &[chord(ChordKey::Tab, ALT_SHIFT)],
+    ),
+    entry(
+        FixedChordAction::SwitchAppWindows,
+        "shortcut-switch-app-windows",
+        "Switch windows of the app",
+        &[chord(ChordKey::Char('`'), ALT)],
     ),
     entry(
         FixedChordAction::CloseTab,

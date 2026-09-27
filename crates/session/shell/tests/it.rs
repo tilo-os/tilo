@@ -195,6 +195,10 @@ mod transient_sheets;
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "window_previews.rs"]
+mod window_previews;
+#[path = "window_switcher.rs"]
+mod window_switcher;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
 #[path = "xdg_activation.rs"]
