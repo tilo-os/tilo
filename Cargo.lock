@@ -14910,6 +14910,7 @@ dependencies = [
  "serde",
  "tilo-app",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]

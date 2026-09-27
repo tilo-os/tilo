@@ -17,6 +17,7 @@ qdoc-rich-text = { path = "../../doc/qdoc-rich-text" }
 tracing.workspace = true
 # The owning resource's action a field edit travels in is serialized for replay.
 serde.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../tilo-app", features = ["test-support"] }
