@@ -179,9 +179,10 @@ class SlotCacheTests(unittest.TestCase):
                  "&& 'trusted' || 'untrusted' }}")
         volume = f"- tilo-slot-cache-{trust}:/ci-slot-cache"
         workflows = root / ".forgejo/workflows"
-        with self.subTest(phase="the three Rust jobs mount, prepare and seal"):
+        with self.subTest(phase="the four Rust jobs mount, prepare and seal"):
             check = (workflows / "check.yml").read_text(encoding="utf-8")
-            for job, following in (("test", "check"), ("check", "clippy"), ("clippy", "pins")):
+            for job, following in (("test", "check"), ("check", "clippy"), ("clippy", "android"),
+                                   ("android", "pins")):
                 body = check.split(f"\n  {job}:\n", 1)[1].split(f"\n  {following}:\n", 1)[0]
                 self.assertEqual(body.count(volume), 1, job)
                 self.assertEqual(body.count("slot-cache: true"), 1, job)
