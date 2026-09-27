@@ -92,18 +92,18 @@ pub use verify::{Verification, verify, verify_with_trust};
 const APP_SIZE_LIMIT_BYTES: u64 = parse_size_limit(include_str!("../max-app-bytes"));
 
 const fn parse_size_limit(text: &str) -> u64 {
-    let bytes = text.as_bytes();
+    let mut rest = text.as_bytes();
     let mut value: u64 = 0;
-    let mut index = 0;
-    while index < bytes.len() && bytes[index] != b'\n' {
-        let digit = bytes[index];
-        assert!(
-            digit.is_ascii_digit(),
-            "max-app-bytes must be a decimal byte count"
-        );
-        value = value * 10 + (digit - b'0') as u64;
-        index += 1;
+    while let [digit @ b'0'..=b'9', tail @ ..] = rest {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(digit.wrapping_sub(b'0') as u64);
+        rest = tail;
     }
+    assert!(
+        matches!(rest, [] | [b'\n']),
+        "max-app-bytes must be a decimal byte count"
+    );
     assert!(value > 0, "max-app-bytes must be positive");
     value
 }
