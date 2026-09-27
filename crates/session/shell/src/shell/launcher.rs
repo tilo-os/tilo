@@ -887,8 +887,8 @@ static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// the safe default: an app launched before publish gets manifest-only.
 static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
-type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
-type StagedContinuationResume = (ContinuationResumePayload, u64);
+pub type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
+pub type StagedContinuationResume = (ContinuationResumePayload, u64);
 
 static PENDING_CONTINUATION_RESUME: LazyLock<
     Mutex<HashMap<(RoomId, u64), StagedContinuationResume>>,
@@ -3169,7 +3169,10 @@ fn take_staged_resume(
     lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab))
 }
 
-pub(crate) fn take_staged_resume_for_package(
+/// Take the continuation staged for the next launch of `package_id` into
+/// `room`: the record instance, and the resume projection when there is one.
+/// Taking it means exactly one launch receives it.
+pub fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
 ) -> Option<StagedContinuationResume> {

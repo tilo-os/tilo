@@ -2,6 +2,26 @@ counter = Wert: { $count }
 btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
+standalone-history-restore = Diese Version wiederherstellen…
+standalone-history-restore-title = Diese Version wiederherstellen?
+standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
+standalone-history-restore-confirm = Version wiederherstellen
+standalone-history-restore-cancel = Abbrechen
+standalone-history-restore-action = Version wiederherstellen
+standalone-history-restore-done = Version wiederhergestellt. Rückgängig macht es rückgängig.
+standalone-history-restore-stale = Das Dokument hat sich während der Prüfung geändert. Wähle die Version erneut aus, um sie wiederherzustellen.
+standalone-history-restore-pending = Schließe die aktuelle Bearbeitung ab und stelle die Version dann wieder her.
+standalone-history-restore-denied = Nur Bearbeitende können eine Version wiederherstellen.
+standalone-history-restore-unavailable = Diese Version kann hier nicht wiederhergestellt werden.
+history-edited-field = { $more ->
+    [0] { $path } bearbeitet
+   *[other] { $path } und { $more } weitere bearbeitet
+}
+history-removed-field = { $more ->
+    [0] { $path } entfernt
+   *[other] { $path } und { $more } weitere entfernt
+}
+
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?
 close-save-failed = Änderungen konnten nicht gespeichert werden

@@ -38,8 +38,7 @@ RECONSTRUCTION_SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PRIVATE = Path('/var/lib/tilo-provisional-compile')
 EVIDENCE = Path('/evidence')
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
-PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
-             'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
+PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
 LOADER_NAMES = {'x86_64': 'systemd-bootx64.efi', 'aarch64': 'systemd-bootaa64.efi'}
 GIB = 1024**3
@@ -554,15 +553,24 @@ def immutable_candidate(reference):
     return reference
 
 
+def resolve_rpms_ref():
+    """Resolve the published set-<fingerprint> snapshot for this checkout."""
+    reference = run(str(REPO / 'os/dev/resolve-rpm-snapshot.sh')).strip()
+    return immutable_candidate(reference)
+
+
 def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate='', require_kernel=True):
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
     if require_kernel and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
     pins = pinned_inputs(architecture, kernel_candidate, include_kernel=require_kernel)
-    for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
-        if candidate and (name != 'KERNEL_RPMS_REF' or require_kernel):
-            pins[name] = immutable_candidate(candidate)
+    if kernel_candidate and require_kernel:
+        pins['KERNEL_RPMS_REF'] = immutable_candidate(kernel_candidate)
+    if rpms_candidate:
+        pins['RPMS_REF'] = immutable_candidate(rpms_candidate)
+    else:
+        pins['RPMS_REF'] = resolve_rpms_ref()
     return pins
 
 

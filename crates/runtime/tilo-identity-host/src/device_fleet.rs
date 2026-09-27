@@ -72,10 +72,10 @@ impl DeviceFleetStore {
     /// Returns an error if the identity registry's environment (neither
     /// `XDG_CONFIG_HOME` nor `HOME` set) can't be resolved.
     pub fn from_env() -> io::Result<Self> {
-        let registry = crate::identity_registry::IdentityRegistryStore::from_env()?;
+        let registry = crate::registry::IdentityRegistryStore::from_env()?;
         Ok(Self::at(
             registry.identity_dir(),
-            crate::firstboot::collaboration_identity_paths(),
+            crate::provisioning::collaboration_identity_paths(),
         ))
     }
 
@@ -385,9 +385,9 @@ impl DeviceFleetStore {
         identity_id: &str,
     ) -> io::Result<(
         runtime_identity::SigningIdentity,
-        crate::identity_registry::IdentityProfile,
+        crate::registry::IdentityProfile,
     )> {
-        let store = crate::identity_registry::IdentityRegistryStore::at(&self.identity_dir);
+        let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
         let registry = store.migrate_legacy_primary()?;
         let profile = registry
             .identities
@@ -471,9 +471,13 @@ mod tests {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");
             let paths = IdentityPaths::under(root.path().join("system"));
-            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
-                .expect("provision");
-            let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+            crate::provisioning::ensure_collaboration_identity(
+                &identity_dir,
+                &paths,
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision");
+            let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
                 .load()
                 .expect("registry");
             let identity_id = registry.default_identity.expect("default identity");
@@ -580,9 +584,13 @@ mod tests {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");
             let paths = IdentityPaths::under(root.path().join("system"));
-            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
-                .expect("provision");
-            let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+            crate::provisioning::ensure_collaboration_identity(
+                &identity_dir,
+                &paths,
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision");
+            let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
                 .load()
                 .expect("registry");
             let identity_id = registry.default_identity.expect("default identity");
@@ -654,8 +662,13 @@ mod tests {
         let root = tempfile::tempdir().expect("temp root");
         let identity_dir = root.path().join("config/identity");
         let paths = IdentityPaths::under(root.path().join("system"));
-        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("provision");
-        let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+        crate::provisioning::ensure_collaboration_identity(
+            &identity_dir,
+            &paths,
+            crate::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision");
+        let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
             .load()
             .expect("registry");
         let identity_id = registry.default_identity.expect("default identity");
