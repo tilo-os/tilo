@@ -10,6 +10,8 @@ pub struct McpServer<H> {
     host: H,
     room: String,
     actor: String,
+    /// The agent run every invocation of this connection is attributed to.
+    run: Option<tilo_actions::ActionGroup>,
 }
 
 #[derive(Default, Deserialize)]
@@ -82,7 +84,24 @@ fn tool_result(result: Result<Value, String>) -> Value {
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
-        Self { host, room, actor }
+        Self {
+            host,
+            room,
+            actor,
+            run: None,
+        }
+    }
+    /// Attribute every invocation of this connection to one agent run, so
+    /// history, undo and activity tell concurrent agents apart. Provenance
+    /// only: authority stays the profile actor's.
+    #[must_use]
+    pub fn with_agent_run(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.run = Some(tilo_actions::ActionGroup {
+            id: id.into(),
+            label: label.into(),
+            kind: "agent-run".into(),
+        });
+        self
     }
     pub async fn handle(&mut self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -292,15 +311,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     .invocation_id
                     .as_deref()
                     .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
+                let target = RemoteActionTarget {
+                    provider: a.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                };
+                let confirmation = self.confirmation(&target, &a.revision).await?;
                 let request = InvokeRequest {
                     invocation,
-                    target: RemoteActionTarget {
-                        provider: a.peer_id.to_string(),
-                        address: tilo_actions::ActionAddress::new(a.resource, a.action),
-                    },
+                    target,
                     argument: InvokeArgument::Json(a.arguments),
-                    context: None,
-                    confirmation: None,
+                    context: self.context(),
+                    confirmation,
                     revision: Some(a.revision),
                 };
                 tokio::time::timeout(
@@ -334,6 +355,34 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// The action host every caller shares; this bridge is one more caller.
     const fn host(&self) -> &H {
         &self.host
+    }
+    /// The evidence the target's current contract asks for. The MCP client
+    /// admitted this call under its own allow/deny policy; that decision is
+    /// the confirmation, so the host never refuses on the contract alone.
+    async fn confirmation(
+        &self,
+        target: &RemoteActionTarget,
+        revision: &str,
+    ) -> Result<Option<tilo_actions::remote::Confirmation>, String> {
+        let page = self
+            .ask(CatalogueQuery::resolve(target, revision.to_owned()))
+            .await?;
+        if page.stale_cursor {
+            return Err("StaleRevision".into());
+        }
+        let action = page
+            .rows
+            .first()
+            .and_then(|row| row.action.as_ref())
+            .ok_or("NotFound")?;
+        Ok(evidence_for(&action.contract.advertised_confirmation()))
+    }
+    fn context(&self) -> Option<tilo_actions::ActionContext> {
+        self.run.as_ref().map(|run| tilo_actions::ActionContext {
+            group: Some(run.clone()),
+            invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+            ..tilo_actions::ActionContext::default()
+        })
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
@@ -414,6 +463,19 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 fn empty_object() -> Value {
     json!({})
 }
+fn evidence_for(
+    policy: &tilo_actions::ConfirmationPolicy,
+) -> Option<tilo_actions::remote::Confirmation> {
+    match policy {
+        tilo_actions::ConfirmationPolicy::None => None,
+        tilo_actions::ConfirmationPolicy::Confirm => {
+            Some(tilo_actions::remote::Confirmation::Confirmed)
+        }
+        tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+            Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
+        }
+    }
+}
 fn page_json(page: &CataloguePage) -> Value {
     json!({"revision":page.revision,"rows":page.rows.iter().map(row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
 }
@@ -445,14 +507,15 @@ fn tool_definitions() -> Vec<Value> {
             json!({"type":"string","format":"uuid"}),
         );
     }
+    let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
-        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
-        ("tilo_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
-        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
-        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
-        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
-    ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
+        ("tilo_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([]),read.clone()),
+        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor. Each action's contract carries its risk level",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"]),read.clone()),
+        ("tilo_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"]),read.clone()),
+        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice. Allowing this call confirms the action, including destructive ones; check the contract's risk first",invoke,json!(["peer_id","revision","resource","action","arguments"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
+        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
+    ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
 }
 #[cfg(test)]
 #[path = "mcp_tests.rs"]

@@ -1,0 +1,347 @@
+//! Streamable HTTP transport for the MCP projection.
+//!
+//! Every MCP session is one agent run: concurrent clients of one machine are
+//! attributed separately in history while acting with the profile actor's
+//! authority. Whoever fronts this endpoint (a hosting provider's proxy) owns
+//! end-user authentication and pins sessions to the right machine; the
+//! optional bearer token only proves that the caller is that proxy.
+//!
+//! Only JSON responses are produced: no server-initiated stream is offered, so
+//! `GET` answers 405 as the specification allows.
+
+use crate::mcp::McpServer;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::{
+    Method, Request, Response, StatusCode,
+    body::{Bytes, Incoming},
+    header::{self, HeaderValue},
+    service::service_fn,
+};
+use hyper_util::rt::TokioIo;
+use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    io,
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tilo_actions::remote::ActionHost;
+
+pub const ADDRESS_ENV: &str = "TILO_RUNTIME_MCP_HTTP";
+pub const TOKEN_FILE_ENV: &str = "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE";
+const SESSION_HEADER: &str = "mcp-session-id";
+const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
+const MAX_SESSIONS: usize = 256;
+const SESSION_IDLE: Duration = Duration::from_secs(6 * 60 * 60);
+const MAX_LABEL_CHARS: usize = 80;
+
+/// Where to listen and which bearer token, if any, callers must present.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Config {
+    pub address: SocketAddr,
+    pub token: Option<String>,
+}
+
+impl Config {
+    /// Read the listen address and optional token file named by the
+    /// environment. `None` when no address is configured.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unparsable address, an unreadable or empty token file, and a
+    /// non-loopback address without a token.
+    pub fn from_env() -> io::Result<Option<Self>> {
+        let Some(address) = std::env::var_os(ADDRESS_ENV) else {
+            return Ok(None);
+        };
+        let address = address
+            .to_str()
+            .and_then(|value| value.parse::<SocketAddr>().ok())
+            .ok_or_else(|| invalid(format!("{ADDRESS_ENV} must be HOST:PORT")))?;
+        let token = std::env::var_os(TOKEN_FILE_ENV)
+            .map(|path| read_token(Path::new(&path)))
+            .transpose()?;
+        let config = Self { address, token };
+        config.validate()?;
+        Ok(Some(config))
+    }
+
+    /// # Errors
+    ///
+    /// Rejects exposing the endpoint beyond loopback without a token.
+    pub fn validate(&self) -> io::Result<()> {
+        if !self.address.ip().is_loopback() && self.token.is_none() {
+            return Err(invalid(format!(
+                "{ADDRESS_ENV} beyond loopback requires {TOKEN_FILE_ENV}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+fn read_token(path: &Path) -> io::Result<String> {
+    let token = std::fs::read_to_string(path)?.trim().to_owned();
+    if token.is_empty() {
+        return Err(invalid(format!("{} is empty", path.display())));
+    }
+    Ok(token)
+}
+
+struct Session<H> {
+    server: Arc<tokio::sync::Mutex<McpServer<H>>>,
+    last_used: Instant,
+}
+
+/// The per-endpoint state shared by every connection.
+pub struct Endpoint<H> {
+    host: H,
+    room: String,
+    actor: String,
+    token: Option<String>,
+    sessions: Mutex<HashMap<String, Session<H>>>,
+}
+
+impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
+    #[must_use]
+    pub fn new(host: H, room: String, actor: String, token: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            host,
+            room,
+            actor,
+            token,
+            sessions: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Number of live sessions.
+    #[must_use]
+    pub fn session_count(&self) -> usize {
+        self.sessions.lock().map_or(0, |sessions| sessions.len())
+    }
+
+    /// Answer one HTTP request.
+    pub async fn respond(self: &Arc<Self>, request: Request<Incoming>) -> Response<Full<Bytes>> {
+        let (parts, body) = request.into_parts();
+        let body = match Limited::new(body, MAX_BODY_BYTES).collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE, "request body exceeds 1 MiB"),
+        };
+        self.dispatch(&parts.method, parts.uri.path(), &parts.headers, &body)
+            .await
+    }
+
+    /// Transport-level routing, separated from hyper's body type for tests.
+    pub async fn dispatch(
+        self: &Arc<Self>,
+        method: &Method,
+        path: &str,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Response<Full<Bytes>> {
+        match (method, path) {
+            (&Method::GET, "/health") => json_response(StatusCode::OK, &json!({"ok":true}), None),
+            (_, "/mcp") if !self.authorized(headers) => {
+                plain(StatusCode::UNAUTHORIZED, "missing or wrong bearer token")
+            }
+            (&Method::POST, "/mcp") => self.post(headers, body).await,
+            (&Method::DELETE, "/mcp") => match session_id(headers) {
+                Some(id) if self.remove(&id) => plain(StatusCode::NO_CONTENT, ""),
+                Some(_) => plain(StatusCode::NOT_FOUND, "unknown session"),
+                None => plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
+            },
+            (_, "/mcp") => plain(StatusCode::METHOD_NOT_ALLOWED, "POST or DELETE"),
+            _ => plain(StatusCode::NOT_FOUND, "not found"),
+        }
+    }
+
+    fn authorized(&self, headers: &hyper::HeaderMap) -> bool {
+        let Some(expected) = &self.token else {
+            return true;
+        };
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .is_some_and(|presented| constant_time_eq(presented.as_bytes(), expected.as_bytes()))
+    }
+
+    async fn post(
+        self: &Arc<Self>,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Response<Full<Bytes>> {
+        let Ok(request) = serde_json::from_slice::<Value>(body) else {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
+                None,
+            );
+        };
+        let initialize = request.get("method").and_then(Value::as_str) == Some("initialize");
+        let (id, server, created) = match (session_id(headers), initialize) {
+            (None, true) => match self.create(&request) {
+                Some((id, server)) => (id, server, true),
+                None => return plain(StatusCode::SERVICE_UNAVAILABLE, "too many MCP sessions"),
+            },
+            (Some(id), _) => match self.find(&id) {
+                Some(server) => (id, server, false),
+                None => return plain(StatusCode::NOT_FOUND, "unknown session; initialize again"),
+            },
+            (None, false) => return plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
+        };
+        let reply = server.lock().await.handle(request).await;
+        let header = created.then_some(id.as_str());
+        if let Some(reply) = reply {
+            return json_response(StatusCode::OK, &reply, header);
+        }
+        let mut response = plain(StatusCode::ACCEPTED, "");
+        if let Some(id) = header
+            && let Ok(value) = HeaderValue::from_str(id)
+        {
+            response.headers_mut().insert(SESSION_HEADER, value);
+        }
+        response
+    }
+
+    fn create(
+        &self,
+        initialize: &Value,
+    ) -> Option<(String, Arc<tokio::sync::Mutex<McpServer<H>>>)> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let server = Arc::new(tokio::sync::Mutex::new(
+            McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
+                .with_agent_run(format!("mcp:{id}"), client_label(initialize)),
+        ));
+        let now = Instant::now();
+        let session = Session {
+            server: Arc::clone(&server),
+            last_used: now,
+        };
+        {
+            let mut sessions = self.sessions.lock().ok()?;
+            sessions.retain(|_, session| now.duration_since(session.last_used) < SESSION_IDLE);
+            if sessions.len() >= MAX_SESSIONS {
+                return None;
+            }
+            sessions.insert(id.clone(), session);
+        }
+        Some((id, server))
+    }
+
+    fn find(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<McpServer<H>>>> {
+        self.sessions.lock().ok()?.get_mut(id).map(|session| {
+            session.last_used = Instant::now();
+            Arc::clone(&session.server)
+        })
+    }
+
+    fn remove(&self, id: &str) -> bool {
+        self.sessions
+            .lock()
+            .is_ok_and(|mut sessions| sessions.remove(id).is_some())
+    }
+}
+
+/// The human label of an agent run: the client's declared name, bounded.
+fn client_label(initialize: &Value) -> String {
+    let name = initialize
+        .pointer("/params/clientInfo/name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("MCP agent");
+    name.chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_LABEL_CHARS)
+        .collect()
+}
+
+fn session_id(headers: &hyper::HeaderMap) -> Option<String> {
+    headers
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn json_response(
+    status: StatusCode,
+    value: &Value,
+    session: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::from(value.to_string())));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    if let Some(id) = session
+        && let Ok(value) = HeaderValue::from_str(id)
+    {
+        response.headers_mut().insert(SESSION_HEADER, value);
+    }
+    response
+}
+
+fn plain(status: StatusCode, message: &'static str) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::from_static(message.as_bytes())));
+    *response.status_mut() = status;
+    response
+}
+
+/// Bind `config.address` and serve on the app runtime until the process ends.
+///
+/// # Errors
+///
+/// Returns bind or runtime-start errors; per-connection errors are logged.
+pub fn spawn<H: ActionHost + Clone + Send + Sync + 'static>(
+    config: &Config,
+    endpoint: Arc<Endpoint<H>>,
+) -> io::Result<SocketAddr> {
+    config.validate()?;
+    let listener = std::net::TcpListener::bind(config.address)?;
+    listener.set_nonblocking(true)?;
+    let bound = listener.local_addr()?;
+    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
+    runtime.spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(error) => {
+                tracing::error!(%error, "MCP HTTP listener could not start");
+                return;
+            }
+        };
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                continue;
+            };
+            let endpoint = Arc::clone(&endpoint);
+            tokio::spawn(async move {
+                let service = service_fn(move |request| {
+                    let endpoint = Arc::clone(&endpoint);
+                    async move { Ok::<_, std::convert::Infallible>(endpoint.respond(request).await) }
+                });
+                if let Err(error) = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await
+                {
+                    tracing::debug!(%error, "MCP HTTP connection ended");
+                }
+            });
+        }
+    });
+    Ok(bound)
+}
+
+#[cfg(test)]
+#[path = "mcp_http_tests.rs"]
+mod tests;

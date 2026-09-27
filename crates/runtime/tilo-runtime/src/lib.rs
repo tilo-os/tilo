@@ -29,6 +29,7 @@ mod apps;
 pub mod cli;
 mod daemon;
 pub mod mcp;
+pub mod mcp_http;
 pub mod mcp_process;
 pub mod profile;
 pub mod standalone;
