@@ -105,6 +105,13 @@ pub struct Workspace {
     /// beside the shortcuts, one map key per schedule.
     #[serde(default)]
     pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
+    /// The always-on hosts the room's authority delegated this room to
+    /// (a public room's relay), each an Iroh endpoint address as JSON.
+    /// Room governance: written only by the room's authority, read by every
+    /// member, and carried in each invitation the room mints so a joiner
+    /// reaches a host while the authority's own device is away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_hosts: Vec<String>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -830,6 +837,7 @@ impl Workspace {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -904,6 +912,7 @@ impl Default for Workspace {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,

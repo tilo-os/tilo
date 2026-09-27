@@ -69,6 +69,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
         recording_delegates_forbidden: false,
         shortcuts: Vec::new(),
         schedule_claims: Vec::new(),
+        delegated_hosts: Vec::new(),
         id: ws_id,
         room: crate::shell::state::RoomId::new(),
         name: "Home".into(),

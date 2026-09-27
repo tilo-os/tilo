@@ -1703,7 +1703,18 @@ impl ShellNetwork {
         // Enrollment-bound home peers must never race an unpinned connection.
         // The actor treats the first `(workspace, endpoint)` dial as the active
         // attempt, and an unpinned attempt deliberately cannot discover Files.
-        let mut host_addrs = configured_host_addrs()
+        let mut host_addrs = configured_host_addrs();
+        // The hosts the rooms this machine is in name as their own: a
+        // public room's relay, delegated by its authority.
+        host_addrs.extend(
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.delegated_hosts.iter())
+                .filter_map(|host| serde_json::from_str::<iroh::EndpointAddr>(host).ok()),
+        );
+        let mut host_addrs = host_addrs
             .into_iter()
             .filter(|addr| !home_peer_ids.contains(&addr.id))
             .collect::<Vec<_>>();
@@ -2894,6 +2905,12 @@ impl ShellNetwork {
                     "revoked": revoked,
                 }))
             }
+            CommunityRequest::DelegateHost { room, endpoint } => {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or_else(|| format!("{room:?} is not a room id"))?;
+                let host = self.delegate_room_host(room, &endpoint)?;
+                Ok(serde_json::json!({ "room": room.to_string(), "host": host }))
+            }
             CommunityRequest::OpenTeamRoom => status(self.open_team_direct_room()?),
             CommunityRequest::OpenDirectRoom { person, label } => {
                 status(self.open_direct_room_with(&person, &label)?)
@@ -2917,6 +2934,61 @@ impl ShellNetwork {
     )]
     fn tree_handle(&self) -> Result<crate::shell::state::WorkspaceTreeHandle, String> {
         Ok(self.tree.clone())
+    }
+
+    /// Record `endpoint` (an Iroh endpoint address, as JSON — what
+    /// `tilo-relay-admin endpoint` prints) as the always-on host of the
+    /// public room `room`, which this machine governs. It becomes room
+    /// governance every member reads, and every invitation the room mints
+    /// from now on names it. Replaces any host recorded before. Returns the
+    /// address as recorded.
+    ///
+    /// # Errors
+    ///
+    /// The address does not parse, or `room` is not a public room this
+    /// machine governs and its person administers.
+    pub fn delegate_room_host(
+        &self,
+        room: crate::shell::state::RoomId,
+        endpoint: &str,
+    ) -> Result<String, String> {
+        let addr: iroh::EndpointAddr = serde_json::from_str(endpoint.trim())
+            .map_err(|error| format!("the host is not an Iroh endpoint address: {error}"))?;
+        let recorded = serde_json::to_string(&addr).map_err(|error| error.to_string())?;
+        let tree_handle = self.tree_handle()?;
+        let mut tree = tree_handle.write();
+        let governs = tree.governs_room(room);
+        let actor = crate::shell::state::local_user_id_for_room(&room);
+        let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+        else {
+            return Err(format!("no workspace holds room {room}"));
+        };
+        if !governs || !workspace.may_administer(&actor) {
+            return Err("only the governing room administrator can delegate its host".into());
+        }
+        if workspace.channel_class != collab_types::ChannelClass::Public {
+            return Err("only a public room is delegated to a host".into());
+        }
+        if workspace.delegated_hosts != [recorded.clone()] {
+            workspace.delegated_hosts = vec![recorded.clone()];
+            tree.sync_room_doc(room);
+            tree.flush_to_disk();
+        }
+        drop(tree);
+        if let Ok(mut hosts) = self.host_addrs.lock()
+            && !hosts.iter().any(|known| known.id == addr.id)
+        {
+            hosts.push(addr.clone());
+        }
+        let _ = self.cmd_tx.try_send(NetCmd::ConnectHost {
+            addr,
+            expectation: None,
+        });
+        Ok(recorded)
     }
 
     /// Create a public room — channels signed like any other, never
@@ -3819,11 +3891,20 @@ impl ShellNetwork {
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
-            let hosts = self
+            let mut hosts = self
                 .host_addrs
                 .lock()
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
+            // The hosts the room itself names — its governance, not this
+            // session's environment — ride in every invitation it mints.
+            for host in &ws.delegated_hosts {
+                if let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(host)
+                    && !hosts.iter().any(|known| known.id == addr.id)
+                {
+                    hosts.push(addr);
+                }
+            }
             let pins: Vec<_> = self
                 .personal_continuity_user
                 .map(|user| {
@@ -12826,6 +12907,57 @@ mod tests {
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
         to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+    }
+
+    #[test]
+    fn a_public_room_records_its_delegated_host_as_governance() {
+        let _env = tilo_test_env::lock();
+        let mut tree = WorkspaceTree::default();
+        let team = tree.append_empty_workspace("Team");
+        let local = tree.append_public_workspace("Community");
+        let room = tree.room_of(local).expect("room");
+        let team_room = tree.room_of(team).expect("team room");
+        let owner = crate::shell::state::local_user_id_for_room(&room);
+        for workspace in &mut tree.desktop.workspaces {
+            workspace.set_owner(owner.clone());
+        }
+        let shared = tree.shared();
+        let (net, mut commands) = shell_network_for_test(shared.clone(), 6);
+        let relay = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
+            .with_ip_addr("203.0.113.7:4433".parse().unwrap());
+        let endpoint = serde_json::to_string(&relay).unwrap();
+
+        assert!(net.delegate_room_host(room, "not an address").is_err());
+        assert!(
+            net.delegate_room_host(team_room, &endpoint)
+                .unwrap_err()
+                .contains("public room"),
+            "an encrypted team room is not delegated to a host"
+        );
+        let recorded = net.delegate_room_host(room, &endpoint).expect("delegated");
+        let workspace = shared
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .cloned()
+            .expect("community");
+        assert_eq!(workspace.delegated_hosts, vec![recorded.clone()]);
+        let in_document = shared
+            .write()
+            .room_docs
+            .get(&room)
+            .map(tilo_desktop_model::projection::delegated_hosts_of)
+            .unwrap_or_default();
+        assert_eq!(in_document, vec![recorded], "members read it from the room");
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(|command| matches!(
+                command,
+                NetCmd::ConnectHost { addr, .. } if addr.id == relay.id
+            )),
+            "this machine reaches its room's host at once"
+        );
     }
 
     #[test]

@@ -57,6 +57,9 @@ pub enum CommunityRequest {
     /// Stop redeeming a standing invitation (hex id) of a public room this
     /// machine governs.
     RevokeStandingInvite { room: String, invite_id: String },
+    /// Record the always-on host (an Iroh endpoint address, JSON) a public
+    /// room this machine governs is delegated to.
+    DelegateHost { room: String, endpoint: String },
     /// Open this person's direct room with the Tilo team principal.
     OpenTeamRoom,
     /// Open the direct room with `person` (the team's end).

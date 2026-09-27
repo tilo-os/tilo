@@ -1150,6 +1150,7 @@ type RoomGovernance = (
     std::collections::BTreeMap<String, Vec<u8>>,
     Option<collab_types::ChannelClass>,
     Option<bool>,
+    Vec<String>,
 );
 
 impl WorkspaceTree {
@@ -1755,6 +1756,7 @@ impl WorkspaceTree {
         let owner = ws.owner.clone();
         let channel_class = ws.channel_class;
         let recording_delegates_forbidden = ws.recording_delegates_forbidden;
+        let delegated_hosts = ws.delegated_hosts.clone();
         // Admissions held outside governance are not the room's to carry:
         // a delegated admission is a record of its own, and projecting them
         // would republish every member of a public room with each change;
@@ -1919,6 +1921,7 @@ impl WorkspaceTree {
         }
         projection::project_channel_class(doc, channel_class);
         projection::project_recording_delegates(doc, recording_delegates_forbidden);
+        projection::project_delegated_hosts(doc, &delegated_hosts);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
         self.confirm_room_records(room, &held);
@@ -2243,6 +2246,7 @@ impl WorkspaceTree {
                 std::collections::BTreeMap::new(),
                 None,
                 None,
+                Vec::new(),
             );
         };
         let owner = match doc.get(&ROOT, "owner").ok().flatten() {
@@ -2298,6 +2302,7 @@ impl WorkspaceTree {
             identities,
             projection::channel_class_of(doc),
             projection::recording_delegates_forbidden_of(doc),
+            projection::delegated_hosts_of(doc),
         )
     }
 
@@ -2877,6 +2882,7 @@ impl WorkspaceTree {
         let channel_class = projection::channel_class_of(&candidate);
         let recording_delegates_forbidden =
             projection::recording_delegates_forbidden_of(&candidate);
+        let delegated_hosts = projection::delegated_hosts_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut schedule_claims = projection::schedule_claims_of(&candidate);
@@ -2934,6 +2940,11 @@ impl WorkspaceTree {
             && ws.recording_delegates_forbidden != forbidden
         {
             ws.recording_delegates_forbidden = forbidden;
+            fields_changed = true;
+        }
+        // Governance: the document's list is the room's, replaced whole.
+        if ws.delegated_hosts != delegated_hosts {
+            ws.delegated_hosts = delegated_hosts;
             fields_changed = true;
         }
         // Replaced rather than merged: a revoked capability is simply
@@ -4238,6 +4249,7 @@ impl WorkspaceTree {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -4419,6 +4431,7 @@ impl WorkspaceTree {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -8363,6 +8376,7 @@ mod active_group_tests {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,
@@ -8855,6 +8869,7 @@ mod active_workspace_peer_count_tests {
             recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            delegated_hosts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
             hidden: false,

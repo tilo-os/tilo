@@ -88,6 +88,43 @@ pub fn recording_delegates_forbidden_of(doc: &AutoCommit) -> Option<bool> {
     }
 }
 
+/// Key a room document stores its delegated hosts under (a JSON array of
+/// Iroh endpoint addresses). Governance, like the channel class.
+pub const ROOM_DELEGATED_HOSTS_KEY: &str = "delegated_hosts_v1";
+
+/// Record the room's delegated hosts. Written by the governing machine on
+/// every projection; an empty list is written as no key at all, so a room
+/// that never had a host carries nothing new.
+pub fn project_delegated_hosts(doc: &mut AutoCommit, hosts: &[String]) {
+    use automerge::transaction::Transactable;
+    if hosts.is_empty() {
+        if doc
+            .get(&automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = doc.delete(&automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY);
+        }
+        return;
+    }
+    let encoded = serde_json::to_string(hosts).unwrap_or_default();
+    put_str_if_changed(doc, &automerge::ROOT, ROOM_DELEGATED_HOSTS_KEY, &encoded);
+}
+
+/// The delegated hosts a room document records; empty when it states none
+/// or states something unreadable.
+pub fn delegated_hosts_of(doc: &AutoCommit) -> Vec<String> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_DELEGATED_HOSTS_KEY).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(text) => serde_json::from_str(text).unwrap_or_default(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
 #[derive(Clone, Debug)]
