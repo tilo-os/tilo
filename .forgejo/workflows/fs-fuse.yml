@@ -178,7 +178,6 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   # Deny warnings through per-target flags. Cargo joins these with the
   # target rustflags in .cargo/config.toml (x86-64-v3, frame pointers,
   # hardening); RUSTFLAGS would replace them, giving these builds different
@@ -187,15 +186,6 @@ env:
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
   TILO_FS_FUSE_REQUIRED: "1"
   TILO_REQUIRE_FUSE: "1"
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   applicability:
@@ -352,15 +342,6 @@ jobs:
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
-
-      - name: Report compiler cache effectiveness
-        if: always()
-        continue-on-error: true
-        run: |
-          echo '### real-fuse compiler cache' >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # The cloud-source conformance suite against real, self-hosted servers:
   # Apache mod_dav and the official Nextcloud image, as job services. The
@@ -534,20 +515,6 @@ jobs:
           bash scripts/ci-run.sh "native Tier 1 acceptance" --
           tools/native-tier1.sh --nocapture
 
-      - name: Report compiler cache effectiveness
-        if: always()
-        continue-on-error: true
-        run: |
-          echo '### native-tier1 compiler cache' >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-  # File Explorer's full UI/library harness links the entire toolkit. Building
-  # it after the relay, shell, and FUSE harnesses filled the privileged
-  # runner's container overlay, then an ordinary tempfile write failed with
-  # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
-  # of deleting an incomplete subset of Cargo artifacts in the live mount job.
   files-ux:
     needs: [applicability, builder]
     if: >-
@@ -578,11 +545,3 @@ jobs:
           bash scripts/ci-run.sh "Files collaboration UX" --
           cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
 
-      - name: Report compiler cache effectiveness
-        if: always()
-        continue-on-error: true
-        run: |
-          echo '### files-ux compiler cache' >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"

@@ -27,10 +27,8 @@ case "$mode" in
       # are unchanged. A job whose pinned toolchain is missing now fails
       # instead of fetching one.
       export RUSTUP_AUTO_INSTALL=0
-      # Workflow-level `env` provides the production namespace
-      # (tools/tests/test_compiler_cache_credentials.py). A canary needs a
-      # fresh one, so it carries its request under a Tilo-specific name that
-      # overrides the production prefix here.
+      # The runner provides SCCACHE_*. A canary can still request a fresh
+      # namespace under a Tilo-specific name that overrides that prefix here.
       # Restarting matters: sccache reads its backend configuration when its
       # long-lived server starts, and `--zero-stats` below may start it.
       if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then

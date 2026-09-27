@@ -676,21 +676,12 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
         };
-        let context = tilo_actions::ActionContext::for_resource(
-            format!(
-                "Allowed {} to use {}: {} {}",
-                label(&request.app_id),
-                label(&request.target_app),
-                request.action_label,
-                answer.lifetime(),
-            ),
-            format!("workspace.permissions:{}", request.room),
-            "workspace.permissions",
-            "App actions",
-        )
-        .with_app(
-            super::state::WORKSPACE_GOVERNANCE_APP_ID,
-            "Workspace permissions",
+        let context = tilo_desktop_model::grants::app_action_grant_context(
+            &request.room,
+            &label(&request.app_id),
+            &label(&request.target_app),
+            &request.action_label,
+            answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(
             workspace_id,

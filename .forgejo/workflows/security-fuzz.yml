@@ -9,18 +9,6 @@ concurrency:
   group: security-fuzz
   cancel-in-progress: false
 
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-
 jobs:
   builder:
     runs-on: runner-quality
@@ -50,7 +38,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_BACKTRACE: "1"
       # Cache availability changes speed, never the fuzzing result.
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -83,7 +70,3 @@ jobs:
       - name: Fuzz sandbox policy parsing
         run: cargo +nightly-2026-08-25 fuzz run sandbox_policy -- -max_total_time=900 -timeout=10
 
-      - name: Report compiler cache effectiveness
-        if: always()
-        continue-on-error: true
-        run: bash tools/ci/sccache.sh report

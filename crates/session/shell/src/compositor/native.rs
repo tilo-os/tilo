@@ -213,6 +213,9 @@ impl NativeRedrawReasons {
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
+const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
+const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
+const SLOW_WAYLAND_CLIENT_DISPATCH: Duration = Duration::from_millis(10);
 const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
 
 fn slow_prepaint_phase(elapsed: Duration) -> bool {
@@ -227,19 +230,44 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
     }
 }
 
+fn dispatch_wayland_clients_fairly(
+    display: &mut Display<State>,
+    state: &mut State,
+) -> std::io::Result<usize> {
+    let started = Instant::now();
+    let dispatched = display
+        .backend()
+        .dispatch_ready_clients_bounded(state, WAYLAND_REQUESTS_PER_CLIENT_PER_TICK)?;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_WAYLAND_CLIENT_DISPATCH {
+        tracing::warn!(
+            target: "tilo::wayland_dispatch",
+            dispatched,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            per_client_limit = WAYLAND_REQUESTS_PER_CLIENT_PER_TICK,
+            "slow bounded Wayland client batch"
+        );
+    }
+    Ok(dispatched)
+}
+
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
 /// earliest real service/widget deadline and wakes early on registered fds.
 fn native_loop_park(
     now: Instant,
     backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
     cadence_needed: bool,
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
+    let wayland_retry = wayland_dispatch_pending
+        .then(|| now.checked_add(WAYLAND_PENDING_RETRY_FLOOR).unwrap_or(now));
     let semantic_deadline = deadlines
         .into_iter()
         .flatten()
+        .chain(wayland_retry)
         .chain(cadence_needed.then_some(frame_deadline))
         .min();
 
@@ -9449,7 +9477,7 @@ pub fn run() {
         }
         state.pump_selection();
         let dispatch_started = Instant::now();
-        match display.dispatch_clients(&mut state) {
+        match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
                 let elapsed = dispatch_started.elapsed();
                 if dispatched > 0 || elapsed > Duration::from_millis(10) {
@@ -9528,6 +9556,7 @@ pub fn run() {
         let park = native_loop_park(
             park_now,
             backend_event_wake,
+            display.backend().has_pending_client_dispatch(),
             cadence_needed,
             frame_clock.next_deadline(),
             [
@@ -9787,17 +9816,13 @@ mod tests {
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
         // Phase `consumed_shell_input_is_a_redraw_edge`.
-        {
-            let mut session_changed = false;
-            session_changed |= true;
-            assert!(
-                NativeRedrawReasons {
-                    session: session_changed,
-                    ..NativeRedrawReasons::default()
-                }
-                .content_changed(false)
-            );
-        }
+        assert!(
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false)
+        );
         // Phase `client_routed_pointer_motion_still_redraws_the_compositor_cursor`.
         assert!(
             NativeRedrawReasons {
@@ -9813,7 +9838,7 @@ mod tests {
             let frame = now + Duration::from_millis(8);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, false, frame, [Some(keepalive)]),
+                native_loop_park(now, true, false, false, frame, [Some(keepalive)]),
                 Some(Duration::from_secs(1)),
                 "a registered backend wake fd lets a static desktop sleep until semantic work"
             );
@@ -9822,7 +9847,7 @@ mod tests {
         {
             let now = Instant::now();
             assert_eq!(
-                native_loop_park(now, true, false, now + Duration::from_millis(8), []),
+                native_loop_park(now, true, false, false, now + Duration::from_millis(8), []),
                 None,
                 "a static DRM session can block indefinitely because libinput wakes the outer loop"
             );
@@ -9831,7 +9856,7 @@ mod tests {
         {
             let now = Instant::now();
             assert_eq!(
-                native_loop_park(now, false, false, now + Duration::from_millis(8), []),
+                native_loop_park(now, false, false, false, now + Duration::from_millis(8), []),
                 Some(IDLE_BACKEND_POLL),
                 "a backend whose wake fd could not be registered must still be serviced"
             );
@@ -9844,6 +9869,7 @@ mod tests {
                 native_loop_park(
                     now,
                     true,
+                    false,
                     false,
                     now + Duration::from_millis(8),
                     [Some(repeat)],
@@ -9861,6 +9887,7 @@ mod tests {
                 native_loop_park(
                     now,
                     true,
+                    false,
                     false,
                     now + Duration::from_millis(8),
                     [wayland_client_service_deadline(true, now)],
@@ -9885,8 +9912,17 @@ mod tests {
             let frame = now + Duration::from_millis(8);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, true, frame, [Some(keepalive)]),
+                native_loop_park(now, true, false, true, frame, [Some(keepalive)]),
                 Some(Duration::from_millis(8))
+            );
+        }
+        // Phase `decoded_wayland_work_gets_a_fair_follow_up_without_spinning`.
+        {
+            let now = Instant::now();
+            assert_eq!(
+                native_loop_park(now, true, true, false, now + Duration::from_millis(8), []),
+                Some(WAYLAND_PENDING_RETRY_FLOOR),
+                "decoded requests left by a bounded turn need another turn even after epoll is drained"
             );
         }
     }
@@ -9999,6 +10035,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
+                    false,
                     cadence_needed,
                     stale,
                     [widget_deadline_for_presenter(false, Some(stale))],
@@ -10029,7 +10066,14 @@ mod tests {
             );
             let frame = now + Duration::from_millis(7);
             assert_eq!(
-                native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    cadence_wait_needed(true, true),
+                    frame,
+                    []
+                ),
                 Some(Duration::from_millis(7)),
                 "the back-pressure guard must not weaken normal animation pacing"
             );
@@ -10041,13 +10085,21 @@ mod tests {
             let widget = now + Duration::from_millis(300);
             let keepalive = now + Duration::from_secs(1);
             assert_eq!(
-                native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
+                native_loop_park(
+                    now,
+                    true,
+                    false,
+                    false,
+                    frame,
+                    [Some(keepalive), Some(widget)],
+                ),
                 Some(Duration::from_millis(300))
             );
             assert_eq!(
                 native_loop_park(
                     now + Duration::from_millis(1),
                     true,
+                    false,
                     false,
                     frame,
                     [Some(now)]
@@ -10188,6 +10240,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
+                    false,
                     true,
                     frame,
                     [lock_animation_park_deadline(now, due)]
@@ -10199,6 +10252,7 @@ mod tests {
                     now,
                     false,
                     false,
+                    false,
                     frame,
                     [lock_animation_park_deadline(now, due)]
                 ),
@@ -10208,6 +10262,7 @@ mod tests {
             assert_eq!(
                 native_loop_park(
                     now,
+                    false,
                     false,
                     false,
                     frame,

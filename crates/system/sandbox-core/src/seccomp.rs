@@ -158,11 +158,9 @@ pub fn af_packet_socket_rule() -> Result<Vec<SeccompRule>, SeccompError> {
 
 /// The baseline deny-list, named so a future Flatpak-policy bump diffs cleanly.
 ///
-/// `clone3` is deliberately NOT denied: modern glibc's `pthread_create`
-/// uses it as the primary syscall, and since `clone` is already
-/// allowed, denying `clone3` blocks nothing of substance — it just
-/// makes a common code path (including the portal client's
-/// worker-thread spawn) unreliable.
+/// `clone3` is handled by [`clone3_compat_program`]. Classic seccomp cannot
+/// inspect the pointed-to `clone_args`, so that filter returns `ENOSYS` and
+/// lets glibc retry ordinary thread creation with inspectable legacy `clone`.
 #[cfg(target_os = "linux")]
 pub const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_ptrace,
@@ -346,6 +344,36 @@ fn baseline_rules(
 #[cfg(target_os = "linux")]
 pub fn baseline_program(profile: SeccompProfile) -> Result<BpfProgram, SeccompError> {
     deny_list_program(baseline_rules(profile)?)
+}
+
+/// Compatibility filter for modern glibc thread creation. Returning `ENOSYS`
+/// for `clone3` makes pthreads fall back to legacy `clone`, whose namespace
+/// flags the baseline filter checks. This must be installed in addition to,
+/// and before, [`baseline_program`].
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] when the host architecture is unsupported or the
+/// compatibility filter cannot be compiled.
+#[cfg(target_os = "linux")]
+pub fn clone3_compat_program() -> Result<BpfProgram, SeccompError> {
+    let filter = SeccompFilter::new(
+        BTreeMap::from([(libc::SYS_clone3, Vec::new())]),
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::ENOSYS as u32),
+        host_target_arch()?,
+    )?;
+    Ok(filter.try_into()?)
+}
+
+/// [`clone3_compat_program`] serialized for bubblewrap's seccomp-fd input.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] when [`clone3_compat_program`] cannot be built.
+#[cfg(target_os = "linux")]
+pub fn compile_clone3_compat() -> Result<Vec<u8>, SeccompError> {
+    Ok(program_bytes(&clone3_compat_program()?))
 }
 
 /// Syscalls a hostile-document parser never needs: it talks only over the
@@ -614,6 +642,23 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn seccomp_filters_are_enforced_by_the_kernel() {
+        // Phase `clone3_compat_preserves_pthreads_without_exposing_clone3`.
+        {
+            let current = std::env::current_exe().expect("current test executable");
+            let status = std::process::Command::new(current)
+                .arg("seccomp::tests::thread_creation_probe_in_clean_process")
+                .arg("--exact")
+                .arg("--ignored")
+                .arg("--test-threads=1")
+                .env("TILO_SECCOMP_THREAD_PROBE", "1")
+                .status()
+                .expect("run clean seccomp probe process");
+            assert_eq!(
+                status.code(),
+                Some(0),
+                "11 = pthread creation was refused, 12 = a filter would not install"
+            );
+        }
         // Phase `strict_profile_refuses_writable_executable_memory_in_the_kernel`.
         {
             assert_eq!(
@@ -746,5 +791,36 @@ mod tests {
             libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
             "the unlisted syscall must kill with SIGSYS (status {status:#x})"
         );
+    }
+
+    #[test]
+    #[ignore = "helper process for seccomp_filters_are_enforced_by_the_kernel"]
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::exit,
+        reason = "the parent test distinguishes seccomp setup and pthread failures by helper-process exit status"
+    )]
+    fn thread_creation_probe_in_clean_process() {
+        if std::env::var_os("TILO_SECCOMP_THREAD_PROBE").is_none() {
+            return;
+        }
+        let compat = clone3_compat_program().expect("build clone3 compatibility filter");
+        let baseline = baseline_program(SeccompProfile::TiloDefault).expect("build baseline");
+        if seccompiler::apply_filter(&compat).is_err()
+            || seccompiler::apply_filter(&baseline).is_err()
+        {
+            std::process::exit(12);
+        }
+        let result = std::thread::Builder::new()
+            .name("seccomp-thread-probe".into())
+            .spawn(|| 42_u8)
+            .and_then(|thread| {
+                thread
+                    .join()
+                    .map_err(|_| std::io::Error::other("thread panicked"))
+            });
+        if !matches!(result, Ok(42)) {
+            std::process::exit(11);
+        }
     }
 }

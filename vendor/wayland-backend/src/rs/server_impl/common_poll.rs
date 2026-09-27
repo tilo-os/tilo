@@ -1,11 +1,13 @@
 use std::{
     os::unix::io::{AsRawFd, BorrowedFd, OwnedFd},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use super::{
-    handle::State, ClientId, Data, GlobalHandler, GlobalId, Handle, InnerClientId, InnerGlobalId,
-    InnerHandle, InnerObjectId, ObjectId,
+    handle::{ErasedState, State},
+    ClientId, Data, GlobalHandler, GlobalId, Handle, InnerClientId, InnerGlobalId, InnerHandle,
+    InnerObjectId, ObjectId,
 };
 use crate::{
     core_interfaces::{WL_DISPLAY_INTERFACE, WL_REGISTRY_INTERFACE},
@@ -77,10 +79,148 @@ impl<D> InnerBackend<D> {
         data: &mut D,
         client_id: InnerClientId,
     ) -> std::io::Result<usize> {
-        let ret = self.dispatch_events_for(data, client_id);
+        let ret = self.dispatch_events_for(data, client_id, usize::MAX);
         let cleanup = self.state.lock().unwrap().cleanup();
         cleanup(&self.handle(), data);
         ret
+    }
+
+    pub fn dispatch_client_bounded(
+        &self,
+        data: &mut D,
+        client_id: InnerClientId,
+        request_limit: usize,
+    ) -> std::io::Result<usize> {
+        let ret = self.dispatch_events_for(data, client_id, request_limit);
+        let cleanup = self.state.lock().unwrap().cleanup();
+        cleanup(&self.handle(), data);
+        ret
+    }
+
+    /// Consume one kernel readiness batch and dispatch a bounded amount of
+    /// work for every client in that batch.
+    ///
+    /// This is the event-loop counterpart to [`Self::dispatch_client_bounded`].
+    /// Calling the latter directly reads a client socket, but intentionally
+    /// does not consume the backend's aggregate epoll/kqueue readiness.  An
+    /// event loop that monitors [`Self::poll_fd`] must use this method after
+    /// that fd becomes readable, otherwise the aggregate readiness fd remains
+    /// readable forever.
+    ///
+    /// The kernel readiness set is snapshotted once per call. This keeps the
+    /// number of clients bounded while every client that was ready at the
+    /// snapshot gets at most `request_limit` requests. If decoding the first
+    /// socket read leaves more messages in a client's userspace buffer, its
+    /// next fair turn is retained internally. Query
+    /// [`Self::has_pending_client_dispatch`] before parking an external event
+    /// loop so that this decoded work cannot be stranded after the aggregate
+    /// epoll fd is drained.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "redox"))]
+    pub fn dispatch_ready_clients_bounded(
+        &self,
+        data: &mut D,
+        request_limit: usize,
+    ) -> std::io::Result<usize> {
+        use std::os::unix::io::AsFd;
+
+        let poll_fd = self.poll_fd();
+        let mut events = Vec::<epoll::Event>::with_capacity(32);
+        let buffer = rustix::buffer::spare_capacity(&mut events);
+        epoll::wait(poll_fd.as_fd(), buffer, Some(&Timespec::default()))?;
+
+        let ready_clients = {
+            let mut state = self.state.lock().unwrap();
+            for event in events.drain(..) {
+                state.queue_pending_dispatch(InnerClientId::from_u64(event.data.u64()));
+            }
+            state.take_pending_dispatches()
+        };
+
+        let mut dispatched = 0;
+        for id in ready_clients {
+            // Preserve dispatch_all_clients' behavior for a client which
+            // disappears after epoll reported it ready.  Its teardown is
+            // collected below, while another ready client still gets a turn.
+            let started = Instant::now();
+            let credentials = self
+                .state
+                .lock()
+                .unwrap()
+                .get_client_credentials(id.clone())
+                .ok();
+            if let Ok(count) = self.dispatch_events_for(data, id.clone(), request_limit) {
+                let elapsed = started.elapsed();
+                if std::env::var_os("TILO_LOOP_TIMING").is_some()
+                    && elapsed >= Duration::from_millis(4)
+                {
+                    eprintln!(
+                        "SLOW-WAYLAND-CLIENT id={id:?} pid={} requests={count} elapsed_us={}",
+                        credentials.map_or(0, |credentials| credentials.pid),
+                        elapsed.as_micros()
+                    );
+                }
+                dispatched += count;
+                // The Wayland wire reader can fill its decoded buffer with a
+                // whole socket payload in one call. Reaching the request
+                // limit therefore does not imply the kernel fd remains
+                // readable; retain one later, fair dispatch turn.
+                if count == request_limit {
+                    self.state.lock().unwrap().queue_pending_dispatch(id);
+                }
+            }
+        }
+        let cleanup = self.state.lock().unwrap().cleanup();
+        cleanup(&self.handle(), data);
+        Ok(dispatched)
+    }
+
+    /// See the Linux implementation above.  kqueue readiness is consumed in
+    /// exactly one non-blocking batch, with the same bounded per-client work.
+    #[cfg(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "macos"
+    ))]
+    pub fn dispatch_ready_clients_bounded(
+        &self,
+        data: &mut D,
+        request_limit: usize,
+    ) -> std::io::Result<usize> {
+        use std::time::Duration;
+
+        let poll_fd = self.poll_fd();
+        let mut events = Vec::<Event>::with_capacity(32);
+        let buffer = rustix::buffer::spare_capacity(&mut events);
+        unsafe { kevent(&poll_fd, &[], buffer, Some(Duration::ZERO))? };
+
+        let ready_clients = {
+            let mut state = self.state.lock().unwrap();
+            for event in events.drain(..) {
+                state.queue_pending_dispatch(InnerClientId::from_u64(event.udata() as u64));
+            }
+            state.take_pending_dispatches()
+        };
+
+        let mut dispatched = 0;
+        for id in ready_clients {
+            if let Ok(count) = self.dispatch_events_for(data, id.clone(), request_limit) {
+                dispatched += count;
+                if count == request_limit {
+                    self.state.lock().unwrap().queue_pending_dispatch(id);
+                }
+            }
+        }
+        let cleanup = self.state.lock().unwrap().cleanup();
+        cleanup(&self.handle(), data);
+        Ok(dispatched)
+    }
+
+    /// Returns whether a bounded ready dispatch left decoded client requests
+    /// waiting for another fair turn.
+    pub fn has_pending_client_dispatch(&self) -> bool {
+        self.state.lock().unwrap().has_pending_dispatches()
     }
 
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "redox"))]
@@ -89,6 +229,21 @@ impl<D> InnerBackend<D> {
 
         let poll_fd = self.poll_fd();
         let mut dispatched = 0;
+        // A caller may return to the traditional unbounded API after using a
+        // bounded ready turn. Those decoded requests are no longer reflected
+        // in epoll, but `dispatch_all_clients` still promises to drain all
+        // pending work.
+        let pending_clients = self.state.lock().unwrap().take_pending_dispatches();
+        let had_pending_clients = !pending_clients.is_empty();
+        for client in pending_clients {
+            if let Ok(count) = self.dispatch_events_for(data, client, usize::MAX) {
+                dispatched += count;
+            }
+        }
+        if had_pending_clients {
+            let cleanup = self.state.lock().unwrap().cleanup();
+            cleanup(&self.handle(), data);
+        }
         let mut events = Vec::<epoll::Event>::with_capacity(32);
         loop {
             let buffer = rustix::buffer::spare_capacity(&mut events);
@@ -101,7 +256,7 @@ impl<D> InnerBackend<D> {
             for event in events.drain(..) {
                 let id = InnerClientId::from_u64(event.data.u64());
                 // remove the cb while we call it, to gracefully handle reentrancy
-                if let Ok(count) = self.dispatch_events_for(data, id) {
+                if let Ok(count) = self.dispatch_events_for(data, id, usize::MAX) {
                     dispatched += count;
                 }
             }
@@ -124,6 +279,17 @@ impl<D> InnerBackend<D> {
 
         let poll_fd = self.poll_fd();
         let mut dispatched = 0;
+        let pending_clients = self.state.lock().unwrap().take_pending_dispatches();
+        let had_pending_clients = !pending_clients.is_empty();
+        for client in pending_clients {
+            if let Ok(count) = self.dispatch_events_for(data, client, usize::MAX) {
+                dispatched += count;
+            }
+        }
+        if had_pending_clients {
+            let cleanup = self.state.lock().unwrap().cleanup();
+            cleanup(&self.handle(), data);
+        }
         let mut events = Vec::<Event>::with_capacity(32);
         loop {
             let buffer = rustix::buffer::spare_capacity(&mut events);
@@ -136,7 +302,7 @@ impl<D> InnerBackend<D> {
             for event in events.drain(..) {
                 let id = InnerClientId::from_u64(event.udata() as u64);
                 // remove the cb while we call it, to gracefully handle reentrancy
-                if let Ok(count) = self.dispatch_events_for(data, id) {
+                if let Ok(count) = self.dispatch_events_for(data, id, usize::MAX) {
                     dispatched += count;
                 }
             }
@@ -151,11 +317,18 @@ impl<D> InnerBackend<D> {
         &self,
         data: &mut D,
         client_id: InnerClientId,
+        request_limit: usize,
     ) -> std::io::Result<usize> {
         let mut dispatched = 0;
+        if request_limit == 0 {
+            return Ok(0);
+        }
         let handle = self.handle();
         let mut state = self.state.lock().unwrap();
         loop {
+            if dispatched >= request_limit {
+                break;
+            }
             let action = {
                 let state = &mut *state;
                 if let Ok(client) = state.clients.get_client_mut(client_id.clone()) {
@@ -261,6 +434,7 @@ impl<D> InnerBackend<D> {
                 } => {
                     // temporarily unlock the state Mutex while this request is dispatched
                     std::mem::drop(state);
+                    let request_started = Instant::now();
                     let ret = object.data.user_data.clone().request(
                         &handle.clone(),
                         data,
@@ -275,6 +449,22 @@ impl<D> InnerBackend<D> {
                             args: arguments,
                         },
                     );
+                    let request_elapsed = request_started.elapsed();
+                    if std::env::var_os("TILO_LOOP_TIMING").is_some()
+                        && request_elapsed >= Duration::from_millis(4)
+                    {
+                        let request_name = object
+                            .interface
+                            .requests
+                            .get(opcode as usize)
+                            .map_or("<unknown>", |request| request.name);
+                        eprintln!(
+                            "SLOW-WAYLAND-REQUEST client={client_id:?} interface={} request={request_name} opcode={opcode} object={} elapsed_us={}",
+                            object.interface.name,
+                            object_id.id,
+                            request_elapsed.as_micros()
+                        );
+                    }
                     if is_destructor {
                         object.data.user_data.clone().destroyed(
                             &handle.clone(),

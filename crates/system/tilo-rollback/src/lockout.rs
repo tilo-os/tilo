@@ -34,7 +34,7 @@
 
 use crate::argv;
 use crate::exec::Runner;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::ffi::OsStr;
 
 /// What the hardware reports.
@@ -286,12 +286,10 @@ pub const RESET_AUTH_CHARS: usize = 32;
 ///
 /// # Errors
 ///
-/// Returns an error if `/dev/urandom` cannot be opened or read.
+/// Returns an error if the operating system's random source fails.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
     let mut b = [0u8; RESET_AUTH_CHARS / 2];
-    f.read_exact(&mut b).context("reading /dev/urandom")?;
+    getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
     Ok(zeroize::Zeroizing::new(hex::encode(b).into_bytes()))
 }
 

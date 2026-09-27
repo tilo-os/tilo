@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "accesskit"
 version = "0.25.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "uuid",
 ]
@@ -25,7 +25,7 @@ dependencies = [
 [[package]]
 name = "accesskit_atspi_common"
 version = "0.20.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -38,7 +38,7 @@ dependencies = [
 [[package]]
 name = "accesskit_consumer"
 version = "0.39.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -75,7 +75,7 @@ dependencies = [
 [[package]]
 name = "accesskit_unix"
 version = "0.23.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -935,7 +935,7 @@ checksum = "41e67cd8309bbd06cd603a9e693a784ac2e5d1e955f11286e355089fcab3047c"
 [[package]]
 name = "atspi"
 version = "0.29.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "atspi-proxies",
@@ -944,7 +944,7 @@ dependencies = [
 [[package]]
 name = "atspi-common"
 version = "0.13.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "enumflags2",
  "serde",
@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "atspi-proxies"
 version = "0.13.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "serde",
@@ -3440,6 +3440,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "image",
+ "qdoc-rich-text",
  "roxmltree 0.20.0",
  "runtime-dylib",
  "serde",
@@ -3453,6 +3454,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "unicode-bidi",
@@ -6502,6 +6504,7 @@ dependencies = [
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-test-env",
+ "uuid",
  "vello",
  "windows-sys 0.61.2",
  "winit",
@@ -12336,7 +12339,7 @@ dependencies = [
 [[package]]
 name = "rustypipe"
 version = "0.11.4"
-source = "git+ssh://git@code.tilo.so/tilo/rustypipe.git?rev=aeb292fb23856c335ee3423745ed98ae0e683760#aeb292fb23856c335ee3423745ed98ae0e683760"
+source = "git+https://code.tilo.so/tilo/rustypipe.git?rev=aeb292fb23856c335ee3423745ed98ae0e683760#aeb292fb23856c335ee3423745ed98ae0e683760"
 dependencies = [
  "data-encoding",
  "fancy-regex",
@@ -13117,7 +13120,6 @@ dependencies = [
  "thumbnail",
  "tilo-action-broker",
  "tilo-actions",
- "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-isolate",
@@ -13131,6 +13133,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -15125,6 +15128,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-installed-apps"
+version = "0.1.0"
+dependencies = [
+ "desktop-policy",
+ "launcher",
+ "package-store",
+ "tempfile",
+ "tilo-app-package",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [
@@ -15501,7 +15516,6 @@ dependencies = [
 name = "tilo-rich-text"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "qdoc",
  "qdoc-rich-text",
  "serde",
@@ -15519,6 +15533,7 @@ dependencies = [
  "base64",
  "bounded-command",
  "clap",
+ "getrandom 0.4.3",
  "hex",
  "serde",
  "serde_json",
@@ -15547,8 +15562,13 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
  "fs",
+ "launcher",
+ "launcher-macos",
  "libc",
+ "package-store",
  "runtime-fs",
  "runtime-identity",
  "serde",
@@ -15556,9 +15576,11 @@ dependencies = [
  "tempfile",
  "tilo-action-broker",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-resource",
  "tilo-rt",
  "tilo-test-env",

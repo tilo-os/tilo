@@ -241,9 +241,9 @@ impl SuspendedLocalControls {
                         .as_ref()
                         .is_some_and(|domain| domain.upgrade().is_none_or(|domain| domain.closed()))
                 {
-                    PendingControlStatus::Refused(
-                        "The original registered control owner is closed".into(),
-                    )
+                    PendingControlStatus::Refused(crate::i18n::I18nManager::lookup_plain(
+                        "history-mode-control-owner-closed",
+                    ))
                 } else {
                     item.status.clone()
                 },

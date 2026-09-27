@@ -4,6 +4,7 @@ use super::{
     PreviewView, Row, Text, review,
 };
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
+use crate::i18n::I18nManager;
 use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
 
 impl HistoryHost {
@@ -35,7 +36,7 @@ impl HistoryHost {
         self.observed_file_binding = binding;
         self.file_target_resolved = false;
         self.timeline.set_entries(vec![]);
-        self.unavailable = Text::new("Select a file with versioned history");
+        self.unavailable = Text::new("history-files-select-file");
         if self.open
             && let Some(target) = target
         {
@@ -74,7 +75,7 @@ impl HistoryHost {
                     }
                 }
             } else if self.files.is_none() {
-                self.unavailable = Text::new("Select a file with versioned history");
+                self.unavailable = Text::new("history-files-select-file");
             }
         }
         for old in &mut self.retired_files {
@@ -187,9 +188,9 @@ impl HistoryHost {
                             .as_ref()
                             .is_some_and(|s| s.version.parents.len() > 1)
                         {
-                            "Choose an actual parent revision for Before".into()
+                            I18nManager::lookup_plain("history-files-choose-parent")
                         } else {
-                            "No earlier version".into()
+                            I18nManager::lookup_plain("history-files-no-earlier")
                         },
                     )
                 },
@@ -285,9 +286,9 @@ impl HistoryHost {
             }
         };
         files.request_review(operation);
-        let message = format!(
-            "File: {}\n\nChecking a fresh compensation review",
-            files.target.label
+        let message = I18nManager::format(
+            "history-files-checking-compensation",
+            &[("file", files.target.label.as_str().into())],
         );
         self.show_review(None, message);
     }
@@ -300,19 +301,19 @@ impl HistoryHost {
         }
         let mut actions = Row::new().push(Box::new(self.command_button(
             "history-files-refresh",
-            "Refresh activity",
+            "history-files-refresh-activity",
             Command::FileRefresh,
         )));
         if files.restore.request.is_some() {
             actions = actions
                 .push(Box::new(self.command_button(
                     "history-files-result",
-                    "Check restore result",
+                    "history-files-check-restore",
                     Command::FileCheck,
                 )))
                 .push(Box::new(self.command_button(
                     "history-files-retry",
-                    "Retry same restore",
+                    "history-files-retry-restore",
                     Command::FileRetry,
                 )));
         }
@@ -325,9 +326,9 @@ impl HistoryHost {
                     "history-files-undo"
                 },
                 if redo {
-                    "Redo file restore…"
+                    "history-files-redo-restore"
                 } else {
-                    "Undo file restore…"
+                    "history-files-undo-restore"
                 },
                 if redo {
                     Command::FileRedo
@@ -340,13 +341,16 @@ impl HistoryHost {
             Text::new(&files.message).with_live(crate::a11y::Politeness::Polite),
         ));
         toolbar = toolbar.push(Box::new(Text::new(&files.current_revision.map_or_else(
-            || "Current file revision pointer unavailable".into(),
-            |revision| format!("Current file revision: {}", revision.version_id.0),
+            || I18nManager::lookup_plain("history-files-current-unavailable"),
+            |revision| {
+                I18nManager::format(
+                    "history-files-current-revision",
+                    &[("revision", revision.version_id.0.to_string().into())],
+                )
+            },
         ))));
         if files.live_updates {
-            toolbar = toolbar.push(Box::new(Text::new(
-                "Live file has updates; selected immutable version remains pinned",
-            )));
+            toolbar = toolbar.push(Box::new(Text::new("history-files-live-updates")));
         }
         if let Some(snapshot) = &files.after {
             if snapshot.version.parents.len() > 1 {
@@ -354,32 +358,35 @@ impl HistoryHost {
                 for id in &snapshot.version.parents {
                     parents = parents.push(Box::new(self.command_button(
                         &format!("history-parent-{}", id.0),
-                        &format!("Before parent {}", id.0),
+                        &I18nManager::format(
+                            "history-files-before-parent",
+                            &[("revision", id.0.to_string().into())],
+                        ),
                         Command::FileParent(*id),
                     )));
                 }
                 toolbar = toolbar.push(Box::new(parents));
             }
             if let Some(before) = &files.before {
-                toolbar = toolbar.push(Box::new(Text::new(&format!(
-                    "Before parent: {}",
-                    before.version.id.0
+                toolbar = toolbar.push(Box::new(Text::new(&I18nManager::format(
+                    "history-files-showing-parent",
+                    &[("revision", before.version.id.0.to_string().into())],
                 ))));
             }
         }
         toolbar
     }
 }
-fn version_label(provenance: &collab_types::FileProvenance) -> &'static str {
-    match provenance {
-        collab_types::FileProvenance::Create => "Created",
-        collab_types::FileProvenance::Edit => "Edited",
-        collab_types::FileProvenance::Rename => "Renamed",
-        collab_types::FileProvenance::Move => "Moved",
-        collab_types::FileProvenance::Delete => "Deleted",
-        collab_types::FileProvenance::Restore { .. } => "Restored",
-        collab_types::FileProvenance::ConflictResolution => "Conflict resolved",
-    }
+fn version_label(provenance: &collab_types::FileProvenance) -> String {
+    I18nManager::lookup_plain(match provenance {
+        collab_types::FileProvenance::Create => "history-files-created",
+        collab_types::FileProvenance::Edit => "history-files-edited",
+        collab_types::FileProvenance::Rename => "history-files-renamed",
+        collab_types::FileProvenance::Move => "history-files-moved",
+        collab_types::FileProvenance::Delete => "history-files-deleted",
+        collab_types::FileProvenance::Restore { .. } => "history-files-restored",
+        collab_types::FileProvenance::ConflictResolution => "history-files-conflict-resolved",
+    })
 }
 
 fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
@@ -390,9 +397,12 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
             let person = version.actor.person.as_bytes();
             let identity = hex::encode(person.get(..6).unwrap_or(person));
             let author = if person.iter().all(|b| *b == 0) {
-                "Unknown author".to_owned()
+                I18nManager::lookup_plain("history-files-unknown-author")
             } else {
-                format!("Author {identity}")
+                I18nManager::format(
+                    "history-files-author",
+                    &[("identity", identity.as_str().into())],
+                )
             };
             crate::HistoryEntry {
                 id: crate::HistoryEntryId(*version.id.0.as_bytes()),

@@ -111,7 +111,7 @@ class BuildkitSnapshotTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.check({"architecture": "amd64", "os": "linux"}, build_error=True)
         with self.subTest(phase="workflow_uses_same_builder_for_verification_and_relay"):
-            workflow = (SCRIPT.parents[2] / ".forgejo/workflows/tilo-relay.yaml").read_text()
+            workflow = (SCRIPT.parents[2] / ".forgejo/workflows/release-relay.yml").read_text()
             self.assertLess(workflow.index("id: buildx"), workflow.index("run: python3 os/dev/verify-rpm-snapshot-buildkit.py"))
             self.assertIn("SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}", workflow)
             self.assertIn("builder: ${{ steps.buildx.outputs.name }}", workflow)

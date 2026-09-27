@@ -183,7 +183,11 @@ impl Widget for PreviewCanvas {
                     .or_else(|| self.status.clone())
                     .unwrap_or_else(|| {
                         self.preview.as_ref().map_or_else(
-                            || "Historical content unavailable".into(),
+                            || {
+                                crate::i18n::I18nManager::lookup_plain(
+                                    "history-mode-content-unavailable",
+                                )
+                            },
                             |preview| preview.accessibility().description,
                         )
                     }),
