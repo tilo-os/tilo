@@ -2212,6 +2212,13 @@ impl OnboardingView {
                 t("onboarding-host-done-ready"),
             ),
         };
+        // The community line takes the place of "sharing remains off" below,
+        // so that promise moves here, still said in full.
+        let body = if self.community {
+            format!("{body} {}", t("onboarding-done-private-workspaces"))
+        } else {
+            body
+        };
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()

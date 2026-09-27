@@ -416,6 +416,8 @@ impl ShellOverlayHost {
                 channel: tilo_reference::FEEDBACK_CHANNEL.to_string(),
                 label: crate::shell::i18n::t("remark-community-label"),
                 joined,
+                left: settings_store::community::membership_in(&settings_store::load())
+                    == settings_store::community::Membership::Left,
             });
         }
         let Some(chrome) = self.chrome.as_ref() else {
