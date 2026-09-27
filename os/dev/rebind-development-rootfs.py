@@ -94,6 +94,11 @@ def dracut_failure_diagnostic(log):
             + '\ntail=' + safe_log[-1024:])
 
 
+def dracut_succeeded(state):
+    return (state.get('Status') in ('exited', 'stopped')
+            and type(state.get('ExitCode')) is int and state['ExitCode'] == 0)
+
+
 def failure_diagnostic(error):
     detail = {'schema': 1, 'error_type': type(error).__name__,
               'reason': sanitized_diagnostic(error)}
@@ -275,7 +280,7 @@ def transform(args):
                         architecture=args.architecture, generation=args.generation)
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
-                if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
+                if not dracut_succeeded(state):
                     raise ValueError(f"dracut status={state.get('Status')!r} "
                                      f"exit={state.get('ExitCode')!r}: "
                                      + dracut_failure_diagnostic(log))

@@ -69,6 +69,14 @@ class TransformTests(unittest.TestCase):
                     transform.create_arguments(image, kernel, epoch, Path('/hooks'))
 
     def test_container_lifecycle(self):
+        with self.subTest(phase="terminal_podman_states_require_zero_integer_exit"):
+            for status, exit_code, expected in (
+                    ('exited', 0, True), ('stopped', 0, True),
+                    ('running', 0, False), ('stopped', 1, False),
+                    ('stopped', True, False)):
+                with self.subTest(status=status, exit_code=exit_code):
+                    self.assertEqual(transform.dracut_succeeded({
+                        'Status': status, 'ExitCode': exit_code}), expected)
         with self.subTest(phase="mount_cleanup_on_consumer_failure"):
             with tempfile.TemporaryDirectory() as temporary:
                 calls = []
