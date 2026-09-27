@@ -62,6 +62,11 @@ workspace-hack = { version = "0.1" }
 tilo-rt.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
+# The browser has no sockets, processes or signals: tokio's `net` pulls mio,
+# which refuses to build for wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
 # Windows/macOS targets.

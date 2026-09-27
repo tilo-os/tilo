@@ -58,6 +58,7 @@ pub mod unpack;
 pub mod validate;
 pub mod verify;
 pub mod version;
+pub mod web;
 
 pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
@@ -67,7 +68,7 @@ pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
     Cli, Entrypoint, EntrypointType, Manifest, ManifestParseError, NetMode, Package, PathPattern,
     Platform, Providers, Publisher, Requirement, Sandbox, SandboxFs, SandboxNet, ServiceReq,
-    ServiceReqParseError, SplashSegment, SplashSegmentError, Trust, TrustAttestation,
+    ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust, TrustAttestation,
 };
 pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
 pub use package::{MetaError, PackageMeta, is_safe_path};

@@ -207,10 +207,10 @@ impl Connected {
 }
 
 /// The objects a text field keeps alive.
-struct Field {
+pub(crate) struct Field {
     client: usize,
-    surface_id: u64,
-    _objects: (
+    pub(crate) surface_id: u64,
+    objects: (
         wl_surface::WlSurface,
         zwp_text_input_v3::ZwpTextInputV3,
         xdg_surface::XdgSurface,
@@ -219,9 +219,18 @@ struct Field {
     ),
 }
 
-struct Harness {
+impl Field {
+    /// The field's text input, for changing what it declares.
+    pub(crate) fn text_input(&self) -> &zwp_text_input_v3::ZwpTextInputV3 {
+        &self.objects.1
+    }
+}
+
+/// A compositor with real Wayland clients and the shell's overlay host,
+/// driven as the native loop drives them.
+pub(crate) struct Harness {
     display: Display<State>,
-    state: State,
+    pub(crate) state: State,
     clients: Vec<Connected>,
     host: ShellOverlayHost,
     taffy: TaffyTree<()>,
@@ -230,7 +239,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let event_loop = EventLoop::try_new().expect("calloop");
         let display = Display::new().expect("display");
         let state = State::new(event_loop.handle(), display.handle());
@@ -319,7 +328,7 @@ impl Harness {
         self.clients.len() - 1
     }
 
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         for _ in 0..8 {
             for client in &mut self.clients {
                 let _ = client.queue.flush();
@@ -417,8 +426,29 @@ impl Harness {
         assert!(!self.host.emoji_picker_open(), "Enter closes it");
     }
 
+    /// Give the seat to the on-screen keyboard: a trusted connection that
+    /// binds the input method, which the focused field then activates.
+    pub(crate) fn own_seat_with_on_screen_keyboard(
+        &mut self,
+    ) -> (usize, zwp_input_method_v2::ZwpInputMethodV2) {
+        self.state
+            .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+        let osk = self.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+        let input_method = {
+            let c = &self.clients[osk];
+            let seat = c.bind::<wl_seat::WlSeat>("wl_seat", 9);
+            let manager = c.bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                "zwp_input_method_manager_v2",
+                1,
+            );
+            manager.get_input_method(&seat, &c.queue.handle(), ())
+        };
+        self.pump();
+        (osk, input_method)
+    }
+
     /// A focused toplevel with a text field declaring `content`.
-    fn field(
+    pub(crate) fn field(
         &mut self,
         content: Option<(
             zwp_text_input_v3::ContentHint,
@@ -452,7 +482,7 @@ impl Harness {
         Field {
             client,
             surface_id,
-            _objects: objects,
+            objects,
         }
     }
 
@@ -534,19 +564,7 @@ fn super_period_thumbs_enter_commits_through_the_compositor_when_no_input_method
 #[test]
 fn a_pick_is_committed_in_the_on_screen_keyboards_session_when_it_owns_the_seat() {
     let mut h = Harness::new();
-    h.state
-        .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
-    let osk = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
-    let _input_method = {
-        let c = &h.clients[osk];
-        let seat = c.bind::<wl_seat::WlSeat>("wl_seat", 9);
-        let manager = c.bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
-            "zwp_input_method_manager_v2",
-            1,
-        );
-        manager.get_input_method(&seat, &c.queue.handle(), ())
-    };
-    h.pump();
+    let (osk, _input_method) = h.own_seat_with_on_screen_keyboard();
     let field = h.field(None);
     assert!(h.peer(&field).entered >= 1);
     assert!(h.clients[osk].peer.activated >= 1, "the field activated it");

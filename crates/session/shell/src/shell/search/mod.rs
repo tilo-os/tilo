@@ -22,6 +22,7 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
+use crate::shell::i18n::t;
 use action_api::{ActionArgs, ActionError, ActionParam};
 
 use ui::search::system::{self, query_input_is_bounded};
@@ -100,6 +101,33 @@ const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
 /// the same word, while an exact action (strength 5.0) still beats an
 /// unrelated app that merely received a weak provider score.
 const PERFECT_APPLICATION_INTENT_BOOST: f32 = 3.0;
+
+/// The chip strip's and group headers' wording for a [`ResourceKind`], in
+/// the desktop's language. [`ResourceKind::id`] stays the stable English
+/// address; `Custom` kinds surface their own string verbatim.
+pub trait ResourceKindText {
+    fn localized_label(&self) -> String;
+}
+
+impl ResourceKindText for ResourceKind {
+    fn localized_label(&self) -> String {
+        match self {
+            ResourceKind::Action => t("search-kind-actions"),
+            ResourceKind::Application => t("search-kind-applications"),
+            ResourceKind::HostApplication => t("search-kind-host-apps"),
+            ResourceKind::Note => t("search-kind-notes"),
+            ResourceKind::Record => t("search-kind-records"),
+            ResourceKind::File => t("search-kind-files"),
+            ResourceKind::Folder => t("search-kind-folders"),
+            ResourceKind::Creator => t("search-kind-creators"),
+            ResourceKind::Video => t("search-kind-videos"),
+            ResourceKind::Playlist => t("search-kind-playlists"),
+            ResourceKind::Tab => t("search-kind-tabs"),
+            ResourceKind::WindowGroup => t("search-kind-window-groups"),
+            ResourceKind::Custom(s) => s.clone(),
+        }
+    }
+}
 
 /// Fired by the shell after the user picks a result, with the live
 /// Automerge doc, its root, and the chrome handle to mutate persisted state
@@ -274,8 +302,13 @@ pub trait SearchProvider {
     /// Stable id, used to route results back for de-dup and to build the
     /// per-scope filter (`ActiveApp` looks up providers by this id).
     fn id(&self) -> &str;
-    /// Group header when results are grouped by provider rather than kind.
+    /// Stable English name, independent of the desktop's language.
     fn name(&self) -> &str;
+    /// The provider as people read it (e.g. in "Disable Notes search"), in
+    /// the desktop's language.
+    fn display_name(&self) -> String {
+        self.name().to_string()
+    }
     /// The set of kinds this provider CAN return; contributes chips to
     /// the palette's filter strip.
     fn resource_kinds(&self) -> &[ResourceKind];
@@ -576,7 +609,7 @@ impl SearchRegistry {
     /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
         let provider_id = provider.id().to_string();
-        let descriptor = (provider_id.clone(), provider.name().to_string());
+        let descriptor = (provider_id.clone(), provider.display_name());
         let mut catalog = self.provider_catalog.borrow_mut();
         if let Some(existing) = catalog.iter_mut().find(|(id, _)| id == &descriptor.0) {
             *existing = descriptor;

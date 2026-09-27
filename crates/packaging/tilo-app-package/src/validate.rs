@@ -64,6 +64,20 @@ pub enum ManifestError {
     AppContinuityMissingPresentation,
     #[error("accessibility.atspi_acceptance.{field} must not be empty")]
     EmptyAtspiAcceptanceField { field: &'static str },
+    #[error("target: {0}")]
+    BadTarget(String),
+    #[error("target.module {0:?} must be a safe payload path ending in `.wasm`")]
+    BadTargetModule(String),
+    #[error("a web build declares no native `[package.isa]`")]
+    TargetWithNativeIsa,
+    #[error("only kind=app and kind=runtime packages have a web build")]
+    TargetKindUnsupported,
+    #[error("target.runtime {target:?} is not a build of package.runtime {declared:?}")]
+    TargetRuntimeMismatch { declared: String, target: String },
+    #[error("a web app's entrypoint must be its target.module {0:?}")]
+    TargetEntrypointMismatch(String),
+    #[error("target.module {0:?} is not in the payload")]
+    TargetModuleMissing(String),
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -225,7 +239,64 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     m.publisher
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+    validate_target(m)
+}
 
+fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(target) = &m.target else {
+        return Ok(());
+    };
+    let registry_target = registry_types::RegistryTarget {
+        platform: target.platform.clone(),
+        architecture: target.architecture.clone(),
+        isa: target.isa.clone(),
+        runtime: Some(target.runtime.clone()),
+    };
+    registry_target
+        .validate()
+        .map_err(|error| ManifestError::BadTarget(error.to_string()))?;
+    let runtime = registry_target.web_runtime().ok_or_else(|| {
+        ManifestError::BadTarget(format!(
+            "platform {:?} is native; native builds declare `[package.isa]` instead",
+            target.platform
+        ))
+    })?;
+    if !crate::package::is_safe_path(&target.module)
+        || std::path::Path::new(&target.module)
+            .extension()
+            .is_none_or(|extension| extension != "wasm")
+        || target.module.len() > 255
+    {
+        return Err(ManifestError::BadTargetModule(target.module.clone()));
+    }
+    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
+        return Err(ManifestError::TargetWithNativeIsa);
+    }
+    match m.package.kind {
+        Kind::App => {
+            let declared = m.package.runtime.clone().unwrap_or_default();
+            if declared != runtime.release() {
+                return Err(ManifestError::TargetRuntimeMismatch {
+                    declared,
+                    target: target.runtime.clone(),
+                });
+            }
+            let entry = m
+                .entrypoint
+                .as_ref()
+                .and_then(|entry| entry.gui_bin_path())
+                .and_then(|path| path.to_str());
+            if entry != Some(target.module.as_str()) {
+                return Err(ManifestError::TargetEntrypointMismatch(
+                    target.module.clone(),
+                ));
+            }
+        }
+        Kind::Runtime => {}
+        Kind::Service | Kind::FormatProvider | Kind::Plugin => {
+            return Err(ManifestError::TargetKindUnsupported);
+        }
+    }
     Ok(())
 }
 
@@ -341,6 +412,14 @@ pub fn validate_manifest_with_payload(
             .any(|p| p.file_name().is_some_and(|n| n == FORMAT_PROVIDER_MODULE))
     {
         return Err(ManifestError::FormatProviderMissingModule);
+    }
+    if let Some(target) = &m.target
+        && !payload_files.iter().any(|path| {
+            path.to_str()
+                .is_some_and(|path| path.replace('\\', "/") == target.module)
+        })
+    {
+        return Err(ManifestError::TargetModuleMissing(target.module.clone()));
     }
     Ok(())
 }

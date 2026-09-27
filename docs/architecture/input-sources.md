@@ -56,7 +56,7 @@ on Caps Lock wins over a Caps Lock remap.
 ## Input methods (Chinese, Japanese, Korean)
 
 Composing input methods are input sources in the same ordered list, with ids
-`ime/pinyin`, `ime/mozc` and `ime/hangul` (`/` never occurs in an XKB name).
+`ime/pinyin`, `ime/anthy` and `ime/hangul` (`/` never occurs in an XKB name).
 They are not XKB groups: the four-group bound counts layouts only, and an
 engine types on the primary (first) layout, so the XKB group index is the
 active layout's position among layouts, or 0 while an engine is active

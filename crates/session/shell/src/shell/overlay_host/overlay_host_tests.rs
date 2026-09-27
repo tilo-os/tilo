@@ -2400,7 +2400,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .search_registry
             .registered_kinds()
             .iter()
-            .map(|k| k.label().to_string())
+            .map(crate::shell::search::ResourceKindText::localized_label)
             // The leading reset chip is painted separately from the
             // registered kinds; see `draw_search_banner`.
             .chain(std::iter::once("All".to_string()))

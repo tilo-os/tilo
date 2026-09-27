@@ -2088,7 +2088,8 @@ impl FrameBuilder {
 
     /// Where protected client surfaces are drawn on screen, in logical
     /// desktop coordinates: visible tiles, app-owned floating and fullscreen
-    /// surfaces, and popups the compositor marked protected.
+    /// surfaces, and the popups and on-screen keyboard the compositor marked
+    /// protected.
     fn capture_protected_window_rects(&mut self) -> Vec<Rect> {
         let protected_tabs: Vec<u64> = {
             let chrome = self.chrome.borrow();
@@ -2110,6 +2111,12 @@ impl FrameBuilder {
                 .chain(self.fullscreen_overlay.iter())
                 .chain(self.transient_overlays.iter())
                 .filter_map(|(_, widget)| widget.capture_protected_rect()),
+        );
+        rects.extend(
+            self.osk_overlay
+                .as_ref()
+                .filter(|keyboard| self.osk_active && keyboard.is_mapped())
+                .and_then(ForeignSurfaceWidget::capture_protected_rect),
         );
         rects
     }
@@ -3665,11 +3672,11 @@ mod tests {
                 "nodes from the replaced step must leave the exported tree"
             );
             assert!(
-                exported_node_named(&intro, crate::onboarding::ACKNOWLEDGEMENT).is_none(),
+                exported_node_named(&intro, &crate::onboarding::acknowledgement()).is_none(),
                 "the next step must not leak into the initial tree"
             );
             let (ack_id, acknowledgement) =
-                exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
+                exported_node_named(&protect, &crate::onboarding::acknowledgement())
                     .expect("the recovery acknowledgement reaches the external tree");
             let (_, create) = exported_node_named(&protect, "Create local identity")
                 .expect("the gated create action reaches the external tree");
@@ -3700,7 +3707,7 @@ mod tests {
             fb.reconcile_native_focus(&mut focus);
             let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
             let (_, acknowledgement) =
-                exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
+                exported_node_named(&acknowledged, &crate::onboarding::acknowledgement()).unwrap();
             let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
             assert_eq!(
                 acknowledgement.toggled(),

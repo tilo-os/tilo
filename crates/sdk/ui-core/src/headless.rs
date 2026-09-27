@@ -4474,6 +4474,37 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
+    /// The resources the hosted component publishes, as its permissions let
+    /// its bound actions be invoked. With `id`, only that resource: an app
+    /// may resolve it lazily (a search hit, an open document), so it can be
+    /// absent from the root listing and still be addressable.
+    ///
+    /// # Errors
+    /// Refuses a closed or unavailable component.
+    pub fn bound_resources(
+        &self,
+        id: Option<&str>,
+    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+        self.drain_component_wakes();
+        let lazy = id.map(|id| tilo_actions::ActionAddress::new(id, ""));
+        let resources = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            lazy.as_ref(),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
+        .into_iter()
+        .flat_map(|snapshot| snapshot.resources)
+        .collect::<Vec<_>>();
+        Ok(match id {
+            Some(id) => crate::bound_dispatch::find_action_resource(&resources, id)
+                .cloned()
+                .into_iter()
+                .collect(),
+            None => resources,
+        })
+    }
+
     fn invoke_bound_action_checked(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,

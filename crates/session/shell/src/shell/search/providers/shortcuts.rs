@@ -28,6 +28,7 @@ use tilo_automation::{SHORTCUTS_APP_ID, quick_action_arguments, quick_action_inp
 use crate::shell::automation_host::run_target;
 use crate::shell::chrome_state::SearchResourceScope;
 use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::remote_actions::BrokerActionHost;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
@@ -136,7 +137,10 @@ impl ShortcutsProvider {
         let (subtitle, params) = match quick {
             // The bound input is not asked for again.
             Some(quick) => (
-                Some(format!("Run on {}", quick.label)),
+                Some(t_args(
+                    "search-shortcut-run-on",
+                    &[("resource", quick.label.as_str().into())],
+                )),
                 descriptor
                     .params
                     .iter()
@@ -156,14 +160,11 @@ impl ShortcutsProvider {
             ),
             title: descriptor.action_label.clone(),
             subtitle,
-            badge: Some(
-                if quick.is_some() {
-                    "Quick action"
-                } else {
-                    "Shortcut"
-                }
-                .into(),
-            ),
+            badge: Some(if quick.is_some() {
+                t("search-badge-quick-action")
+            } else {
+                t("search-badge-shortcut")
+            }),
             score,
             params,
             contract: Some(descriptor.contract),
@@ -212,6 +213,10 @@ impl SearchProvider for ShortcutsProvider {
 
     fn name(&self) -> &'static str {
         "Shortcuts"
+    }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-shortcuts")
     }
 
     fn resource_kinds(&self) -> &[ResourceKind] {

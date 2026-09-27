@@ -1004,8 +1004,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "automerge"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fb849130973a7808a167887f56b1e8bdc36b9b541542602dcb337f34aecf47b"
 dependencies = [
  "cfg-if",
  "flate2",
@@ -5799,6 +5797,14 @@ dependencies = [
  "bounded-command",
  "libc",
  "workspace-hack",
+]
+
+[[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
 ]
 
 [[package]]
@@ -11640,10 +11646,35 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "postcard",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "workspace-hack",
+]
+
+[[package]]
+name = "registry-web"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
+name = "registry-web-bindgen"
+version = "0.1.0"
+dependencies = [
+ "registry-web",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -14738,6 +14769,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "registry-types",
  "semver",
  "serde",
  "tar",
@@ -14756,6 +14788,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
+ "blake3",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -14905,6 +14938,9 @@ dependencies = [
 [[package]]
 name = "tilo-clock"
 version = "0.1.0"
+dependencies = [
+ "web-time",
+]
 
 [[package]]
 name = "tilo-cloud-enrollment"
