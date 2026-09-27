@@ -2424,7 +2424,9 @@ impl ChatApp {
                     ),
                     Hit::Send => ("Send message".into(), Role::Button, false),
                     Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
-                    Hit::ComposerEmoji(_) => ("Insert emoji".into(), Role::Button, false),
+                    Hit::ComposerEmoji(_) => {
+                        (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
+                    }
                     Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
                         format!(
@@ -2455,32 +2457,51 @@ impl ChatApp {
                             })
                             .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
                         (
-                            format!("{} {} reaction", if mine { "Remove" } else { "Add" }, emoji),
+                            crate::i18n::t_args(
+                                if mine {
+                                    "chat-reaction-remove"
+                                } else {
+                                    "chat-reaction-add"
+                                },
+                                &[("emoji", emoji.as_str().into())],
+                            ),
                             Role::ToggleButton,
                             mine,
                         )
                     }
-                    Hit::AddReaction { .. } => ("Add reaction".into(), Role::Button, false),
+                    Hit::AddReaction { .. } => (
+                        crate::i18n::t("chat-emoji-add-reaction"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::EmojiChoice(emoji) => (
-                        format!(
-                            "Choose {}",
-                            emoji::Catalogue::english()
-                                .get(emoji)
-                                .map_or(emoji.as_str(), |found| found.name())
+                        crate::i18n::t_args(
+                            "chat-emoji-choose",
+                            &[(
+                                "name",
+                                crate::i18n::emoji_catalogue()
+                                    .get(emoji)
+                                    .map_or(emoji.as_str(), |found| found.name())
+                                    .into(),
+                            )],
                         ),
                         Role::Button,
                         false,
                     ),
                     Hit::EmojiGroup(group) => (
-                        emoji::Catalogue::english()
+                        crate::i18n::emoji_catalogue()
                             .groups()
                             .get(*group)
-                            .map_or("Emoji group", emoji::Group::label)
-                            .into(),
+                            .map_or_else(
+                                || crate::i18n::t("chat-emoji-group"),
+                                |group| group.label().to_owned(),
+                            ),
                         Role::Tab,
                         *group == self.emoji_group,
                     ),
-                    Hit::FocusEmojiSearch => ("Search emoji".into(), Role::TextInput, false),
+                    Hit::FocusEmojiSearch => {
+                        (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
+                    }
                     Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
                     Hit::EditSave => ("Save message edit".into(), Role::Button, false),
                     Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),

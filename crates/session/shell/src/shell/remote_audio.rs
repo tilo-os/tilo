@@ -925,7 +925,10 @@ fn reconcile_source_tokens(
                     token
                 });
             let (label, application) = match selection {
-                LocalAudioSelection::System => ("All system audio".into(), false),
+                LocalAudioSelection::System => (
+                    crate::shell::i18n::t("remote-audio-all-system-audio"),
+                    false,
+                ),
                 LocalAudioSelection::Application { label, .. } => (label, true),
             };
             RemoteAudioSourceView {
@@ -1099,20 +1102,22 @@ pub fn request(
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let snapshot = fabric
         .snapshots()
         .get(target)
-        .ok_or_else(|| "the target is not an enrolled device".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-target-not-enrolled"))?;
     if target == &local || !snapshot.presence.online || !snapshot.presence.capabilities.audio_output
     {
-        return Err("the target is not an online audio output".into());
+        return Err(crate::shell::i18n::t(
+            "remote-audio-error-target-not-output",
+        ));
     }
     let (session_id, selection, label) = {
         let mut state = state()
             .lock()
-            .map_err(|_| "remote audio service is unavailable".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
         if state
             .outbound
             .len()
@@ -1120,14 +1125,14 @@ pub fn request(
             .saturating_add(state.pending.len())
             >= MAX_REMOTE_AUDIO_SESSIONS
         {
-            return Err("too many remote audio routes are active".into());
+            return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
         }
         let selection = state
             .source_tokens
             .remove(&source_token)
-            .ok_or_else(|| "that audio source picker entry expired".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-source-expired"))?;
         let label = match &selection {
-            LocalAudioSelection::System => "All system audio".to_string(),
+            LocalAudioSelection::System => crate::shell::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
         let session_id = random_nonzero_16();
@@ -1185,10 +1190,10 @@ pub fn authorize(
 ) -> Result<(), String> {
     let pending = state()
         .lock()
-        .map_err(|_| "remote audio service is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?
         .pending
         .remove(&session_id)
-        .ok_or_else(|| "that remote audio request expired".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-request-expired"))?;
     let authorization = approved.then(random_nonzero_16);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
@@ -1206,10 +1211,10 @@ pub fn authorize(
         };
         let mut state = state()
             .lock()
-            .map_err(|_| "remote audio service is unavailable".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
         if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
             state.pending.insert(session_id, pending);
-            return Err("too many remote audio routes are active".into());
+            return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
         }
         let now = Instant::now();
         state.inbound.insert(
@@ -1268,7 +1273,7 @@ fn set_role_with(
     session_id: [u8; 16],
     role: ChannelRole,
 ) -> Result<(), String> {
-    let inactive = || "that remote audio route is no longer active".to_string();
+    let inactive = || crate::shell::i18n::t("remote-audio-error-route-inactive");
     let current = state.lock().unwrap_or_else(PoisonError::into_inner);
     let route = current.inbound.get(&session_id).map(|route| {
         (
@@ -1307,7 +1312,7 @@ pub fn set_trim(session_id: [u8; 16], trim_ns: i64) -> Result<(), String> {
         .inbound
         .get(&session_id)
         .and_then(|route| route.playback.as_ref())
-        .ok_or_else(|| "that remote audio route is no longer active".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-route-inactive"))?;
     playback.shared.lock().playout.set_trim_ns(trim_ns);
     drop(state);
     Ok(())
@@ -1327,7 +1332,7 @@ fn tap_for(
                 .source_tokens
                 .get(&token)
                 .cloned()
-                .ok_or_else(|| "that audio source picker entry expired".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-source-expired"))?;
             match chosen {
                 LocalAudioSelection::System => TapSelection::System,
                 LocalAudioSelection::Application { serial, .. } => {
@@ -1356,14 +1361,14 @@ pub fn start_group_send(
     let capture = PcmCapture::group_sink(tap.serial())?;
     let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
-        return Err("too many remote audio routes are active".into());
+        return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
     let now = Instant::now();
     state.outbound.insert(
         route,
         OutboundRoute {
             target: target.clone(),
-            label: "Speaker group".into(),
+            label: crate::shell::i18n::t("remote-audio-speaker-group"),
             selection: LocalAudioSelection::System,
             authorization: Some(authorization),
             sequence: 0,
@@ -1437,7 +1442,7 @@ pub fn start_group_receive(
     )?;
     let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
-        return Err("too many remote audio routes are active".into());
+        return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
     let now = Instant::now();
     state.inbound.insert(
@@ -1445,7 +1450,7 @@ pub fn start_group_receive(
         InboundRoute {
             source: source.clone(),
             target: local.clone(),
-            label: "Speaker group".into(),
+            label: crate::shell::i18n::t("remote-audio-speaker-group"),
             authorization,
             last_audio: now,
             last_heard: now,
@@ -1541,7 +1546,7 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
     let stopped = {
         let mut state = state()
             .lock()
-            .map_err(|_| "remote audio service is unavailable".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
         if state.interrupted.remove(&session_id).is_some() {
             return Ok(());
         }
@@ -1567,7 +1572,7 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
         }
     };
     let Some((peer, action)) = stopped else {
-        return Err("that remote audio route is no longer active".into());
+        return Err(crate::shell::i18n::t("remote-audio-error-route-inactive"));
     };
     network
         .send_personal_fabric_action(&peer, action)
@@ -1889,14 +1894,14 @@ impl PcmCapture {
                     serial: sink.serial,
                     monitor_sink: true,
                 })
-                .ok_or_else(|| "no local PipeWire output is available".to_string())?,
+                .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-no-output"))?,
             LocalAudioSelection::Application { serial, .. } => {
                 let current = media::audio::enumerate()
                     .playback_streams
                     .into_iter()
                     .any(|stream| stream.serial == *serial);
                 if !current {
-                    return Err("that application audio stream ended".into());
+                    return Err(crate::shell::i18n::t("remote-audio-error-stream-ended"));
                 }
                 media::pw_stream::CaptureTarget {
                     serial: *serial,

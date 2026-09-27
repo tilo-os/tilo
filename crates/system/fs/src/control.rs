@@ -431,6 +431,9 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use crate::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
 
@@ -775,7 +778,8 @@ mod tests {
         let mut editor_b = Client::connect(&sock_b).await.unwrap();
         let ino_b = editor_b.open("doc.md").await.unwrap().unwrap();
         let mut seen = false;
-        for _ in 0..50 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             let snap = editor_b.snapshot(ino_b).await.unwrap().unwrap();
             let text: String = snap.blocks.iter().map(|b| b.text.clone()).collect();
             if text.contains("+A") {

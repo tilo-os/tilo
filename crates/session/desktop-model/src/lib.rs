@@ -32,6 +32,7 @@ pub mod layout;
 pub mod partition;
 pub mod projection;
 pub mod serde_ids;
+pub mod service_member;
 pub mod shared_surfaces;
 pub mod task;
 pub mod topology;
@@ -59,5 +60,5 @@ pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
     PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId,
-    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, role_label,
+    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, role_from_id, role_id,
 };

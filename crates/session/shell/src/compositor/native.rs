@@ -91,6 +91,7 @@ use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceS
 use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
@@ -1548,22 +1549,24 @@ impl ControlState for FrameBuilderControlState<'_> {
         // A pointer is not a roster — different questions. Derived from
         // `collaborator_roster_rows` rather than re-walked, so reads can't drift from what a person sees.
         let chrome = self.fb.chrome();
-        let roster: Vec<serde_json::Value> =
-            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "label": row.label,
-                        "role": row.role,
-                        // Kept separate from the label, same as the panel: inferring which of
-                        // these is a person from the label alone is the one mistake to avoid.
-                        "is_agent": row.is_agent,
-                        // Named but not arrived — the one thing a harness watching a join needs,
-                        // and what a screenshot of a dimmed row can't be asserted on.
-                        "invited": row.invited,
-                    })
-                })
-                .collect();
+        let roster: Vec<serde_json::Value> = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.tree().desktop,
+            &crate::shell::state::local_user_id(),
+        )
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "label": row.label,
+                "role": row.role,
+                // Kept separate from the label, same as the panel: inferring which of
+                // these is a person from the label alone is the one mistake to avoid.
+                "is_agent": row.is_agent,
+                // Named but not arrived — the one thing a harness watching a join needs,
+                // and what a screenshot of a dimmed row can't be asserted on.
+                "invited": row.invited,
+            })
+        })
+        .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
@@ -1925,6 +1928,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
+            // The input hardware and last-used modality the chrome adapts
+            // to, and the language the desktop help overlay is written in.
+            "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
@@ -1965,7 +1971,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "title": n.title,
                 "body": n.body,
                 "severity": format!("{:?}", n.severity),
-                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+                "persistent": n.dismiss_after >= tilo_desktop::notifications::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
@@ -2018,7 +2024,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     .tree()
                     .desktop.active_workspace()
                     .and_then(|ws| {
-                        crate::shell::workspace_settings::draft_subject(
+                        tilo_desktop::workspace_settings::draft_subject(
                             ws,
                             &chrome.ws_grant_draft,
                         )
@@ -2093,6 +2099,10 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Attached input devices and the last kind of input used, from the
+    /// backend or from injected test-control input alike. The shell chrome's
+    /// shortcut help follows it.
+    input: InputEnvironment,
 }
 
 impl TestControlCtx {
@@ -2104,6 +2114,41 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            input: InputEnvironment::default(),
+        }
+    }
+
+    /// Hand the current input environment to the shell chrome.
+    fn publish_input_environment(&self, fb: &mut FrameBuilder) {
+        fb.host_mut()
+            .apply_input_environment(self.input.environment());
+    }
+
+    /// Fold injected test-control input into the input environment exactly
+    /// as a backend reports physical devices: a named touch device is
+    /// attached by its first contact, and every event class counts as used.
+    fn note_injected_input(&mut self, action: &PlannedAction, fb: &mut FrameBuilder) {
+        let changed = match action {
+            PlannedAction::Touch { device, phase, .. } => {
+                let attached = self.input.device_added(
+                    format!("test-control:{device}"),
+                    ui::InputAvailability::NONE.with(ui::InputDevice::Touch),
+                );
+                let used = matches!(phase, TouchPhaseKind::Down)
+                    && self.input.note_used(ui::InputModality::Touch);
+                attached || used
+            }
+            PlannedAction::KeyboardKey { pressed: true, .. } => {
+                self.input.note_used(ui::InputModality::Keyboard)
+            }
+            PlannedAction::CursorMoved { .. }
+            | PlannedAction::MouseLeftButton { .. }
+            | PlannedAction::MousePointerButton { .. }
+            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            _ => false,
+        };
+        if changed {
+            self.publish_input_environment(fb);
         }
     }
 }
@@ -2272,7 +2317,12 @@ fn pump_controller_navigation(
         // the next intent so it lands in the window now in front.
         frame_builder.host_mut().flush_active_tab_writeback();
         client_input::sync_keyboard_focus(state, frame_builder);
-        frame_builder.host_mut().note_controller_input(family);
+        // Controller use is classified here, at its source. The keystrokes
+        // it synthesised above never reach the input environment, so they
+        // do not count as typing on a keyboard.
+        if ctx.input.note_controller(family) {
+            ctx.publish_input_environment(frame_builder);
+        }
     }
     true
 }
@@ -2375,11 +2425,11 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             state.cancel_host_launch_activation(&token);
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
-                    crate::shell::notification::Notification::new(
+                    tilo_desktop::notifications::Notification::new(
                         crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                     .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
@@ -2448,6 +2498,38 @@ fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
             button: MouseButton::Left,
         },
     ]
+}
+
+/// Wire name of an input modality in `state-dump`.
+fn input_modality_name(modality: ui::InputModality) -> &'static str {
+    match modality {
+        ui::InputModality::Pointer => "pointer",
+        ui::InputModality::Touch => "touch",
+        ui::InputModality::Keyboard => "keyboard",
+        ui::InputModality::Controller => "controller",
+    }
+}
+
+/// `state-dump`'s view of the chrome's input environment.
+fn input_environment_json(
+    environment: ui::InteractionEnvironment,
+    help_modality: ui::InputModality,
+) -> serde_json::Value {
+    let available = [
+        (ui::InputDevice::Keyboard, "keyboard"),
+        (ui::InputDevice::Pointer, "pointer"),
+        (ui::InputDevice::Touch, "touch"),
+        (ui::InputDevice::Controller, "controller"),
+    ]
+    .into_iter()
+    .filter(|(device, _)| environment.available.contains(*device))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "modality": input_modality_name(environment.modality),
+        "available": available,
+        "help_modality": input_modality_name(help_modality),
+    })
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -2675,6 +2757,7 @@ fn execute_planned_action(
     state: Option<&mut State>,
 ) -> Option<Result<crate::shell::search::InvocationDisposition, InvokeFailure>> {
     let mut state = state;
+    ctx.note_injected_input(action, fb);
     match action {
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
@@ -4148,7 +4231,10 @@ fn spawn_session_collab_broker(
         );
         chrome
             .borrow_mut()
-            .set_collab_unavailable(format!("The service directory could not be created: {e}"));
+            .set_collab_unavailable(crate::shell::i18n::t_args(
+                "collab-unavailable-services-root",
+                &[("error", e.to_string().into())],
+            ));
         return None;
     }
 
@@ -4160,9 +4246,9 @@ fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome.borrow_mut().set_collab_unavailable(
-            "Another session on this machine already owns the collaboration socket.",
-        );
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
         return None;
     }
 
@@ -4191,7 +4277,10 @@ fn spawn_session_collab_broker(
             );
             chrome
                 .borrow_mut()
-                .set_collab_unavailable(format!("The broker could not start: {e}"));
+                .set_collab_unavailable(crate::shell::i18n::t_args(
+                    "collab-unavailable-broker",
+                    &[("error", e.to_string().into())],
+                ));
             None
         }
     }
@@ -4332,7 +4421,7 @@ fn install_device_fabric_bridge(
                     target,
                 } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                        .ok_or_else(|| crate::shell::i18n::t("fabric-focus-app-for-controller"))?;
                     let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
                         &fabric_net,
                         source_token,
@@ -4404,8 +4493,10 @@ fn install_device_fabric_bridge(
                     crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
-                    let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let binding =
+                        active_physical_gamepad_binding(&tree_handle.read()).ok_or_else(|| {
+                            crate::shell::i18n::t("fabric-focus-app-for-remote-input")
+                        })?;
                     let app =
                         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
@@ -5746,7 +5837,7 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
-    if let Some(store) = crate::shell::emoji_picker::RecentsStore::for_user() {
+    if let Some(store) = crate::shell::emoji_recents::FileRecentsStore::for_user() {
         frame_builder.host_mut().attach_emoji_recents_store(store);
     }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
@@ -6048,6 +6139,9 @@ pub fn run() {
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    // Nothing is known about the input hardware until the backend announces
+    // devices; the chrome must not keep the toolkit's desktop assumption.
+    test_control_ctx.publish_input_environment(&mut frame_builder);
     frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
@@ -6279,6 +6373,23 @@ pub fn run() {
         )
     });
 
+    // Bluetooth pairing agent: BlueZ's default agent for this session, so a
+    // passkey, PIN, confirmation or service authorisation from any pairing
+    // becomes a dialog only the compositor draws, instead of a pairing that
+    // silently fails.
+    let pairing_prompts = crate::bluetooth::PairingPromptHandle::global();
+    pairing_prompts.set_wake(Arc::clone(&session_wake));
+    let bluetooth_agent: Option<
+        crate::session_runtime::Registration<crate::bluetooth::PairingService>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "bluetooth pairing agent",
+            crate::bluetooth::PairingService::start(pairing_prompts),
+            |_| tracing::info!("bluetooth: pairing agent registered with BlueZ"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -6347,6 +6458,8 @@ pub fn run() {
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
         std::collections::VecDeque::new();
+    // The pad whose map is held open, with its saved settings.
+    let mut pad_map_hold: Option<(String, Box<settings_store::hardware::TabletConfig>)> = None;
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6579,10 +6692,18 @@ pub fn run() {
         // A pen goes to a tablet-aware client directly and stands in for the
         // pointer everywhere else, so it expands into ordinary input here,
         // in order, before the batch is dispatched.
-        if pending_events
-            .iter()
-            .any(|event| matches!(event, BackendEvent::Tablet(_)))
-        {
+        // A pad follows keyboard focus the same way, with its settings'
+        // mapping standing in wherever no tablet-aware app is focused.
+        if pending_events.iter().any(|event| {
+            matches!(
+                event,
+                BackendEvent::Tablet(_)
+                    | BackendEvent::TabletPad(_)
+                    | BackendEvent::TabletPadMap { .. }
+                    | BackendEvent::TabletPadAdded(_)
+                    | BackendEvent::TabletPadRemoved(_)
+            )
+        }) {
             for event in std::mem::take(&mut pending_events) {
                 match event {
                     BackendEvent::Tablet(input) => {
@@ -6593,9 +6714,67 @@ pub fn run() {
                             session.is_locked(),
                         ));
                     }
+                    BackendEvent::TabletPad(pad) => {
+                        if let crate::compositor::backend::PadAction::ModeSwitch {
+                            mode,
+                            modes,
+                            ..
+                        } = pad.action
+                        {
+                            frame_builder.with_chrome(|st| {
+                                st.show_osd(crate::shell::osd::Osd::pad_mode(mode, modes));
+                            });
+                        }
+                        pending_events.extend(client_input::route_pad_event(
+                            &mut state,
+                            &frame_builder,
+                            pad,
+                            session.is_locked(),
+                        ));
+                    }
+                    BackendEvent::TabletPadMap {
+                        pad,
+                        shown,
+                        time_msec,
+                    } => match shown {
+                        // Not on the lock screen: the map names what the
+                        // apps behind it do.
+                        Some(config) if !session.is_locked() => {
+                            let target =
+                                client_input::pad_focus_target(&state, &frame_builder, false);
+                            // The app learns the pad is there now, so it can
+                            // label the controls while the map is up.
+                            state.focus_tablet_pad(&pad, target, time_msec);
+                            pad_map_hold = Some((pad, config));
+                        }
+                        Some(_) => {}
+                        None => {
+                            if pad_map_hold.as_ref().is_some_and(|(held, _)| *held == pad) {
+                                pad_map_hold = None;
+                            }
+                        }
+                    },
+                    BackendEvent::TabletPadAdded(description) => {
+                        state.add_tablet_pad(description);
+                    }
+                    BackendEvent::TabletPadRemoved(pad) => state.remove_tablet_pad(&pad),
                     other => pending_events.push_back(other),
                 }
             }
+        }
+        // Rebuilt every tick while held, so labels an app sends after a mode
+        // switch replace the ones it gave for the last mode.
+        if pad_map_hold.is_some() && session.is_locked() {
+            pad_map_hold = None;
+        }
+        let pad_map = pad_map_hold
+            .as_ref()
+            .and_then(|(pad, config)| state.tablet_pad_map(pad, config));
+        if pad_map.is_none() {
+            pad_map_hold = None;
+        }
+        if pad_map.is_some() || frame_builder.chrome().pad_map.is_some() {
+            frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -7134,6 +7313,27 @@ pub fn run() {
                         }
                     }
                 }
+                BackendEvent::InputDeviceAdded { id, capabilities } => {
+                    if test_control_ctx.input.device_added(id, capabilities) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::InputDeviceRemoved { id } => {
+                    if test_control_ctx.input.device_removed(&id) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::TabletMode(on) => {
+                    test_control_ctx.input.set_tablet_mode(on);
+                }
+                BackendEvent::InputUsed(modality) => {
+                    if test_control_ctx.input.note_used(modality) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
                 BackendEvent::Focus(focused) => {
                     if !focused {
                         if let Some(network) = peer_sync.as_ref() {
@@ -7147,10 +7347,15 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
+                BackendEvent::Redraw
+                | BackendEvent::Tablet(_)
+                | BackendEvent::TabletPad(_)
+                | BackendEvent::TabletPadMap { .. }
+                | BackendEvent::TabletPadAdded(_)
+                | BackendEvent::TabletPadRemoved(_) => {
                     // Redraw is implicit: the native loop paints every tick.
-                    // Pen events were expanded into client or pointer input
-                    // before the batch.
+                    // Pen and pad events were expanded into client or
+                    // ordinary input before the batch.
                 }
             }
         }
@@ -7307,6 +7512,7 @@ pub fn run() {
             outputs_dirty = true;
             input_methods.reload(&mut state);
         }
+        input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick();
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
@@ -8056,34 +8262,38 @@ pub fn run() {
                 nearby_drop_event_count,
                 for event in nearby_drop_events {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
                     let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
-                            || "your device".to_string(),
+                            || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
                         )
                     };
+                    let line = |key: &str, file: String, peer: String| {
+                        t_args(key, &[("file", file.into()), ("device", peer.into())])
+                    };
                     let (title, body) = match event {
                         NearbyDropEvent::Sending { file_name, peer } => (
-                            "Sending nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sending"),
+                            line("nearby-drop-sending-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Sent { file_name, peer } => (
-                            "Sent nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sent"),
+                            line("nearby-drop-sent-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Failed { file_name, peer } => (
-                            "Nearby drop failed".to_string(),
-                            format!("{file_name} · {}", peer_label(&peer)),
+                            t("nearby-drop-failed"),
+                            line("nearby-drop-failed-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Received { path, peer } => (
-                            "Received nearby".to_string(),
-                            format!(
-                                "{} from {}",
+                            t("nearby-drop-received"),
+                            line(
+                                "nearby-drop-received-body",
                                 path.file_name()
                                     .and_then(|name| name.to_str())
-                                    .unwrap_or("File"),
-                                peer_label(&peer)
+                                    .map_or_else(|| t("doc-open-unnamed-file"), str::to_string),
+                                peer_label(&peer),
                             ),
                         ),
                     };
@@ -8388,9 +8598,12 @@ pub fn run() {
             // run normally.
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
-                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
-                    "the desktop's network could not start ({error})"
-                )),
+                Some(error) => {
+                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
+                        "launch-held-network-failed",
+                        &[("error", error.into())],
+                    ));
+                }
             }
             apps_changed = true;
         }
@@ -8847,10 +9060,16 @@ pub fn run() {
                             match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
                             {
                                 Ok(receipt) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                    chrome.push_notification(
+                                        crate::shell::i18n::t("capture-screenshot-sent"),
+                                        receipt.message(),
+                                    );
                                 }),
                                 Err(error) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_error_notification("Screenshot not sent", error);
+                                    chrome.push_error_notification(
+                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
+                                        error,
+                                    );
                                 }),
                             }
                         }
@@ -8896,8 +9115,14 @@ pub fn run() {
                         CaptureOutcome::RecordingAudioLost { path, reason } => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_notification(
-                                    "Recording continues without audio",
-                                    format!("{} · {reason}", path.display()),
+                                    crate::shell::i18n::t("capture-recording-audio-lost"),
+                                    crate::shell::i18n::t_args(
+                                        "capture-recording-audio-lost-body",
+                                        &[
+                                            ("path", path.display().to_string().into()),
+                                            ("reason", reason.into()),
+                                        ],
+                                    ),
                                 );
                             });
                         }
@@ -8925,7 +9150,7 @@ pub fn run() {
                         CaptureOutcome::ReplayAudioLost(reason) => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_warning_notification(
-                                    "Recent capture continues without audio",
+                                    crate::shell::i18n::t("capture-recent-audio-lost"),
                                     reason,
                                 );
                             });
@@ -8953,7 +9178,10 @@ pub fn run() {
                         CaptureOutcome::Failed(error) => {
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification("Capture failed", error);
+                                chrome.push_error_notification(
+                                    crate::shell::i18n::t("capture-failed"),
+                                    error,
+                                );
                             });
                         }
                     }
@@ -9376,6 +9604,7 @@ pub fn run() {
     drop(tray_handle);
     drop(polkit_agent);
     drop(network_secret_agent);
+    drop(bluetooth_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
@@ -9434,7 +9663,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
         | crate::shell::osd::OsdKind::InputSource(_)
-        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
+        | crate::shell::osd::OsdKind::KeysCaptured { .. }
+        | crate::shell::osd::OsdKind::PadMode { .. } => {}
     }
 }
 

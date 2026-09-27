@@ -6,13 +6,15 @@ import {createDesktopSpeculation} from './desktop-speculation.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
-import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
+import {MountRegistry,reopenedRecord,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {createLiveOverlay} from './live-overlay.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
+import {SideModuleLinker} from './dylink.mjs';
+import {createAppInstaller,canonicalAppId} from './app-installer.mjs';
+import {importGlue,loadCore} from './core-loader.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -26,7 +28,51 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 // first frames either.
 const APP_FONTS=['Noto-COLRv1.ttf','NotoSansSymbols[wght].ttf','NotoSansSymbols2-Regular.ttf','NotoSansMath-Regular.ttf'];
 const prewarmFonts=createIdlePrewarm(()=>fontLoader.prewarm({prefer:APP_FONTS}));
-const ready=retryableMemo(()=>init());
+// The core: by default the glue and module next to this file; a page may
+// supply a verified one instead (configureRuntime) before its first mount.
+let runtime,core,appLinker,supplied;
+const ready=retryableMemo(async()=>{
+  const source=supplied??{glue:import('./pkg/tilo_browser_runtime.js'),module:new URL('./pkg/tilo_browser_runtime_bg.wasm',import.meta.url)};
+  core=await loadCore({glue:await importGlue(await source.glue),module:source.module});
+  runtime=core.runtime;
+  return core;
+});
+/**
+ * Run a core from a verified source instead of `./pkg/`: `glue` is the
+ * self-contained glue (its module namespace, or a URL such as the object URL
+ * of a verified asset), `module` the core module (WebAssembly.Module,
+ * Response or bytes). The registry client's `resolveRuntime()` supplies both.
+ * Must precede the first mount; throws once a core is loading.
+ */
+export function configureRuntime({glue,module}){
+  if(core||supplied)throw Error('the core is already configured');
+  if(!glue||!module)throw TypeError('configureRuntime needs {glue, module}');
+  supplied={glue,module};
+}
+/** The loaded core's runtime ABI id, once it has loaded. */
+export async function runtimeAbiId(){return (await ready()).abi;}
+// Apps the core does not contain arrive as side modules (WEB_RUNTIME.md).
+// A core built without `dylink` has no linker, so only its compiled apps exist.
+const apps=createAppInstaller({
+  ready,
+  installed:app=>{try{runtime.application(app);return true;}catch{return false;}},
+  canonical:canonicalAppId,
+  linker:()=>appLinker??=new SideModuleLinker(core.exports,core.abi),
+});
+/**
+ * The resolver mounts use when they pass none: `(appId, {signal}) =>
+ * {module, abi, assets}`, such as the registry client's `resolveApp`.
+ */
+export function setAppResolver(resolver){apps.setResolver(resolver);}
+/**
+ * Resolve and link apps before they are mounted, concurrently with each other
+ * and with the core's own download (a session restore passes every app it
+ * will open). Resolves to their ids; rejects with an AggregateError naming
+ * each app that could not be installed in `failed`.
+ */
+export function preloadApps(appIds,options={}){return apps.preload(appIds,options);}
+/** The static assets of a linked app: asset name to URL. */
+export function appAssets(appId){return apps.assets(appId);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
   const canvas=document.createElement('canvas');canvas.className='tilo-canvas';canvas.tabIndex=0;
@@ -39,7 +85,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  let id,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
+  let id,application,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
@@ -51,7 +97,7 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.resolveApp;
   let unsubscribeDesktopCommits;
   let liveOverlay;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
@@ -137,8 +183,10 @@ export async function mountDesktop(target,options={}) {
     complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
     load:async request=>{
       if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
-      const url=new URL(request.url,location.href);
-      if(url.origin!==location.origin||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+      // An app's own static asset is fetched where its resolver placed it.
+      const appAsset=application&&apps.assets(application.id)?.get(request.url);
+      const url=new URL(appAsset??request.url,location.href);
+      if((!appAsset&&url.origin!==location.origin)||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
       const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
       if(!response.ok)throw Error(`asset HTTP ${response.status}`);
       return new Uint8Array(await response.arrayBuffer());
@@ -218,17 +266,20 @@ export async function mountDesktop(target,options={}) {
   }
   try{
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    // An app the core lacks is resolved while the core itself loads.
+    const installing=config.app==='desktop'?undefined:apps.ensure(config.app,{resolveApp:options.resolveApp,signal:options.signal,onStatus:report});
+    void installing?.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    // An app that is neither in the core nor resolvable rejects here.
+    try{await installing;application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));}
+    catch(error){report({phase:'failed',error:error instanceof Error?error.message:String(error)});throw error instanceof Error?error:Error(String(error));}
     const acquired=await acquireStorage(config.profile,config.device);
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
     if(storage.fresh){runtime.refresh_storage_lease(config.profile,config.device);storage.fresh=false;}
     const [assets,entries]=await Promise.all([fonts(),storage.hydrate()]);
     if(!registry.current(token))throw Error('mount disposed');
-    if(config.app==='writer'&&!config.record&&!config.newDocument){
-      const found=entries.map(e=>JSON.parse(e.key)).find(k=>k.type==='record'&&k.package==='so.tilo.word-processor'&&k.workspace===config.room);
-      config.record=found?.record;
-    }
+    if(!config.record&&!config.newDocument)config.record=reopenedRecord(entries,application,config.room);
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
@@ -343,7 +394,11 @@ export async function mountDesktop(target,options={}) {
       },{capture:true});
       options.onNavigation?.(navigation.controller);
     }
-    return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+    const actionSurface=()=>{if(!active())throw Error('mount disposed');return id;};
+    return {navigation: navigation?.controller,application,retryAsset,
+      get record(){return lastState?.record||undefined;},
+      actions:resource=>JSON.parse(runtime.component_actions(actionSurface(),resource)),
+      invokeAction:(resource,action,args={},{confirm=false}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm)),cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
@@ -352,7 +407,9 @@ export async function mountDesktop(target,options={}) {
       liveOverlay:()=>liveOverlay?.stats()??null};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
-export function pendingComponentCloseCount(){return runtime.component_close_count();}
+/** Every application this build can mount standalone. */
+export async function applications(){await ready();return JSON.parse(runtime.applications());}
+export function pendingComponentCloseCount(){return runtime?.component_close_count()??0;}
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}
-export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}
+export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));if(runtime)await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}

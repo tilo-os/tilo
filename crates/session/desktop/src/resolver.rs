@@ -88,19 +88,23 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
         let Some(id) = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile) else {
             return TileResolution::Unavailable {
                 title: request.tab.title.clone(),
-                detail: "Application identity unavailable".into(),
+                detail: crate::i18n::t("desktop-app-identity-unavailable"),
             };
         };
         let Ok(definition) = self.catalog.resolve(&id) else {
             return if collab_types::first_party_app_ids::is_first_party_app_id(&id) {
                 TileResolution::Unavailable {
                     title: request.tab.title.clone(),
-                    detail: format!(
-                        "{id}: application integration or required service unavailable"
+                    detail: crate::i18n::t_args(
+                        "desktop-app-integration-unavailable",
+                        &[("app", id.as_str().into())],
                     ),
                 }
             } else {
-                TileResolution::OpaqueForeign { app_id: id, reason: "No semantic application adapter; process-local pixels cannot be reconstructed".into() }
+                TileResolution::OpaqueForeign {
+                    app_id: id,
+                    reason: crate::i18n::t("desktop-app-no-adapter"),
+                }
             };
         };
         let checkout = match self.host.checkout(definition, &request) {
@@ -136,7 +140,7 @@ impl TileResolution {
                         let detail = error.to_string();
                         failures.push(error);
                         TileHost::new(ui::widget::TileContent::Notice {
-                            title: "Application unavailable".into(),
+                            title: crate::i18n::t("desktop-app-unavailable"),
                             detail,
                         })
                     }
@@ -157,7 +161,7 @@ impl TileResolution {
                 let detail = error.to_string();
                 failures.push(error);
                 TileHost::new(ui::widget::TileContent::Notice {
-                    title: "Application unavailable".into(),
+                    title: crate::i18n::t("desktop-app-unavailable"),
                     detail,
                 })
             }

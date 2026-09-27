@@ -197,9 +197,7 @@ impl Desk {
 
     /// Frames until `done` holds, letting eased pans run out.
     fn settle_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
-            .expect("deadline");
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             self.frame();
             if done(self) {

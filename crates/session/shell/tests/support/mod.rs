@@ -16,3 +16,7 @@
 
 pub mod offscreen;
 pub mod snapshot;
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang
+/// reaches it, however loaded the test machine is.
+pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);

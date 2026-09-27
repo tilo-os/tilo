@@ -212,14 +212,14 @@ impl ScopedAppFixture {
         self.host.signing.clone()
     }
     pub(crate) async fn next_startup_signature(&mut self) -> crate::host_signing::PendingSignature {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.host.pump(&self.owner).unwrap();
             if let Ok(pending) = self.signatures.try_recv() {
                 return pending;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "real mounted app did not enqueue scoped startup"
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -293,7 +293,7 @@ impl ScopedAppFixture {
         Ok(())
     }
     pub(crate) async fn wait_action(&mut self, action: &str) -> (u64, String) {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(found) = self
                 .host
@@ -317,7 +317,7 @@ impl ScopedAppFixture {
             }
             self.pump().await.unwrap();
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "mounted app never published {action}; actual surfaces: {:?}",
                 self.host
                     .broker
@@ -383,7 +383,7 @@ impl ScopedAppFixture {
             arguments,
             confirmation
         }));
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in self.caller.poll() {
                 if let CollabEvent::PublishedInvocationResult { request_id, result } = event
@@ -399,7 +399,7 @@ impl ScopedAppFixture {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "original caller RPC did not admit"
             );
         }
@@ -416,7 +416,7 @@ impl ScopedAppFixture {
         {
             return Err("actual caller queue refused directory query".into());
         }
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in self.caller.poll() {
                 if let CollabEvent::ActionDirectoryPage {
@@ -428,7 +428,7 @@ impl ScopedAppFixture {
                     return result;
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err("actual directory query timed out".into());
             }
             self.pump().await?;
@@ -452,7 +452,7 @@ impl ScopedAppFixture {
         }) {
             return Err("actual caller queue refused directory resolution".into());
         }
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in self.caller.poll() {
                 if let CollabEvent::PublishedActionResolution {
@@ -464,7 +464,7 @@ impl ScopedAppFixture {
                     return result;
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err("actual directory resolution timed out".into());
             }
             self.pump().await?;
@@ -494,7 +494,7 @@ impl ScopedAppFixture {
         {
             return Err("actual caller queue refused resolved invocation".into());
         }
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in self.caller.poll() {
                 if let CollabEvent::PublishedInvocationResult {
@@ -506,7 +506,7 @@ impl ScopedAppFixture {
                     return result.map(|(id, _)| id);
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err("actual resolved invocation timed out".into());
             }
             self.pump().await?;

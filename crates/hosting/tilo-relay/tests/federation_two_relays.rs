@@ -21,8 +21,6 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -82,9 +80,8 @@ async fn op_on_relay1_reaches_device_on_relay2() {
 
     // Drain the Ready acks.
     for cli in [&c1, &c2] {
-        let env = tokio::time::timeout(Duration::from_secs(3), cli.recv())
+        let env = tilo_test_env::within("Ready timeout", cli.recv())
             .await
-            .expect("Ready timeout")
             .expect("closed");
         assert!(matches!(env, Envelope::Ready { .. }));
     }
@@ -110,9 +107,8 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     // fanout → p2.
     let mut got = false;
     for _ in 0..5 {
-        let env = tokio::time::timeout(Duration::from_secs(3), c2.recv())
+        let env = tilo_test_env::within("federation delta timeout", c2.recv())
             .await
-            .expect("federation delta timeout")
             .expect("closed");
         if let Envelope::Delta {
             delta,

@@ -107,6 +107,13 @@ seconds at most) for the field to get the keyboard back and re-enable. A field
 that declares a password, PIN or hidden/sensitive content still receives the
 emoji, but it is not added to the picker's recents.
 
+The picker opens at the field's caret the way candidate windows do: below
+the cursor rectangle the field last committed with `set_cursor_rectangle`,
+flipped above it at the bottom of the output, and kept on that output. A
+field reports its caret only while its text input is enabled, which happens
+only while an input method owns the seat; without one, or when the field
+reports no caret, the picker is centred on the display with focus.
+
 Apps receive composed text through `zwp_text_input_v3` (GTK, Qt, Chromium and
 Tilo apps through winit's IME). Candidate windows are `zwp_input_popup_surface_v2`
 surfaces placed directly below the field's caret rectangle, flipped above it

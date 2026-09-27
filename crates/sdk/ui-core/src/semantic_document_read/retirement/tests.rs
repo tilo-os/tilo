@@ -74,7 +74,7 @@ fn retirement_waits_for_entered_probe_before_finishing() {
         owner.finish_retirement();
         finished_tx.send(()).unwrap();
     });
-    requested_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    tilo_test_env::recv("the retirement request", &requested_rx);
     assert!(observer.value.marker.requested.load(Ordering::Acquire));
     assert!(!observer.value.marker.retired.load(Ordering::Acquire));
     assert!(matches!(
@@ -82,7 +82,7 @@ fn retirement_waits_for_entered_probe_before_finishing() {
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     drop(entered);
-    finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    tilo_test_env::recv("the retirement to finish", &finished_rx);
     retiring.join().unwrap();
     assert!(matches!(probe(&observer), Err(RetirementError::Retired)));
 }

@@ -183,6 +183,13 @@ does not fit this codebase is changed in the workspace table, with its reason.
 
 The weekly quality workflow runs the same script with `--workspace`.
 
+sccache caches Clippy's library targets across runners like any other
+compile: the script sets `RUSTC=rustc`, the only compiler argument sccache
+accepts after `clippy-driver`, and clippy-driver records `Cargo.toml`,
+`clippy.toml` and `CLIPPY_ARGS` in the dep-info that the cache key hashes.
+Test, binary and example targets carry no `--crate-type`, so sccache leaves
+them to the slot's target tree.
+
 ## Cache layers
 
 - sccache stores compiler outputs in S3 namespaces configured by the runner,

@@ -75,8 +75,11 @@ pub const MAX_TITLE_BYTES: usize = 255;
 /// physical-resource `DoS` (paper, toner) no consent granularity fixes.
 pub const MAX_COPIES: u32 = 100;
 
-/// Title used when the app's own title sanitises down to nothing.
-pub const FALLBACK_TITLE: &str = "Document";
+/// Title used when the app's own title sanitises down to nothing, in the
+/// desktop's language, since it is what the print queue shows.
+pub fn fallback_title() -> String {
+    crate::shell::i18n::t("print-untitled-document")
+}
 
 /// How long a `PreparePrint` token stays redeemable — a dialog the user configured and walked away from shouldn't leave a live capability behind.
 const TOKEN_TTL: Duration = Duration::from_secs(300);
@@ -675,7 +678,7 @@ pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, Stri
 ///   `fdp.exe` shows up in a queue as `exe.pdf`.
 /// - Leading dashes are stripped, so the value can never read as a flag.
 /// - Truncated to [`MAX_TITLE_BYTES`] on a character boundary.
-/// - Empty after all that falls back to [`FALLBACK_TITLE`].
+/// - Empty after all that falls back to [`fallback_title`].
 pub fn sanitise_title(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
@@ -687,7 +690,7 @@ pub fn sanitise_title(raw: &str) -> String {
     }
     let trimmed = out.trim().trim_start_matches('-').trim();
     if trimmed.is_empty() {
-        FALLBACK_TITLE.to_string()
+        fallback_title()
     } else {
         trimmed.to_string()
     }
@@ -865,9 +868,9 @@ mod tests {
             assert!(out.chars().all(|c| c == 'é'));
         }
         // Phase `sanitise_title_falls_back_when_nothing_survives`.
-        assert_eq!(sanitise_title(""), FALLBACK_TITLE);
-        assert_eq!(sanitise_title("\n\t  \r"), FALLBACK_TITLE);
-        assert_eq!(sanitise_title("---"), FALLBACK_TITLE);
+        assert_eq!(sanitise_title(""), fallback_title());
+        assert_eq!(sanitise_title("\n\t  \r"), fallback_title());
+        assert_eq!(sanitise_title("---"), fallback_title());
     }
 
     // Destination validation
