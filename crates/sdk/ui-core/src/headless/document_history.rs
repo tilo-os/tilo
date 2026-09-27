@@ -971,11 +971,9 @@ mod tests {
                 observed.enqueue("run");
                 driver.click_named("standalone-history-open").unwrap();
                 assert!(driver.document_history.is_open());
-                assert!(
-                    driver.wait_until(crate::time::Duration::from_secs(1), |driver| driver
-                        .pending_control_invocations
-                        .is_empty())
-                );
+                assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
+                    driver.pending_control_invocations.is_empty()
+                }));
                 assert_eq!(observed.calls.get(), 1);
                 assert_eq!(observed.polls.get(), 3);
                 assert_eq!(observed.commits.get(), 0);

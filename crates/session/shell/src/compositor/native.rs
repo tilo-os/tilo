@@ -4229,7 +4229,10 @@ fn spawn_session_collab_broker(
         );
         chrome
             .borrow_mut()
-            .set_collab_unavailable(format!("The service directory could not be created: {e}"));
+            .set_collab_unavailable(crate::shell::i18n::t_args(
+                "collab-unavailable-services-root",
+                &[("error", e.to_string().into())],
+            ));
         return None;
     }
 
@@ -4241,9 +4244,9 @@ fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome.borrow_mut().set_collab_unavailable(
-            "Another session on this machine already owns the collaboration socket.",
-        );
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
         return None;
     }
 
@@ -4272,7 +4275,10 @@ fn spawn_session_collab_broker(
             );
             chrome
                 .borrow_mut()
-                .set_collab_unavailable(format!("The broker could not start: {e}"));
+                .set_collab_unavailable(crate::shell::i18n::t_args(
+                    "collab-unavailable-broker",
+                    &[("error", e.to_string().into())],
+                ));
             None
         }
     }
@@ -4413,7 +4419,7 @@ fn install_device_fabric_bridge(
                     target,
                 } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                        .ok_or_else(|| crate::shell::i18n::t("fabric-focus-app-for-controller"))?;
                     let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
                         &fabric_net,
                         source_token,
@@ -4485,8 +4491,10 @@ fn install_device_fabric_bridge(
                     crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
-                    let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let binding =
+                        active_physical_gamepad_binding(&tree_handle.read()).ok_or_else(|| {
+                            crate::shell::i18n::t("fabric-focus-app-for-remote-input")
+                        })?;
                     let app =
                         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
@@ -6363,6 +6371,23 @@ pub fn run() {
         )
     });
 
+    // Bluetooth pairing agent: BlueZ's default agent for this session, so a
+    // passkey, PIN, confirmation or service authorisation from any pairing
+    // becomes a dialog only the compositor draws, instead of a pairing that
+    // silently fails.
+    let pairing_prompts = crate::bluetooth::PairingPromptHandle::global();
+    pairing_prompts.set_wake(Arc::clone(&session_wake));
+    let bluetooth_agent: Option<
+        crate::session_runtime::Registration<crate::bluetooth::PairingService>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "bluetooth pairing agent",
+            crate::bluetooth::PairingService::start(pairing_prompts),
+            |_| tracing::info!("bluetooth: pairing agent registered with BlueZ"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -8162,34 +8187,38 @@ pub fn run() {
                 nearby_drop_event_count,
                 for event in nearby_drop_events {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
                     let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
-                            || "your device".to_string(),
+                            || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
                         )
                     };
+                    let line = |key: &str, file: String, peer: String| {
+                        t_args(key, &[("file", file.into()), ("device", peer.into())])
+                    };
                     let (title, body) = match event {
                         NearbyDropEvent::Sending { file_name, peer } => (
-                            "Sending nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sending"),
+                            line("nearby-drop-sending-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Sent { file_name, peer } => (
-                            "Sent nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sent"),
+                            line("nearby-drop-sent-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Failed { file_name, peer } => (
-                            "Nearby drop failed".to_string(),
-                            format!("{file_name} · {}", peer_label(&peer)),
+                            t("nearby-drop-failed"),
+                            line("nearby-drop-failed-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Received { path, peer } => (
-                            "Received nearby".to_string(),
-                            format!(
-                                "{} from {}",
+                            t("nearby-drop-received"),
+                            line(
+                                "nearby-drop-received-body",
                                 path.file_name()
                                     .and_then(|name| name.to_str())
-                                    .unwrap_or("File"),
-                                peer_label(&peer)
+                                    .map_or_else(|| t("doc-open-unnamed-file"), str::to_string),
+                                peer_label(&peer),
                             ),
                         ),
                     };
@@ -8494,9 +8523,12 @@ pub fn run() {
             // run normally.
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
-                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
-                    "the desktop's network could not start ({error})"
-                )),
+                Some(error) => {
+                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
+                        "launch-held-network-failed",
+                        &[("error", error.into())],
+                    ));
+                }
             }
             apps_changed = true;
         }
@@ -8953,10 +8985,16 @@ pub fn run() {
                             match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
                             {
                                 Ok(receipt) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                    chrome.push_notification(
+                                        crate::shell::i18n::t("capture-screenshot-sent"),
+                                        receipt.message(),
+                                    );
                                 }),
                                 Err(error) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_error_notification("Screenshot not sent", error);
+                                    chrome.push_error_notification(
+                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
+                                        error,
+                                    );
                                 }),
                             }
                         }
@@ -9002,8 +9040,14 @@ pub fn run() {
                         CaptureOutcome::RecordingAudioLost { path, reason } => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_notification(
-                                    "Recording continues without audio",
-                                    format!("{} · {reason}", path.display()),
+                                    crate::shell::i18n::t("capture-recording-audio-lost"),
+                                    crate::shell::i18n::t_args(
+                                        "capture-recording-audio-lost-body",
+                                        &[
+                                            ("path", path.display().to_string().into()),
+                                            ("reason", reason.into()),
+                                        ],
+                                    ),
                                 );
                             });
                         }
@@ -9031,7 +9075,7 @@ pub fn run() {
                         CaptureOutcome::ReplayAudioLost(reason) => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_warning_notification(
-                                    "Recent capture continues without audio",
+                                    crate::shell::i18n::t("capture-recent-audio-lost"),
                                     reason,
                                 );
                             });
@@ -9059,7 +9103,10 @@ pub fn run() {
                         CaptureOutcome::Failed(error) => {
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification("Capture failed", error);
+                                chrome.push_error_notification(
+                                    crate::shell::i18n::t("capture-failed"),
+                                    error,
+                                );
                             });
                         }
                     }
@@ -9482,6 +9529,7 @@ pub fn run() {
     drop(tray_handle);
     drop(polkit_agent);
     drop(network_secret_agent);
+    drop(bluetooth_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that

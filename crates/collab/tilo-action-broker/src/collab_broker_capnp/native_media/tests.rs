@@ -27,11 +27,9 @@ os._exit(0)
         .expect(
             "Linux kernel qualification requires python3 for the real socket descendant fixture",
         );
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-            .await
-            .unwrap()
-            .unwrap();
+    let (mut stream, _) = tilo_test_env::within("`listener.accept()`", listener.accept())
+        .await
+        .unwrap();
     assert_eq!(
         u32::try_from(stream.peer_cred().unwrap().pid().unwrap()).unwrap(),
         child.id()
@@ -51,10 +49,7 @@ os._exit(0)
     )
     .unwrap();
     stream.write_all(b"G").await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), watcher)
-        .await
-        .unwrap()
-        .unwrap();
+    tilo_test_env::within("`watcher`", watcher).await.unwrap();
     assert_eq!(stopped.load(Ordering::SeqCst), 1);
     assert!(!process.alive());
     stream.read_exact(&mut byte).await.unwrap();
