@@ -80,7 +80,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         QuickFS::new(namespace, hydrator, heuristics).with_availability(availability.clone());
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("tilo_files_live_test".into())];
-    let session = fuser::spawn_mount2(quick_fs, &mount, &config).unwrap();
+    let session = fuser::spawn_mount(quick_fs, &mount, &config).unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
