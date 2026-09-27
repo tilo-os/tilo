@@ -2269,17 +2269,20 @@ impl RemarkView {
         };
         // As tall as the offer, at most the sheet below its header.
         let inset = f64_of(theme.tokens.spacing.s4);
-        let layout = offer.layout(
+        let bottom = sheet.y1 - f64_of(theme.tokens.spacing.s4);
+        let layout = offer.layout_fitting(
             Point::new(body.x0 + inset, body.y0 + inset),
             (body.width() - inset * 2.0).max(120.0),
+            bottom - body.y0 - inset * 2.0,
             *expanded,
+            theme,
             tr,
         );
         let card = Rect::new(
             body.x0,
             body.y0,
             body.x1,
-            (layout.rect.y1 + inset).min(sheet.y1 - f64_of(theme.tokens.spacing.s4)),
+            (layout.rect.y1 + inset).min(bottom),
         );
         let radius = f64_of(theme.tokens.radii.lg);
         ui::surface::shadow(scene, transform, card, radius, &theme.tokens.elevation.e3);
@@ -3269,7 +3272,13 @@ mod tests {
         assert_eq!(offer.alternatives.len(), 1);
         assert!(offer.show_more.contains('1'));
         let mut renderer = TextRenderer::new();
-        let expanded = offer.layout(Point::new(0.0, 0.0), 700.0, true, &mut renderer);
+        let expanded = offer.layout(
+            Point::new(0.0, 0.0),
+            700.0,
+            true,
+            &Theme::dark(),
+            &mut renderer,
+        );
         assert!(
             expanded
                 .texts()

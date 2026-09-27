@@ -17,6 +17,7 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing, TypeScale};
 
 use super::{Badge, BadgeTone, Button, ButtonFace, Column, Container, Row, Spacer, Text, Widget};
 
@@ -94,16 +95,61 @@ pub struct OfferBindings {
     pub toggle: Box<dyn FnMut()>,
 }
 
-const HEADING_SIZE: f32 = 14.0;
-const TITLE_SIZE: f32 = 13.0;
-const DETAIL_SIZE: f32 = 12.0;
-const BUTTON_HEIGHT: f64 = 40.0;
-const BUTTON_PAD: f64 = 16.0;
-const PILL_HEIGHT: f64 = 20.0;
-const PILL_PAD: f64 = 10.0;
-const GAP: f64 = 8.0;
-/// The rhythm between an offer's rows.
-const ROW_GAP: f32 = 10.0;
+/// An offer's geometry, all read from the theme's tokens: its type sizes
+/// from the type scale, its gaps and paddings from the spacing scale, and
+/// its buttons at the pointer-target height plus a step.
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    heading: f32,
+    detail: f32,
+    pill_text: f32,
+    button_height: f64,
+    button_pad: f64,
+    pill_height: f64,
+    pill_pad: f64,
+    gap: f64,
+    row_gap: f64,
+}
+
+impl Geometry {
+    fn of(spacing: &Spacing, metrics: &Metrics, scale: &TypeScale) -> Self {
+        Self {
+            heading: scale.base,
+            detail: scale.sm,
+            pill_text: scale.xs,
+            button_height: f64::from(metrics.min_pointer_target + spacing.s2),
+            button_pad: f64::from(spacing.s4),
+            pill_height: f64::from(spacing.s4 + spacing.s1),
+            pill_pad: f64::from(spacing.s3),
+            gap: f64::from(spacing.s2),
+            row_gap: f64::from(spacing.s3),
+        }
+    }
+
+    /// The reference geometry, for the retained composition, which is
+    /// built before it sees a theme and scales with it afterwards.
+    fn reference() -> Self {
+        Self::of(&Spacing::BASE, &Metrics::BASE, &TypeScale::BASE)
+    }
+
+    fn themed(theme: &Theme) -> Self {
+        Self::of(
+            &theme.tokens.spacing,
+            &theme.tokens.metrics,
+            &theme.tokens.typography.scale,
+        )
+    }
+
+    /// The same offer a step tighter, for a surface short of room: rows a
+    /// small step apart and buttons at the bare pointer-target height.
+    fn compact(self, theme: &Theme) -> Self {
+        Self {
+            row_gap: f64::from(theme.tokens.spacing.s2),
+            button_height: f64::from(theme.tokens.metrics.min_pointer_target),
+            ..self
+        }
+    }
+}
 
 fn f32_of(value: f64) -> f32 {
     crate::num::f32_of_f64(value)
@@ -119,23 +165,25 @@ impl SetupOffer {
             alternatives,
             mut toggle,
         } = bindings;
+        let geometry = Geometry::reference();
         let mut rows: Vec<Box<dyn Widget>> = vec![
-            Self::titled_row(&self.heading, HEADING_SIZE, &self.recommended.pills),
-            Box::new(Text::new(&self.question).with_scaled_size(TITLE_SIZE)),
+            Self::titled_row(&self.heading, geometry, &self.recommended.pills),
+            Box::new(Text::new(&self.question).with_scaled_size(geometry.heading)),
             Box::new(
                 Text::new(&self.description)
-                    .with_scaled_size(DETAIL_SIZE)
+                    .with_scaled_size(geometry.detail)
                     .dimmed(),
             ),
             Box::new(
                 Text::new(&self.recommended.terms)
-                    .with_scaled_size(DETAIL_SIZE)
+                    .with_scaled_size(geometry.detail)
                     .dimmed(),
             ),
         ];
         let button =
             |id: String, label: &str, binding: Option<crate::tilo_actions::ActionBinding<()>>| {
-                let button = Button::new(&id, label, None).fit_content(f32_of(BUTTON_HEIGHT));
+                let button =
+                    Button::new(&id, label, None).fit_content(f32_of(geometry.button_height));
                 match binding {
                     Some(binding) => button.on_action(binding),
                     None => button.with_enabled(false),
@@ -145,7 +193,7 @@ impl SetupOffer {
             button(format!("{id}-set-up"), &self.set_up, set_up).primary(),
         ));
         if !self.alternatives.is_empty() {
-            buttons = buttons.push(gap()).push(Box::new(
+            buttons = buttons.push(gap(geometry)).push(Box::new(
                 Button::new(
                     &format!("{id}-more"),
                     if expanded {
@@ -155,7 +203,7 @@ impl SetupOffer {
                     },
                     None,
                 )
-                .fit_content(f32_of(BUTTON_HEIGHT))
+                .fit_content(f32_of(geometry.button_height))
                 .ghost()
                 .on_view(move || toggle()),
             ));
@@ -163,14 +211,14 @@ impl SetupOffer {
         rows.push(Box::new(buttons.push(Box::new(Spacer::new()))));
         if expanded && !self.alternatives.is_empty() {
             rows.push(Box::new(
-                Text::new(&self.alternatives_title).with_scaled_size(TITLE_SIZE),
+                Text::new(&self.alternatives_title).with_scaled_size(geometry.heading),
             ));
             let mut bindings = alternatives.into_iter();
             for (index, choice) in self.alternatives.iter().enumerate() {
-                rows.push(Self::titled_row(&choice.title, TITLE_SIZE, &choice.pills));
+                rows.push(Self::titled_row(&choice.title, geometry, &choice.pills));
                 rows.push(Box::new(
                     Text::new(&choice.terms)
-                        .with_scaled_size(DETAIL_SIZE)
+                        .with_scaled_size(geometry.detail)
                         .dimmed(),
                 ));
                 rows.push(Box::new(
@@ -187,20 +235,22 @@ impl SetupOffer {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(ROW_GAP);
+            .with_gap(f32_of(geometry.row_gap));
         for row in rows {
             column = column.push(row);
         }
         Box::new(column)
     }
 
-    fn titled_row(title: &str, size: f32, pills: &[OfferPill]) -> Box<dyn Widget> {
+    fn titled_row(title: &str, geometry: Geometry, pills: &[OfferPill]) -> Box<dyn Widget> {
         let mut row = Row::new()
-            .push(Box::new(Text::new(title).with_scaled_size(size)))
+            .push(Box::new(
+                Text::new(title).with_scaled_size(geometry.heading),
+            ))
             .push(Box::new(Spacer::new()));
         for (index, pill) in pills.iter().enumerate() {
             if index > 0 {
-                row = row.push(gap());
+                row = row.push(gap(geometry));
             }
             row = row.push(Box::new(Badge::semantic_pill(
                 pill.label.clone(),
@@ -210,15 +260,53 @@ impl SetupOffer {
         Box::new(row)
     }
 
-    /// Lay the offer out at `origin`, `width` wide, for immediate-mode
-    /// painting: every line wrapped to the width, every pill and button
-    /// placed, and the press targets.
+    /// Lay the offer out at `origin`, `width` wide, in `theme`'s geometry,
+    /// for immediate-mode painting: every line wrapped to the width, every
+    /// pill and button placed, and the press targets.
     #[must_use]
     pub fn layout(
         &self,
         origin: Point,
         width: f64,
         expanded: bool,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> SetupOfferLayout {
+        self.layout_in(
+            origin,
+            width,
+            expanded,
+            Geometry::themed(theme),
+            text_renderer,
+        )
+    }
+
+    /// As [`Self::layout`], a step tighter when the offer would be taller
+    /// than `max_height` in the theme's usual geometry.
+    #[must_use]
+    pub fn layout_fitting(
+        &self,
+        origin: Point,
+        width: f64,
+        max_height: f64,
+        expanded: bool,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> SetupOfferLayout {
+        let usual = Geometry::themed(theme);
+        let layout = self.layout_in(origin, width, expanded, usual, text_renderer);
+        if layout.rect.height() <= max_height {
+            return layout;
+        }
+        self.layout_in(origin, width, expanded, usual.compact(theme), text_renderer)
+    }
+
+    fn layout_in(
+        &self,
+        origin: Point,
+        width: f64,
+        expanded: bool,
+        geometry: Geometry,
         text_renderer: &mut TextRenderer,
     ) -> SetupOfferLayout {
         let mut placed = Placer {
@@ -226,12 +314,13 @@ impl SetupOffer {
             width,
             y: origin.y,
             parts: Vec::new(),
+            geometry,
             text_renderer,
         };
-        placed.titled(&self.heading, HEADING_SIZE, &self.recommended.pills);
-        placed.text(&self.question, TITLE_SIZE, false);
-        placed.text(&self.description, DETAIL_SIZE, true);
-        placed.text(&self.recommended.terms, DETAIL_SIZE, true);
+        placed.titled(&self.heading, &self.recommended.pills);
+        placed.text(&self.question, geometry.heading, false);
+        placed.text(&self.description, geometry.detail, true);
+        placed.text(&self.recommended.terms, geometry.detail, true);
         let mut buttons = vec![(OfferTarget::SetUp, self.set_up.as_str(), Look::Primary)];
         if !self.alternatives.is_empty() {
             buttons.push((
@@ -249,10 +338,10 @@ impl SetupOffer {
         }
         placed.buttons(&buttons);
         if expanded && !self.alternatives.is_empty() {
-            placed.text(&self.alternatives_title, TITLE_SIZE, false);
+            placed.text(&self.alternatives_title, geometry.heading, false);
             for (index, choice) in self.alternatives.iter().enumerate() {
-                placed.titled(&choice.title, TITLE_SIZE, &choice.pills);
-                placed.text(&choice.terms, DETAIL_SIZE, true);
+                placed.titled(&choice.title, &choice.pills);
+                placed.text(&choice.terms, geometry.detail, true);
                 placed.buttons(&[(
                     OfferTarget::Alternative(index),
                     self.instead.as_str(),
@@ -260,7 +349,7 @@ impl SetupOffer {
                 )]);
             }
         }
-        let height = (placed.y - f64::from(ROW_GAP) - origin.y).max(0.0);
+        let height = (placed.y - geometry.row_gap - origin.y).max(0.0);
         SetupOfferLayout {
             rect: Rect::new(origin.x, origin.y, origin.x + width, origin.y + height),
             parts: placed.parts,
@@ -268,11 +357,11 @@ impl SetupOffer {
     }
 }
 
-fn gap() -> Box<dyn Widget> {
+fn gap(geometry: Geometry) -> Box<dyn Widget> {
     Box::new(
         Container::new()
             .with_no_padding()
-            .with_size(f32_of(GAP), 1.0),
+            .with_size(f32_of(geometry.gap), 1.0),
     )
 }
 
@@ -312,12 +401,13 @@ struct Placer<'a> {
     width: f64,
     y: f64,
     parts: Vec<Part>,
+    geometry: Geometry,
     text_renderer: &'a mut TextRenderer,
 }
 
 impl Placer<'_> {
     fn advance(&mut self, height: f64) {
-        self.y += height + f64::from(ROW_GAP);
+        self.y += height + self.geometry.row_gap;
     }
 
     fn text(&mut self, text: &str, size: f32, dimmed: bool) {
@@ -335,14 +425,18 @@ impl Placer<'_> {
 
     /// A title with its pills at the right edge, the title wrapping in the
     /// room the pills leave.
-    fn titled(&mut self, title: &str, size: f32, pills: &[OfferPill]) {
+    fn titled(&mut self, title: &str, pills: &[OfferPill]) {
+        let geometry = self.geometry;
+        let size = geometry.heading;
         let mut x = self.origin.x + self.width;
         let mut pill_parts = Vec::new();
         for pill in pills.iter().rev() {
-            let (label_width, _) = self.text_renderer.measure(&pill.label, 11.0, None);
-            let pill_width = f64::from(label_width) + PILL_PAD * 2.0;
-            let rect = Rect::new(x - pill_width, self.y, x, self.y + PILL_HEIGHT);
-            x = rect.x0 - GAP;
+            let (label_width, _) =
+                self.text_renderer
+                    .measure(&pill.label, geometry.pill_text, None);
+            let pill_width = f64::from(label_width) + geometry.pill_pad * 2.0;
+            let rect = Rect::new(x - pill_width, self.y, x, self.y + geometry.pill_height);
+            x = rect.x0 - geometry.gap;
             pill_parts.push(Part::Pill {
                 rect,
                 label: pill.label.clone(),
@@ -359,22 +453,26 @@ impl Placer<'_> {
             max_width,
         });
         self.parts.extend(pill_parts);
-        self.advance(f64::from(height).max(PILL_HEIGHT));
+        self.advance(f64::from(height).max(geometry.pill_height));
     }
 
     fn buttons(&mut self, buttons: &[(OfferTarget, &str, Look)]) {
+        let geometry = self.geometry;
         let mut x = self.origin.x;
         for (target, label, style) in buttons {
-            let (label_width, _) =
-                self.text_renderer
-                    .measure_weighted(label, TITLE_SIZE, None, TextWeight::Medium);
+            let (label_width, _) = self.text_renderer.measure_weighted(
+                label,
+                geometry.heading,
+                None,
+                TextWeight::Medium,
+            );
             let rect = Rect::new(
                 x,
                 self.y,
-                x + f64::from(label_width) + BUTTON_PAD * 2.0,
-                self.y + BUTTON_HEIGHT,
+                x + f64::from(label_width) + geometry.button_pad * 2.0,
+                self.y + geometry.button_height,
             );
-            x = rect.x1 + GAP;
+            x = rect.x1 + geometry.gap;
             self.parts.push(Part::Button {
                 rect,
                 label: (*label).to_owned(),
@@ -382,7 +480,7 @@ impl Placer<'_> {
                 style: *style,
             });
         }
-        self.advance(BUTTON_HEIGHT);
+        self.advance(geometry.button_height);
     }
 }
 
@@ -524,7 +622,13 @@ mod tests {
     #[test]
     fn the_face_shows_the_recommendation_and_its_alternatives_only_when_asked() {
         let mut text = TextRenderer::new();
-        let collapsed = offer().layout(Point::new(10.0, 20.0), 600.0, false, &mut text);
+        let collapsed = offer().layout(
+            Point::new(10.0, 20.0),
+            600.0,
+            false,
+            &Theme::dark(),
+            &mut text,
+        );
         assert_eq!(
             collapsed
                 .targets()
@@ -553,8 +657,26 @@ mod tests {
             Some("Show more (2)")
         );
 
-        let expanded = offer().layout(Point::new(10.0, 20.0), 600.0, true, &mut text);
+        let expanded = offer().layout(
+            Point::new(10.0, 20.0),
+            600.0,
+            true,
+            &Theme::dark(),
+            &mut text,
+        );
         assert!(expanded.rect.height() > collapsed.rect.height());
+        // Short of room, the same offer tightens to the compact steps.
+        let short = expanded.rect.height() - 20.0;
+        let fitted = offer().layout_fitting(
+            Point::new(10.0, 20.0),
+            600.0,
+            short,
+            true,
+            &Theme::dark(),
+            &mut text,
+        );
+        assert!(fitted.rect.height() < expanded.rect.height());
+        assert_eq!(fitted.targets().len(), expanded.targets().len());
         assert!(
             expanded
                 .texts()
