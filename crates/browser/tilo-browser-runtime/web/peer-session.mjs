@@ -6,7 +6,7 @@ import {createInvitedPeerSource} from './invited-peer-source.mjs';
 import {createCloudPeerSource} from './cloud-peer-source.mjs';
 import {createActionClient,actionError} from './action-client.mjs';
 import {createAgentReadsClient} from './agent-reads-client.mjs';
-import {commitPeerWrites,commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
+import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
 const recoveryOwners=new Set();
@@ -108,9 +108,7 @@ return async function connectPeer(options={}){
       try{
         // The journal (including replay floors/outbox) and all canonical records
         // share this one strict IDB transaction. Network publication follows ack.
-        const result=runtime.peer_pending_batch_bytes||runtime.peer_pending_batch
-          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:(writes,batch)=>deliveryClient?deliveryClient.commitBatch(writes,batch):batch.transferId===undefined?storageCommit(()=>storage.commit(writes)):Promise.reject(Error('Transfer custody unavailable')),acknowledge:value=>{if(value.result.ok)committed++;runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value));},epoch:storage.epoch,publish:publication})
-          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storageCommit(()=>storage.commit(writes)),acknowledge:write=>{committed++;runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined);},publish:publication});
+        const result=await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:(writes,batch)=>deliveryClient?deliveryClient.commitBatch(writes,batch):batch.transferId===undefined?storageCommit(()=>storage.commit(writes)):Promise.reject(Error('Transfer custody unavailable')),acknowledge:value=>{if(value.result.ok)committed++;runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value));},epoch:storage.epoch,publish:publication});
         // Another persister's capture is still settling: nothing was captured, retry shortly.
         if(result.busy){if(busyTimer===null&&!closed)busyTimer=timerSet(()=>{busyTimer=null;void persist(request.publish,request.force).catch(()=>{});},25);return;}
         clearFailure('storage');storageRecovered();

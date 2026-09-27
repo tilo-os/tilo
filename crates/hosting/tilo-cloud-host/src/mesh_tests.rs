@@ -1,5 +1,6 @@
 use super::*;
-use tilo_user_identity::machine_mesh::{MeshRequest, sign_request};
+use crate::mesh::MeshAction;
+use tilo_user_identity::machine_mesh::{BROKER_ACTIONS_SCOPE, MeshRequest, sign_request};
 fn linked() -> (tempfile::TempDir, tempfile::TempDir, MeshRequest) {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -18,13 +19,51 @@ fn linked() -> (tempfile::TempDir, tempfile::TempDir, MeshRequest) {
         link_id: "link-1".into(),
         source: sa.mesh_inspect(20).unwrap(),
         target: sb.mesh_inspect(20).unwrap(),
-        allowed_actions: vec!["model_complete".into()],
+        allowed_actions: vec![BROKER_ACTIONS_SCOPE.into()],
         source_signature: vec![],
         target_signature: vec![],
     };
     sign_request(&mut request, &ra, &rb).unwrap();
     (a, b, request)
 }
+
+/// Same user root on both machines so the source host can also be admitted as a
+/// member on the target and exercise ordinary broker permissions over the link.
+fn linked_same_root() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    MeshRequest,
+    SigningKey,
+) {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[7; 32]);
+    let device_a = SigningKey::from_bytes(&[8; 32]);
+    let device_b = SigningKey::from_bytes(&[10; 32]);
+    let mut sa = Store::open(a.path(), "a").unwrap();
+    let mut sb = Store::open(b.path(), "b").unwrap();
+    let enroll_a = super::tests::approved(sa.inspect(10).unwrap(), &root, &device_a);
+    sa.apply(&enroll_a, 11).unwrap();
+    let enroll_b = super::tests::approved(sb.inspect(10).unwrap(), &root, &device_b);
+    sb.apply(&enroll_b, 11).unwrap();
+    // Source host key is admitted on the target with ordinary member rights.
+    let source_host = sa.key();
+    let admit_source = super::tests::approved(sb.inspect(12).unwrap(), &root, &source_host);
+    sb.apply(&admit_source, 13).unwrap();
+    let mut request = MeshRequest {
+        version: 1,
+        kind: "link".into(),
+        link_id: "link-1".into(),
+        source: sa.mesh_inspect(20).unwrap(),
+        target: sb.mesh_inspect(20).unwrap(),
+        allowed_actions: vec![BROKER_ACTIONS_SCOPE.into()],
+        source_signature: vec![],
+        target_signature: vec![],
+    };
+    sign_request(&mut request, &root, &root).unwrap();
+    (a, b, request, root)
+}
+
 #[test]
 fn mesh_bilateral_replay_substitution_and_durable_unlink() {
     let (a, b, r) = linked();
@@ -52,6 +91,10 @@ fn mesh_bilateral_replay_substitution_and_durable_unlink() {
             .len(),
         1
     );
+    assert_eq!(
+        sa.mesh_status(22).unwrap()["capabilities"]["remote_actions"],
+        serde_json::json!([BROKER_ACTIONS_SCOPE])
+    );
     let mut unlink = r.clone();
     unlink.kind = "unlink".into();
     unlink.source = sa.mesh_inspect(30).unwrap();
@@ -66,6 +109,10 @@ fn mesh_bilateral_replay_substitution_and_durable_unlink() {
     drop(sa);
     let mut sa = Store::open(a.path(), "a").unwrap();
     assert_eq!(sa.mesh_status(32).unwrap()["links"][0]["active"], false);
+    assert_eq!(
+        sa.mesh_status(32).unwrap()["capabilities"]["remote_actions"],
+        serde_json::json!([])
+    );
     let persisted = std::fs::read(a.path().join("state.json")).unwrap();
     let mut repeated = unlink.clone();
     repeated.source.nonce = [99; 32];
@@ -116,5 +163,52 @@ fn mesh_rejects_wrong_roots_self_links_expiry_and_supports_refreshed_retry() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn mesh_delegates_broker_action_with_source_permissions_idempotency_and_unlink() {
+    let (a, b, r, root) = linked_same_root();
+    let mut sa = Store::open(a.path(), "a").unwrap();
+    let mut sb = Store::open(b.path(), "b").unwrap();
+    sa.mesh_apply(&r, 21).unwrap();
+    sb.mesh_apply(&r, 21).unwrap();
+    let source_cert = r.source.host_certificate.clone();
+    let call = MeshAction {
+        version: 1,
+        link_id: r.link_id.clone(),
+        source_machine_id: "a".into(),
+        target_machine_id: "b".into(),
+        source_device_public_key: source_cert.device_public_key,
+        request: ActionRequest {
+            version: 1,
+            room: format!("mesh:{}", r.link_id),
+            invocation_id: "mesh-edit-1".into(),
+            operation: NativeOperation::WriterInsert {
+                text: "delegated over link".into(),
+            },
+        },
+    };
+    let before = sb.peer().unwrap().rows();
+    let receipt = sb.mesh_execute(&source_cert, &call, 22).unwrap();
+    assert_eq!(receipt.status, "completed");
+    assert_ne!(before, sb.peer().unwrap().rows());
+    let heads = sb.peer().unwrap().rows();
+    assert_eq!(receipt, sb.mesh_execute(&source_cert, &call, 23).unwrap());
+    assert_eq!(heads, sb.peer().unwrap().rows());
+
+    let mut unlink = r.clone();
+    unlink.kind = "unlink".into();
+    unlink.source = sa.mesh_inspect(30).unwrap();
+    unlink.target = sb.mesh_inspect(30).unwrap();
+    sign_request(&mut unlink, &root, &root).unwrap();
+    sb.mesh_apply(&unlink, 31).unwrap();
+    let error = sb
+        .mesh_execute(&source_cert, &call, 32)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("revoked") || error.contains("missing"),
+        "{error}"
     );
 }

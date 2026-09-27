@@ -109,6 +109,9 @@ blake3.workspace = true
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
+# File URIs and percent-encoded URI parts.
+url.workspace = true
+percent-encoding.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 

@@ -2787,7 +2787,9 @@ impl StatePeer {
         peer.core.room_doc = durable
             .room_bytes
             .map(|bytes| {
-                AutoCommit::load(&bytes)
+                // Isolated load leaves the document in a worker so the first
+                // inbound change does not pay a full rebuild.
+                tilo_automerge_isolate::load(&bytes)
                     .map(CachedDocument::from)
                     .map_err(err)
             })
@@ -2809,7 +2811,7 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: AutoCommit::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,

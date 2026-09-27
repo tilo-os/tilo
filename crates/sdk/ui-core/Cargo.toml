@@ -99,8 +99,8 @@ settings-store = { path = "../../system/settings-store" }
 url.workspace = true
 # The two halves of `uri`: RFC 3986 percent-decoding and the
 # x-www-form-urlencoded dialect that also reads `+` as a space.
-percent-encoding = "2"
-form_urlencoded = "1"
+percent-encoding.workspace = true
+form_urlencoded.workspace = true
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the

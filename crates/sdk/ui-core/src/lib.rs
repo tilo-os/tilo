@@ -173,6 +173,7 @@ pub mod image_store;
 pub mod ime;
 pub mod input;
 pub mod interaction;
+pub mod keycaps;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
@@ -286,6 +287,7 @@ pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
     KeyboardFamily, PointerPrecision,
 };
+pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
 };
