@@ -188,7 +188,9 @@ warn_slow_podman_storage() {
 # Runs with the *current working directory preserved* (distrobox does this), so
 # relative paths and the cargo workspace resolve correctly.
 inenv() {
-  if [ -n "$TILO_DISTROBOX" ]; then
+  # Already inside a container (the distrobox itself, a build container), or no
+  # distrobox here: the tools are where this runs.
+  if [ -n "$TILO_DISTROBOX" ] && [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null; then
     distrobox enter "$TILO_DISTROBOX" -- bash -lc "$1"
   else
     bash -lc "$1"
