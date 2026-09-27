@@ -307,11 +307,11 @@ pub type WallpaperChannel = Receiver<Result<(), String>>;
 /// (typically from [`PickRequest::send_open_file`]), for `target`. Never
 /// blocks: the D-Bus round trip runs on the app runtime.
 pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChannel {
-    #[cfg(all(feature = "portal", unix))]
+    #[cfg(all(feature = "portal", freedesktop))]
     {
         crate::native::portal::set_wallpaper(file, target)
     }
-    #[cfg(not(all(feature = "portal", unix)))]
+    #[cfg(not(all(feature = "portal", freedesktop)))]
     {
         let _ = (file, target);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -582,7 +582,7 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(all(feature = "native", not(all(feature = "portal", unix))))]
+#[cfg(all(feature = "native", not(all(feature = "portal", freedesktop))))]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())

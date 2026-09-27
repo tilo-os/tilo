@@ -20,6 +20,12 @@ pub use tilo_host::native::host_notifications;
 #[cfg(target_os = "linux")]
 #[doc(inline)]
 pub use tilo_host::native::wayland_clipboard;
+#[cfg(target_os = "android")]
 #[doc(inline)]
-pub use tilo_host::native::{capture, location, mpris, portal, services};
+pub use tilo_host::native::android;
+#[cfg(not(target_os = "android"))]
+#[doc(inline)]
+pub use tilo_host::native::portal;
+#[doc(inline)]
+pub use tilo_host::native::{capture, location, mpris, services};
 pub mod warmup;
