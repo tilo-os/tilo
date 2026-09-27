@@ -557,6 +557,32 @@ impl AudioEngine {
         self.backend.as_ref()?.audio_sink_is_real()
     }
 
+    /// Where a source stands on its way to audio, for a test's failure message.
+    #[cfg(all(test, feature = "audio"))]
+    pub fn diagnostics(&self) -> String {
+        use gstreamer::prelude::*;
+        let pipeline = self.backend.as_ref().map(|backend| {
+            let (result, current, pending) =
+                backend.inner.playbin.state(gstreamer::ClockTime::ZERO);
+            format!(
+                "{result:?} {current:?}->{pending:?}, sink {:?}",
+                backend.inner.sink.as_ref().map(GstObjectExt::name)
+            )
+        });
+        format!(
+            "uri {:?}, initializing {}, pipeline {pipeline:?}, frames {}, want_play {}, \
+             pending_seek {:?}, preroll {:?}, failed {}, capture {:?}",
+            self.current_uri,
+            self.initialization.is_some(),
+            self.frames_rendered(),
+            self.want_play,
+            self.pending_seek,
+            self.preroll_started.map(|started| started.elapsed()),
+            self.initialization_failed,
+            self.capture().map(PcmCapture::snapshot),
+        )
+    }
+
     /// Bounded test/probe helper; production frames call `pump` instead.
     #[cfg(feature = "audio")]
     pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {

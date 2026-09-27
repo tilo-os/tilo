@@ -250,6 +250,12 @@ mod tests {
     use super::*;
     use ui::widget::Widget;
 
+    /// How long a loop waiting on the decoder may run before it counts as
+    /// hung. Every such loop ends as soon as the pipeline gets there, which
+    /// takes milliseconds; a loaded test machine can stall `GStreamer`'s
+    /// initialization and streaming threads for seconds.
+    const DECODER_HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -511,7 +517,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
-            let first_output = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let first_output = std::time::Instant::now() + DECODER_HANG_BOUND;
             while app.audio.frames_rendered() < 2 {
                 app.tick();
                 assert!(std::time::Instant::now() < first_output);
@@ -549,7 +555,7 @@ mod tests {
                 app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                     .is_none()
             );
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
             loop {
                 app.tick();
                 if let Some(result) =
@@ -732,7 +738,7 @@ mod tests {
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                 .is_none()
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
         let update = loop {
             app.tick();
             if let Some(update) =
@@ -1010,9 +1016,7 @@ mod tests {
             .capture()
             .expect("tests capture decoded audio")
             .clone();
-        // A hang bound: decoding a short tone takes milliseconds, but a loaded
-        // test machine can stall the pipeline's threads for seconds.
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let until = std::time::Instant::now() + DECODER_HANG_BOUND;
         // A playing source must also be rendering before the caller acts on
         // it. Unlike a sound server's sink, the capture sink can stall when it
         // is paused while still completing its switch to PLAYING.
@@ -1077,7 +1081,7 @@ mod tests {
             assert!(!json.contains("local song"));
             app.on_toggle_play(&mut doc);
             assert!(!app.pb.playing);
-            let paused_by = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            let paused_by = std::time::Instant::now() + DECODER_HANG_BOUND;
             while app.audio.is_playing_real() {
                 assert!(
                     std::time::Instant::now() < paused_by,
@@ -1115,7 +1119,7 @@ mod tests {
                 app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                     .is_none()
             );
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
             loop {
                 app.tick();
                 if let Some(result) =
@@ -1327,7 +1331,7 @@ mod tests {
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             );
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(7);
+            let until = std::time::Instant::now() + DECODER_HANG_BOUND;
             loop {
                 app.sync(&mut doc, &automerge::ROOT);
                 app.tick();
