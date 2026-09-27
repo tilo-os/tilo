@@ -1906,6 +1906,7 @@ dependencies = [
  "tilo-reference",
  "tilo-test-env",
  "tokio",
+ "tracing",
  "uuid",
  "vello",
  "winit",

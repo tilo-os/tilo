@@ -986,8 +986,15 @@ impl ChatApp {
     pub fn new() -> Self {
         let mut app = Self::bare(ContentStore::for_app());
         app.is_live = true;
-        app.comments =
-            crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
+        // Owner-backed: comment records are minted here, which the plain
+        // launch set (the conversation's checkout) cannot do.
+        let comments = ui::record::RecordOwners::native()
+            .open_launched("so.tilo.chat")
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "comment records unavailable in this launch");
+                ui::record::RecordStore::in_memory()
+            });
+        app.comments = crate::comments::Comments::new(comments);
         app.me = LocalIdentity::resolve();
         // Least privilege until the host hands over the real context.
         app.perms = ChatPermissions::unknown();
@@ -1374,6 +1381,7 @@ impl ChatApp {
                 return;
             }
             Some(Err(reason)) => {
+                tracing::warn!(%reason, "a comment was not kept");
                 self.feedback.notice = Some(crate::i18n::t_args(
                     "chat-notice-failed",
                     &[("reason", ui::i18n::ArgValue::Text(reason))],
@@ -4734,9 +4742,21 @@ impl Widget for ChatApp {
                 self.arrange_reports();
             }
             crate::actions::ChatOperation::Comment { action } => {
-                // Performed on the next sync, which holds the document the
-                // fallback needs; the comment record path needs none.
-                self.feedback.pending.push_back(*action);
+                // A comment is the author's own record, kept now: waiting for
+                // the next model pass would leave the invocation succeeded
+                // while nothing was kept, and a Chat that is not drawing may
+                // not have one for a long while. A refused comment fails the
+                // invocation with its reason. Only a comment no record can
+                // hold waits for that pass, which holds the document its
+                // conversation write needs.
+                match self.perform_as_comment(doc, &action) {
+                    Some(Ok(())) => self.reload(doc),
+                    Some(Err(reason)) => {
+                        tracing::warn!(%reason, "a comment was not kept");
+                        return Err(reason);
+                    }
+                    None => self.feedback.pending.push_back(*action),
+                }
                 self.relayout = true;
             }
             crate::actions::ChatOperation::ImportAttachment { channel, path } => {
