@@ -41,7 +41,7 @@ pub(crate) mod native_initial;
 mod native_media;
 pub use committed_document::CommittedDocument;
 
-use crate::time::Duration;
+use crate::time::{Duration, Instant};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
@@ -66,9 +66,17 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 /// Every step before the report is a local syscall, so reaching this means
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// The worker must abandon a stuck primary RPC before the caller-side startup
-/// deadline so dropping a failed manager always closes its owned transports.
+/// How long a primary `Hello` may take, from the instant the owner submits it.
+/// The worker abandons the join at that deadline; the owner waits for it plus
+/// [`PRIMARY_ROUTE_REPLY_SLACK`], so the worker always decides first and
+/// dropping a failed manager always closes its owned transports.
 const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
+/// How long past the shared primary-route deadline the owner waits for the
+/// worker's answer to arrive.
+const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
+/// The one error a primary route that missed its deadline reports, whichever
+/// side noticed.
+const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
 /// One absolute deadline for each host identity request/response exchange.
 /// The identity client drops a failed stream, so this also bounds shutdown of
 /// partial and late replies without blocking the shovel's `LocalSet`.
@@ -205,6 +213,8 @@ pub(super) struct BrokerTransport {
     /// Reply slot of the latest [`TransportCommand::ConfirmPrimaryRoute`],
     /// answered by the shovel once it has processed every earlier command.
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
+    /// Deadline of the latest primary `Hello`, shared with the shovel.
+    primary_deadline: Option<Instant>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
     /// Whether [`wifi_continuity_command`] has been pointed at this
@@ -247,6 +257,26 @@ impl CollabTransport for BrokerTransport {
 
     fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
         let command = match command {
+            TransportCommand::Primary(CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                handle,
+            }) => {
+                let deadline = crate::time::now()
+                    .checked_add(SDK_PRIMARY_ROUTE_TIMEOUT)
+                    .unwrap_or_else(crate::time::now);
+                self.primary_deadline = Some(deadline);
+                SdkCommand::Hello(PrimaryHello {
+                    route: RouteSpec {
+                        app_id,
+                        cluster_id,
+                        record,
+                    },
+                    handle,
+                    deadline,
+                })
+            }
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
             TransportCommand::Join(route) => SdkCommand::Join(route),
@@ -297,6 +327,7 @@ impl CollabTransport for BrokerTransport {
             }
         };
         self.pending_primary = None;
+        self.primary_deadline = None;
         result
     }
 
@@ -304,6 +335,14 @@ impl CollabTransport for BrokerTransport {
         &mut self,
         timeout: Duration,
     ) -> Option<Result<RouteSpec, String>> {
+        // The worker answers by the shared deadline; waiting past it by the
+        // slack means this side never gives up while the worker still may.
+        let timeout = self.primary_deadline.map_or(timeout, |deadline| {
+            deadline
+                .checked_add(PRIMARY_ROUTE_REPLY_SLACK)
+                .unwrap_or(deadline)
+                .saturating_duration_since(crate::time::now())
+        });
         let result = match self.pending_primary.as_ref()?.recv_timeout(timeout) {
             Ok(result) => Some(result),
             Err(mpsc::RecvTimeoutError::Timeout) => return None,
@@ -313,6 +352,7 @@ impl CollabTransport for BrokerTransport {
             }
         };
         self.pending_primary = None;
+        self.primary_deadline = None;
         result
     }
 
@@ -381,6 +421,8 @@ impl CollabTransport for BrokerTransport {
 }
 
 enum SdkCommand {
+    /// Announce the primary route; the shovel abandons the join at `deadline`.
+    Hello(PrimaryHello),
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
@@ -407,6 +449,14 @@ enum SdkCommand {
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
+}
+
+struct PrimaryHello {
+    route: RouteSpec,
+    handle: Option<String>,
+    /// Set by the owner when it submits the `Hello`, so both sides time the
+    /// join from one instant.
+    deadline: Instant,
 }
 
 impl SdkCommand {
@@ -729,6 +779,17 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
 
 fn command_bytes(command: &SdkCommand) -> Option<usize> {
     match command {
+        SdkCommand::Hello(hello) => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&hello.route.app_id);
+            if let Some(record) = &hello.route.record {
+                meter.string_capacity(record);
+            }
+            if let Some(handle) = &hello.handle {
+                meter.string_capacity(handle);
+            }
+            meter.finish()
+        }
         SdkCommand::Primary(request) => request_bytes(request),
         SdkCommand::ToRoute(route, request) => {
             let mut meter = ByteMeter(request_bytes(request));
@@ -2001,19 +2062,18 @@ fn await_primary_route_on(
     }
     match transport.wait_primary_route_result(SHOVEL_INIT_TIMEOUT) {
         Some(result) => primary_route.accept(result).map_err(|error| {
-            let kind = if error == "collaboration primary route timed out" {
+            let kind = if error == PRIMARY_ROUTE_TIMED_OUT {
                 std::io::ErrorKind::TimedOut
             } else {
                 std::io::ErrorKind::ConnectionRefused
             };
             runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(kind, error))
         }),
-        None if transport.status().is_open() => Err(
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "collaboration primary route did not become ready in time",
-            )),
-        ),
+        None if transport.status().is_open() => {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(std::io::ErrorKind::TimedOut, PRIMARY_ROUTE_TIMED_OUT),
+            ))
+        }
         None => Err(runtime_portal::NotAvailable::ConnectionFailed(
             std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -2572,6 +2632,7 @@ impl CollaborationManager {
             action_directory_rx,
             action_directory_tx,
             pending_primary: None,
+            primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
             _thread: Some(handle),
@@ -2863,21 +2924,15 @@ async fn drive_shovel(
         let document = command.document_len().is_some();
         let mut published = true;
         match command {
-            SdkCommand::Primary(CollabRequest::Hello {
-                app_id,
-                cluster_id,
-                record,
+            SdkCommand::Hello(PrimaryHello {
+                route: spec,
                 handle,
+                deadline,
             }) => {
                 participant_handle = handle;
-                let spec = RouteSpec {
-                    app_id,
-                    cluster_id,
-                    record,
-                };
                 let key = spec.channel_id();
-                primary_result = match tokio::time::timeout(
-                    SDK_PRIMARY_ROUTE_TIMEOUT,
+                primary_result = match tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
                     ensure_sdk_route(
                         &client,
                         &presentation,
@@ -2893,7 +2948,7 @@ async fn drive_shovel(
                 .await
                 {
                     Ok(result) => result.map(|()| spec),
-                    Err(_) => Err("collaboration primary route timed out".to_string()),
+                    Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
             }
@@ -6616,7 +6671,7 @@ mod tests {
         match result.expect("manager must return within the bounded startup window") {
             Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-                assert_eq!(error.to_string(), "collaboration primary route timed out");
+                assert_eq!(error.to_string(), PRIMARY_ROUTE_TIMED_OUT);
             }
             _ => panic!("unacknowledged Hello must never return a connected manager"),
         }
@@ -7465,6 +7520,7 @@ mod tests {
             action_directory_rx,
             action_directory_tx,
             pending_primary: None,
+            primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
             _thread: None,
