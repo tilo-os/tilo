@@ -1427,7 +1427,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let catalogue = emoji::Catalogue::english();
+        let catalogue = crate::i18n::emoji_catalogue();
         // full-window dismiss scrim (lowest priority)
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 

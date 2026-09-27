@@ -24,9 +24,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
@@ -276,13 +273,9 @@ fn non_background_pixels(rgba: &[u8]) -> usize {
 
 fn two_peers() -> (CollaborationManager, CollaborationManager) {
     let broker = TypedBroker::new();
+    // Each returns subscribed, so fan-out traffic reaches both from here on.
     let a = broker.manager("alice");
     let b = broker.manager("bob");
-
-    assert!(a.is_connected(), "peer A must connect to the broker");
-    assert!(b.is_connected(), "peer B must connect to the broker");
-    // Let both Hellos register on the broker before any fan-out traffic.
-    thread::sleep(Duration::from_millis(150));
     (a, b)
 }
 

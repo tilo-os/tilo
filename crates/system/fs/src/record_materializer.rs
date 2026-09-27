@@ -1148,8 +1148,7 @@ mod tests {
                         .record_mutation(&repository, fixture.binding(), &old_envelope, &captured)
                         .unwrap();
                 });
-                wait.recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 repository.apply(key, &current_envelope, &Allow).unwrap();
                 drop(namespace);
                 worker.join().unwrap();

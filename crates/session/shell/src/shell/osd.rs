@@ -73,6 +73,9 @@ pub enum OsdKind {
     /// The focused app takes every key, shell shortcuts included
     /// (`captured`), or the shortcuts were just handed back.
     KeysCaptured { captured: bool },
+    /// A tablet pad's mode button switched its rings, strips and buttons
+    /// to `mode` (from zero) of `modes`.
+    PadMode { mode: u32, modes: u32 },
 }
 
 /// A short caption carried inline so a readout stays `Copy`: the slab is
@@ -260,6 +263,15 @@ impl Osd {
         }
     }
 
+    /// A tablet pad now in `mode` (from zero) of `modes`.
+    pub fn pad_mode(mode: u32, modes: u32) -> Self {
+        Self {
+            kind: OsdKind::PadMode { mode, modes },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     pub fn input_source(name: &str) -> Self {
         Self {
             kind: OsdKind::InputSource(OsdLabel::new(name)),
@@ -331,6 +343,13 @@ impl Osd {
                 )],
             ),
             OsdKind::KeysCaptured { captured: false } => t("osd-keys-released"),
+            OsdKind::PadMode { mode, modes } => t_args(
+                "osd-pad-mode",
+                &[
+                    ("mode", mode.saturating_add(1).into()),
+                    ("modes", modes.max(mode.saturating_add(1)).into()),
+                ],
+            ),
         }
     }
 
@@ -579,6 +598,7 @@ fn draw_glyph(
             },
         ),
         OsdKind::PointerHeld { .. } => (ui::icons::Icon::MousePointer2, colors.text_primary),
+        OsdKind::PadMode { .. } => (ui::icons::Icon::PenTool, colors.text_primary),
         OsdKind::Magnifier { zoom } => (
             ui::icons::Icon::Search,
             if zoom > settings_store::magnifier::OFF {
@@ -849,6 +869,14 @@ mod tests {
         let long = "Ü".repeat(40);
         let cut = Osd::input_source(&long).caption();
         assert!(cut.len() <= 48 && long.starts_with(&cut) && !cut.is_empty());
+    }
+
+    #[test]
+    fn a_pad_mode_readout_counts_modes_from_one_without_a_bar() {
+        let osd = Osd::pad_mode(1, 4);
+        let caption = osd.caption();
+        assert!(caption.contains('2') && caption.contains('4'), "{caption}");
+        assert!(!osd.has_level());
     }
 
     #[test]

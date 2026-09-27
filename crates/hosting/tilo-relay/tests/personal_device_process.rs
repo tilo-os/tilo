@@ -434,12 +434,11 @@ trap 'kill "$requester" 2>/dev/null || true' EXIT
 # setpriv executes. Do not race the helper's ownership validation against that
 # transition.
 requester_uid=
-attempts=0
 while [ "$requester_uid" != 42424 ]; do
     requester_uid=$(/proc/self/fd/6 '$1 == "Uid:" { print $2; exit }' "/proc/$requester/status" 2>/dev/null) || requester_uid=
-    attempts=$((attempts + 1))
-    if [ "$attempts" -ge 500 ]; then
-        echo "requester did not assume uid 42424 (observed ${requester_uid:-missing})" >&2
+    if [ "$SECONDS" -ge "$TILO_HANG_BOUND_SECS" ]; then
+        state=$(/proc/self/fd/6 '$1 == "State:" { print $2 $3; exit }' "/proc/$requester/status" 2>/dev/null) || state=
+        echo "requester did not assume uid 42424 within ${TILO_HANG_BOUND_SECS}s (observed ${requester_uid:-missing}, state ${state:-missing})" >&2
         exit 1
     fi
     /proc/self/fd/7 0.01
@@ -455,6 +454,10 @@ wait "$approval"
             .arg("bash")
             .arg("-ceu")
             .arg(script)
+            .env(
+                "TILO_HANG_BOUND_SECS",
+                tilo_test_env::hang_bound().as_secs().to_string(),
+            )
             .env("TILO_ENROLL_BIN", enroll)
             .env("TILO_HELPER", helper)
             .env("TILO_SCOPE", scope.path())

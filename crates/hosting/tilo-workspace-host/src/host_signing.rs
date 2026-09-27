@@ -207,11 +207,20 @@ impl PendingSignature {
         self.0.matches_route(app, record)
     }
     pub fn apply(self, owner: &mut SessionOwner) -> (impl FnOnce() + use<>, Result<(), String>) {
+        self.apply_until(owner, crate::owner_commit::execution_deadline())
+    }
+    /// [`Self::apply`] with the caller's reply deadline chosen by the owner
+    /// turn instead of the shipping execution budget.
+    fn apply_until(
+        self,
+        owner: &mut SessionOwner,
+        deadline: std::time::Instant,
+    ) -> (impl FnOnce() + use<>, Result<(), String>) {
         let timing = self.1;
         let policy_time = self.2;
         timing.mark("owner_dequeued");
         self.0.apply_scoped_fenced(
-            crate::owner_commit::execution_deadline(),
+            deadline,
             |route, certificate, mutation, authorization| {
                 if let Some(authorization) = authorization {
                     let time = policy_time.as_ref().ok_or_else(|| HostDocumentTurnError::Refused("startup replay requires original registered owner time".into()))?;
@@ -795,7 +804,10 @@ mod tests {
         );
         assert!(service.health().is_ok());
         assert_eq!(owner.status(), before);
-        let (complete, result) = pending.apply(&mut owner);
+        // The owner turn starts the caller's reply deadline. Its shipping five
+        // seconds would also bound this runner's commit fsyncs, so the turn
+        // here grants the shared hang bound instead.
+        let (complete, result) = pending.apply_until(&mut owner, tilo_test_env::hang_deadline());
         result.unwrap();
         complete();
         let signed = waiting.await.unwrap().unwrap();

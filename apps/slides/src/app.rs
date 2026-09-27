@@ -12076,7 +12076,7 @@ mod history_interruption_tests {
             .as_ref()
             .unwrap()
             .rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         let DocumentJobResult::Save { result, .. } = &completed else {
             panic!("expected a save completion");

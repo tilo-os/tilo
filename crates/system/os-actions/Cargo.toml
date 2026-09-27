@@ -40,6 +40,7 @@ workspace-hack = { version = "0.1" }
 # Fixture sysfs trees for testing the backlight reader/writer against
 # representative directory layouts.
 tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

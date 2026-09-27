@@ -664,7 +664,7 @@ fn connect_files_and_word_processor(
         ready_tx.send(()).unwrap();
         drive_files_peer(files_peer, seed_foreign(), &stop_rx);
     });
-    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
 
     // The word processor, holding the page with the instruction on it.
     let mut wp_peer = UnixStream::connect(sock);
