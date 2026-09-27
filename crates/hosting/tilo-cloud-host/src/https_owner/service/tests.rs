@@ -390,7 +390,7 @@ async fn started(
             .await
         })
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while !ready.exists() {
         assert!(
             !server.is_finished(),
@@ -1129,7 +1129,7 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
             .await
         })
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while !ready.exists() {
         assert!(
             !server.is_finished(),
@@ -1153,7 +1153,7 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
         assert!(ready.exists(), "Ready record withdrawn while serving");
     }
     let _ = stop.send(());
-    let served = tokio::time::timeout(Duration::from_secs(30), server)
+    let served = tokio::time::timeout(tilo_test_env::hang_bound(), server)
         .await
         .expect("clean shutdown")
         .unwrap();
@@ -1191,7 +1191,7 @@ fn client_peer_host(hint: &tilo_peer_state::join::TransportHint) -> DeviceCert {
     hint.host.clone()
 }
 async fn renewed(client: &Client, before: [u8; 32]) -> [u8; 32] {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let digest = descriptor_digest(client).await;
         if digest != before {
@@ -1447,7 +1447,7 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
         "/peer/v3/events?cursor={}&mode=poll",
         encode_cursor_url(cursor.as_ref().unwrap().as_bytes()).unwrap()
     );
-    let (status, body) = tokio::time::timeout(Duration::from_secs(10), client.get(&target))
+    let (status, body) = tokio::time::timeout(tilo_test_env::hang_bound(), client.get(&target))
         .await
         .expect("answered");
     assert_eq!(
@@ -1555,7 +1555,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
         "/peer/v3/events?cursor={}&mode=poll",
         encode_cursor_url(cursor.as_ref().unwrap().as_bytes()).unwrap()
     );
-    let (status, body) = tokio::time::timeout(Duration::from_secs(10), client.get(&target))
+    let (status, body) = tokio::time::timeout(tilo_test_env::hang_bound(), client.get(&target))
         .await
         .expect("rotation wakes the held poll");
     assert_eq!(
@@ -1704,7 +1704,7 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
             .await
         })
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while !ready.exists() {
         assert!(
             !server.is_finished(),
@@ -1812,7 +1812,7 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(body.is_empty());
     let _ = stop.send(());
-    let served = tokio::time::timeout(Duration::from_secs(30), server)
+    let served = tokio::time::timeout(tilo_test_env::hang_bound(), server)
         .await
         .expect("clean shutdown")
         .unwrap();
@@ -2267,7 +2267,7 @@ async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
     );
     let over_h2 = response.bytes().await.unwrap().to_vec();
     let (status, over_h3) = tokio::time::timeout(
-        Duration::from_secs(10),
+        tilo_test_env::hang_bound(),
         h3_get(&origin, "/peer/v3/descriptor"),
     )
     .await

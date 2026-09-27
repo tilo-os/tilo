@@ -137,7 +137,7 @@ async fn admitted_grant_reaches_moq() {
     let relay = LoopbackRelay::start(authority.clone()).unwrap();
     let session = open(&relay).await;
     let connected = start(session, b"good", None, None).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while relay.counters().accepted == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
