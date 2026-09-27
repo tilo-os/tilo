@@ -32,7 +32,7 @@ mod android_env;
 /// executable, so there is no process `main`. Invoked once at the top level
 /// of an app's `main.rs`, this defines the `android_main` the activity calls,
 /// which prepares the process and runs that same `main`. On every other
-/// target it expands to nothing. `crates/packaging/android` builds the file
+/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
 /// as a `cdylib` example.
 #[macro_export]
 macro_rules! android_main {

@@ -1,5 +1,5 @@
 //! The Java half of the Android services: Tilo's classes in the APK
-//! (`crates/packaging/android/java/so/tilo/android`) and the calls they make
+//! (`crates/sdk/ui-core/android/java/so/tilo/android`) and the calls they make
 //! back into this library once the user answers a chooser or a permission
 //! prompt, or the location service answers.
 
