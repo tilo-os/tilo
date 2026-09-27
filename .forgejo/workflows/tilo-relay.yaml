@@ -249,10 +249,43 @@ jobs:
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
-    uses: ./.forgejo/workflows/snapshot-rpms.yml
-    # Forgejo requires OIDC opt-in on the caller as well as the nested signing jobs.
-    enable-openid-connect: true
-    secrets: inherit
+    # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
+    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # only its exact content fingerprint here; never fall back to a stale tag.
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install snapshot verification tools
+        run: |
+          set -euo pipefail
+          ./os/dev/install-cached-cosign.sh
+          missing=()
+          for tool in skopeo jq; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+            else
+              sudo -n dnf install -y "${missing[@]}"
+            fi
+          fi
+      - name: Resolve the exact signed RPM snapshot fingerprint
+        id: resolve
+        run: |
+          set -euo pipefail
+          ./os/dev/resolve-rpm-snapshot.sh || {
+            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
+            exit 1
+          }
 
   build-and-push:
     needs: [signing-preflight, applicability, ensure-rpms]
