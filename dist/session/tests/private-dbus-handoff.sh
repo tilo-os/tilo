@@ -29,6 +29,7 @@ private_bus() {
     mkdir -p "$XDG_DATA_HOME/dbus-1/services"
 
     printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/systemctl"
+    printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/loginctl"
     printf '%s\n' \
         '#!/bin/sh' \
         'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
@@ -39,7 +40,7 @@ private_bus() {
         '#!/bin/sh' \
         'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
-    chmod 0755 "$root/systemctl" "$root/tilo-shell" "$root/dbus-probe"
+    chmod 0755 "$root/systemctl" "$root/loginctl" "$root/tilo-shell" "$root/dbus-probe"
     for probe_name in Initial Tilo Empty EmptyLogout Gnome; do
         printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
@@ -52,6 +53,7 @@ private_bus() {
     # real and talks to the private bus.
     tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
         SYSTEMCTL="$root/systemctl" \
+        LOGINCTL="$root/loginctl" \
         FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
     tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
         TILO_SHELL="$root/tilo-shell" \
