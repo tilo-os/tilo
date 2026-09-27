@@ -31,8 +31,8 @@ use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 use crate::compositor::backend::{BackendEvent, PadAction, PadDescription, PadEvent};
 use crate::compositor::state::State;
 
-/// How far a ring turns for one step of a mapped action.
-pub const RING_STEP_DEGREES: f64 = 15.0;
+/// Steps of a mapped action in one full turn of a ring: one every 15°.
+pub const RING_STEPS_PER_TURN: u32 = 24;
 /// How far along a strip (of `0.0..=1.0`) a finger slides for one step.
 pub const STRIP_STEP: f64 = 0.1;
 
@@ -423,7 +423,7 @@ impl DialSteps {
             // The shorter way round, so crossing the top is a small turn.
             PadDial::Ring(_) => (
                 (position - last + 540.0).rem_euclid(360.0) - 180.0,
-                RING_STEP_DEGREES,
+                360.0 / f64::from(RING_STEPS_PER_TURN),
             ),
             PadDial::Strip(_) => (last - position, STRIP_STEP),
         };
