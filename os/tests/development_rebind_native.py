@@ -84,6 +84,14 @@ def install_packaged_rootfs(image_root):
     if result.returncode:
         detail = result.stdout.decode(errors='replace')[-4096:]
         raise RuntimeError('packaged-kernel installroot failed: ' + detail)
+    # Match the production image: dracut's ldconfig -r rejects Fedora's
+    # relative include pattern even though it names the same directory.
+    config = image_root / 'etc/ld.so.conf'
+    original = config.read_text()
+    normalized = original.replace('include ld.so.conf.d/*.conf\n',
+                                  'include /etc/ld.so.conf.d/*.conf\n')
+    if normalized != original:
+        config.write_text(normalized)
     modules = sorted(path.name for path in (image_root / 'usr/lib/modules').iterdir()
                      if path.is_dir())
     if len(modules) != 1:
