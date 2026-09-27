@@ -20,10 +20,10 @@ use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::overlay_host::modal_transition_curve;
 use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
-    DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
-    draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
-    permissions_pane_layout, recording_delegates_rect,
+    DefaultAppsCtx, agents_add_rect, agents_add_triage_rect, agents_pane_rows, default_app_rows,
+    draw_agents_pane, draw_default_apps_pane, draw_members_pane, draw_permissions_pane,
+    members_pane_rows, ownership_action_rect, ownership_transfer_resource,
+    permission_profiles_rect, permissions_pane_layout, recording_delegates_rect,
 };
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
@@ -71,6 +71,8 @@ pub enum EventOutcome {
     AddAgent,
     /// Allows or forbids the room's members' session recorders.
     ToggleRecordingDelegates,
+    /// Add the feedback triage agent through the same admission flow.
+    AddTriageAgent,
     /// Opens Privacy & Security with this agent preselected as the subject.
     ReviewAgent(String),
     RemoveAgent(String),
@@ -137,6 +139,7 @@ pub struct WorkspaceSettingsOverlay {
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
     recording_delegates_rect: Rect,
+    agent_add_triage_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
@@ -159,6 +162,7 @@ impl Default for WorkspaceSettingsOverlay {
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
             recording_delegates_rect: Rect::ZERO,
+            agent_add_triage_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
             member_sheet: None,
             member_sheet_focus: 0,
@@ -508,6 +512,7 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.recording_delegates_rect = Rect::ZERO;
+        self.agent_add_triage_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.member_sheet_option_rects.clear();
     }
@@ -625,6 +630,22 @@ impl WorkspaceSettingsOverlay {
 
     /// Resolve a click to one semantic outcome. The host remains the sole
     /// owner of authorization and mutation side effects.
+    /// The Agents pane's entry points under `point`: the guided setup, the
+    /// room's recording switch and adding the triage agent.
+    fn agents_entry_hit(&self, point: Point) -> Option<EventOutcome> {
+        [
+            (self.agent_add_rect, EventOutcome::AddAgent),
+            (
+                self.recording_delegates_rect,
+                EventOutcome::ToggleRecordingDelegates,
+            ),
+            (self.agent_add_triage_rect, EventOutcome::AddTriageAgent),
+        ]
+        .into_iter()
+        .find(|(rect, _)| rect.area() > 0.0 && rect.contains(point))
+        .map(|(_, outcome)| outcome)
+    }
+
     pub fn hit_test(&self, point: Point, active_tab: WsTab) -> EventOutcome {
         if let Some(sheet) = &self.member_sheet {
             if let Some(index) = self
@@ -685,16 +706,9 @@ impl WorkspaceSettingsOverlay {
             return EventOutcome::ManageOwnership;
         }
         if matches!(active_tab, WsTab::Agents)
-            && self.agent_add_rect.area() > 0.0
-            && self.agent_add_rect.contains(point)
+            && let Some(outcome) = self.agents_entry_hit(point)
         {
-            return EventOutcome::AddAgent;
-        }
-        if matches!(active_tab, WsTab::Agents)
-            && self.recording_delegates_rect.area() > 0.0
-            && self.recording_delegates_rect.contains(point)
-        {
-            return EventOutcome::ToggleRecordingDelegates;
+            return outcome;
         }
         for (agent, review, remove) in &self.agent_control_rects {
             if review.area() > 0.0 && review.contains(point) {
@@ -1543,6 +1557,7 @@ impl WorkspaceSettingsOverlay {
                 self.ownership_action_rect = Rect::ZERO;
                 self.agent_add_rect = Rect::ZERO;
                 self.recording_delegates_rect = Rect::ZERO;
+                self.agent_add_triage_rect = Rect::ZERO;
                 self.agent_control_rects.clear();
                 self.default_app_rects.clear();
                 false
@@ -1624,6 +1639,7 @@ impl WorkspaceSettingsOverlay {
         let body_rect = Self::body_rect(rect);
         self.agent_add_rect = agents_add_rect(body_rect);
         self.recording_delegates_rect = recording_delegates_rect(body_rect);
+        self.agent_add_triage_rect = agents_add_triage_rect(body_rect);
         let is_owner = is_active_workspace_owner(state);
         if let Some(ws) = tree.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {

@@ -16089,6 +16089,16 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
+            WorkspaceSettingsOutcome::AddTriageAgent => {
+                if is_owner {
+                    // The same typed palette flow as any agent: one action,
+                    // reviewable and invocable by keyboard or automation.
+                    self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                    self.palette
+                        .set_query(&crate::shell::i18n::t("search-action-agent-invite-triage"));
+                    self.last_search_query = "\0agent-onboarding\0".to_string();
+                }
+            }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();

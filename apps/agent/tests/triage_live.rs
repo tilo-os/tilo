@@ -36,7 +36,7 @@ use tilo_agent::triage::{self, forge::Forge, think::NoModel};
 
 const ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x7a1a_9e00_0000_4c0d_9a11_0000_0000_0077);
 const APP: &str = "so.tilo.chat";
-const AGENT: &str = "triage";
+const AGENT: &str = shell::shell::workspace_settings::TRIAGE_AGENT;
 const FORGE_ACCOUNT: &str = "tilo-forge";
 
 struct Person {
@@ -440,8 +440,8 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
         ROOM.to_string(),
         collab_types::Verb::Comment,
     ));
-    // Contributor: comment only, and only Chat's reply-shaped actions.
-    for cap in triage::participant::contributor_grants(&ROOM.to_string(), AGENT) {
+    // The triage agent's Contributor grants, as Workspace Settings adds them.
+    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
         workspace.grant_capability(cap);
     }
     let mut tree = WorkspaceTree::default();
@@ -793,7 +793,7 @@ fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
         ROOM.to_string(),
         collab_types::Verb::Write,
     ));
-    for cap in triage::participant::contributor_grants(&ROOM.to_string(), AGENT) {
+    for cap in shell::shell::workspace_settings::triage_agent_grants(&ROOM.to_string(), AGENT) {
         workspace.grant_capability(cap);
     }
     let mut tree = WorkspaceTree::default();
@@ -820,7 +820,6 @@ fn the_triage_agent_answers_a_private_report_in_a_direct_room() {
         may(&room.editor, ui::permissions::Verb::Write)
             && chat::doc::ChatDoc::is_seeded(&room.editor.state_mut_for_test().doc)
     });
-    let team_chat = own_chat(&host, &team, &mut room);
     let reporter_chat = own_chat(&host, &reporter, &mut room);
     room.agent = Some(
         Participant::connect(

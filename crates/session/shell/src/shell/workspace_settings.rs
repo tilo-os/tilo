@@ -2416,6 +2416,44 @@ pub fn admit_agent(
     edit
 }
 
+/// The feedback triage agent's name as a room admits it.
+pub const TRIAGE_AGENT: &str = "triage";
+
+/// Chat's package id, whose comment records the triage agent writes.
+const CHAT_APP_ID: &str = "so.tilo.chat";
+
+/// What a room grants the feedback triage agent: the Contributor bundle,
+/// scoped to Chat. A room membership that lets it comment, and `Comment` on
+/// Chat, so it may write its own comment records (its replies) and take
+/// Chat's comment-level actions such as `remark`. Nothing that writes the
+/// conversation, so it can never set a status or approve an issue; removing
+/// the agent revokes both.
+///
+/// Scoped to Chat rather than to the `#feedback` channel: a channel is not an
+/// artifact a capability can name. What the agent writes is one comment
+/// record per reply, each its own artifact, and in a direct room it replies
+/// to conversation messages rather than to a channel, so no single artifact
+/// covers its work.
+pub fn triage_agent_grants(room: &str, agent: &str) -> Vec<CapOverride> {
+    vec![
+        CapOverride::membership(
+            Subject::agent(agent),
+            room,
+            AgentAuthorityPreset::Contributor.admission_verb(),
+        )
+        .with_id(format!(
+            "agent-member:{agent}:{}",
+            AgentAuthorityPreset::Contributor.id()
+        )),
+        CapOverride::grant(
+            Subject::agent(agent),
+            Scope::App(CHAT_APP_ID.into()),
+            Verb::Comment,
+        )
+        .with_id(format!("agent-grant:{agent}:chat")),
+    ]
+}
+
 /// Geometry for the always-visible entry point into the guided setup.
 pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     Rect::new(
@@ -2489,6 +2527,48 @@ fn draw_recording_delegates_switch(
         )
         .disabled(!is_owner),
     );
+}
+
+/// The Agents pane's entry points: the guided setup, and adding the feedback
+/// triage agent through the same admission flow.
+fn draw_agent_add_buttons(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    draw_primary_button(
+        scene,
+        transform,
+        agents_add_rect(pane_rect),
+        &t("workspace-settings-add-agent"),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+    draw_primary_button(
+        scene,
+        transform,
+        agents_add_triage_rect(pane_rect),
+        &t("workspace-settings-add-triage-agent"),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+/// Geometry for adding the feedback triage agent, after the room's
+/// recording switch.
+pub fn agents_add_triage_rect(pane_rect: Rect) -> Rect {
+    let recording = recording_delegates_rect(pane_rect);
+    Rect::new(
+        recording.x1 + 12.0,
+        recording.y0,
+        recording.x1 + 12.0 + 196.0,
+        recording.y1,
+    )
 }
 
 /// Stable, policy-backed rows for the Agents pane.
@@ -3073,15 +3153,7 @@ pub fn draw_agents_pane(
         theme,
     );
     if rows.is_empty() {
-        draw_primary_button(
-            scene,
-            transform,
-            agents_add_rect(pane_rect),
-            &t("workspace-settings-add-agent"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
+        draw_agent_add_buttons(scene, transform, pane_rect, is_owner, text_renderer, theme);
         let empty = Rect::new(
             pane_rect.x0,
             pane_rect.y0
@@ -3122,15 +3194,7 @@ pub fn draw_agents_pane(
         text_renderer,
         theme,
     );
-    draw_primary_button(
-        scene,
-        transform,
-        agents_add_rect(pane_rect),
-        &t("workspace-settings-add-agent"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
+    draw_agent_add_buttons(scene, transform, pane_rect, is_owner, text_renderer, theme);
     for row in &rows {
         draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
     }
@@ -5270,6 +5334,39 @@ mod agents_pane_tests {
             edit.revoked,
             vec!["agent-member:recorder:observer".to_string()]
         );
+    }
+
+    /// The triage agent is added as a Contributor on Chat: listed with the
+    /// agents, able to comment and never to write, and removing it takes
+    /// every grant with it.
+    #[test]
+    fn the_triage_agent_is_a_chat_contributor_that_removal_revokes() {
+        let mut ws = Workspace::new(WorkspaceId::from(19), "triage-test");
+        ws.set_owner(OWNER);
+        for cap in triage_agent_grants(&ws.room.to_string(), TRIAGE_AGENT) {
+            ws.grant_as(&OWNER.to_string(), cap)
+                .expect("owner admits the triage agent");
+        }
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), Some(CapRole::Commenter));
+        assert_eq!(
+            agent_authority_preset(&ws, TRIAGE_AGENT),
+            AgentAuthorityPreset::Contributor
+        );
+        let actor = ws.actor_for_agent(TRIAGE_AGENT);
+        let chat = ResourceRef::App("so.tilo.chat".into());
+        assert!(ws.allows(&actor, &chat, Verb::Comment));
+        assert!(!ws.allows(&actor, &chat, Verb::Write), "never an Editor");
+        assert!(
+            !ws.allows(
+                &actor,
+                &ResourceRef::App("so.tilo.notes".into()),
+                Verb::Comment
+            ),
+            "nothing beyond Chat"
+        );
+        let removed = remove_agent(&mut ws, &OWNER.to_string(), TRIAGE_AGENT);
+        assert_eq!(removed.revoked.len(), 2);
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), None);
     }
 
     #[test]

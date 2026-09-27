@@ -12108,6 +12108,10 @@ pub(crate) mod tests {
     /// much authority they hold, would otherwise write under the other
     /// participant's device, and is refused and never offered it.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario: the offer, the refusal, the owner's own call and the closed connection"
+    )]
     fn an_action_speaking_for_a_participant_is_delivered_only_from_them() {
         let mut workspace =
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(32), "Chat room");

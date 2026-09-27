@@ -329,7 +329,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Admin;
         }
         // Recording admits the Recorder agent to the room.
-        "peer.invite.named" | "agent.invite" | "feedback.record.start" | "remark.record.start" => {
+        "peer.invite.named"
+        | "agent.invite"
+        | "agent.invite.triage"
+        | "feedback.record.start"
+        | "remark.record.start" => {
             contract.permission = PermissionRequirement::Invite;
         }
         "feedback.record.stop"
@@ -395,9 +399,11 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
-        "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
-            tilo_actions::OperationKind::Document
-        }
+        "text.insert"
+        | "record.bring"
+        | "peer.invite.named"
+        | "agent.invite"
+        | "agent.invite.triage" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ => tilo_actions::OperationKind::Effect,
     }
@@ -1650,6 +1656,42 @@ impl Action {
                 }
                 // Land back on the dedicated, clearly non-human roster. The
                 // next visible action is Review access, not a chat prompt.
+                st.open_workspace_settings(crate::shell::chrome_state::WsTab::Agents);
+                Ok(())
+            },
+        },
+        // The feedback triage agent: `agent.invite` with its name and its
+        // Contributor grants on Chat, reviewed like any agent's.
+        Action {
+            id: "agent.invite.triage",
+            label: "search-action-agent-invite-triage",
+            subtitle: "search-action-agent-invite-triage-subtitle",
+            params: &[],
+            apply: |st, _args| {
+                use crate::shell::workspace_settings::{TRIAGE_AGENT, triage_agent_grants};
+                let user = st.active_local_user();
+                let admitted = {
+                    let mut tree = st.tree_mut();
+                    let Some((ws_id, room)) = tree
+                        .desktop
+                        .active_workspace()
+                        .map(|w| (w.id, w.room.to_string()))
+                    else {
+                        return Err(ActionError::Refused(
+                            "there is no workspace here to add the triage agent to".into(),
+                        ));
+                    };
+                    let admitted = triage_agent_grants(&room, TRIAGE_AGENT)
+                        .into_iter()
+                        .all(|cap| tree.grant_in_workspace(ws_id, &user, cap).is_some());
+                    drop(tree);
+                    admitted
+                };
+                if !admitted {
+                    return Err(ActionError::Refused(format!(
+                        "{user} does not administer this workspace, so the triage agent was not added"
+                    )));
+                }
                 st.open_workspace_settings(crate::shell::chrome_state::WsTab::Agents);
                 Ok(())
             },

@@ -63,6 +63,7 @@ pub const ADD_ONEDRIVE_KEY: &str = "settings.accounts.add.onedrive";
 pub const ADD_DROPBOX_KEY: &str = "settings.accounts.add.dropbox";
 pub const ADD_ICLOUD_DRIVE_KEY: &str = "settings.accounts.add.icloud-drive";
 pub const ADD_AZURE_OPENAI_KEY: &str = "settings.accounts.add.azure-openai";
+pub const ADD_FORGEJO_KEY: &str = "settings.accounts.add.forgejo";
 /// Keys the inline form's Save / Cancel buttons write.
 pub const FORM_SAVE_KEY: &str = "settings.accounts.form.save";
 pub const FORM_CANCEL_KEY: &str = "settings.accounts.form.cancel";
@@ -327,6 +328,11 @@ impl AccountsPane {
 
     pub fn form_open(&self) -> bool {
         self.form_kind.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn form_error_for_test(&self) -> Option<&str> {
+        self.form_error.as_deref()
     }
 
     pub fn directory(&self) -> &AccountDirectory {
@@ -619,12 +625,22 @@ impl AccountsPane {
                         .into(),
                 );
             }
+            if kind == AccountKind::Forgejo {
+                self.form_user.set(
+                    stored
+                        .config
+                        .get("repository")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                );
+            }
             let server = stored
                 .config
-                .get(if kind == AccountKind::WebDav {
-                    "base_url"
-                } else {
-                    "server_url"
+                .get(match kind {
+                    AccountKind::WebDav => "base_url",
+                    AccountKind::Forgejo => "server",
+                    _ => "server_url",
                 })
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
@@ -791,6 +807,7 @@ impl AccountsPane {
             AccountKind::Dropbox,
             AccountKind::ICloudDrive,
             AccountKind::AzureOpenAi,
+            AccountKind::Forgejo,
         ] {
             panel.push(self.kind_card(kind, theme));
         }
@@ -850,6 +867,12 @@ impl AccountsPane {
             body.push(caption(
                 "Added when a provider signs in with Microsoft in Settings › AI. Removing one \
                  here signs that provider out.",
+            ));
+        }
+        if kind == AccountKind::Forgejo {
+            body.push(caption(
+                "A repository the feedback triage agent files issues in, once an Editor \
+                 approves them. The access token stays in this device's account vault.",
             ));
         }
         if kind.is_custodied()
@@ -1050,15 +1073,15 @@ impl AccountsPane {
             TextInputKind::Username
         })
         .with_id("accounts.form.identity")
-        .with_accessible_name(if kind == AccountKind::Mail {
-            "Email address"
-        } else {
-            "Username"
+        .with_accessible_name(match kind {
+            AccountKind::Mail => "Email address",
+            AccountKind::Forgejo => "Repository",
+            _ => "Username",
         })
-        .with_placeholder(if kind == AccountKind::Mail {
-            "you@example.com"
-        } else {
-            "Username or email"
+        .with_placeholder(match kind {
+            AccountKind::Mail => "you@example.com",
+            AccountKind::Forgejo => "owner/repository",
+            _ => "Username or email",
         })
         .with_font_size(13.0);
         let user = TextInput::from_state(&self.form_user)
@@ -1067,12 +1090,21 @@ impl AccountsPane {
             .with_accessible_name("Login name")
             .with_placeholder("Username (defaults to your address)")
             .with_font_size(13.0);
+        let credential = if kind == AccountKind::Forgejo {
+            "Access token"
+        } else {
+            "Password or app password"
+        };
         let password = TextInput::from_state(&self.form_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
-            .with_accessible_name("Password or app password")
+            .with_accessible_name(credential)
             .with_secret(true)
-            .with_placeholder("Password")
+            .with_placeholder(if kind == AccountKind::Forgejo {
+                "Token with issue access"
+            } else {
+                "Password"
+            })
             .with_font_size(13.0);
         let server = TextInput::from_state(&self.form_server)
             .with_kind(TextInputKind::Url)
@@ -1083,6 +1115,7 @@ impl AccountsPane {
                 AccountKind::WebDav => "https://files.example.com/remote.php/dav/files/you/",
                 AccountKind::Nextcloud => "https://cloud.example.com",
                 AccountKind::Mail => "Detected from your email address",
+                AccountKind::Forgejo => "https://codeberg.org",
                 AccountKind::GoogleDrive
                 | AccountKind::OneDrive
                 | AccountKind::Dropbox
@@ -1126,10 +1159,10 @@ impl AccountsPane {
                 let mut fields = vec![
                     setting_row("Display name", Box::new(name)),
                     setting_row(
-                        if kind == AccountKind::Mail {
-                            "Email address"
-                        } else {
-                            "Username"
+                        match kind {
+                            AccountKind::Mail => "Email address",
+                            AccountKind::Forgejo => "Repository",
+                            _ => "Username",
                         },
                         Box::new(identity),
                     ),
@@ -1140,7 +1173,7 @@ impl AccountsPane {
                     fields.push(setting_row("Server", Box::new(server)));
                 }
                 if kind != AccountKind::Nextcloud {
-                    fields.push(setting_row("Password or app password", Box::new(password)));
+                    fields.push(setting_row(credential, Box::new(password)));
                 }
                 if let Some(error) = &self.form_error {
                     fields.push(caption(&format!("Could not save: {error}")));
@@ -1249,19 +1282,29 @@ impl AccountsPane {
             return Err("enter a display name".into());
         }
         if identity.is_empty() {
-            return Err(if kind == AccountKind::Mail {
-                "enter an email address"
-            } else {
-                "enter a username"
+            return Err(match kind {
+                AccountKind::Mail => "enter an email address",
+                AccountKind::Forgejo => "enter the repository, as owner/repository",
+                _ => "enter a username",
             }
             .into());
+        }
+        if kind == AccountKind::Forgejo
+            && !(account_custody::forge::ForgeConfig {
+                server: server.to_string(),
+                repository: identity.to_string(),
+            })
+            .is_valid()
+        {
+            return Err("enter an HTTPS server and the repository as owner/repository".into());
         }
         if kind == AccountKind::Mail
             && (!identity.contains('@') || identity.contains(char::is_whitespace))
         {
             return Err("enter a valid email address".into());
         }
-        if kind != AccountKind::Mail {
+        // A forge server is checked by custody's own rule, above.
+        if !matches!(kind, AccountKind::Mail | AccountKind::Forgejo) {
             let parsed = tilo_dav::Url::parse(server).map_err(|_| "enter a valid server URL")?;
             let localhost_http = cfg!(debug_assertions)
                 && parsed.scheme() == "http"
@@ -1276,7 +1319,12 @@ impl AccountsPane {
             }
         }
         if existing_id.is_none() && password.trim().is_empty() {
-            return Err("enter a password or app password".into());
+            return Err(if kind == AccountKind::Forgejo {
+                "enter an access token"
+            } else {
+                "enter a password or app password"
+            }
+            .into());
         }
 
         let shared = account_root.store();
@@ -1336,6 +1384,10 @@ impl AccountsPane {
                 &mut stored.config,
                 serde_json::json!({"id": id.to_string(), "label": name.trim(), "server_url": server, "username": identity}),
             ),
+            AccountKind::Forgejo => merge_config(
+                &mut stored.config,
+                serde_json::json!({"server": server, "repository": identity}),
+            ),
             AccountKind::GoogleDrive
             | AccountKind::OneDrive
             | AccountKind::Dropbox
@@ -1352,6 +1404,9 @@ impl AccountsPane {
             if secret.is_empty() {
                 return Err("this account has no saved credential; enter one".into());
             }
+        } else if kind == AccountKind::Forgejo {
+            // Custody files with the token field; there is no password.
+            secret.token = Some(password.trim().to_string());
         } else {
             // An edit may add/replace a password on an OAuth-capable account;
             // preserve any provider token fields we do not own.
@@ -2211,6 +2266,7 @@ fn add_key(kind: AccountKind) -> &'static str {
         AccountKind::Dropbox => ADD_DROPBOX_KEY,
         AccountKind::ICloudDrive => ADD_ICLOUD_DRIVE_KEY,
         AccountKind::AzureOpenAi => ADD_AZURE_OPENAI_KEY,
+        AccountKind::Forgejo => ADD_FORGEJO_KEY,
     }
 }
 

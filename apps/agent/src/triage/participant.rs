@@ -65,27 +65,6 @@ pub enum Standing {
     Revoked,
 }
 
-/// What a room grants the triage agent: the Contributor bundle, scoped to
-/// Chat. A room membership that lets it comment, and `Comment` on Chat, so
-/// it may write its own comment records (its replies) and take Chat's
-/// comment-level actions such as `remark`. Nothing that writes the
-/// conversation, so it can never set a status or approve an issue; removing
-/// these grants removes the agent.
-#[must_use]
-pub fn contributor_grants(room: &str, name: &str) -> Vec<ui::permissions::CapOverride> {
-    use ui::permissions::{CapOverride, Scope, Subject};
-    vec![
-        CapOverride::membership(Subject::agent(name), room, Verb::Comment)
-            .with_id(format!("agent-member:{name}:contributor")),
-        CapOverride::grant(
-            Subject::agent(name),
-            Scope::App(CHAT_APP.into()),
-            Verb::Comment,
-        )
-        .with_id(format!("agent-grant:{name}:chat")),
-    ]
-}
-
 /// The agent's participant id in Chat.
 #[must_use]
 pub fn participant_id(name: &str) -> String {

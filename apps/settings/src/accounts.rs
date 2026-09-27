@@ -731,11 +731,14 @@ pub enum AccountKind {
     /// A Microsoft work or school account the AI hub signed in to Azure
     /// `OpenAI` with.
     AzureOpenAi,
+    /// A Forgejo repository and the access token that files issues in it,
+    /// for the feedback triage agent. The token is sealed in the vault.
+    Forgejo,
 }
 
 impl AccountKind {
     /// Every kind, in panel order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Mail,
         Self::CalDav,
         Self::WebDav,
@@ -745,6 +748,7 @@ impl AccountKind {
         Self::Dropbox,
         Self::ICloudDrive,
         Self::AzureOpenAi,
+        Self::Forgejo,
     ];
 
     pub fn label(self) -> &'static str {
@@ -758,6 +762,7 @@ impl AccountKind {
             AccountKind::Dropbox => "Dropbox",
             AccountKind::ICloudDrive => "iCloud Drive",
             AccountKind::AzureOpenAi => "Azure OpenAI",
+            AccountKind::Forgejo => "Forgejo",
         }
     }
 
@@ -772,6 +777,7 @@ impl AccountKind {
             | AccountKind::Dropbox
             | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
             AccountKind::AzureOpenAi => "\u{f06a9}", // md-robot
+            AccountKind::Forgejo => "\u{f02a2}", // md-git
         }
     }
 
@@ -786,6 +792,7 @@ impl AccountKind {
             AccountKind::Dropbox => "dropbox",
             AccountKind::ICloudDrive => "icloud-drive",
             AccountKind::AzureOpenAi => "azure-openai",
+            AccountKind::Forgejo => "forgejo",
         }
     }
 
@@ -801,6 +808,7 @@ impl AccountKind {
             AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
             AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
             AccountKind::AzureOpenAi => account_custody::providers::AZURE_OPENAI_TYPE,
+            AccountKind::Forgejo => account_custody::forge::FORGEJO_TYPE,
         }
     }
 
@@ -880,6 +888,8 @@ pub struct AccountDirectory {
     /// Google Drive, `OneDrive`, Dropbox, `iCloud` Drive and Azure `OpenAI`
     /// accounts, straight from the canonical store.
     pub cloud: Vec<accounts::Account>,
+    /// Forgejo repositories, straight from the canonical store.
+    pub forges: Vec<accounts::Account>,
 }
 
 impl AccountDirectory {
@@ -942,6 +952,13 @@ impl AccountDirectory {
                 })
                 .cloned()
                 .collect(),
+            forges: shared
+                .list(&accounts::AccountTypeId::from(
+                    account_custody::forge::FORGEJO_TYPE,
+                ))
+                .into_iter()
+                .cloned()
+                .collect(),
         }
     }
 
@@ -953,6 +970,7 @@ impl AccountDirectory {
             && self.files.accounts.is_empty()
             && self.nextcloud.accounts.is_empty()
             && self.cloud.is_empty()
+            && self.forges.is_empty()
     }
 
     /// The uniform views for one kind, in store order.
@@ -987,6 +1005,7 @@ impl AccountDirectory {
                 .filter(|account| account.type_id.as_str() == kind.type_id())
                 .map(|account| cloud_view(kind, account))
                 .collect(),
+            AccountKind::Forgejo => self.forges.iter().map(forge_view).collect(),
         }
     }
 }
@@ -1031,6 +1050,25 @@ fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
         summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
         enabled: a.enabled,
         tint: a.tint,
+    }
+}
+
+fn forge_view(account: &accounts::Account) -> AccountView {
+    let config = account.config_as::<account_custody::forge::ForgeConfig>();
+    AccountView {
+        id: account.id.to_string(),
+        kind: AccountKind::Forgejo,
+        label: if account.display_name.is_empty() {
+            AccountKind::Forgejo.label().to_string()
+        } else {
+            account.display_name.clone()
+        },
+        summary: config.map_or_else(
+            || "Forgejo".to_string(),
+            |config| format!("{} · {}", short_url(&config.server), config.repository),
+        ),
+        enabled: account.enabled,
+        tint: account.tint,
     }
 }
 
@@ -1294,6 +1332,7 @@ pub fn sample_directory() -> AccountDirectory {
             accounts: vec![cloud],
         },
         cloud: Vec::new(),
+        forges: Vec::new(),
     }
 }
 

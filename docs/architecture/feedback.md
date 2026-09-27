@@ -357,17 +357,29 @@ The triage agent (`tilo-agent --triage`, `apps/agent/src/triage`) is an
 ordinary agent member of the community room and of each private direct room.
 It is not a backend:
 
-- **Membership.** A room admits it with the Contributor bundle: a membership
-  that lets it comment and `Comment` on Chat. It runs from a team device (only
-  an administrator may launch a delegated agent session) and shows with the
-  `AGENT` label. Removing it revokes those grants; the broker tells its Chat
-  at once, and the agent stops.
+- **Membership.** Workspace Settings › Agents › *Add the triage agent*
+  admits it through the ordinary agent admission flow, with the Contributor
+  bundle (`workspace_settings::triage_agent_grants`): a membership that lets
+  it comment, and `Comment` on Chat. The grant is on Chat, not on
+  `#feedback`, because a channel is not an artifact a capability can name.
+  What the agent writes is one comment record per reply, each its own
+  artifact, and in a direct room it answers conversation messages rather
+  than a channel. It runs from a team device (only an administrator may
+  launch a delegated agent session) and shows with the `AGENT` label.
+  Removing it revokes those grants; the broker tells its Chat at once, and
+  the agent stops.
 - **How it acts.** It runs Chat headless as its own participant. It reads
   what that Chat holds (`chat::hand`): each report's address (`reference`),
   its recording's summary and its thread, never its prose as an instruction.
-  It acts only by asking that Chat for its own published actions. Its replies
-  are therefore its own comment records, which the broker checks like any
-  member's, and it can never write the conversation: no status, no approval.
+  It acts only by asking that Chat for its own published actions. A
+  participant that may not write the conversation writes comment records in
+  every channel, so the agent's replies are its own records, in `#feedback`
+  and in a direct room alike. The broker checks them like any member's, and
+  the agent can never write the conversation: no status, no approval.
+- **Nobody speaks through its Chat.** Chat's posting actions carry the
+  participant tag (`ActionSpec::as_participant`). The broker delivers such an
+  action only when the caller is the participant the app runs for, so a
+  reporter cannot post in the agent's name by invoking the agent's Chat.
 
 What it does, one report at a time, oldest first:
 
@@ -383,9 +395,17 @@ What it does, one report at a time, oldest first:
   mentions are declared personal, and who reported it is left out.
 - **Filing.** An Editor approves a draft with Chat's `approve-issue`. That
   action writes the conversation document, which only an Editor may write.
-  The agent then files exactly that draft with the team's `forgejo` account
-  through account custody (`Custodian::file_forge_issue`), where the token
-  stays, and replies with the issue's address.
+  The agent then files exactly that draft through the accounts service, over
+  the descriptor the launcher hands it (`accounts = "optional@1"`). The
+  service holds the vault and the network, and files with the team's
+  `forgejo` account, which Settings › Accounts › Forgejo adds with its token
+  in the vault. The agent then replies with the issue's address.
+- **At most once.** Before it files, the agent writes a durable intent: the
+  approved draft it is about to file. The issue carries a marker made of the
+  room and the draft. Custody searches for that marker before it files, and
+  returns the issue it finds instead of filing another. An agent that stopped
+  between filing and replying finds its intent and the issue, and only
+  replies.
 
 Each reply carries an address: another report for a suggestion, a draft for
 a draft, a `forge.issue` for a filing. These addresses are how the agent

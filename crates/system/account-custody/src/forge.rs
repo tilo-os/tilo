@@ -177,6 +177,50 @@ impl Repository {
     }
 }
 
+/// Check that `token` may file issues in `config`'s repository before an
+/// account is saved: the repository answers with the token and says it
+/// takes issues. Settings runs this on a draft; nothing is stored.
+///
+/// # Errors
+/// [`CustodyError::Account`] for a malformed server or repository, a token
+/// the forge refuses or a repository without issues;
+/// [`CustodyError::Offline`] otherwise.
+pub fn verify_forge(config: &ForgeConfig, token: &str) -> Result<(), CustodyError> {
+    let endpoint = config.issues_endpoint()?;
+    let repository_url = Url::parse(endpoint.as_str().trim_end_matches("/issues"))
+        .map_err(|_| CustodyError::Account("forge account: not a server URL".into()))?;
+    let repository = Repository {
+        endpoint,
+        token: zeroize::Zeroizing::new(token.trim().to_string()),
+        http: tilo_net::http::blocking_client()
+            .user_agent(USER_AGENT)
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| CustodyError::Offline)?,
+    };
+    let response = repository
+        .http
+        .get(repository_url)
+        .header(reqwest::header::AUTHORIZATION, repository.authorization())
+        .send()
+        .map_err(|_| CustodyError::Offline)?;
+    let body = Repository::read(response).map_err(|error| match error {
+        CustodyError::NeedsAuthentication => {
+            CustodyError::Account("the forge refused this token".into())
+        }
+        other => other,
+    })?;
+    let body: serde_json::Value = serde_json::from_str(&body).map_err(|_| CustodyError::Offline)?;
+    if body.get("has_issues").and_then(serde_json::Value::as_bool) == Some(false) {
+        return Err(CustodyError::Account(
+            "that repository does not take issues".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Custodian {
     /// File `issue` in the repository of forge account `id`, with the token
     /// sealed for it, unless an issue carrying its marker is already there;
@@ -308,6 +352,13 @@ pub mod fake {
                     .target
                     .split_once('?')
                     .unwrap_or((request.target.as_str(), ""));
+                if path.ends_with("/repos/tilo/tilo") && request.method == "GET" {
+                    return Some(
+                        test_http::Reply::status(200)
+                            .header("Content-Type", "application/json")
+                            .body(r#"{"full_name":"tilo/tilo","has_issues":true}"#),
+                    );
+                }
                 if !path.ends_with("/issues") {
                     return Some(test_http::Reply::status(404));
                 }
@@ -449,6 +500,15 @@ mod tests {
         );
         custodian.file_forge_issue(&id, &issue("m_other")).unwrap();
         assert_eq!(forge.issues().len(), 2, "another marker is another issue");
+        let config = ForgeConfig {
+            server: forge.url(),
+            repository: "tilo/tilo".into(),
+        };
+        assert_eq!(verify_forge(&config, "sealed-token"), Ok(()));
+        assert_eq!(
+            verify_forge(&config, "wrong"),
+            Err(CustodyError::Account("the forge refused this token".into()))
+        );
     }
 
     #[test]
