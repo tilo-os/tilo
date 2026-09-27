@@ -180,27 +180,10 @@ pub fn push_clip(scene: &mut Scene, tf: Affine, rect: Rect) {
 }
 
 /// Truncate `s` to fit `max_w` pixels at `size`, appending an ellipsis
-/// when it overflows. Cheap char-walk; good enough for single-line chrome.
+/// when it overflows. Thin wrapper over [`TextRenderer::elide_to_width`] so
+/// chat chrome shares the grapheme-safe cut with every other app.
 pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let (w, _) = tr.measure(s, size, None);
-    if f64::from(w) <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let ell = "…";
-    for ch in s.chars() {
-        let candidate = format!("{out}{ch}{ell}");
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if f64::from(cw) > max_w {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push_str(ell);
-    out
+    tr.elide_to_width(s, size, ui::num::f32_of_f64(max_w))
 }
 
 /// Deterministic accent colour for a 0-based palette index, sampling the
