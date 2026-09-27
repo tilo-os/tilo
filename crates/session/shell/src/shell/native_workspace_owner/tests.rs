@@ -1050,7 +1050,6 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     use std::os::unix::fs::PermissionsExt;
-    use std::time::Duration;
     /// Lets background fs-authority publication settle before the wrapped
     /// scope restores the environment it reads.
     struct RestoreEnv {
@@ -1059,18 +1058,14 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
             let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
-                PUBLICATION_SETTLE_BUDGET,
+                tilo_test_env::hang_bound(),
             );
         }
     }
-    /// Publication retires as soon as the fake publisher exits, which the
-    /// wait observes directly; this budget only bounds a publisher that
-    /// never succeeds, so it stays generous for a saturated CI host.
-    const PUBLICATION_SETTLE_BUDGET: Duration = Duration::from_secs(60);
     #[track_caller]
     fn settle_publication(step: &str) {
         crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
-            PUBLICATION_SETTLE_BUDGET,
+            tilo_test_env::hang_bound(),
         )
         .unwrap_or_else(|report| panic!("{step}: {report}"));
     }

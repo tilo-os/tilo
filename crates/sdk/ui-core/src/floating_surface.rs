@@ -1771,13 +1771,10 @@ mod tests {
             bytes.push(b'\n');
             shell_side.write_all(&bytes).unwrap();
             let mut received = Vec::new();
-            for _ in 0..100 {
+            tilo_test_env::wait_until("the inbound surface message", || {
                 received.extend(client.pump().unwrap());
-                if !received.is_empty() {
-                    break;
-                }
-                std::thread::yield_now();
-            }
+                !received.is_empty()
+            });
             assert_eq!(received, vec![inbound]);
         }
     }

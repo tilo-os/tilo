@@ -857,9 +857,8 @@ mod tests {
         drop(pending);
         drop(receiver);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            tilo_test_env::within("the signer to fail once its queue is dropped", waiting)
                 .await
-                .unwrap()
                 .unwrap()
                 .is_err()
         );
@@ -914,10 +913,12 @@ mod tests {
         let mut pending = Vec::with_capacity(LIMIT);
         for _ in 0..LIMIT {
             pending.push(
-                tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-                    .await
-                    .expect("bounded signer entered its owner queue")
-                    .expect("owner queue remains open"),
+                tilo_test_env::within(
+                    "the bounded signer to enter its owner queue",
+                    receiver.recv(),
+                )
+                .await
+                .expect("owner queue remains open"),
             );
         }
         assert_eq!(LIMIT - service.shared.outstanding_handoffs(), 0);
@@ -965,11 +966,12 @@ mod tests {
             .commit(first)
             .await
             .expect("consuming one exact receipt releases one permit");
-        let overflow_pending =
-            tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-                .await
-                .expect("waiting signer advances after exact receipt consumption")
-                .expect("owner queue remains open");
+        let overflow_pending = tilo_test_env::within(
+            "the waiting signer to advance after exact receipt consumption",
+            receiver.recv(),
+        )
+        .await
+        .expect("owner queue remains open");
         let (complete, result) = overflow_pending.apply(&mut owner);
         result.expect("waiting exact mutation remains admitted");
         complete();
@@ -1014,9 +1016,8 @@ mod tests {
         assert!(!waiting.is_finished());
 
         service.fail("owner authority retired while signing waited");
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        let error = tilo_test_env::within("closed capacity to wake the waiter", waiting)
             .await
-            .expect("closed capacity wakes waiter")
             .expect("signer task")
             .unwrap_err();
         assert_eq!(error, "owner authority retired while signing waited");

@@ -344,7 +344,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
         },
     )
     .unwrap();
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let reply = tilo_test_env::within("the native reply", async {
         loop {
             if let Some(reply) = pending.try_reply().unwrap() {
                 break reply;
@@ -352,8 +352,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
             tokio::task::yield_now().await
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert!(matches!(
         reply.message,
         ActionMessage::BrokerCatalogue { .. }
@@ -396,7 +395,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
         },
     )
     .unwrap();
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let reply = tilo_test_env::within("the fresh native reply", async {
         loop {
             if let Some(reply) = fresh.try_reply().unwrap() {
                 break reply;
@@ -404,8 +403,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
             tokio::task::yield_now().await
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert!(
         output(fresh, current.read().unwrap().view(), &reply).is_ok(),
         "fresh authorized output remains live"
