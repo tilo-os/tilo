@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev" / "require-private-oci-owner.py"
@@ -74,6 +74,21 @@ class OwnerVisibilityTests(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             connection.return_value.getresponse.return_value = response
             self.assertEqual(module.main(), 0)
+
+    def test_explicit_public_owner_override_retries_without_registry_token(self):
+        public = {"username": "tilo", "visibility": "public"}
+        self.assertTrue(module.owner_is_approved(public, True))
+        self.assertFalse(module.owner_is_approved(public, False))
+        self.assertFalse(module.owner_is_approved(
+            {"username": "other", "visibility": "public"}, True))
+        with patch.dict(module.os.environ, {
+                "REGISTRY_TOKEN": "test-token",
+                "TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE": "true"}), \
+             patch.object(module, "fetch_owner", side_effect=[None, public]) as fetch, \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(fetch.call_args_list, [
+            call({"Authorization": "token test-token"}), call({})])
 
 
 if __name__ == "__main__":

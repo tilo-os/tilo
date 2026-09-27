@@ -34,6 +34,11 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      allow_public_lenovo_firmware:
+        description: "Explicitly permit this Lenovo dispatch to publish bundled firmware through the public tilo owner"
+        type: boolean
+        required: false
+        default: false
       fex_payload_candidate:
         description: "One-off ARM FEX OCI digest; requires a paired guest and Lenovo main dispatch"
         required: false
@@ -75,6 +80,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   # The compiler cache belongs to this repository: its key is a repository
   # secret, not runner environment, because the runners serve every repository.
   SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
