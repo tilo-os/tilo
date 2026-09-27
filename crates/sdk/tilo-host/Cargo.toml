@@ -75,6 +75,8 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 # `ndk-context` holds for the process (android-activity installs it).
 jni = { version = "0.21.1", optional = true }
 ndk-context = { version = "0.1.1", optional = true }
+# winit's Android backend refuses to compile without an activity flavour.
+winit = { workspace = true, features = ["android-native-activity"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native

@@ -22,11 +22,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(not(target_os = "android"))]
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard, warn_fallback_once};
-use crate::host::{HostServices, MediaSession, MediaSessionFactory};
 #[cfg(not(target_os = "android"))]
-use crate::host::{Notifier, SpeechFactory, UriOpener};
+use crate::host::HostServices;
+use crate::host::{MediaSession, MediaSessionFactory};
 #[cfg(all(windows, feature = "notifications"))]
 use crate::host::{Notification, NotifyError};
+#[cfg(not(target_os = "android"))]
+use crate::host::{Notifier, SpeechFactory, UriOpener};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 
 /// The native services for this process. `app_id` names the app to the

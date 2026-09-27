@@ -25,6 +25,9 @@ struct AppHandler {
     /// `None` again in `exiting`, after the worker is joined, so its surface
     /// drops BEFORE the `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    /// Between `suspended` and the next `resumed` the window has no native
+    /// surface to render into, so a redraw must not try to create one.
+    surface_suspended: bool,
     /// A real, separate fullscreen output for a root widget's audience view.
     /// It is deliberately not modelled as a floating surface: it has no
     /// desktop-space proxy or compositor handoff and is always destroyed
@@ -1273,6 +1276,9 @@ impl AppHandler {
         };
         mark_first_frame("first-frame-redraw-start");
         let _entry = self.app.enter_wake_scope();
+        if self.surface_suspended {
+            return;
+        }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
@@ -2732,8 +2738,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
-        // Can fire more than once (suspend/resume on mobile).
-        if self.window.is_some() {
+        // Fires again after `suspended` on mobile, where the window survives
+        // but its native surface was destroyed: the next redraw rebuilds the
+        // renderer against the new surface.
+        self.surface_suspended = false;
+        if let Some(window) = &self.window {
+            self.app.layout.layout_dirty = true;
+            window.request_redraw();
             return;
         }
         // Required, not incidental: the compositor only accepts
@@ -2858,6 +2869,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         crate::dnd::set_drag_window(&window);
         self.window = Some(window);
         tilo_startup_metrics::mark("primary-window-resumed-done");
+    }
+
+    /// Android destroys the window's native surface when the activity leaves
+    /// the screen and may kill the process any time after. Save the app's
+    /// state and drop the renderer while its surface is still valid; the
+    /// window, widget tree and document stay for the next `resumed`.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        let _entry = self.app.enter_wake_scope();
+        self.surface_suspended = true;
+        for error in self.app.checkpoint_before_close() {
+            tracing::error!(%error, "could not save state on suspend");
+        }
+        if let Some(mut render) = self.render.take() {
+            render.shutdown_and_join();
+        }
     }
 
     /// BEFORE the `Window` arc is dropped — the worker's
@@ -3446,6 +3472,15 @@ impl App {
             // Keep normal launches unchanged; this is an opt-in profiling mode.
             event_loop_builder.with_activate_ignoring_other_apps(false);
         }
+        #[cfg(target_os = "android")]
+        {
+            use winit::platform::android::EventLoopBuilderExtAndroid;
+            event_loop_builder.with_android_app(
+                crate::launch::android::app()
+                    .expect("an Android app starts through ui::android_main!")
+                    .clone(),
+            );
+        }
         let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -3480,6 +3515,7 @@ impl App {
             app: self,
             window: None,
             render: None,
+            surface_suspended: false,
             audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,

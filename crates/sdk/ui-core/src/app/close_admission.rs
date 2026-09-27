@@ -93,7 +93,7 @@ impl App {
         true
     }
 
-    fn checkpoint_before_close(&mut self) -> Vec<String> {
+    pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
         let mut errors = Vec::new();
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
