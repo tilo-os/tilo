@@ -14,6 +14,7 @@ name = "clocks"
 path = "src/main.rs"
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 chrono = { workspace = true, features = ["clock", "serde"] }
 chrono-tz = "0.10"
 serde.workspace = true

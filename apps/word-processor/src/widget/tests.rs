@@ -750,7 +750,9 @@ fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::Encoded
         .unwrap_or_else(|| panic!("spec {id}"));
     match &spec.input {
         tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("{id} is immediate")
+        }
     }
 }
 
@@ -2604,7 +2606,7 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         assert!((before - after).abs() < 1e-6);
         assert!(!wp.view.auto_fit_page);
         assert_eq!(state.doc.get_heads(), heads);
-        assert!(!(wp.save_status == DocumentSaveStatus::Modified));
+        assert_ne!(wp.save_status, DocumentSaveStatus::Modified);
         assert!(pinch(&mut wp, &mut state, -0.05, TouchPhase::Moved));
         assert!(wp.zoom.factor() < 1.025);
     }
@@ -3911,6 +3913,44 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn typing_and_clipboard_edit_the_document_through_one_action() {
+    const CHILD: &str = "TILO_WRITER_CLIPBOARD_TEST_CHILD";
+    #[derive(Default)]
+    struct TestClipboard(std::sync::Mutex<Option<String>>);
+    impl ui::clipboard::ClipboardBackend for TestClipboard {
+        fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.to_string());
+            true
+        }
+
+        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn name(&self) -> &'static str {
+            "writer-clipboard-test"
+        }
+    }
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "widget::tests::typing_and_clipboard_edit_the_document_through_one_action",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated clipboard test failed:
+{}
+{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
     // Phase: multi_block_typing_dispatches_one_replace_selection_action.
     {
         let mut state = ui::State::new();
@@ -3953,6 +3993,9 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
     // Phase: shared_clipboard_preserves_rich_paste_and_plain_paste_semantics.
     {
+        let services = ui::host::HostServices::null()
+            .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
+        let _host = ui::host::enter(&services);
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
@@ -4215,6 +4258,9 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
                 _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
             }
             let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            // Ctrl+Z is the host undo binding under these conventions; on a macOS
+            // build host the default conventions bind undo to Cmd instead.
+            driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
             driver.set_modifiers(&["ctrl".into()]);
             driver.key("z");
             assert_eq!(
@@ -4359,6 +4405,19 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
             );
         };
         wp.dispatch_context_action(idx, &mut state.doc);
+        // The replacement is one replayable envelope through the executor, not a
+        // direct CRDT write.
+        let dispatched = wp
+            .last_dispatched_for_test()
+            .expect("the suggestion dispatched an action");
+        assert_eq!(
+            dispatched.type_id,
+            crate::actions::WORD_PROCESSOR_ACTION_TYPE
+        );
+        assert!(matches!(
+            serde_json::from_slice::<crate::actions::RichTextAction>(&dispatched.payload),
+            Ok(crate::actions::RichTextAction::SpliceText { at: 0, del: 3, ref ins, .. }) if ins == "the"
+        ));
         // The block text now reads "the end".
         let id = wp.blocks[0].id.clone();
         let text = wp.model().block_texts(&state.doc);
@@ -5548,7 +5607,7 @@ fn templates_replace_the_document_only_when_chosen() {
             "New must ask for a destination on its first Save"
         );
         assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert!((wp.save_status == DocumentSaveStatus::Modified));
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(
             std::fs::read_to_string(&old_path).unwrap(),
             "Original document"
@@ -7078,7 +7137,7 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
         wp.sync(&mut state.doc, &state.root);
         assert_eq!(wp.path, Some(original.clone()));
         assert_eq!(wp.format, Some(WpFormat::Markdown));
-        assert!((wp.save_status == DocumentSaveStatus::Modified));
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert_eq!(
             std::fs::read_to_string(&original).unwrap(),
             "Original on disk"
@@ -7123,7 +7182,7 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
             first_block(&wp, &state).map(|b| b.text),
             Some("Unsaved work".into())
         );
-        assert!((wp.save_status == DocumentSaveStatus::Modified));
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
     }
 
     // Phase: file_ux_open_does_not_replace_a_modified_draft_without_a_decision.
@@ -7206,7 +7265,7 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
             first_block(&wp, &state).map(|b| b.text),
             Some("Keep this draft".into())
         );
-        assert!((wp.save_status == DocumentSaveStatus::Modified));
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
     }
 
     // Phase: file_ux_save_then_open_writes_the_draft_before_replacing_it.
@@ -7397,7 +7456,7 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
             }
             assert_eq!(wp.path.as_deref(), Some(source.as_path()));
             assert_eq!(wp.format, Some(WpFormat::Markdown));
-            assert!(wp.save_status == DocumentSaveStatus::Modified);
+            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
             assert_eq!(std::fs::read(&source).unwrap(), b"original source");
             assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
         }
@@ -7432,7 +7491,7 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
             assert!(bytes.starts_with(if extension == "pdf" { b"%PDF" } else { b"PK" }));
             assert_eq!(wp.path.as_deref(), Some(source.as_path()));
             assert_eq!(wp.format, Some(WpFormat::Markdown));
-            assert!(wp.save_status == DocumentSaveStatus::Modified);
+            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
             assert_eq!(std::fs::read(&source).unwrap(), b"original source");
             assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
         }
@@ -7518,7 +7577,7 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
             assert_eq!(state.doc.pending_ops(), pending);
             assert_eq!(wp.model_mut().caret(), &caret);
             assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert!(wp.save_status == DocumentSaveStatus::Modified);
+            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
             assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
             assert_eq!(std::fs::read(&source).unwrap(), b"original source");
         }
@@ -7580,7 +7639,7 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
         assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
         assert_eq!(std::fs::read(&destination).unwrap(), b"protected bytes");
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
         assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -8638,7 +8697,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             0o600
         );
         assert_eq!(wp.path.as_deref(), Some(link.as_path()));
-        assert!(wp.save_status == DocumentSaveStatus::Clean);
+        assert_eq!(wp.save_status, DocumentSaveStatus::Clean);
         // The public export/save API has the same target and permission contract.
         crate::save_document(&state, &link, WpFormat::Markdown, &tilo_content::NoContent).unwrap();
         assert!(
@@ -8691,7 +8750,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
                 .is_err()
             );
             assert_eq!(wp.path.as_deref(), Some(source.as_path()));
-            assert!(wp.save_status == DocumentSaveStatus::Modified);
+            assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
             assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
             assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
             assert_eq!(std::fs::read(&linked).unwrap(), b"target bytes");
@@ -8827,4 +8886,441 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         assert_eq!(std::fs::read(&source).unwrap(), saved_bytes);
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+/// Window groups offer an unclaimed event to each visible app in presentation
+/// order. A zoom gesture must therefore leave an unfocused Writer untouched,
+/// so the Writer selected by the host can receive it instead. When a
+/// non-Writer owns focus neither retained Writer may consume or mutate it.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario covering pinch and Ctrl+wheel across focused and unfocused Writers"
+)]
+fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
+    use winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase},
+        keyboard::ModifiersState,
+    };
+
+    let (mut first_state, mut first) = populated();
+    let (mut second_state, mut second) = populated();
+    for (writer, state) in [
+        (&mut first, &mut first_state),
+        (&mut second, &mut second_state),
+    ] {
+        writer.set_zoom(1.0);
+        pipeline_draw(writer, state, 1000, 700);
+        writer.pointer = Point::new(500.0, 300.0);
+    }
+
+    // The first visible Writer is stale/unfocused; the selected second Writer
+    // must receive the same native pinch after the first declines it.
+    first.set_focus(false);
+    second.set_focus(true);
+    assert!(
+        !pinch(&mut first, &mut first_state, 0.025, TouchPhase::Moved),
+        "an unfocused Writer must leave pinch for the selected sibling"
+    );
+    assert!(pinch(
+        &mut second,
+        &mut second_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), 1.0);
+    assert_eq!(second.zoom.factor(), 1.025);
+
+    // Browser trackpads encode the same gesture as Ctrl + pixel wheel. The
+    // same unfocused-first/focused-second delivery order must select the
+    // second Writer, rather than letting the first visible Writer steal it.
+    let ctrl: Modifiers = ModifiersState::CONTROL.into();
+    let ctrl_wheel = WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 24.0)),
+        phase: TouchPhase::Moved,
+    };
+    let mut first_handled = false;
+    first.handle_event(
+        &ctrl_wheel,
+        1.0,
+        &ctrl,
+        &mut first_state.doc,
+        &first_state.root,
+        &mut first_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(
+        !first_handled,
+        "an unfocused Writer must leave browser Ctrl+wheel for the selected sibling"
+    );
+    assert_eq!(first.zoom.factor(), 1.0);
+    let mut second_handled = false;
+    second.handle_event(
+        &ctrl_wheel,
+        1.0,
+        &ctrl,
+        &mut second_state.doc,
+        &second_state.root,
+        &mut second_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
+    assert_eq!(
+        second.zoom.factor(),
+        1.1,
+        "Ctrl+wheel uses Writer's tenth-step zoom quantization"
+    );
+
+    // Focus may switch back to the first Writer; it then owns ordinary
+    // native pinch while the second document remains exactly unchanged.
+    first.set_focus(true);
+    second.set_focus(false);
+    assert!(pinch(
+        &mut first,
+        &mut first_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), 1.025);
+    assert_eq!(second.zoom.factor(), 1.1);
+
+    // Selecting a non-Writer leaves every Writer unfocused. Neither may
+    // claim or mutate a subsequent pinch; this is the regression reported by
+    // the browser host where a hidden Writer used to zoom in the background.
+    first.set_focus(false);
+    let first_before = first.zoom.factor();
+    let second_before = second.zoom.factor();
+    // Focus ownership blocks zoom only. A plain wheel remains pointer-routed,
+    // so an unfocused Writer still pans if its document has overflow.
+    let plain_wheel = WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -24.0)),
+        phase: TouchPhase::Moved,
+    };
+    let first_scroll_before = first.scroll_y;
+    let mut plain_handled = false;
+    first.handle_event(
+        &plain_wheel,
+        1.0,
+        &Modifiers::default(),
+        &mut first_state.doc,
+        &first_state.root,
+        &mut plain_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(plain_handled, "plain wheel remains pointer-routed");
+    assert!(
+        first.scroll_y > first_scroll_before,
+        "plain wheel pans overflow"
+    );
+    assert!(!pinch(
+        &mut first,
+        &mut first_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert!(!pinch(
+        &mut second,
+        &mut second_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), first_before);
+    assert_eq!(second.zoom.factor(), second_before);
+}
+
+/// A `LIVE_V1` caret whose block id is too long for the 64-byte anchor arrives
+/// under the digest stand-in key; the widget resolves it to its own block, so
+/// agent-written (130-byte id) paragraphs still show carets and selections.
+#[test]
+fn a_digest_addressed_remote_caret_resolves_to_its_block() {
+    let (_state, wp) = drawn_focused();
+    let block_id = first_block_id(&wp);
+    let digest = block_presence_key(false, &block_id).digest_form().unwrap();
+    assert!(is_scope_digest_key(&digest));
+    let peer = "agent-publisher";
+    let mut presence = PresenceCtx::empty();
+    presence.set_remote_caret(peer.into(), digest.clone(), 3);
+    presence.set_selection(
+        &digest,
+        UserId(peer.into()),
+        SelectionRange { start: 0, end: 2 },
+    );
+    let (carets, selections) = wp.remote_presence_overlays(&presence);
+    assert_eq!(carets.len(), 1, "digest caret drawn once, in its block");
+    assert_eq!(selections.len(), 1);
+    // A digest naming no block of this document draws nothing.
+    let mut stray = PresenceCtx::empty();
+    stray.set_remote_caret(
+        peer.into(),
+        ui::presence::PresenceKey::from_scope_digest([7; 16]),
+        1,
+    );
+    assert!(wp.remote_presence_overlays(&stray).0.is_empty());
+}
+
+#[test]
+fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draft() {
+    let mut wp = WordProcessorWidget::new();
+    let invocation = tilo_actions::InvocationId::new();
+    let selected = PathBuf::from("selected.md");
+    wp.path = Some(selected.clone());
+    wp.save_status = DocumentSaveStatus::Modified;
+    wp.editing_field = Some(NumField::Size);
+    wp.pending_resource_open = Some((invocation, PathBuf::from("pending.md")));
+    wp.resource_file_invocation = Some(invocation);
+    assert!(wp.release_record_scope().is_err());
+    assert!(wp.pending_resource_open.is_some());
+    assert_eq!(wp.resource_file_invocation, Some(invocation));
+    assert_eq!(wp.path, Some(selected.clone()));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
+
+    wp.editing_field = None;
+    wp.pending_replacement = Some(PendingReplacement::Open(PathBuf::from("replacement.md")));
+    wp.replace_after_save = true;
+    wp.unsaved_changes.open();
+    wp.resource_file_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+        invocation,
+        output: tilo_actions::ActionOutput::default(),
+    });
+    wp.release_record_scope().unwrap();
+    assert!(wp.pending_resource_open.is_none());
+    assert!(wp.pending_replacement.is_none());
+    assert!(!wp.replace_after_save);
+    assert!(!wp.unsaved_changes.is_open());
+    assert!(wp.resource_file_invocation.is_none());
+    assert!(wp.resource_file_result.is_none());
+    assert_eq!(wp.path, Some(selected));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
+}
+
+#[test]
+fn tile_host_preserves_completed_direct_open_result_across_record_intent_release() {
+    let directory = std::env::temp_dir().join(format!(
+        "tilo-owner-release-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let target = directory.join("opened.md");
+    std::fs::write(&target, "Opened through the real direct path").unwrap();
+    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
+    let store = owners.open("word-processor", "owner-release").unwrap();
+    let first =
+        ui::RecordCheckout::new(ui::RecordId::for_tab(9101), ui::RecordKind::new("document"));
+    let selected = ui::RecordCheckout::new(
+        ui::RecordId::for_file(&target),
+        ui::RecordKind::new("document"),
+    );
+    store
+        .reserve_record(&first)
+        .unwrap()
+        .initialize(|_| Ok(()))
+        .unwrap();
+    let mut word_processor = WordProcessorWidget::new();
+    word_processor
+        .recovery
+        .set_base_dir(directory.join("recovery"));
+    let mut tile =
+        ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(word_processor)));
+    tile.bind_record(store.clone(), first);
+    let mut outer = AutoCommit::new();
+    tile.sync(&mut outer, &automerge::ROOT);
+    store
+        .reserve_record(&selected)
+        .unwrap()
+        .initialize(|doc| {
+            let mut candidate = WordProcessorWidget::new();
+            candidate
+                .recovery
+                .set_base_dir(directory.join("candidate-recovery"));
+            candidate.sync(doc, &automerge::ROOT);
+            Ok(())
+        })
+        .unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
+        path: Some(target.to_string_lossy().into_owned()),
+    })
+    .unwrap();
+    assert!(matches!(
+        tile.start_resource_operation_with_document(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &mut outer,
+            &automerge::ROOT,
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Accepted)
+    ));
+    tile.sync(&mut outer, &automerge::ROOT);
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
+            if completed == invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
+            .is_none()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the controlled Open, refusal, managed Escape event and one-shot result form one lifecycle proof"
+)]
+fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Size, TaffyTree};
+    use winit::keyboard::{NativeKeyCode, PhysicalKey};
+
+    let directory = std::env::temp_dir().join(format!(
+        "tilo-owner-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let target = directory.join("opened.md");
+    std::fs::write(&target, "Opened after the draft is cancelled").unwrap();
+    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
+    let store = owners.open("word-processor", "owner-recovery").unwrap();
+    let first =
+        ui::RecordCheckout::new(ui::RecordId::for_tab(9102), ui::RecordKind::new("document"));
+    let selected = ui::RecordCheckout::new(
+        ui::RecordId::for_file(&target),
+        ui::RecordKind::new("document"),
+    );
+    store
+        .reserve_record(&first)
+        .unwrap()
+        .initialize(|_| Ok(()))
+        .unwrap();
+    store
+        .reserve_record(&selected)
+        .unwrap()
+        .initialize(|doc| {
+            let mut candidate = WordProcessorWidget::new();
+            candidate
+                .recovery
+                .set_base_dir(directory.join("candidate-recovery"));
+            candidate.sync(doc, &automerge::ROOT);
+            Ok(())
+        })
+        .unwrap();
+
+    let mut word_processor = Box::new(WordProcessorWidget::new());
+    word_processor
+        .recovery
+        .set_base_dir(directory.join("recovery"));
+    word_processor.lifecycle.focused = true;
+    let word_processor_ptr = std::ptr::from_mut(word_processor.as_mut());
+    let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(word_processor));
+    tile.bind_record(store, first);
+    let mut outer = AutoCommit::new();
+    tile.sync(&mut outer, &automerge::ROOT);
+
+    let invocation = tilo_actions::InvocationId::new();
+    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
+        path: Some(target.to_string_lossy().into_owned()),
+    })
+    .unwrap();
+    assert!(matches!(
+        tile.start_resource_operation_with_document(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &mut outer,
+            &automerge::ROOT,
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Accepted)
+    ));
+    tile.sync(&mut outer, &automerge::ROOT);
+    // SAFETY: the boxed Writer allocation remains owned by `tile` for the
+    // rest of this test; no reference survives a widget callback.
+    unsafe {
+        (*word_processor_ptr).editing_field = Some(NumField::Size);
+        (*word_processor_ptr).edit_buf = "24".into();
+    }
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_some());
+    let status = tile
+        .accessibility()
+        .expect("transition refusal is accessible");
+    assert_eq!(status.name.as_deref(), Some("Document switch blocked"));
+
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = tile.build_layout(&mut tree, &ui::Theme::default(), &mut nodes);
+    tree.compute_layout(
+        node,
+        Size {
+            width: AvailableSpace::Definite(1000.0),
+            height: AvailableSpace::Definite(700.0),
+        },
+    )
+    .unwrap();
+    tile.apply_layout(&tree, node, vello::kurbo::Point::ZERO);
+
+    let mut key: KeyEvent = unsafe { std::mem::zeroed() };
+    key.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    key.logical_key = Key::Named(NamedKey::Escape);
+    key.text = None;
+    key.location = winit::keyboard::KeyLocation::Standard;
+    key.state = ElementState::Pressed;
+    key.repeat = false;
+    let mut handled = false;
+    let mut focus = None;
+    tile.handle_event(
+        &WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key,
+            is_synthetic: false,
+        },
+        1.0,
+        &Modifiers::default(),
+        &mut outer,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        node,
+        &tree,
+    );
+    assert!(handled);
+    // SAFETY: same stable boxed allocation as above.
+    assert!(unsafe { (*word_processor_ptr).editing_field.is_none() });
+
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
+            if completed == invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
+            .is_none()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }

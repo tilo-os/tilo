@@ -1631,7 +1631,7 @@ impl SlidesApp {
             doc,
             crate::actions::SLIDES_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Slides", "Slides", action),
+            tilo_actions::ActionContext::for_action("so.tilo.slides", "Slides", action),
         );
         self.canonical_deck = doc
             .get(automerge::ROOT, "deck")

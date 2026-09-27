@@ -21,7 +21,7 @@
 //! cursor, so nothing is lost across a rebuild.
 
 #[cfg(all(test, unix))]
-use crate::filesystem_metadata as xattr;
+use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;

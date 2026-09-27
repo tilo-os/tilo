@@ -258,6 +258,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 app_id: APP.into(),
                 cluster: room,
                 record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
                 name: "Scribe".into(),
                 pace: Duration::from_millis(10),
                 once: true,
@@ -337,6 +338,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 app_id: APP.into(),
                 cluster: room,
                 record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
                 name: "Scribe".into(),
                 pace: Duration::from_millis(10),
                 once: true,
@@ -409,6 +411,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 app_id: APP.into(),
                 cluster: room,
                 record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
                 name: "Scribe".into(),
                 pace: Duration::from_millis(10),
                 once: true,
@@ -493,7 +496,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         // One content store stands in for the room's: the photo editor's export
         // lands in it and the word processor places what it finds there.
         let content = ContentStore::memory();
-        let (photo_peer, photo_replica) = connect_photo_editor(&sock, room, &content);
+        let photo_socket = sock.clone();
         std::thread::sleep(Duration::from_millis(100));
 
         let permissions = word_processor_and_photos_permissions();
@@ -503,6 +506,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -538,6 +542,9 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
         let photo_content = content.clone();
         let photo_thread = std::thread::spawn(move || {
+            // The typed collaboration manager is local to its owning thread.
+            let (photo_peer, photo_replica) =
+                connect_photo_editor(&photo_socket, room, &photo_content);
             drive_photo_peer(photo_peer, photo_replica, &photo_content, &photo_ready_tx)
         });
 
@@ -730,7 +737,8 @@ fn drive_photo_peer(
                         })
                         .and_then(|spec| match &spec.input {
                             tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            tilo_actions::ActionInput::Prompted { .. } => None,
+                            tilo_actions::ActionInput::Prompted { .. }
+                            | tilo_actions::ActionInput::Deferred { .. } => None,
                         })
                         .expect("the published export has one immediate operation payload");
                     let result =

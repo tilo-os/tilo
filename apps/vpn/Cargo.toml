@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+test-support = ["ui/test-support"]
 
 [dependencies]
 zeroize.workspace = true
