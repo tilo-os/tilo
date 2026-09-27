@@ -9564,7 +9564,7 @@ mod tests {
             command.creation_flags(0x0800_0000);
         }
         let mut child = command.spawn().unwrap();
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(45);
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;

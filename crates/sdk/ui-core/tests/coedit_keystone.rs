@@ -287,18 +287,11 @@ fn two_peers() -> (CollaborationManager, CollaborationManager) {
 }
 
 fn poll_until<T>(
+    what: &str,
     mgr: &mut CollaborationManager,
     mut f: impl FnMut(&CollabEvent) -> Option<T>,
-) -> Option<T> {
-    for _ in 0..60 {
-        for ev in mgr.poll() {
-            if let Some(v) = f(&ev) {
-                return Some(v);
-            }
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    None
+) -> T {
+    tilo_test_env::wait_for(what, || mgr.poll().iter().find_map(&mut f))
 }
 
 #[allow(
@@ -323,11 +316,12 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
         let mut b_doc = AutoCommit::new();
         b_doc.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-        let adopted = poll_until(&mut b, |ev| match ev.document_mutation()? {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => Some(data),
-            _ => None,
-        })
-        .expect("B must receive A's snapshot");
+        let adopted = poll_until("B must receive A's snapshot", &mut b, |ev| {
+            match ev.document_mutation()? {
+                Ok(collab_types::DocumentMutation::Snapshot(data)) => Some(data),
+                _ => None,
+            }
+        });
         let mut incoming = AutoCommit::load(&adopted).unwrap();
         b_doc.merge(&mut incoming).unwrap();
         assert_eq!(text_of(&b_doc), "SEED", "B adopts A's seed text");
@@ -349,11 +343,12 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         assert!(!delta.is_empty(), "the edit must produce a delta");
         a.send(CollabRequest::document_incremental(delta));
 
-        let got = poll_until(&mut b, |ev| match ev.document_mutation()? {
+        let got = poll_until("B must receive A's incremental edit", &mut b, |ev| match ev
+            .document_mutation()?
+        {
             Ok(collab_types::DocumentMutation::Incremental(data)) => Some(data),
             _ => None,
-        })
-        .expect("B must receive A's incremental edit");
+        });
         b_doc.load_incremental(&got).unwrap();
 
         assert_eq!(
@@ -401,15 +396,18 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 7 },
         });
-        let a_caret_on_b = poll_until(&mut b, |ev| match ev {
-            CollabEvent::RemotePresenceUpdate {
-                user_id,
-                payload: PresencePayload::Caret { pos },
-                ..
-            } if user_id == "alice" => Some(*pos),
-            _ => None,
-        })
-        .expect("B must receive A's caret presence attributed to alice");
+        let a_caret_on_b = poll_until(
+            "B must receive A's caret presence attributed to alice",
+            &mut b,
+            |ev| match ev {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    payload: PresencePayload::Caret { pos },
+                    ..
+                } if user_id == "alice" => Some(*pos),
+                _ => None,
+            },
+        );
         assert_eq!(a_caret_on_b, 7);
 
         // B's caret moves -> A sees it, attributed to bob. Both directions
@@ -418,15 +416,18 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 3 },
         });
-        let b_caret_on_a = poll_until(&mut a, |ev| match ev {
-            CollabEvent::RemotePresenceUpdate {
-                user_id,
-                payload: PresencePayload::Caret { pos },
-                ..
-            } if user_id == "bob" => Some(*pos),
-            _ => None,
-        })
-        .expect("A must receive B's caret presence attributed to bob");
+        let b_caret_on_a = poll_until(
+            "A must receive B's caret presence attributed to bob",
+            &mut a,
+            |ev| match ev {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    payload: PresencePayload::Caret { pos },
+                    ..
+                } if user_id == "bob" => Some(*pos),
+                _ => None,
+            },
+        );
         assert_eq!(b_caret_on_a, 3);
 
         // The remote caret paints into the local render: place alice's caret

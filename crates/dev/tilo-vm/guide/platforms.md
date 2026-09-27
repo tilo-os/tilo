@@ -90,8 +90,11 @@ WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
 `Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
 and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
 publishes the three checksum-listed companion files under `directBoot` in
-`tilo-vm-disk-aarch64.json`. Download those files into one directory;
-for a local disk, an operator may extract the same files from its UKI.
+`tilo-vm-disk-aarch64.json`. On WHPX, `vm create` with a published disk
+downloads and verifies the matching companions automatically. The source
+revision, architecture, package URLs, file names and SHA-256 values must agree
+with the selected disk manifest. For a local disk, an operator may extract the
+same files from its UKI.
 The bundle JSON beside `Image` and `initrd` has this shape:
 
 ```json
@@ -103,11 +106,17 @@ The bundle JSON beside `Image` and `initrd` has this shape:
 }
 ```
 
-Create the COW VM with `--direct-boot-bundle` to validate and register these
-files before the image download or disk creation:
+Create a published COW VM with direct boot automatically:
 
 ```powershell
-tilo-vm vm create dev --hypervisor whpx --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
+tilo-vm vm create dev --hypervisor whpx --tag main-1a2b3c4 --headless --memory-mb 2048
+```
+
+For a local disk, pass `--direct-boot-bundle` to validate and register its
+manually prepared files before disk creation:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --image C:\tilo-vm\disk.qcow2 --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
 ```
 
 Alternatively, add a `direct_kernel` table to an existing VM's

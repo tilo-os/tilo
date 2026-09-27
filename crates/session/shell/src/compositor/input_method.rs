@@ -12,9 +12,14 @@
 //!
 //! * the active input source is an input-method engine → the composing input
 //!   method owns the seat, and the on-screen keyboard is stopped;
-//! * otherwise, the on-screen keyboard preference is on → the on-screen
-//!   keyboard owns the seat, and the composing input method is not running;
+//! * otherwise, the on-screen keyboard is wanted → the on-screen keyboard
+//!   owns the seat, and the composing input method is not running;
 //! * otherwise nobody does.
+//!
+//! Whether the on-screen keyboard is wanted is [`osk_wanted`]: its preference
+//! is `auto`, `always` or `never`, and `auto` follows the input hardware in
+//! use — a touchscreen with nothing typed on a physical keyboard since the
+//! last touch, or a convertible folded into tablet mode.
 //!
 //! The on-screen keyboard does not try to feed the composer: its keys are
 //! committed text, not key events a composer could compose, and splitting one
@@ -95,6 +100,63 @@ impl InputMethodOwner {
             Self::Composer(engine) => Some(engine),
             _ => None,
         }
+    }
+}
+
+/// When the person wants the on-screen keyboard: the stored
+/// `accessibility.on_screen_keyboard` preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OskPreference {
+    /// Follow the input hardware in use; see [`osk_wanted`].
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl OskPreference {
+    /// Parse the stored value. Anything unrecognised is the default.
+    pub fn from_setting(value: Option<&serde_json::Value>) -> Self {
+        match value.and_then(serde_json::Value::as_str) {
+            Some("always") => Self::Always,
+            Some("never") => Self::Never,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// The input facts [`osk_wanted`] reads in `auto`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OskInput {
+    /// A touchscreen is attached.
+    pub touchscreen: bool,
+    /// A physical key was pressed after the most recent touch (or before any
+    /// touch).
+    pub typed_since_touch: bool,
+    /// A convertible reports that its keyboard is folded away.
+    pub tablet_mode: bool,
+}
+
+impl OskInput {
+    pub fn from_environment(input: &super::input_environment::InputEnvironment) -> Self {
+        Self {
+            touchscreen: input.available().contains(ui::InputDevice::Touch),
+            typed_since_touch: input.typed_since_touch(),
+            tablet_mode: input.tablet_mode(),
+        }
+    }
+}
+
+/// Whether the on-screen keyboard should own an otherwise idle seat.
+///
+/// In `Auto`, a convertible in tablet mode always gets it: its keyboard is
+/// folded away. Otherwise it needs a touchscreen, and a key press on a
+/// physical keyboard hides it until the screen is touched again.
+pub fn osk_wanted(preference: OskPreference, input: OskInput) -> bool {
+    match preference {
+        OskPreference::Always => true,
+        OskPreference::Never => false,
+        OskPreference::Auto => input.tablet_mode || (input.touchscreen && !input.typed_since_touch),
     }
 }
 
@@ -278,6 +340,68 @@ mod tests {
                 "engine {engine:?}, composer installed {available}, OSK {osk}"
             );
         }
+    }
+
+    #[test]
+    fn automatic_on_screen_keyboard_follows_touch_typing_and_tablet_mode() {
+        use OskPreference::{Always, Auto, Never};
+        use serde_json::json;
+        // (preference, touchscreen, typed since touch, tablet mode) → wanted
+        let table = [
+            ((Auto, false, false, false), false),
+            ((Auto, true, false, false), true),
+            ((Auto, true, true, false), false),
+            ((Auto, false, true, false), false),
+            ((Auto, false, false, true), true),
+            ((Auto, true, true, true), true),
+            ((Always, false, true, false), true),
+            ((Always, true, true, false), true),
+            ((Never, true, false, false), false),
+            ((Never, true, false, true), false),
+        ];
+        for ((preference, touchscreen, typed_since_touch, tablet_mode), expected) in table {
+            let input = OskInput {
+                touchscreen,
+                typed_since_touch,
+                tablet_mode,
+            };
+            assert_eq!(
+                osk_wanted(preference, input),
+                expected,
+                "{preference:?} {input:?}"
+            );
+        }
+
+        // The stored preference defaults to automatic; the old boolean is
+        // not read.
+        for (stored, expected) in [
+            (None, Auto),
+            (Some(json!("auto")), Auto),
+            (Some(json!("always")), Always),
+            (Some(json!("never")), Never),
+            (Some(json!(true)), Auto),
+        ] {
+            assert_eq!(OskPreference::from_setting(stored.as_ref()), expected);
+        }
+
+        // A key press hides it until the next touch; pointer use in between
+        // is not typing.
+        let mut environment = super::super::input_environment::InputEnvironment::default();
+        environment.device_added(
+            "panel",
+            ui::InputAvailability::NONE.with(ui::InputDevice::Touch),
+        );
+        let wanted = |environment: &super::super::input_environment::InputEnvironment| {
+            osk_wanted(Auto, OskInput::from_environment(environment))
+        };
+        environment.note_used(ui::InputModality::Keyboard);
+        assert!(!wanted(&environment), "typed before any touch");
+        environment.note_used(ui::InputModality::Touch);
+        assert!(wanted(&environment));
+        environment.note_used(ui::InputModality::Pointer);
+        assert!(wanted(&environment), "pointer use is not typing");
+        environment.note_used(ui::InputModality::Keyboard);
+        assert!(!wanted(&environment));
     }
 
     #[test]
