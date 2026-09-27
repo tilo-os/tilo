@@ -86,7 +86,7 @@ use smithay::{
     delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
+    delegate_seat, delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
 };
@@ -681,6 +681,11 @@ pub struct State {
         ClientId,
         crate::compositor::input_method::TrustedInputMethod,
     )>,
+    /// Every text input's declared content type, for telling a secret
+    /// field from an ordinary one.
+    pub(crate) text_fields: crate::compositor::text_commit::TextFields,
+    /// Text the shell is committing into the focused field.
+    pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
@@ -1087,6 +1092,8 @@ impl State {
             input_method_popups: Vec::new(),
             seat_input_method,
             trusted_input_method_clients: Vec::new(),
+            text_fields: crate::compositor::text_commit::TextFields::default(),
+            text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -3687,7 +3694,7 @@ impl State {
             if handle.backend_handle().get_client_data(id.clone()).is_err() {
                 return false;
             }
-            if Some(*kind) == owner {
+            if crate::compositor::input_method::SeatInputMethod::keeps(*kind, owner) {
                 return true;
             }
             handle
@@ -4829,7 +4836,8 @@ delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
-delegate_text_input_manager!(State);
+// Text input is dispatched in `compositor::text_commit`, which follows each
+// field's declared content type before handing the request to Smithay.
 delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
