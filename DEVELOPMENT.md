@@ -1437,6 +1437,11 @@ and `verify`, and fails until both commands leave nothing to change. Neither
 moves a locked version; `Cargo.lock` only gains or loses `workspace-hack`
 edges. Never edit between the `HAKARI SECTION` markers by hand.
 
+The hack's feature set is native and does not build for wasm32. A member the
+browser runtime also builds for `wasm32-unknown-unknown` names it under
+`[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` instead; the policy
+suite names a member that `manage-deps` gave the unconditional line.
+
 ## Pre-commit hook
 
 Enable the repo's git hooks once per clone:

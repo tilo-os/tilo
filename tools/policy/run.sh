@@ -54,6 +54,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Browser wasm32 builds stay off the workspace-hack' \
+  python3 tools/policy/check_wasm_workspace_hack.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 
 printf '\nRepository policy suite OK\n'

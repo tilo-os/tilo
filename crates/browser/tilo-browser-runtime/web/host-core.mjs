@@ -22,6 +22,11 @@ export class MountRegistry {
   }
   shutdown() { for (const {token} of this.#entries.values()) this.remove(token); this.#closed = true; }
 }
+/** The durable record an ordinary application reopens in `room` when the host names none. A package-primary application always opens its one room document instead. */
+export function reopenedRecord(entries, application, room) {
+  if (application?.scope !== 'ordinary') return undefined;
+  return entries.map(entry => JSON.parse(entry.key)).find(key => key.type === 'record' && key.package === application.id && key.workspace === room)?.record;
+}
 export function physicalViewport(width, height, dpr) {
   if (!Number.isFinite(dpr) || dpr <= 0) throw Error('invalid device pixel ratio');
   return {width: Math.ceil(Math.max(0,width)*dpr), height: Math.ceil(Math.max(0,height)*dpr), dpr, suspended: width<=0 || height<=0};

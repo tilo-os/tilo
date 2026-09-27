@@ -17,6 +17,7 @@ class BuildProfileTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 log = (root/'log').read_text()
                 self.assertIn('--profile '+profile, log)
+                self.assertIn('--features cloud,static-apps', log)
                 self.assertIn('/'+directory+'/tilo_browser_runtime.wasm', log)
                 metadata = json.loads((root/'out/build.json').read_text())
                 self.assertEqual(metadata['profile'], profile)
