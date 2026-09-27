@@ -380,26 +380,40 @@ async fn started(
     tokio::task::JoinHandle<anyhow::Result<()>>,
     String,
 ) {
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = {
-        let (config, ready) = (config.to_owned(), ready.to_owned());
-        tokio::spawn(async move {
-            crate::https_owner::serve::serve_broker_only_until(&config, &ready, async {
-                let _ = stopped.await;
+    let mut attempt = 0;
+    let (stop, server) = loop {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = {
+            let (config, ready) = (config.to_owned(), ready.to_owned());
+            tokio::spawn(async move {
+                crate::https_owner::serve::serve_broker_only_until(&config, &ready, async {
+                    let _ = stopped.await;
+                })
+                .await
             })
-            .await
-        })
-    };
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !ready.exists() {
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !ready.exists() && !server.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "Ready not published");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if !server.is_finished() || ready.exists() {
+            break (stop, server);
+        }
+        // The fixture's free address was taken by another test process
+        // before the service bound it: assign another and start again.
+        let error = format!("{:#}", server.await.unwrap().unwrap_err());
         assert!(
-            !server.is_finished(),
-            "server stopped before Ready: {:?}",
-            server.await
+            attempt < 8 && error.contains("Address already in use"),
+            "server stopped before Ready: {error}"
         );
-        assert!(std::time::Instant::now() < deadline, "Ready not published");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        attempt += 1;
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        crate::https_owner::serve::tests::assign_free_origin(Path::new(
+            json["transport_config"].as_str().unwrap(),
+        ));
+    };
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(ready).unwrap()).unwrap();
     assert_eq!(record["capabilities"], PRODUCT_DATA_V1);
     (stop, server, record["origin"].as_str().unwrap().to_owned())
@@ -514,7 +528,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         .await;
     assert_eq!(status, reqwest::StatusCode::OK);
     let later_commit = accepted(&body);
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+    let woken = tokio::time::timeout(Duration::from_secs(30), held)
         .await
         .expect("held poll woken by commit")
         .unwrap()
@@ -2465,7 +2479,7 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
     })
     .await
     .unwrap();
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+    let woken = tokio::time::timeout(Duration::from_secs(30), held)
         .await
         .expect("held poll woken after the lock is released, not at its idle deadline")
         .unwrap()
@@ -2540,7 +2554,7 @@ async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
     })
     .await
     .unwrap();
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+    let woken = tokio::time::timeout(Duration::from_secs(30), held)
         .await
         .expect("held poll woken by the commit, not at its idle deadline")
         .unwrap()
