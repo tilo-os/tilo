@@ -128,27 +128,7 @@ Remove-Partition -DiskNumber {disk} -PartitionNumber {number} -Confirm:$false
 
 /// Base64 (RFC 4648, padded).
 pub fn base64(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let symbol = |index: u32| {
-        ALPHABET
-            .get(usize::try_from(index & 63).unwrap_or(0))
-            .map_or('A', |b| char::from(*b))
-    };
-    let mut out = String::with_capacity(data.len().div_ceil(3).saturating_mul(4));
-    for chunk in data.chunks(3) {
-        let [a, b, c] = match *chunk {
-            [a] => [a, 0, 0],
-            [a, b] => [a, b, 0],
-            [a, b, c] => [a, b, c],
-            _ => continue,
-        };
-        let n = (u32::from(a) << 16) | (u32::from(b) << 8) | u32::from(c);
-        out.push(symbol(n >> 18));
-        out.push(symbol(n >> 12));
-        out.push(if chunk.len() > 1 { symbol(n >> 6) } else { '=' });
-        out.push(if chunk.len() > 2 { symbol(n) } else { '=' });
-    }
-    out
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data)
 }
 
 /// The `-EncodedCommand` argument for `script`.

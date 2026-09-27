@@ -77,7 +77,7 @@ tilo-pdf = { path = "../../doc/pdf" }
 thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"
-mime_guess = "2.0.5"
+mime_guess.workspace = true
 app-cli = { path = "../../packaging/app-cli" }
 app-host = { path = "../../packaging/app-host" }
 registry-types = { path = "../../packaging/registry-types" }

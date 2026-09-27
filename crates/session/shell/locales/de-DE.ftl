@@ -1917,6 +1917,9 @@ window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens g
 window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
 window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
 window-transfer-late-edits-detail = Änderungen, die in { $from } während des Verschiebens gemacht wurden, wurden dem Dokument hinzugefügt.
+window-transfer-moved-away-title = „{ $window }“ wurde in einen anderen Arbeitsbereich verschoben
+window-transfer-moved-away-to = { $person } hat es nach { $to } verschoben. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
+window-transfer-moved-away-elsewhere = { $person } hat es in einen Arbeitsbereich verschoben, in dem du nicht bist. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
 
 # Startfläche für leere Arbeitsbereiche und die Standardbefehle
 global-search-create-workspace = Arbeitsbereich erstellen

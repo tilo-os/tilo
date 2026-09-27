@@ -877,7 +877,7 @@ mod native_process_tests {
             probe::APP,
             room,
             &crate::record::transfer::Origin::Record(carried.clone()),
-            crate::record::transfer::Retirement::Moved,
+            &crate::record::transfer::Retirement::Moved(None),
         )
         .unwrap();
         let prepared = host(temp.path())

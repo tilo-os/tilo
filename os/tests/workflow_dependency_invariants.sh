@@ -71,7 +71,7 @@ if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' 
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
    && grep -Fq 'python3 os/dev/rpm-snapshot-fingerprint.py' "$rpm_snapshot_workflow" \
    && grep -Fq './os/dev/resolve-rpm-snapshot.sh' "$rpm_snapshot_workflow" \
-   && grep -Fq 'workflow_call:' "$rpm_snapshot_workflow" \
+   && ! grep -Fq 'workflow_call:' "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else

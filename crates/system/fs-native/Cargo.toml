@@ -18,6 +18,7 @@ name = "tilo-fs-native"
 path = "src/bin/tilo-fs-native/main.rs"
 
 [dependencies]
+hex.workspace = true
 blake3.workspace = true
 fs-content = { path = "../fs-content" }
 libc.workspace = true

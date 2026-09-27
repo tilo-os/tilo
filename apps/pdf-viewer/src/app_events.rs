@@ -599,7 +599,7 @@ impl PdfApp {
         // page doesn't pan under the selection.
         if self.editing.is_some() {
             self.drive_editor(event, scale_factor, modifiers, state);
-            if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
+            if self.editing.as_ref().is_some_and(Editing::is_dragging) {
                 self.dirty = true;
                 return true;
             }
@@ -854,7 +854,7 @@ impl PdfApp {
             return;
         }
         // End an inline-editor drag-selection.
-        if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
+        if self.editing.as_ref().is_some_and(Editing::is_dragging) {
             self.drive_editor(event, scale_factor, modifiers, state);
             self.dirty = true;
             *handled = true;
@@ -1067,8 +1067,23 @@ impl PdfApp {
         modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
     ) {
-        if let Some(e) = self.editing.as_mut() {
-            Self::drive_local_input(&mut e.input, event, scale, modifiers, state);
+        match self.editing.as_mut().map(|e| &mut e.input) {
+            Some(EditInput::Plain(input)) => {
+                Self::drive_local_input(input, event, scale, modifiers, state);
+            }
+            Some(EditInput::Rich(field)) => {
+                let mut handled = false;
+                field.handle_event(
+                    event,
+                    scale,
+                    &modifiers,
+                    state,
+                    &automerge::ROOT,
+                    &mut handled,
+                );
+                field.sync(state, &automerge::ROOT);
+            }
+            None => {}
         }
     }
 
@@ -1140,7 +1155,7 @@ impl PdfApp {
             return true;
         }
         self.drive_editor(event, scale, modifiers, state);
-        let submitted = self.editing.as_mut().is_some_and(|e| e.input.take_submit());
+        let submitted = self.editing.as_mut().is_some_and(Editing::take_submit);
         if submitted {
             self.commit_edit(state);
         }
@@ -2235,11 +2250,7 @@ mod event_tests {
         let cid = app.comments[0].id.clone();
         let replies_before = app.comments[0].replies.len();
         app.begin_edit(EditTarget::Reply(cid.clone()), "");
-        app.editing
-            .as_mut()
-            .unwrap()
-            .input
-            .insert_at_cursor("Looks good");
+        app.editing.as_mut().unwrap().set_text("Looks good");
         app.commit_edit(&mut st.doc);
         let after = app.comments.iter().find(|c| c.id == cid).unwrap();
         assert_eq!(
@@ -2288,7 +2299,7 @@ mod event_tests {
         rig.app.begin_edit(EditTarget::CommentBody(cid), "AB"); // caret at end
         ui::clipboard_copy("XY");
         rig.key(ctrl_mods(), character("v"));
-        let after = rig.app.editing.as_ref().unwrap().text().to_string();
+        let after = rig.app.editing.as_ref().unwrap().text();
         let clip: String = ui::clipboard_paste()
             .unwrap_or_default()
             .chars()

@@ -391,6 +391,7 @@ jobs:
           podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
           digest=$(tr -d '[:space:]' < "$digest_file")
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           echo "::notice::preinstall dev image $candidate ($digest); resume with dev_image=registry.tilo.so/tilo/tilo-vm@$digest"
 
       - name: Load and verify preinstall dev-image checkpoint
@@ -430,6 +431,7 @@ jobs:
           }
           podman pull "$DEV_CHECKPOINT_REF"
           podman tag "$DEV_CHECKPOINT_REF" "$DEV_IMAGE"
+          echo "DEV_IMAGE_DIGEST=$actual" >> "$GITHUB_ENV"
           echo "::notice::resumed verified dev image $DEV_CHECKPOINT_REF"
 
       # Keep the OS and dev-image recipe at SOURCE_REVISION. A separately
@@ -447,6 +449,8 @@ jobs:
             os/dev/hold-loop-partition-nodes.py
             os/dev/private_disk_image.py
             os/dev/check-dev-vm.sh
+            os/dev/diagnose-boot-failure.sh
+            os/dev/publish-dev-disk-candidate.sh
             os/dev/publish-dev-disk.sh
             os/dev/_common.sh
             os/dev/probe-kvm.py
@@ -464,7 +468,8 @@ jobs:
           # the reviewed helper with the reviewed disk script, after the dev
           # image was built from the unmodified OS source.
           for file in disk-image.sh hold-loop-partition-nodes.py private_disk_image.py \
-                       check-dev-vm.sh publish-dev-disk.sh _common.sh probe-kvm.py; do
+                       check-dev-vm.sh diagnose-boot-failure.sh publish-dev-disk-candidate.sh \
+                       publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"
             install -m 0755 ".ci-disk-tooling/os/dev/$file" "os/dev/$file"
           done
@@ -482,9 +487,11 @@ jobs:
           TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
           TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
+          TILO_QCOW2_COMPRESS: "1"
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          df -h "$TILO_OUTPUT" "${RUNNER_TEMP:-/var/tmp}"
           if [[ $ARCH == aarch64 ]]; then
             rm -rf -- "$TILO_OUTPUT/direct-boot"
             export TILO_DEV_DIRECT_BUNDLE_DIR="$TILO_OUTPUT/direct-boot"
@@ -494,6 +501,18 @@ jobs:
           if [[ $ARCH == aarch64 ]]; then
             test -s "$TILO_OUTPUT/direct-boot/boot.json"
           fi
+
+      # An immutable, explicitly unvalidated checkpoint lets a WHPX host
+      # inspect the installed disk even if slow CI TCG cannot reach greetd.
+      # The normal dev-disk manifest is still published only after boot proof.
+      - name: Publish unvalidated installed disk candidate
+        env:
+          SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
+          SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
+          BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: ./os/dev/publish-dev-disk-candidate.sh
 
       - name: Boot the disk and reach tilo-vmd over SSH
         timeout-minutes: 45
@@ -511,10 +530,25 @@ jobs:
           # Boot a throwaway overlay so the published disk is never first-booted.
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
-          trap './os/dev/vm.sh stop || true; rm -f "$overlay"' EXIT
+          finish_boot() {
+            status=$?
+            if (( status != 0 )); then ./os/dev/diagnose-boot-failure.sh || true; fi
+            ./os/dev/vm.sh stop || true
+            rm -f "$overlay"
+            return "$status"
+          }
+          trap finish_boot EXIT
           ./os/dev/vm.sh boot --disk "$overlay"
           ./os/dev/vm.sh wait
           ./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"
+
+      - name: Upload failed boot framebuffer
+        if: failure()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: dev-disk-boot-failure-${{ matrix.arch }}
+          path: /var/tmp/tilo-vm-vm-${{ matrix.arch }}/boot-timeout.ppm
+          if-no-files-found: ignore
 
       # This architecture publishes on its own; another lane of the same tag
       # adds its child to the index and its own manifest whenever it lands.

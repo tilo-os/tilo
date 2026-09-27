@@ -46,7 +46,6 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
@@ -1740,11 +1739,7 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
 // --- helpers -------------------------------------------------------------
 
 fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    hex::encode(bytes)
 }
 
 /// `2024-05-01T12:30:45.123Z`.

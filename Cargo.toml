@@ -183,6 +183,7 @@ members = [
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
+    "crates/packaging/installed-apps",
     "crates/packaging/launcher",
     "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
@@ -368,7 +369,9 @@ vello = "0.9"
 vello_encoding = "0.9"
 wgpu = "29"
 taffy = "0.10.1"
-winit = "0.30.13"
+# The default `wayland-csd-adwaita` draws titles through ab_glyph and
+# owned_ttf_parser; `-notitle` keeps the client-side frame without that stack.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
 tilo-automerge = { path = "crates/doc/tilo-automerge" }
@@ -399,6 +402,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# MIME types from file extensions.
+mime_guess = "2.0.5"
 # Percent-encoding and form-urlencoding outside a whole `url::Url`.
 percent-encoding = "2"
 form_urlencoded = "1"
@@ -511,7 +516,9 @@ zbus = { version = "5.16", default-features = false }
 # through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.18.0"
-notify = { version = "8", default-features = false }
+# Defaults on: the only default is `macos_fsevent`, without which notify has no
+# macOS backend and fails to compile there.
+notify = "8"
 landlock = "0.4"
 seccompiler = "0.5"
 sd-notify = "0.4"
