@@ -22,6 +22,7 @@ use ui_core::automerge::ChangeHash;
 /// participant's permission, apply through the replayable executor with
 /// attribution, and are undone per author.
 pub struct Dispatcher<R: Resource> {
+    app_id: &'static str,
     resource_id: Rc<str>,
     queue: Rc<RefCell<VecDeque<ControlInvocation>>>,
     /// The invocations of the open group, and how many groups are open.
@@ -43,6 +44,7 @@ pub struct Dispatcher<R: Resource> {
 impl<R: Resource> Clone for Dispatcher<R> {
     fn clone(&self) -> Self {
         Self {
+            app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
@@ -58,8 +60,9 @@ impl<R: Resource> Clone for Dispatcher<R> {
 }
 
 impl<R: Resource> Dispatcher<R> {
-    pub(crate) fn new(resource_id: &str, read_only: bool) -> Self {
+    pub(crate) fn new(app_id: &'static str, resource_id: &str, read_only: bool) -> Self {
         Self {
+            app_id,
             resource_id: Rc::from(resource_id),
             queue: Rc::default(),
             group: Rc::default(),
@@ -230,6 +233,9 @@ impl<R: Resource> Dispatcher<R> {
         self.host
             .borrow_mut()
             .try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)?;
+        if R::annotates(action) {
+            return Ok(());
+        }
         let continues = self
             .last
             .borrow()
@@ -270,6 +276,12 @@ impl<R: Resource> Dispatcher<R> {
 
     pub(crate) fn resource_id(&self) -> &str {
         &self.resource_id
+    }
+
+    /// The id of the app whose resource this is, which presence keys name
+    /// ([`ResourceSelection::presence`](super::ResourceSelection::presence)).
+    pub fn app_id(&self) -> &'static str {
+        self.app_id
     }
 }
 

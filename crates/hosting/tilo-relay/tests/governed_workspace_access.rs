@@ -53,9 +53,7 @@ async fn connect(
 
 async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), client.recv())
-        .await
-        .expect("relay answered subscription")
+    tilo_test_env::within("relay answered subscription", client.recv()).await
 }
 
 fn retained_delta(body: &[u8]) -> Vec<u8> {
@@ -181,8 +179,8 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), alice_client.recv()).await,
-        Ok(Some(Envelope::NotAuthorised { workspace_id: 701, reason }))
+    tilo_test_env::within("a message on alice_client", alice_client.recv()).await,
+    Some(Envelope::NotAuthorised { workspace_id: 701, reason })
             if reason == "workspace membership changed"
     ));
     assert!(
@@ -202,10 +200,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // Alice stays globally handshake-admitted through room 702, but the
     // periodic audit then closes her room-701 stream and that global admission
     // cannot reopen room 701.
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(4), alice_client.recv()).await,
-        Ok(None)
-    ));
+    assert!(
+        tilo_test_env::within("alice_client to close", alice_client.recv())
+            .await
+            .is_none()
+    );
     assert!(!relay.is_subscribed(701, &alice_a_key).await);
     assert!(relay.is_subscribed(701, &bob_key).await);
 
@@ -240,10 +239,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             .await
             .is_err()
     );
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), alice_reconnect.recv()).await,
-        Ok(None)
-    ));
+    assert!(
+        tilo_test_env::within("alice_reconnect to close", alice_reconnect.recv())
+            .await
+            .is_none()
+    );
 
     let alice_room_b = connect(
         &relay,

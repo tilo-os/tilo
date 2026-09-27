@@ -259,7 +259,10 @@ async fn pump_until(
     what: &str,
     mut f: impl FnMut(&mut ShellOverlayHost) -> bool,
 ) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if f(host) {
             return;
@@ -282,7 +285,10 @@ async fn await_response(
     what: &str,
     handle: tokio::task::JoinHandle<(u32, std::collections::HashMap<String, OwnedValue>)>,
 ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if handle.is_finished() {
             return handle.await.expect("join");

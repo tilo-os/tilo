@@ -68,7 +68,6 @@ const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
-const DEADLINE: Duration = Duration::from_secs(20);
 /// Devices the owner runs applications on, each connecting as the owner.
 const SHORTCUTS_HANDLE: &str = "shortcuts-app";
 const SILENT_HANDLE: &str = "silent-app";
@@ -377,7 +376,7 @@ impl FixtureApp {
 }
 
 fn answer<T>(pending: Pending<T>) -> T {
-    match pending.wait_timeout(Duration::from_secs(5)) {
+    match pending.wait_timeout(tilo_test_env::hang_bound()) {
         Ok(Some(value)) => value,
         _ => panic!("the broker did not answer"),
     }
@@ -415,9 +414,7 @@ impl Door {
             host,
             owner: Caller::local_person(owner_principal()),
             app: FixtureApp::connect(&socket),
-            deadline: Instant::now()
-                .checked_add(DEADLINE)
-                .expect("the deadline fits in an Instant"),
+            deadline: tilo_test_env::hang_deadline(),
             dir,
         };
         while !["draft", "publish", "archive"]
@@ -958,10 +955,8 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
     host.tick_shortcut_triggers_now();
     // Building a compositor host is slow on a cold process; the run gets
-    // its own full deadline from here.
-    door.deadline = Instant::now()
-        .checked_add(DEADLINE)
-        .expect("the deadline fits in an Instant");
+    // its own full hang bound from here.
+    door.deadline = tilo_test_env::hang_deadline();
     let listed: Vec<(String, String)> = host
         .action_chords()
         .iter()
@@ -1850,7 +1845,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                         provider: workspace_provider(&ROOM.to_string()),
                         address: ActionAddress::new(
                             format!("workspace.permissions:{ROOM}"),
-                            shell::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
+                            tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
                         ),
                     },
                     argument: InvokeArgument::Json(

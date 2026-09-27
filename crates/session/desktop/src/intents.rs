@@ -1,5 +1,5 @@
 //! Requests only. A session intent is never a receipt or proof of mutation.
-use tilo_desktop_model::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalViewIntent {
     Workspace(WorkspaceId),
@@ -30,10 +30,81 @@ pub enum SessionIntent {
         group: GroupId,
     },
 }
+impl SessionIntent {
+    /// The group the request was made in.
+    pub fn group(&self) -> GroupId {
+        match self {
+            Self::CloseTab { group, .. }
+            | Self::ReorderTab { group, .. }
+            | Self::ReorderGroup { group, .. }
+            | Self::OpenTab { group, .. } => *group,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesktopIntent {
     Local(LocalViewIntent),
     Session(SessionIntent),
+}
+
+/// Apply a per-device view change to the rendered desktop: selection,
+/// width and maximize. It never changes the topology, so every host runs it
+/// locally without asking the owner.
+pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
+    match intent {
+        LocalViewIntent::Workspace(id) => {
+            if tree.workspaces.iter().any(|w| w.id == id) {
+                tree.active = id;
+            }
+        }
+        LocalViewIntent::Strip(id) => {
+            if let Some(w) = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == tree.active && w.strips.iter().any(|s| s.id == id))
+            {
+                tree.active_strip.insert(w.id, id);
+            }
+        }
+        LocalViewIntent::Group { strip, group } => {
+            if tree
+                .workspaces
+                .iter()
+                .filter(|w| w.id == tree.active)
+                .flat_map(|w| &w.strips)
+                .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
+            {
+                tree.active_strip.insert(tree.active, strip);
+                tree.active_group.insert(strip, group);
+            }
+        }
+        other => {
+            for w in &mut tree.workspaces {
+                for s in &mut w.strips {
+                    for g in &mut s.window_groups {
+                        match other {
+                            LocalViewIntent::Tab { group, tab }
+                                if group == g.id && g.tabs.iter().any(|t| t.id == tab) =>
+                            {
+                                g.active_tab = tab;
+                                if w.id == tree.active {
+                                    tree.active_strip.insert(w.id, s.id);
+                                    tree.active_group.insert(s.id, g.id);
+                                }
+                            }
+                            LocalViewIntent::Width { group, width } if group == g.id => {
+                                g.width = width;
+                            }
+                            LocalViewIntent::Maximized { group, maximized } if group == g.id => {
+                                g.maximized = maximized;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Drain each toolkit request once; native and portable hosts apply the same typed requests.

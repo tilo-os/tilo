@@ -29,8 +29,9 @@ use vello::peniko::{
 use crate::compositor::foreign::store;
 use crate::compositor::frame::FrameBuilder;
 use crate::shell::window_previews::{
-    MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, PreviewSource, RENDERS_PER_REFRESH, preview_size,
+    MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, RENDERS_PER_REFRESH, preview_size,
 };
+use tilo_desktop::window_switcher::PreviewSource;
 
 /// What one refresh did, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

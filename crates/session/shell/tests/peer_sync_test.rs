@@ -59,7 +59,7 @@ async fn connect_pair(
 }
 
 async fn wait_peer_joined(events: &mut mpsc::Receiver<NetEvent>) {
-    timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("Iroh gossip mesh formed", async {
         while let Some(event) = events.recv().await {
             if matches!(event, NetEvent::PeerJoined { .. }) {
                 return;
@@ -67,12 +67,11 @@ async fn wait_peer_joined(events: &mut mpsc::Receiver<NetEvent>) {
         }
         panic!("event channel closed before peer joined");
     })
-    .await
-    .expect("Iroh gossip mesh formed");
+    .await;
 }
 
 async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, expected: u8) {
-    timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("exact-target input arrived", async {
         loop {
             if let Some(NetEvent::Msg {
                 msg:
@@ -90,8 +89,7 @@ async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, 
             }
         }
     })
-    .await
-    .expect("exact-target input arrived");
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -117,7 +115,7 @@ async fn two_actors_exchange_a_workspace_change() {
         .await
         .unwrap();
 
-    let (changes, sender) = timeout(Duration::from_secs(15), async {
+    let (changes, sender) = tilo_test_env::within("change arrived", async {
         loop {
             if let Some(NetEvent::Msg {
                 peer,
@@ -129,8 +127,7 @@ async fn two_actors_exchange_a_workspace_change() {
             }
         }
     })
-    .await
-    .expect("change arrived");
+    .await;
 
     let mut target = WorkspaceTree::default();
     let target_id = target.append_empty_workspace("Placeholder");
@@ -166,7 +163,7 @@ async fn presence_round_trips_over_iroh() {
         .await
         .unwrap();
 
-    timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("presence arrived", async {
         loop {
             if let Some(NetEvent::Msg { msg, .. }) = events_b.recv().await
                 && msg == presence
@@ -175,8 +172,7 @@ async fn presence_round_trips_over_iroh() {
             }
         }
     })
-    .await
-    .expect("presence arrived");
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -246,7 +242,7 @@ async fn remote_action_frames_travel_the_exact_target_route() {
             })
             .await
             .expect("remote action queued");
-        let received = timeout(Duration::from_secs(5), async {
+        let received = timeout(tilo_test_env::hang_bound(), async {
             loop {
                 match events_b.recv().await {
                     Some(NetEvent::Msg {

@@ -23,6 +23,26 @@ use winit::{
     window::{Window, WindowId},
 };
 
+#[cfg(feature = "cloud")]
+use crate::peer as cloud_peer;
+/// Without `cloud` no certified peer exists, so a mount that names one fails.
+#[cfg(not(feature = "cloud"))]
+mod cloud_peer {
+    const UNAVAILABLE: &str = "this runtime was built without the Cloud peer";
+    pub(super) fn permissions(_: u32) -> Result<ui::permissions::PermissionContext, String> {
+        Err(UNAVAILABLE.into())
+    }
+    pub(super) fn local_owned_document(
+        _: u32,
+        _: &str,
+        _: &str,
+        _: automerge::AutoCommit,
+    ) -> Result<(), String> {
+        Err(UNAVAILABLE.into())
+    }
+    pub(super) fn mark_failure(_: u32, _: String) {}
+}
+
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
@@ -32,8 +52,11 @@ thread_local! {
     static CLOSED: RefCell<crate::close_recovery::ClosedComponents> = RefCell::new(crate::close_recovery::ClosedComponents::default());
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
 }
+/// The `app` that mounts the canonical desktop rather than one application.
+const DESKTOP: &str = "desktop";
 #[derive(serde::Deserialize)]
 struct Config {
+    /// An installed app id or alias (see `catalog`), or [`DESKTOP`].
     app: String,
     profile: String,
     device: String,
@@ -103,6 +126,9 @@ struct Mount {
     peer: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
+    /// `record_version` of `record` when this mount last drew or was
+    /// re-synced; a change is what re-syncs the page's other mounts of it.
+    record_version: (Vec<automerge::ChangeHash>, usize),
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -110,6 +136,11 @@ struct Mount {
     gpu: Option<Gpu>,
     pending: bool,
     viewport: ViewportState,
+    /// The scale of Winit's last `ScaleFactorChanged`. `devicePixelRatio`
+    /// changes a frame before the canvas's physical size follows it; pairing
+    /// the live ratio with the old size would lay one frame out at the wrong
+    /// logical width.
+    scale: f64,
     hidden: bool,
     generation: u64,
     frames: u64,
@@ -190,7 +221,11 @@ pub fn mount(
         *next += 1;
         id
     });
-    let config = serde_json::from_str(config).map_err(error)?;
+    let config: Config = serde_json::from_str(config).map_err(error)?;
+    // An unknown app rejects the mount itself, before any window or storage exists.
+    if config.app != DESKTOP {
+        crate::catalog::resolve_mount(&config.app).map_err(error)?;
+    }
     REQUESTS.with_borrow_mut(|r| {
         r.insert(
             id,
@@ -205,6 +240,23 @@ pub fn mount(
     });
     p.send_event(id).map_err(error)?;
     Ok(id)
+}
+/// The installed application a mount's `app` names (an app id or alias).
+#[wasm_bindgen]
+pub fn application(app: &str) -> Result<String, JsValue> {
+    let definition = crate::catalog::resolve_mount(app).map_err(error)?;
+    Ok(crate::catalog::describe(definition).to_string())
+}
+/// Every application this build can mount standalone.
+#[wasm_bindgen]
+pub fn applications() -> String {
+    serde_json::Value::Array(
+        crate::catalog::installed()
+            .into_iter()
+            .map(crate::catalog::describe)
+            .collect(),
+    )
+    .to_string()
 }
 #[wasm_bindgen]
 pub fn close(id: u64) -> Result<String, JsValue> {
@@ -313,6 +365,9 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                        m.scale = scale_factor;
+                    }
                     if m.peer_suspended {
                         return;
                     }
@@ -384,6 +439,7 @@ impl ApplicationHandler<u64> for Runner {
                     m.window.request_redraw();
                 }
             }
+            propagate_record_change(mounts, id);
         });
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -469,19 +525,20 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
-    if config.app == "desktop" {
+    if config.app == DESKTOP {
+        #[cfg(feature = "cloud")]
         return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
+        #[cfg(not(feature = "cloud"))]
+        return Err(error(
+            "the canonical desktop requires a runtime built with the Cloud peer",
+        ));
     }
-    let definition = match config.app.as_str() {
-        "writer" => word_processor::definition(),
-        "chat" => chat::definition(),
-        _ => return Err(error("unsupported application")),
-    };
+    let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
-    let target = if config.app == "chat" {
+    let target = if crate::desktop::opens_package_primary(definition.app_id) {
         let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
         match records.try_open_record(&checkout) {
             Ok(_) => LaunchTarget::Record {
@@ -510,7 +567,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
     let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
-        crate::peer::permissions(peer).map_err(error)?
+        cloud_peer::permissions(peer).map_err(error)?
     } else {
         PermissionContext::from_capabilities(
             Actor::person(Some(Role::Owner), &config.author),
@@ -542,6 +599,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     .map_err(error)?;
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
+    let record_version = records
+        .read(&checkout.id, record_version)
+        .unwrap_or_default();
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -597,6 +657,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             store: records,
             checkout,
         }),
+        record_version,
         window: window.clone(),
         canvas,
         frame,
@@ -608,6 +669,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             height: size.height,
             dpr,
         }),
+        scale: dpr,
         hidden: false,
         generation: 1,
         frames: 0,
@@ -622,6 +684,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     initialize_gpu(id, 1, window);
     Ok(())
 }
+#[cfg(feature = "cloud")]
 fn begin_desktop(
     event_loop: &ActiveEventLoop,
     id: u64,
@@ -703,6 +766,7 @@ fn begin_desktop(
         peer: Some(peer),
         desktop: Some(desktop),
         record: None,
+        record_version: Default::default(),
         window: window.clone(),
         canvas,
         frame,
@@ -714,6 +778,7 @@ fn begin_desktop(
             height: size.height,
             dpr,
         }),
+        scale: dpr,
         hidden: false,
         generation: 1,
         frames: 0,
@@ -794,7 +859,73 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
         }
     });
 }
+/// Committed heads and uncommitted operations: any edit moves one of them.
+fn record_version(doc: &automerge::AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    (doc.base_heads(), doc.pending_ops())
+}
+/// One standalone record as the page's mounts share it: every mount of the
+/// same profile/device cache, app and record edits one in-memory document.
+struct SharedRecord {
+    storage: ui::portable_storage::ProfileNamespace,
+    app: String,
+    record: RecordId,
+}
+impl SharedRecord {
+    fn shown_by(&self, mount: &Mount) -> bool {
+        mount.record.as_ref().is_some_and(|record| {
+            record.app == self.app
+                && record.checkout.id == self.record
+                && *mount.storage.namespace() == self.storage
+        })
+    }
+}
+/// Mount `origin` may have changed the record it shows. Nothing else wakes a
+/// component whose document another component edited, so re-run the frame
+/// passes of the page's other mounts of that record, which read the document
+/// afresh, and have them present. Returns the mounts it re-synced.
+fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec<u64> {
+    let Some(changed) = mounts.get_mut(&origin).and_then(Mount::take_record_change) else {
+        return Vec::new();
+    };
+    let mut resynced = Vec::new();
+    for (&id, mount) in mounts
+        .iter_mut()
+        .filter(|(id, mount)| **id != origin && changed.shown_by(mount))
+    {
+        // Heads first: only a change this re-sync itself makes echoes back.
+        let _ = mount.take_record_change();
+        mount.frame.relayout();
+        mount.pending = true;
+        mount.window.request_redraw();
+        resynced.push(id);
+    }
+    resynced
+}
+/// A redraw requested outside Winit's dispatch (from a call the page made)
+/// waits for the next event; a proxy event per mount delivers it now.
+fn wake(ids: impl IntoIterator<Item = u64>) {
+    if let Some(proxy) = LOOP.with_borrow(Clone::clone) {
+        for id in ids {
+            let _ = proxy.send_event(id);
+        }
+    }
+}
 impl Mount {
+    /// The shared record this standalone mount shows, when its heads moved
+    /// since the last call.
+    fn take_record_change(&mut self) -> Option<SharedRecord> {
+        let record = self.record.as_ref()?;
+        let version = record.store.read(&record.checkout.id, record_version)?;
+        if version == self.record_version {
+            return None;
+        }
+        self.record_version = version;
+        Some(SharedRecord {
+            storage: self.storage.namespace().clone(),
+            app: record.app.clone(),
+            record: record.checkout.id.clone(),
+        })
+    }
     fn metric_start(&self) -> Option<web_time::Instant> {
         self.metrics.borrow().begin()
     }
@@ -825,7 +956,7 @@ impl Mount {
         let changed = self.viewport.request(Viewport {
             width: size.width,
             height: size.height,
-            dpr: self.window.scale_factor(),
+            dpr: self.scale,
         });
         self.pending |= changed;
         changed
@@ -1056,10 +1187,10 @@ impl Mount {
                 &record.app,
                 &record.store,
                 &record.checkout.id,
-                |document| crate::peer::local_owned_document(peer, &record.app, id, document),
+                |document| cloud_peer::local_owned_document(peer, &record.app, id, document),
             );
             if let Err(error) = published {
-                crate::peer::mark_failure(peer, error.clone());
+                cloud_peer::mark_failure(peer, error.clone());
                 emit(
                     &self.status,
                     serde_json::json!({"phase":"failed","error":error}),
@@ -1173,10 +1304,10 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         "end" => winit::event::Ime::Disabled,
         _ => return Err(error("invalid IME event")),
     };
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let resynced = MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let start = m.metric_start();
         m.frame.send_host_event(&WindowEvent::Ime(event));
@@ -1186,8 +1317,10 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         }
         m.pending = true;
         m.window.request_redraw();
-        Ok(())
-    })
+        Ok::<_, JsValue>(propagate_record_change(mounts, id))
+    })?;
+    wake(resynced);
+    Ok(())
 }
 #[wasm_bindgen]
 pub fn semantic(
@@ -1208,10 +1341,10 @@ pub fn semantic(
         "selection" => Action::SetSelection { anchor, focus },
         _ => return Err(error("unsupported semantic action")),
     };
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let resynced = MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended {
-            return Ok(false);
+            return Ok(None);
         }
         let desktop = m.desktop.clone();
         crate::clipboard::during_input(&m.status, || match desktop {
@@ -1225,8 +1358,83 @@ pub fn semantic(
         .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
-        Ok(true)
+        Ok::<_, JsValue>(Some(propagate_record_change(mounts, id)))
+    })?;
+    let Some(resynced) = resynced else {
+        return Ok(false);
+    };
+    wake(resynced);
+    Ok(true)
+}
+/// The actions a standalone mount's application publishes, described as
+/// `tilo-control actions list` describes them. `resource` narrows to one
+/// resource and its children, including one the app resolves lazily.
+#[wasm_bindgen]
+pub fn component_actions(id: u64, resource: Option<String>) -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let m = mounts.get(&id).ok_or_else(|| error("closed mount"))?;
+        if m.desktop.is_some() {
+            return Err(error(DESKTOP_ACTIONS));
+        }
+        let resources = m
+            .frame
+            .bound_resources(resource.as_deref())
+            .map_err(door_error)?;
+        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
     })
+}
+/// Invoke one action a standalone mount's application publishes, through the
+/// bound door the palette, agents and assistive technology use: the address
+/// must be published now, the mount's permissions must allow it, its
+/// arguments must bind, and a confirmation policy requires `confirmed`.
+#[wasm_bindgen]
+pub fn invoke_component_action(
+    id: u64,
+    resource: &str,
+    action: &str,
+    arguments: &str,
+    confirmed: bool,
+) -> Result<String, JsValue> {
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(arguments).map_err(error)?;
+    let (started, resynced) = MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        if m.desktop.is_some() {
+            return Err(error(DESKTOP_ACTIONS));
+        }
+        if m.peer_suspended {
+            return Err(error("the mount is suspended"));
+        }
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: m
+                .frame
+                .component_instance_id()
+                .ok_or_else(|| error("the mount hosts no application"))?,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let started = if confirmed {
+            m.frame.invoke_bound_action_confirmed(&address, &arguments)
+        } else {
+            m.frame.invoke_bound_action(&address, &arguments)
+        }
+        .map_err(door_error)?;
+        // A following call sees the state this one left, not the last frame's.
+        m.frame.relayout();
+        m.pending = true;
+        Ok((started, propagate_record_change(mounts, id)))
+    })?;
+    wake(std::iter::once(id).chain(resynced));
+    Ok(match started {
+        ui::widget::ResourceOperationStart::Completed(output) => {
+            serde_json::json!({"state":"completed","output":output})
+        }
+        ui::widget::ResourceOperationStart::Accepted => serde_json::json!({"state":"accepted"}),
+    }
+    .to_string())
+}
+const DESKTOP_ACTIONS: &str = "the canonical desktop's actions go through its certified peer";
+fn door_error(e: tilo_actions::DoorError) -> JsValue {
+    error(format!("{}: {e}", e.code()))
 }
 /// The host needs the complete semantics tree now, for example when assistive
 /// technology focus enters the surface: the next status carries it even if
@@ -1366,11 +1574,11 @@ pub fn clipboard_event(
         "cut" => "x",
         _ => return Err(error("invalid clipboard event")),
     };
-    crate::clipboard::during(transfer, || {
-        MOUNTS.with_borrow_mut(|m| {
-            let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    let (handled, resynced) = crate::clipboard::during(transfer, || {
+        MOUNTS.with_borrow_mut(|mounts| {
+            let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
             if m.peer_suspended {
-                return Ok(false);
+                return Ok((false, Vec::new()));
             }
             let mut modifiers =
                 if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
@@ -1396,9 +1604,12 @@ pub fn clipboard_event(
             ));
             m.pending = true;
             m.window.request_redraw();
-            Ok(kind == "paste" || crate::clipboard::copied())
+            let handled = kind == "paste" || crate::clipboard::copied();
+            Ok::<_, JsValue>((handled, propagate_record_change(mounts, id)))
         })
-    })
+    })?;
+    wake(resynced);
+    Ok(handled)
 }
 
 /// Read actual rendered texture pixels to separate the compute pass from canvas presentation.
@@ -1527,10 +1738,10 @@ pub fn complete_asset(
     url: &str,
     bytes: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
-    if let (Some(hash), Some(bytes)) = (url.strip_prefix("tilo-blob://"), bytes.as_ref()) {
-        if !tilo_content::verify(hash, bytes) {
-            return Err(error("asset bytes do not match their content hash"));
-        }
+    if let (Some(hash), Some(bytes)) = (url.strip_prefix("tilo-blob://"), bytes.as_ref())
+        && !tilo_content::verify(hash, bytes)
+    {
+        return Err(error("asset bytes do not match their content hash"));
     }
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
@@ -1672,6 +1883,7 @@ pub(crate) fn load_cache(
     Ok(storage)
 }
 
+#[cfg(feature = "cloud")]
 pub(crate) fn refresh_peer_mounts(peer: u32) {
     let state = crate::peer::desktop_state(peer);
     let permissions = crate::peer::permissions(peer);
@@ -1731,6 +1943,7 @@ pub(crate) fn refresh_peer_mounts(peer: u32) {
     });
 }
 
+#[cfg(feature = "cloud")]
 #[wasm_bindgen]
 pub fn rebind_peer(old: u32, new: u32) {
     MOUNTS.with_borrow_mut(|mounts| {
@@ -1746,6 +1959,7 @@ pub fn rebind_peer(old: u32, new: u32) {
     });
 }
 
+#[cfg(feature = "cloud")]
 #[wasm_bindgen]
 pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
     if suspended {
@@ -1755,6 +1969,7 @@ pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[cfg(feature = "cloud")]
 pub(crate) fn prepare_peer_remote(peer: u32) -> Result<(), String> {
     MOUNTS.with_borrow(|mounts| {
         for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
@@ -2108,6 +2323,7 @@ pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsVa
 /// so the accessibility DOM shows a collaborator's text in the same frame
 /// the canvas does. Remote live changes arrive at most once per publication
 /// window of the author, never per local keystroke.
+#[cfg(feature = "cloud")]
 pub(crate) fn expedite_peer_semantics(peer: u32) {
     MOUNTS.with_borrow(|mounts| {
         for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {

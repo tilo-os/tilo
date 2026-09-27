@@ -99,6 +99,9 @@ pub struct Counters {
     pub queued_received: usize,
 }
 struct SentGroup {
+    /// When the group's newest frame goes stale. Aborting a group discards
+    /// every frame the transport has not drained yet, so a group lives as long
+    /// as its newest frame, not its oldest.
     expires: Instant,
     group: moq_net::group::Producer,
     count: u64,
@@ -395,7 +398,7 @@ impl Client {
             });
         }
         let sent = state.groups.back_mut().ok_or(ClientError::Unavailable)?;
-        sent.expires = sent.expires.min(crate::later(frame.captured_at, SEND_AGE));
+        sent.expires = sent.expires.max(crate::later(frame.captured_at, SEND_AGE));
         sent.group
             .write_frame(timestamp, bytes)
             .map_err(|_| ClientError::Capacity)?;
@@ -730,10 +733,11 @@ async fn receive_groups(
         let expires_at = crate::later(Instant::now(), RECEIVE_AGE);
         let mut count: u64 = 0;
         loop {
+            // Frames already buffered in this group come first: they are
+            // older than the next group's and still inside their budget, and
+            // switching groups would discard them unread.
             tokio::select! {
                 biased;
-                fresh = track.recv_group() => { next = fresh; break; }
-                () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
                 value = group.read_frame() => {
                     let Ok(Some(frame)) = value else { next = track.recv_group().await; break; };
                     if shared.check().is_err() { return; }
@@ -749,6 +753,8 @@ async fn receive_groups(
                     }
                     if !deliver(shared, name, group.sequence, object, last) { return; }
                 }
+                fresh = track.recv_group() => { next = fresh; break; }
+                () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
             }
         }
     }

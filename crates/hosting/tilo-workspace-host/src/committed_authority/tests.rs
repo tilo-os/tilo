@@ -338,7 +338,7 @@ fn committed_authority_explicit_invalidation_wins_over_inflight_update() {
     std::thread::scope(|scope| {
         let other = committed.clone();
         let invalidation = scope.spawn(move || other.invalidate());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !committed.0.terminal.load(Ordering::Acquire) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
@@ -699,16 +699,12 @@ fn native_private_terminal_retirement_cannot_leave_recovery_time_live() {
     let (resume, resumption) = sync_channel(0);
     *committed.0.after_time_retirement.lock().unwrap() = Some(Box::new(move || {
         retired.send(()).unwrap();
-        resumption
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        tilo_test_env::recv("the resume signal", &resumption);
     }));
     let escaped = std::thread::scope(|scope| {
         let other = committed.clone();
         let invalidation = scope.spawn(move || other.invalidate());
-        retirement
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        tilo_test_env::recv("the time retirement hook", &retirement);
         // Old code exposes a fresh real Current during the terminal gap. The
         // fixed transition may instead reject recovery before publication.
         let escaped = if update.publish(&owner).is_ok() {
@@ -741,7 +737,7 @@ fn native_private_disclosure_fence_invalidation_wins_with_retained_current_guard
     std::thread::scope(|scope| {
         let other = committed.clone();
         let invalidation = scope.spawn(move || other.invalidate());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !committed.0.terminal.load(Ordering::Acquire) {
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();

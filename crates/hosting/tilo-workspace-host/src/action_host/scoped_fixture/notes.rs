@@ -1,7 +1,6 @@
 //! Actual mounted Notes, original certified RPC caller and scoped chooser.
 use super::ScopedAppFixture;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 use tilo_actions::InvocationUpdate;
 
 fn document_bytes(fixture: &mut ScopedAppFixture) -> Vec<u8> {
@@ -13,7 +12,7 @@ fn document_bytes(fixture: &mut ScopedAppFixture) -> Vec<u8> {
 }
 
 async fn terminal(fixture: &mut ScopedAppFixture, job: u64) -> InvocationUpdate {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(update) = fixture.invocation_status(job)
             && update.is_terminal()
@@ -22,14 +21,14 @@ async fn terminal(fixture: &mut ScopedAppFixture, job: u64) -> InvocationUpdate 
         }
         fixture.pump().await.unwrap();
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "Notes never completed its original job"
         );
     }
 }
 
 async fn closed_final_publication(fixture: &mut ScopedAppFixture) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Err(error) = fixture.pump().await {
             assert_eq!(
@@ -39,7 +38,7 @@ async fn closed_final_publication(fixture: &mut ScopedAppFixture) {
             return;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "scoped mutation did not reach the actual closed native publication boundary"
         );
     }
@@ -97,7 +96,7 @@ async fn notes_scoped_import_expired_after_chooser_admission_cannot_mutate() {
             || release_rx
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .is_err()
         {
             return ui::portal::PortalOutcome::Cancelled;
@@ -109,7 +108,7 @@ async fn notes_scoped_import_expired_after_chooser_admission_cannot_mutate() {
     let job = fixture
         .invoke("import-markdown", serde_json::Map::new())
         .await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     while entered_rx.try_recv().is_err() {
         if let Some(update) = fixture.invocation_status(job) {
             assert!(
@@ -119,7 +118,7 @@ async fn notes_scoped_import_expired_after_chooser_admission_cannot_mutate() {
         }
         fixture.pump().await.unwrap();
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "scoped chooser never admitted"
         );
     }
@@ -190,7 +189,7 @@ impl HeldEffect {
     }
 
     async fn accepted(&self, fixture: &mut ScopedAppFixture, job: u64) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut entered = false;
         loop {
             entered |= self.entered.try_recv().is_ok();
@@ -204,7 +203,7 @@ impl HeldEffect {
             );
             fixture.pump().await.unwrap();
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "actual Notes effect worker never entered"
             );
         }
@@ -220,7 +219,7 @@ fn held_picker(path: std::path::PathBuf) -> (ui::portal::ScopedPickerFixture, He
         if release_rx
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .is_err()
         {
             return ui::portal::PortalOutcome::Cancelled;
@@ -333,7 +332,7 @@ async fn image_original_caller(expire: bool) {
     } else {
         // A real canonical continuation is the positive control. The native
         // final publication evaluator remains separately closed.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let assets = fixture
                 .records()
@@ -350,7 +349,7 @@ async fn image_original_caller(expire: bool) {
             );
             fixture.pump().await.unwrap();
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "actual scoped image never entered canonical record"
             );
         }
@@ -486,7 +485,7 @@ async fn uri_original_caller(expire_pending: bool) {
         release_rx
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .map_err(|e| e.to_string())?;
         Ok(())
     }))

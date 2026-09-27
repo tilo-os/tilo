@@ -10,7 +10,7 @@ fn fixture() -> (tempfile::TempDir, CloudStoreSource, [u8; 32]) {
     (dir, source, device)
 }
 fn turn<R>(source: &CloudStoreSource, run: impl FnOnce(&CloudStoreTurn) -> R) -> R {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tilo_test_env::hang_deadline();
     let mut run = Some(run);
     loop {
         match source.with_current(|turn| run.take().unwrap()(turn)) {
@@ -316,7 +316,7 @@ fn accepted(host: Uuid, invocation: tilo_actions::InvocationId) -> ActionMessage
     }
 }
 fn service(source: &CloudStoreSource, queue: PeerActionQueue) -> CloudPrivateService {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         match CloudPrivateService::new_unqualified(source, &queue) {
             Current::Current(Ok(value)) => return value,
@@ -414,7 +414,7 @@ impl HttpFixture {
                 .await
                 .unwrap()
         });
-        let request = tokio::time::timeout(std::time::Duration::from_secs(3), self.receiver.recv())
+        let request = tokio::time::timeout(tilo_test_env::hang_bound(), self.receiver.recv())
             .await
             .unwrap()
             .unwrap();
@@ -865,7 +865,7 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
     );
     // Client Bytes are a network copy, not the server backing; backing clone/
     // slice custody is separately tested in the transport crate itself.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             match queue.submit_certified(evidence.clone(), deadline) {
                 Ok(pending) => {
@@ -996,7 +996,7 @@ async fn cloud_private_committed_status_change_streams_to_the_watching_session()
         .committed
         .store(true, std::sync::atomic::Ordering::SeqCst);
     commits.send_modify(|n| *n += 1);
-    let notification = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let notification = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             service.pump().unwrap();
             if let Ok(incoming) = receiver.try_recv() {
@@ -1070,27 +1070,20 @@ async fn cloud_private_actual_agent_owner_observes_the_evidence_invocation_only(
         service.submit(
             proof,
             turn,
-            Instant::now() + std::time::Duration::from_secs(5),
+            Instant::from_std(tilo_test_env::hang_deadline()),
         )
     })
     .unwrap();
     let evidence = receiver.try_recv().unwrap().evidence.unwrap();
-    // Each owner command has a 5 s deadline; a freshly started runtime under a
-    // loaded test process may miss one, so retry this read-only observation.
-    let started = Instant::now();
-    let observed = loop {
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        match commands
-            .observe_certified(evidence.clone(), invocation, deadline)
-            .await
-        {
-            Ok(observed) => break observed.expect("reserved agent invocation"),
-            Err(error) if started.elapsed() < std::time::Duration::from_secs(30) => {
-                eprintln!("observation retry: {error}");
-            }
-            Err(error) => panic!("actual owner observation failed: {error}"),
-        }
-    };
+    let observed = commands
+        .observe_certified(
+            evidence.clone(),
+            invocation,
+            Instant::from_std(tilo_test_env::hang_deadline()),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("actual owner observation failed: {error}"))
+        .expect("reserved agent invocation");
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     assert!(matches!(
         observed,

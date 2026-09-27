@@ -26,7 +26,7 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
         );
         const {
             assert!(
-                WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+                WHEEL_TO_STRIP_GAP_PX > tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
                 "the gutter must hold the disc's rim shadow with wallpaper to spare",
             );
         }

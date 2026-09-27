@@ -9,6 +9,7 @@
 )]
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
+use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceId};
 
 fn gap(gap_index: usize) -> DropTarget {
@@ -81,7 +82,22 @@ fn peer_local_selection_does_not_change_another_desktop_or_topology() {
 #[test]
 fn reordering_keeps_tab_identity_selection_and_geometry() {
     let mut tree = legacy_tree();
-    assert!(tree.reorder_tab_within_group(12, 0, 99).is_some());
+    let reorder = |tree: &mut DesktopTree, tab: u64| {
+        apply_command(
+            &mut tree.workspaces[0],
+            &DesktopCommand::ReorderTab {
+                location: TabLocation {
+                    strip: 11,
+                    group: 12,
+                    tab,
+                },
+                before: None,
+            },
+            &mut || Err("a reorder mints nothing".into()),
+            &mut |_, _| Err("a reorder creates nothing".into()),
+        )
+    };
+    assert!(reorder(&mut tree, 13).is_ok());
     let group = &tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(
         group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
@@ -89,7 +105,7 @@ fn reordering_keeps_tab_identity_selection_and_geometry() {
     );
     assert_eq!(group.active_tab, 9_007_199_254_741_001);
     assert_eq!(group.width, WindowWidth::Fraction(500));
-    assert!(tree.reorder_tab_within_group(12, 99, 0).is_none());
+    assert!(reorder(&mut tree, 99).is_err());
     assert_eq!(
         AppKind::Other("org.example.Foreign".into()).app_id(),
         "org.example.Foreign"

@@ -25,6 +25,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use ui::clock::{Duration, Instant, SystemTime};
+use ui::i18n::ArgValue;
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
@@ -118,13 +119,13 @@ pub enum ActivityView {
 impl ActivityView {
     const ALL: [Self; 4] = [Self::CatchUp, Self::Tasks, Self::Explore, Self::Replay];
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::CatchUp => "Catch up",
-            Self::Tasks => "Tasks",
-            Self::Explore => "Explore",
-            Self::Replay => "Replay",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::CatchUp => "activity-view-catch-up",
+            Self::Tasks => "activity-view-tasks",
+            Self::Explore => "activity-view-explore",
+            Self::Replay => "activity-view-replay",
+        })
     }
 }
 
@@ -195,15 +196,15 @@ enum TaskAction {
 }
 
 impl TaskAction {
-    fn label(self) -> &'static str {
-        match self {
-            Self::OpenResource => "Open resource",
-            Self::StartAgent => "Start agent",
-            Self::Launch => "Launch agent",
-            Self::Start => "Mark started",
-            Self::Complete => "Mark done",
-            Self::Cancel => "Cancel task",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::OpenResource => "activity-task-open-resource",
+            Self::StartAgent => "activity-task-start-agent",
+            Self::Launch => "activity-task-launch-agent",
+            Self::Start => "activity-task-mark-started",
+            Self::Complete => "activity-task-mark-done",
+            Self::Cancel => "activity-task-cancel",
+        })
     }
 }
 
@@ -225,15 +226,15 @@ enum DetailAction {
 }
 
 impl DetailAction {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Open => "Open",
-            Self::Compare => "Compare",
-            Self::Undo => "Undo",
-            Self::UndoTask => "Undo whole task",
-            Self::Split => "Split",
-            Self::Merge => "Merge",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::Open => "activity-detail-open",
+            Self::Compare => "activity-detail-compare",
+            Self::Undo => "activity-detail-undo",
+            Self::UndoTask => "activity-detail-undo-task",
+            Self::Split => "activity-detail-split",
+            Self::Merge => "activity-detail-merge",
+        })
     }
 }
 
@@ -256,12 +257,12 @@ enum ExplorerPane {
 impl ExplorerPane {
     const ALL: [Self; 3] = [Self::Timeline, Self::Browse, Self::Details];
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Timeline => "Timeline",
-            Self::Browse => "Browse",
-            Self::Details => "Details",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::Timeline => "activity-pane-timeline",
+            Self::Browse => "activity-pane-browse",
+            Self::Details => "activity-pane-details",
+        })
     }
 }
 
@@ -365,7 +366,7 @@ fn draw_resume_card(
     );
     tr.draw_text(
         scene,
-        "YOU LEFT OFF",
+        &t("activity-resume-heading"),
         (theme.tokens.typography.scale.sm - 2.0).max(9.0),
         colors.accent[4],
         at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
@@ -385,9 +386,15 @@ fn draw_resume_card(
         None,
         ui::text_render::TextWeight::Medium,
     );
+    let when = format_relative_time(resume.timestamp, now);
     let context = resume.app.as_ref().map_or_else(
-        || format_relative_time(resume.timestamp, now),
-        |app| format!("{app} · {}", format_relative_time(resume.timestamp, now)),
+        || when.clone(),
+        |app| {
+            t_args(
+                "activity-resume-context",
+                &[("app", app.into()), ("when", when.as_str().into())],
+            )
+        },
     );
     let context = tr.elide_to_width(
         &context,
@@ -417,7 +424,7 @@ fn draw_resume_card(
     );
     tr.draw_text_weighted(
         scene,
-        "Resume →",
+        &t("activity-resume-button"),
         theme.tokens.typography.scale.sm,
         theme
             .tokens
@@ -499,13 +506,13 @@ pub enum Period {
 impl Period {
     pub const ALL: [Period; 4] = [Period::AllTime, Period::Today, Period::Week, Period::Month];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Period::AllTime => "All time",
-            Period::Today => "Today",
-            Period::Week => "7 days",
-            Period::Month => "30 days",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Period::AllTime => "activity-period-all-time",
+            Period::Today => "activity-period-today",
+            Period::Week => "activity-period-week",
+            Period::Month => "activity-period-month",
+        })
     }
 
     /// The half-open `[start, now)` window, or `None` for "everything".
@@ -542,11 +549,11 @@ pub enum RoomScope {
 impl RoomScope {
     pub const ALL: [RoomScope; 2] = [RoomScope::ThisRoom, RoomScope::AllWorkspaces];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            RoomScope::ThisRoom => "This workspace",
-            RoomScope::AllWorkspaces => "All workspaces",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            RoomScope::ThisRoom => "activity-scope-this-workspace",
+            RoomScope::AllWorkspaces => "activity-scope-all-workspaces",
+        })
     }
 }
 
@@ -710,7 +717,7 @@ pub struct RoomActivityPane {
     explorer_pane: ExplorerPane,
     explorer_pane_rects: Vec<(ExplorerPane, Rect)>,
     pub(super) replay_unavailable: usize,
-    replay_presentation_note: Option<&'static str>,
+    replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
     pub(super) replay_index: usize,
     pub(super) replay_playing: bool,
@@ -752,7 +759,7 @@ impl RoomActivityPane {
         self.host = host;
     }
 
-    fn detail_action_label(&self, action: DetailAction) -> &'static str {
+    fn detail_action_label(&self, action: DetailAction) -> String {
         if action == DetailAction::Open
             && self.selection_detail().is_some_and(|detail| {
                 detail.resources.first().is_some_and(|resource| {
@@ -760,7 +767,7 @@ impl RoomActivityPane {
                 })
             })
         {
-            "Open app"
+            t("activity-detail-open-app")
         } else {
             action.label()
         }
@@ -1303,14 +1310,14 @@ impl RoomActivityPane {
 
     fn agent_name(&self, run: &AgentRun) -> String {
         run.by.as_deref().map_or_else(
-            || "Agent".to_string(),
+            || t("activity-agent-fallback"),
             |actor| self.source.authors().resolve(actor).name,
         )
     }
 
     fn issuer_name(&self, run: &AgentRun) -> String {
         run.issued_by.as_deref().map_or_else(
-            || "Unknown collaborator".to_string(),
+            || t("activity-unknown-collaborator"),
             |actor| self.source.authors().resolve(actor).name,
         )
     }
@@ -1762,7 +1769,7 @@ impl RoomActivityPane {
         }
         self.timeline.set_time_range_label(match self.period {
             Period::AllTime => None,
-            p => Some(p.label().to_string()),
+            p => Some(p.label()),
         });
     }
 
@@ -1935,7 +1942,7 @@ impl RoomActivityPane {
                     summary: receipt
                         .context
                         .summary()
-                        .unwrap_or_else(|| receipt.status.label().to_string()),
+                        .unwrap_or_else(|| receipt_status_label(&receipt.status)),
                     text_delta: None,
                     diff_payload: None,
                     redaction: None,
@@ -1980,7 +1987,7 @@ impl RoomActivityPane {
                 && since.elapsed() >= AGENT_START_TIMEOUT
             {
                 *state = AgentStartup::Failed {
-                    detail: "The agent did not connect to the workspace. Retry to start a new managed session.".into(),
+                    detail: t("activity-agent-connect-timeout"),
                 };
             }
             true
@@ -2019,8 +2026,13 @@ impl RoomActivityPane {
             AgentLaunchEventKind::Failed { code, stderr_tail } => {
                 let detail = if stderr_tail.trim().is_empty() {
                     code.map_or_else(
-                        || "The managed agent stopped before connecting.".to_string(),
-                        |code| format!("The managed agent launcher exited with status {code}."),
+                        || t("activity-agent-stopped"),
+                        |code| {
+                            t_args(
+                                "activity-agent-exited",
+                                &[("code", code.to_string().into())],
+                            )
+                        },
                     )
                 } else {
                     stderr_tail.clone()
@@ -2056,7 +2068,7 @@ impl RoomActivityPane {
                         let label = names
                             .get(id)
                             .cloned()
-                            .unwrap_or_else(|| "a removed workspace".to_string());
+                            .unwrap_or_else(|| t("activity-removed-workspace"));
                         e.summary = format!("{label} \u{00b7} {}", e.summary);
                         let mut context =
                             e.context
@@ -2695,7 +2707,7 @@ impl RoomActivityPane {
         let y = self.sheet.y0 + self.chrome_height();
         let items: Vec<_> = ExplorerPane::ALL
             .into_iter()
-            .map(|pane| (pane, pane.label().to_string()))
+            .map(|pane| (pane, pane.label()))
             .collect();
         let selected = self.explorer_pane;
         self.explorer_pane_rects = draw_chip_row(
@@ -2800,7 +2812,7 @@ impl RoomActivityPane {
     ) {
         tr.draw_text_weighted(
             scene,
-            "Browse by",
+            &t("activity-browse-by"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
@@ -2823,12 +2835,12 @@ impl RoomActivityPane {
             self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, bounds);
         }
         if shown < remaining || self.lens_offset > 0 {
-            let label = if shown < remaining {
-                "More lenses…"
+            let label = t(if shown < remaining {
+                "activity-more-lenses"
             } else {
-                "First lenses…"
-            };
-            self.lens_more_rect = draw_more_row(scene, transform, tr, theme, bounds, y, label);
+                "activity-first-lenses"
+            });
+            self.lens_more_rect = draw_more_row(scene, transform, tr, theme, bounds, y, &label);
             self.lens_more_advance = shown.max(1);
         }
     }
@@ -2844,7 +2856,7 @@ impl RoomActivityPane {
         let size = type_size(tr, theme.tokens.typography.scale.sm);
         tr.draw_text_weighted(
             scene,
-            "Provenance",
+            &t("activity-provenance"),
             size,
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
@@ -2895,7 +2907,7 @@ impl RoomActivityPane {
             let width = text_width(bounds.width() - 24.0);
             tr.draw_text(
                 scene,
-                "Select a work session or a range of actions",
+                &t("activity-select-prompt"),
                 type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
@@ -2903,7 +2915,7 @@ impl RoomActivityPane {
             );
             tr.draw_text(
                 scene,
-                "See who was involved, affected resources, and an exact before-and-after comparison.",
+                &t("activity-select-hint"),
                 size,
                 theme.tokens.colors.text_dim,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
@@ -2933,7 +2945,7 @@ impl RoomActivityPane {
         let mut y = bounds.y0 + 40.0;
         tr.draw_text_weighted(
             scene,
-            "Agent task",
+            &t("activity-agent-task"),
             type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.accent[4],
             at(transform, x, y),
@@ -2953,10 +2965,12 @@ impl RoomActivityPane {
         y += 52.0;
         tr.draw_text(
             scene,
-            &format!(
-                "Assigned by {}  ·  Run by {}",
-                self.issuer_name(run),
-                self.agent_name(run)
+            &t_args(
+                "activity-agent-task-people",
+                &[
+                    ("issuer", self.issuer_name(run).into()),
+                    ("agent", self.agent_name(run).into()),
+                ],
             ),
             size,
             theme.tokens.colors.text_dim,
@@ -2966,7 +2980,7 @@ impl RoomActivityPane {
         y += 38.0;
         tr.draw_text_weighted(
             scene,
-            "Why this work",
+            &t("activity-why-this-work"),
             size,
             theme.tokens.colors.text_primary,
             at(transform, x, y),
@@ -2974,11 +2988,13 @@ impl RoomActivityPane {
             ui::text_render::TextWeight::Medium,
         );
         y += 20.0;
+        let decision = run
+            .decision
+            .clone()
+            .unwrap_or_else(|| t("activity-no-decision"));
         tr.draw_text(
             scene,
-            run.decision
-                .as_deref()
-                .unwrap_or("No decision route was recorded."),
+            &decision,
             size,
             theme.tokens.colors.text_dim,
             at(transform, x, y),
@@ -2987,7 +3003,7 @@ impl RoomActivityPane {
         y += 48.0;
         tr.draw_text_weighted(
             scene,
-            "Affected records",
+            &t("activity-affected-records"),
             size,
             theme.tokens.colors.text_primary,
             at(transform, x, y),
@@ -3030,7 +3046,7 @@ impl RoomActivityPane {
         if !self.can_undo_agent_run() {
             tr.draw_text(
                 scene,
-                "Open every affected document to undo this task together.",
+                &t("activity-undo-task-needs-open"),
                 size,
                 theme.tokens.colors.text_dim,
                 at(transform, x, y),
@@ -3099,9 +3115,12 @@ impl RoomActivityPane {
             }
             let label = self.detail_action_label(action);
             let button_width = f64::from(
-                (tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None)
-                    .0
-                    + 20.0)
+                (tr.measure(
+                    &label,
+                    type_size(tr, theme.tokens.typography.scale.sm),
+                    None,
+                )
+                .0 + 20.0)
                     .max(60.0),
             );
             if x + button_width > bounds.x1 - 12.0 {
@@ -3122,7 +3141,7 @@ impl RoomActivityPane {
             paint_control_chip(scene, transform, theme, &shape, is_active);
             tr.draw_text(
                 scene,
-                label,
+                &label,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
@@ -3187,29 +3206,21 @@ impl RoomActivityPane {
         );
         tr.draw_text_weighted(
             scene,
-            "What changed",
+            &t("activity-what-changed"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
             None,
             ui::text_render::TextWeight::Medium,
         );
-        let action_word = if comparison.entries.len() == 1 {
-            "action"
-        } else {
-            "actions"
-        };
-        let change_word = if comparison.patches.len() == 1 {
-            "document change"
-        } else {
-            "document changes"
-        };
         tr.draw_text(
             scene,
-            &format!(
-                "{} {action_word} · {} {change_word}",
-                comparison.entries.len(),
-                comparison.patches.len()
+            &t_args(
+                "activity-comparison-counts",
+                &[
+                    ("actions", comparison.entries.len().into()),
+                    ("changes", comparison.patches.len().into()),
+                ],
             ),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
@@ -3219,7 +3230,7 @@ impl RoomActivityPane {
         if labels.is_empty() {
             tr.draw_text(
                 scene,
-                "No content differences in this selection",
+                &t("activity-no-differences"),
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, card.x0 + 12.0, card.y0 + 52.0),
@@ -3244,7 +3255,10 @@ impl RoomActivityPane {
         if labels.len() > visible {
             tr.draw_text(
                 scene,
-                &format!("+{} more", labels.len().saturating_sub(visible)),
+                &counted(
+                    "activity-comparison-more",
+                    labels.len().saturating_sub(visible),
+                ),
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(
@@ -3275,7 +3289,7 @@ impl RoomActivityPane {
         );
         tr.draw_text_weighted(
             scene,
-            "Preview unavailable",
+            &t("activity-preview-unavailable"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
@@ -3284,7 +3298,7 @@ impl RoomActivityPane {
         );
         tr.draw_text(
             scene,
-            "This action has provenance, but no materialized before-and-after snapshot.",
+            &t("activity-preview-unavailable-detail"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, card.x0 + 12.0, card.y0 + 36.0),
@@ -3345,11 +3359,14 @@ impl RoomActivityPane {
     }
 
     fn lens_candidates(&self) -> Vec<(LensSelection, String)> {
-        let mut rows = vec![(LensSelection::All, "Everything".to_string())];
+        let mut rows = vec![(LensSelection::All, t("activity-lens-everything"))];
         if !self.agent_runs.is_empty() {
             rows.push((
                 LensSelection::AgentTasks,
-                format!("Agent tasks  {}", self.agent_runs.len()),
+                t_args(
+                    "activity-lens-agent-tasks",
+                    &[("count", self.agent_runs.len().into())],
+                ),
             ));
         }
         rows.extend(self.facet_index.apps.iter().map(|(label, count)| {
@@ -3392,7 +3409,10 @@ impl RoomActivityPane {
         if self.facet_index.unclassified > 0 {
             rows.push((
                 LensSelection::Unclassified,
-                format!("Unclassified  {}", self.facet_index.unclassified),
+                t_args(
+                    "activity-lens-unclassified",
+                    &[("count", self.facet_index.unclassified.into())],
+                ),
             ));
         }
         rows
@@ -3409,7 +3429,7 @@ impl RoomActivityPane {
         let y = self.sheet.y0 + self.header_h() + (VIEW_ROW_H - MIN_TARGET) / 2.0;
         let items: Vec<(ActivityView, String)> = ActivityView::ALL
             .iter()
-            .map(|view| (*view, view.label().to_string()))
+            .map(|view| (*view, view.label()))
             .collect();
         let selected = self.view;
         self.view_rects = draw_chip_row(
@@ -3459,11 +3479,11 @@ impl RoomActivityPane {
         if self.digest.briefs.is_empty() {
             tr.draw_text(
                 scene,
-                if self.feed_coverage.pending_tree {
-                    "History is waiting for current edits to finish"
+                &t(if self.feed_coverage.pending_tree {
+                    "activity-history-pending"
                 } else {
-                    "You're caught up"
-                },
+                    "activity-caught-up"
+                }),
                 type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 12.0),
@@ -3479,13 +3499,13 @@ impl RoomActivityPane {
             // seated on its measured line so 200 % type grows the card.
             let label_size = type_size(tr, theme.tokens.typography.scale.xs);
             let body_size = type_size(tr, theme.tokens.typography.scale.sm);
-            let label = if generated {
-                "On-device summary"
+            let label = t(if generated {
+                "activity-summary-on-device"
             } else {
-                "At a glance"
-            };
+                "activity-summary-glance"
+            });
             let inner_w = text_width(x1 - x0 - 24.0);
-            let (_, label_h) = tr.measure(label, label_size, Some(inner_w));
+            let (_, label_h) = tr.measure(&label, label_size, Some(inner_w));
             let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
             let body_top = metrics.pad + f64::from(label_h) + metrics.gap;
             let card_h = body_top + 2.0 * metrics.line_lh + metrics.pad;
@@ -3503,7 +3523,7 @@ impl RoomActivityPane {
             );
             tr.draw_text(
                 scene,
-                label,
+                &label,
                 label_size,
                 theme.tokens.colors.text_dim,
                 at(transform, card.x0 + 12.0, card.y0 + metrics.pad),
@@ -3646,11 +3666,11 @@ impl RoomActivityPane {
             .len()
             .saturating_sub(self.brief_offset.saturating_add(shown));
         if remaining > 0 || self.brief_offset > 0 {
-            let label = if remaining > 0 {
-                "More work sessions…"
+            let label = t(if remaining > 0 {
+                "activity-more-sessions"
             } else {
-                "First work sessions…"
-            };
+                "activity-first-sessions"
+            });
             self.brief_more_rect = draw_more_row(
                 scene,
                 transform,
@@ -3658,7 +3678,7 @@ impl RoomActivityPane {
                 theme,
                 Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
                 y,
-                label,
+                &label,
             );
             self.brief_more_advance = shown.max(1);
         }
@@ -3681,13 +3701,13 @@ impl RoomActivityPane {
         if self.replay_frames.is_empty() {
             tr.draw_text(
                 scene,
-                if self.feed_coverage.pending_tree {
-                    "Replay is waiting for current edits to finish"
+                &t(if self.feed_coverage.pending_tree {
+                    "activity-replay-pending"
                 } else if self.replay_unavailable > 0 {
-                    "Workspace replay is unavailable for these checkpoints"
+                    "activity-replay-unavailable"
                 } else {
-                    "No replayable workspace checkpoints yet"
-                },
+                    "activity-replay-empty"
+                }),
                 type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(
@@ -3734,11 +3754,16 @@ impl RoomActivityPane {
         // chip; idle chips derive their edge from the lift floor (§9.5).
         let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
         let idle_edge = ui::surface::edge_on(floor);
+        let play_label = t(if self.replay_playing {
+            "activity-replay-pause"
+        } else {
+            "activity-replay-play"
+        });
         for (rect, label, active) in [
             (self.replay_back_rect, "←", false),
             (
                 self.replay_play_rect,
-                if self.replay_playing { "Pause" } else { "Play" },
+                play_label.as_str(),
                 self.replay_playing,
             ),
             (self.replay_forward_rect, "→", false),
@@ -3783,11 +3808,16 @@ impl RoomActivityPane {
         }
         tr.draw_text(
             scene,
-            &format!(
-                "Checkpoint {} of {} · {}",
-                self.replay_index.saturating_add(1),
-                self.replay_frames.len(),
-                format_relative_time(frame.timestamp, self.now())
+            &t_args(
+                "activity-replay-position",
+                &[
+                    ("position", self.replay_index.saturating_add(1).into()),
+                    ("total", self.replay_frames.len().into()),
+                    (
+                        "when",
+                        format_relative_time(frame.timestamp, self.now()).into(),
+                    ),
+                ],
             ),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
@@ -3872,11 +3902,19 @@ impl RoomActivityPane {
         self.new_task_rect = None;
         if self.host.mutations_available() && !self.feed_coverage.pending_tree {
             self.new_task_rect = Some(new_task);
-            draw_task_button(scene, transform, tr, theme, new_task, "+ New task", true);
+            draw_task_button(
+                scene,
+                transform,
+                tr,
+                theme,
+                new_task,
+                &t("activity-task-new"),
+                true,
+            );
         }
         tr.draw_text_weighted(
             scene,
-            "WORKSPACE QUEUE",
+            &t("activity-task-queue"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, x0 + 4.0, y + 8.0),
@@ -3896,7 +3934,7 @@ impl RoomActivityPane {
             );
             tr.draw_text_weighted(
                 scene,
-                "Create work without leaving the desktop",
+                &t("activity-task-composer-title"),
                 type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, composer.x0 + 12.0, composer.y0 + 10.0),
@@ -3916,10 +3954,11 @@ impl RoomActivityPane {
                 None,
                 &RoundedRect::from_rect(field, 6.0),
             );
+            let placeholder = t("activity-task-placeholder");
             tr.draw_text(
                 scene,
                 if self.task_draft.is_empty() {
-                    "What needs doing?"
+                    &placeholder
                 } else {
                     &self.task_draft
                 },
@@ -3938,7 +3977,7 @@ impl RoomActivityPane {
                 WorkspaceTaskRoute::Model,
             ]
             .into_iter()
-            .map(|route| (route, route.label().to_string()))
+            .map(|route| (route, task_route_label(route)))
             .collect::<Vec<_>>();
             self.task_route_rects = draw_chip_row(
                 scene,
@@ -3955,13 +3994,11 @@ impl RoomActivityPane {
                 |route| *route == self.task_route,
             );
             let executor = match self.task_route {
-                WorkspaceTaskRoute::Manual => {
-                    "Executor · You or another collaborator · no model".to_string()
-                }
+                WorkspaceTaskRoute::Manual => t("activity-task-executor-manual"),
                 WorkspaceTaskRoute::RulesOnly | WorkspaceTaskRoute::Model => {
                     self.task_agent.as_ref().map_or_else(
-                        || "Executor · No agent available · task stays unassigned".to_string(),
-                        |agent| format!("Executor · ▣ AGENT · {agent}"),
+                        || t("activity-task-executor-none"),
+                        |agent| t_args("activity-task-executor-agent", &[("agent", agent.into())]),
                     )
                 }
             };
@@ -3979,12 +4016,21 @@ impl RoomActivityPane {
                 None,
             );
             let attached = self.task_attachment.as_ref().map_or_else(
-                || "No resource attached · task stays workspace-wide".to_string(),
+                || t("activity-task-no-attachment"),
                 |resource| {
-                    format!(
-                        "Attached · {} · {}",
-                        resource.app_label.as_deref().unwrap_or("Workspace"),
-                        resource.label
+                    t_args(
+                        "activity-task-attached",
+                        &[
+                            (
+                                "app",
+                                resource
+                                    .app_label
+                                    .clone()
+                                    .unwrap_or_else(|| t("activity-task-attached-workspace"))
+                                    .into(),
+                            ),
+                            ("resource", (&resource.label).into()),
+                        ],
                     )
                 },
             );
@@ -4015,14 +4061,22 @@ impl RoomActivityPane {
             );
             self.task_cancel_rect = Some(cancel);
             self.task_create_rect = Some(create);
-            draw_task_button(scene, transform, tr, theme, cancel, "Cancel", false);
+            draw_task_button(
+                scene,
+                transform,
+                tr,
+                theme,
+                cancel,
+                &t("activity-task-cancel-compose"),
+                false,
+            );
             draw_task_button(
                 scene,
                 transform,
                 tr,
                 theme,
                 create,
-                "Create",
+                &t("activity-task-create"),
                 !self.task_draft.trim().is_empty(),
             );
             y = composer.y1 + 8.0;
@@ -4031,11 +4085,11 @@ impl RoomActivityPane {
         if self.tasks.is_empty() {
             tr.draw_text_weighted(
                 scene,
-                if self.feed_coverage.pending_tree {
-                    "Tasks are waiting for current edits to finish"
+                &t(if self.feed_coverage.pending_tree {
+                    "activity-tasks-pending"
                 } else {
-                    "No tasks yet"
-                },
+                    "activity-tasks-empty"
+                }),
                 type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, x0 + 4.0, y + 16.0),
@@ -4044,7 +4098,7 @@ impl RoomActivityPane {
             );
             tr.draw_text(
                 scene,
-                "Create one manually, or attach the resource selected in Explore.",
+                &t("activity-tasks-empty-hint"),
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 40.0),
@@ -4119,12 +4173,12 @@ impl RoomActivityPane {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let title_size = type_size(tr, tokens.typography.scale.lg);
-        let title = match self.view {
-            ActivityView::CatchUp => "While you were away",
-            ActivityView::Tasks => "Task Center",
-            ActivityView::Explore => "Workspace activity",
-            ActivityView::Replay => "Replay workspace",
-        };
+        let title = t(match self.view {
+            ActivityView::CatchUp => "activity-title-catch-up",
+            ActivityView::Tasks => "activity-title-tasks",
+            ActivityView::Explore => "activity-title-explore",
+            ActivityView::Replay => "activity-title-replay",
+        });
         // The title yields to the scope pills on its right (painted first):
         // elided to the room left of them, so at 200 % the two never
         // overprint. Its measured line, not the authored 20, seats the
@@ -4136,7 +4190,7 @@ impl RoomActivityPane {
             .map(|(_, rect)| rect.x0)
             .fold(self.sheet.x1 - 16.0, f64::min);
         let title_room = (pills_x0 - f64::from(tokens.spacing.s3) - title_x).max(1.0);
-        let title = tr.elide_to_width(title, title_size, text_width(title_room));
+        let title = tr.elide_to_width(&title, title_size, text_width(title_room));
         let (_, title_h) = tr.measure(&title, title_size, None);
         let title_y = self.sheet.y0 + HEADER_TOP;
         tr.draw_text(
@@ -4168,21 +4222,19 @@ impl RoomActivityPane {
                 (self.total_entries, self.contributors.len())
             }
         };
+        let workspace = if self.room_name.is_empty() {
+            t("activity-workspace-fallback")
+        } else {
+            self.room_name.clone()
+        };
         if self.view == ActivityView::Tasks {
-            let active = change_count;
-            let task_noun = if active == 1 { "task" } else { "tasks" };
-            let agent_noun = if contributor_count == 1 {
-                "agent"
-            } else {
-                "agents"
-            };
-            let subtitle = format!(
-                "{} · {active} active {task_noun} · {contributor_count} assigned {agent_noun}",
-                if self.room_name.is_empty() {
-                    "This workspace"
-                } else {
-                    self.room_name.as_str()
-                }
+            let subtitle = t_args(
+                "activity-tasks-subtitle",
+                &[
+                    ("workspace", workspace.as_str().into()),
+                    ("active", change_count.into()),
+                    ("agents", contributor_count.into()),
+                ],
             );
             // Both lines are elided to one line each: the header band holds
             // exactly one subtitle line and one line under it, so a wrapped
@@ -4199,11 +4251,7 @@ impl RoomActivityPane {
                 at(transform, self.sheet.x0 + 16.0, subtitle_y),
                 None,
             );
-            let tagline = tr.elide_to_width(
-                "Native workspace tasks · model optional · every action auditable",
-                sub_size,
-                wrap_width,
-            );
+            let tagline = tr.elide_to_width(&t("activity-tasks-tagline"), sub_size, wrap_width);
             tr.draw_text(
                 scene,
                 &tagline,
@@ -4221,11 +4269,6 @@ impl RoomActivityPane {
         if self.view == ActivityView::CatchUp {
             // Catch Up is the friendly recap: who kept the workspace moving,
             // not the counts the deeper views report.
-            let workspace = if self.room_name.is_empty() {
-                "This workspace"
-            } else {
-                self.room_name.as_str()
-            };
             let mut names = self
                 .digest
                 .briefs
@@ -4234,19 +4277,30 @@ impl RoomActivityPane {
                 .collect::<Vec<_>>();
             names.sort();
             names.dedup();
+            let workspace = ("workspace", workspace.as_str().into());
             let mut subtitle = match names.as_slice() {
-                [] => format!("{workspace} · Nothing new needs your attention"),
-                [name] => format!("{workspace} · {name} kept things moving"),
-                [first, second] => format!("{workspace} · {first} and {second} kept things moving"),
-                [first, second, rest @ ..] => {
-                    format!(
-                        "{workspace} · {first}, {second} and {} others were active",
-                        rest.len()
-                    )
-                }
+                [] => t_args("activity-catch-up-quiet", &[workspace]),
+                [name] => t_args("activity-catch-up-one", &[workspace, ("name", name.into())]),
+                [first, second] => t_args(
+                    "activity-catch-up-two",
+                    &[
+                        workspace,
+                        ("first", first.into()),
+                        ("second", second.into()),
+                    ],
+                ),
+                [first, second, rest @ ..] => t_args(
+                    "activity-catch-up-many",
+                    &[
+                        workspace,
+                        ("first", first.into()),
+                        ("second", second.into()),
+                        ("others", rest.len().into()),
+                    ],
+                ),
             };
             if self.feed_coverage.pending_tree {
-                subtitle.push_str(" · Waiting for current edits to finish");
+                push_part(&mut subtitle, &t("activity-pending-edits"));
             }
             let subtitle =
                 tr.elide_to_width(&subtitle, sub_size, text_width(self.sheet.width() - 32.0));
@@ -4260,87 +4314,61 @@ impl RoomActivityPane {
             );
             return;
         }
-        let people = if contributor_count == 1 {
-            "1 person".to_string()
-        } else {
-            format!("{contributor_count} people")
-        };
-        let freshness = if self.view == ActivityView::CatchUp {
-            "new "
-        } else {
-            ""
-        };
-        let change_noun = if change_count == 1 {
-            "change"
-        } else {
-            "changes"
-        };
-        let mut subtitle = if self.view == ActivityView::CatchUp
-            && change_count == 0
-            && !self.feed_coverage.pending_tree
-        {
-            match self.scope {
-                RoomScope::ThisRoom => format!(
-                    "{} · You're caught up",
-                    if self.room_name.is_empty() {
-                        "This workspace"
-                    } else {
-                        self.room_name.as_str()
-                    }
-                ),
-                RoomScope::AllWorkspaces => "Every workspace · You're caught up".to_string(),
-            }
-        } else {
-            match self.scope {
-                RoomScope::ThisRoom => {
-                    let workspace = if self.room_name.is_empty() {
-                        "This workspace"
-                    } else {
-                        self.room_name.as_str()
-                    };
-                    format!(
-                        "{workspace} \u{00b7} {change_count} {freshness}{change_noun} by {people}"
-                    )
-                }
-                RoomScope::AllWorkspaces => format!(
-                    "Every workspace on this machine \u{00b7} {change_count} {freshness}{change_noun} by {people}",
-                ),
-            }
+        let counts = [
+            ("changes", ArgValue::from(change_count)),
+            ("people", contributor_count.into()),
+        ];
+        let mut subtitle = match self.scope {
+            RoomScope::ThisRoom => t_args(
+                "activity-changes-workspace",
+                &[
+                    ("workspace", workspace.as_str().into()),
+                    counts[0].clone(),
+                    counts[1].clone(),
+                ],
+            ),
+            RoomScope::AllWorkspaces => t_args("activity-changes-everywhere", &counts),
         };
         if self.feed_coverage.pending_tree {
-            subtitle.push_str(" · Waiting for current edits to finish");
+            push_part(&mut subtitle, &t("activity-pending-edits"));
         }
         if !self.feed_coverage.is_complete() {
             if !self.feed_coverage.excluded_apps.is_empty() {
-                let _ = write!(
-                    subtitle,
-                    " · History unavailable for {}",
-                    self.feed_coverage.excluded_apps.join(", ")
+                push_part(
+                    &mut subtitle,
+                    &t_args(
+                        "activity-coverage-excluded",
+                        &[("apps", self.feed_coverage.excluded_apps.join(", ").into())],
+                    ),
                 );
             }
             let missing = self.feed_coverage.unavailable_records.len();
             let capped = self.feed_coverage.capped_records;
             if missing > 0 {
-                let _ = write!(
-                    subtitle,
-                    " · {missing} record{} unavailable",
-                    if missing == 1 { "" } else { "s" }
+                push_part(
+                    &mut subtitle,
+                    &t_args("activity-coverage-missing", &[("count", missing.into())]),
                 );
             }
             if capped > 0 {
-                let _ = write!(subtitle, " · {capped} additional records truncated");
+                push_part(
+                    &mut subtitle,
+                    &t_args("activity-coverage-capped", &[("count", capped.into())]),
+                );
             }
         }
         if self.view == ActivityView::Replay && self.replay_unavailable > 0 {
-            let _ = write!(
-                subtitle,
-                " · {} checkpoints unavailable",
-                self.replay_unavailable
+            push_part(
+                &mut subtitle,
+                &t_args(
+                    "activity-replay-checkpoints-unavailable",
+                    &[("count", self.replay_unavailable.into())],
+                ),
             );
         }
         let wrap_width = text_width(self.sheet.width() - 32.0);
         let latest = if self.view == ActivityView::Replay {
-            self.replay_presentation_note.map(str::to_owned)
+            self.replay_presentation_note.clone()
         } else {
             None
         }
@@ -4349,7 +4377,7 @@ impl RoomActivityPane {
                 .as_ref()
                 .map(|narrative| narrative.text.clone())
                 .or_else(|| self.digest.headline())
-                .map(|headline| format!("Latest \u{00b7} {headline}"))
+                .map(|headline| t_args("activity-latest", &[("headline", headline.into())]))
         });
         // The subtitle may wrap, but the header band holds one subtitle line
         // plus "Latest", which used to sit at an authored offset underneath,
@@ -4416,9 +4444,15 @@ impl RoomActivityPane {
         let h = SELECTOR_H;
         let cy = self.sheet.y0 + HEADER_TOP + self.title_line_h() / 2.0;
         let label_sets = [
-            ["This workspace", "All workspaces"],
-            ["Workspace", "All"],
-            ["Here", "All"],
+            [
+                t("activity-scope-this-workspace"),
+                t("activity-scope-all-workspaces"),
+            ],
+            [
+                t("activity-scope-workspace-short"),
+                t("activity-scope-all-short"),
+            ],
+            [t("activity-scope-here"), t("activity-scope-all-short")],
         ];
         let available = (self.sheet.width() * 0.62).max(1.0);
         let first_set = usize::from(self.sheet.width() < 520.0);
@@ -4453,7 +4487,7 @@ impl RoomActivityPane {
                 continue;
             }
             let w = widths.get(i).copied().unwrap_or(0.0);
-            let label = labels.get(i).copied().unwrap_or_else(|| sc.label());
+            let label = labels.get(i).cloned().unwrap_or_else(|| sc.label());
             let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
             self.scope_rects.push((
                 *sc,
@@ -4462,10 +4496,10 @@ impl RoomActivityPane {
             let active = self.scope == *sc;
             let shape = RoundedRect::from_rect(rect, h / 2.0);
             paint_selector_pill(scene, transform, theme, &shape, active);
-            let (lw, lh) = tr.measure(label, size, None);
+            let (lw, lh) = tr.measure(&label, size, None);
             tr.draw_text(
                 scene,
-                label,
+                &label,
                 size,
                 if active {
                     colors.text_primary
@@ -4492,10 +4526,7 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         let y = self.sheet.y0 + self.header_h() + VIEW_ROW_H;
-        let periods: Vec<(Period, String)> = Period::ALL
-            .iter()
-            .map(|p| (*p, p.label().to_string()))
-            .collect();
+        let periods: Vec<(Period, String)> = Period::ALL.iter().map(|p| (*p, p.label())).collect();
         let selected = self.period;
         self.period_rects = draw_chip_row(
             scene,
@@ -4515,7 +4546,7 @@ impl RoomActivityPane {
         if self.author_offset >= self.contributors.len() {
             self.author_offset = 0;
         }
-        let mut people: Vec<(Option<String>, String)> = vec![(None, "Everyone".to_string())];
+        let mut people: Vec<(Option<String>, String)> = vec![(None, t("activity-people-everyone"))];
         people.extend(
             self.contributors
                 .iter()
@@ -4552,7 +4583,7 @@ impl RoomActivityPane {
                 theme,
                 row,
                 row.y0 + 1.0,
-                "First people…",
+                &t("activity-first-people"),
             );
         }
         self.author_rects = page.items;
@@ -4788,7 +4819,7 @@ impl RoomActivityPane {
                     .as_ref()
                     .err()
                     .cloned()
-                    .unwrap_or_else(|| "agent task dispatch failed".into());
+                    .unwrap_or_else(|| t("activity-agent-dispatch-failed"));
                 self.agent_startup.insert(
                     (self.task_room.clone(), agent),
                     AgentStartup::Failed { detail },
@@ -4888,9 +4919,9 @@ impl RoomActivityPane {
                 )
             })
         {
-            "Retry agent".into()
+            t("activity-task-retry-agent")
         } else {
-            action.label().to_string()
+            action.label()
         }
     }
 
@@ -4904,19 +4935,18 @@ impl RoomActivityPane {
             return None;
         }
         let Some(agent) = task.assigned_agent.as_deref() else {
-            return Some(
-                "No enabled workspace agent is assigned · this task has not started".into(),
-            );
+            return Some(t("activity-task-notice-no-agent"));
         };
         if self.agent_is_live(agent) {
-            return Some("Agent connected · ready to run this task".into());
+            return Some(t("activity-task-notice-ready"));
         }
         match self.agent_startup_state(agent) {
-            Some(AgentStartup::Starting { .. }) => {
-                Some("Starting managed agent · waiting for its broker subscription".into())
-            }
-            Some(AgentStartup::Failed { detail }) => Some(format!("Agent offline · {detail}")),
-            None => Some("Agent runtime not connected · this task has not started".into()),
+            Some(AgentStartup::Starting { .. }) => Some(t("activity-task-notice-starting")),
+            Some(AgentStartup::Failed { detail }) => Some(t_args(
+                "activity-task-notice-offline",
+                &[("detail", detail.into())],
+            )),
+            None => Some(t("activity-task-notice-no-runtime")),
         }
     }
 
@@ -5067,10 +5097,8 @@ impl RoomActivityPane {
         if !indexed.run.steps.iter().all(|step| {
             RecordId::parse(&step.record).is_some_and(|id| records.read(&id, |_| ()).is_some())
         }) {
-            self.agent_undo_notice = Some((
-                indexed.run.id,
-                "Nothing changed. Open every affected document first.".to_string(),
-            ));
+            self.agent_undo_notice =
+                Some((indexed.run.id, t("activity-undo-task-needs-documents")));
             return UndoApply::default();
         }
 
@@ -5096,14 +5124,14 @@ impl RoomActivityPane {
             wrote |= matches!(state, StepState::Undone { .. } | StepState::KeptSome { .. });
             partial |= !state.is_clean();
         }
-        let notice = if wrote && partial {
-            "Task partly undone; later collaborator edits were kept."
+        let notice = t(if wrote && partial {
+            "activity-undo-task-partial"
         } else if wrote {
-            "Whole task undone as a new history entry."
+            "activity-undo-task-done"
         } else {
-            "The task's effects were already gone."
-        };
-        self.agent_undo_notice = Some((indexed.run.id, notice.to_string()));
+            "activity-undo-task-gone"
+        });
+        self.agent_undo_notice = Some((indexed.run.id, notice));
         UndoApply { wrote, partial }
     }
 
@@ -5631,9 +5659,9 @@ impl RoomActivityPane {
 
     fn focus_label(&self, focus: &ActivityFocus) -> Option<String> {
         match focus {
-            ActivityFocus::Scope(value) => Some(value.label().to_string()),
-            ActivityFocus::View(value) => Some(value.label().to_string()),
-            ActivityFocus::Period(value) => Some(value.label().to_string()),
+            ActivityFocus::Scope(value) => Some(value.label()),
+            ActivityFocus::View(value) => Some(value.label()),
+            ActivityFocus::Period(value) => Some(value.label()),
             ActivityFocus::Author(Some(value))
             | ActivityFocus::Lens(
                 LensSelection::App(value)
@@ -5665,10 +5693,10 @@ impl RoomActivityPane {
                 .iter()
                 .find(|task| &task.id == id)
                 .map(|task| task.title.clone()),
-            ActivityFocus::TaskRoute(route) => Some(route.label().to_string()),
+            ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
-            ActivityFocus::TaskAction(action) => Some(action.label().to_string()),
+            ActivityFocus::TaskAction(action) => Some(action.label()),
             ActivityFocus::Lens(LensSelection::All) => Some(t("a11y-shell-activity-everything")),
             ActivityFocus::Lens(LensSelection::AgentTasks) => {
                 Some(t("a11y-shell-activity-agent-tasks"))
@@ -5680,8 +5708,8 @@ impl RoomActivityPane {
                 Some(t("a11y-shell-activity-unclassified"))
             }
             ActivityFocus::MoreLenses => Some(t("a11y-shell-activity-more-lenses")),
-            ActivityFocus::Detail(action) => Some(self.detail_action_label(*action).to_string()),
-            ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
+            ActivityFocus::Detail(action) => Some(self.detail_action_label(*action)),
+            ActivityFocus::ExplorerPane(pane) => Some(pane.label()),
             ActivityFocus::Timeline => Some(t("a11y-shell-activity-history-entries")),
             ActivityFocus::ReplayBack => Some(t("a11y-shell-activity-previous-checkpoint")),
             ActivityFocus::ReplayPlay => Some(if self.replay_playing {
@@ -5817,8 +5845,8 @@ impl RoomActivityPane {
                     expanded: Some(self.selected_task.as_ref() == Some(id)),
                     description: format!(
                         "{}; {}; {}; {}",
-                        task.status.label(),
-                        task.route.label(),
+                        task_status_label(task.status),
+                        task_route_label(task.route),
                         task.assigned_agent.as_deref().map_or_else(
                             || t("a11y-shell-activity-task-unassigned"),
                             |_| t("a11y-shell-activity-task-assigned-agent"),
@@ -6465,10 +6493,10 @@ fn draw_task_card(
             &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
         );
     }
-    let status = task.status.label();
+    let status = task_status_label(task.status);
     tr.draw_text_weighted(
         scene,
-        status,
+        &status,
         type_size(tr, theme.tokens.typography.scale.sm),
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
@@ -6479,13 +6507,17 @@ fn draw_task_card(
         None,
         ui::text_render::TextWeight::Medium,
     );
-    let route = task.route.label();
+    let route = task_route_label(task.route);
     let route_width = tr
-        .measure(route, type_size(tr, theme.tokens.typography.scale.sm), None)
+        .measure(
+            &route,
+            type_size(tr, theme.tokens.typography.scale.sm),
+            None,
+        )
         .0;
     tr.draw_text(
         scene,
-        route,
+        &route,
         type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(
@@ -6543,7 +6575,7 @@ fn draw_task_card(
         }
         tr.draw_text_weighted(
             scene,
-            "AUDIT TRAIL",
+            &t("activity-task-audit-trail"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, rect.x0 + 12.0, audit_y),
@@ -6578,17 +6610,20 @@ fn draw_task_card(
 fn task_assignee_label(task: &WorkspaceTask) -> String {
     task.assigned_agent.as_ref().map_or_else(
         || {
-            format!(
-                "Unassigned · created by {}",
-                participant_display_label(&task.created_by)
+            t_args(
+                "activity-task-unassigned-by",
+                &[(
+                    "creator",
+                    participant_display_label(&task.created_by).into(),
+                )],
             )
         },
         |agent| {
             // The card already owns the prominent AGENT badge, so reuse the
             // shared presentation while avoiding a redundant second suffix.
-            let label = participant_display_label(agent);
-            let name = label.strip_suffix(" · Agent").unwrap_or(&label);
-            format!("▣ AGENT · {name}")
+            let name = ui::history_source::agent_principal_name(agent)
+                .unwrap_or_else(|| agent.trim().to_string());
+            t_args("activity-task-agent-badge", &[("name", name.into())])
         },
     )
 }
@@ -6617,8 +6652,8 @@ fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> Stri
     let mut description = t_args(
         "a11y-shell-activity-task-description",
         &[
-            ("status", task.status.label().into()),
-            ("route", task.route.label().into()),
+            ("status", task_status_label(task.status).into()),
+            ("route", task_route_label(task.route).into()),
             ("assignee", task_assignee_label(task).into()),
             ("count", task.audit.len().into()),
         ],
@@ -6655,14 +6690,16 @@ fn detail_provenance(detail: &HistorySelectionDetail) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "{} action{}\n{}\n{}{}",
-        detail.entry_ids.len(),
-        if detail.entry_ids.len() == 1 { "" } else { "s" },
+        "{}\n{}\n{}{}",
+        t_args(
+            "activity-detail-action-count",
+            &[("count", detail.entry_ids.len().into())],
+        ),
         people,
         if resources.is_empty() {
-            "No resource declared"
+            t("activity-no-resource")
         } else {
-            &resources
+            resources
         },
         if facets.is_empty() {
             String::new()
@@ -6679,42 +6716,50 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
     let mut labels = Vec::new();
     for patch in patches {
         let label = match &patch.action {
-            automerge::PatchAction::PutMap { key, conflict, .. } => {
+            automerge::PatchAction::PutMap { key, conflict, .. } => field_change(
                 if *conflict {
-                    format!("Resolved concurrent changes to {}", humanize_field(key))
+                    "activity-change-resolved-field"
                 } else {
-                    format!("Updated {}", humanize_field(key))
-                }
-            }
+                    "activity-change-updated-field"
+                },
+                humanize_field(key),
+            ),
             automerge::PatchAction::DeleteMap { key } => {
-                format!("Removed {}", humanize_field(key))
+                field_change("activity-change-removed-field", humanize_field(key))
             }
-            automerge::PatchAction::PutSeq { conflict, .. } => {
-                if *conflict {
-                    "Resolved concurrent list changes".to_string()
-                } else {
-                    "Updated a list item".to_string()
-                }
+            automerge::PatchAction::PutSeq { conflict, .. } => t(if *conflict {
+                "activity-change-resolved-list"
+            } else {
+                "activity-change-updated-list-item"
+            }),
+            automerge::PatchAction::Insert { values, .. } => {
+                counted("activity-change-added-items", values.len())
             }
-            automerge::PatchAction::Insert { values, .. } => plural(values.len(), "item", "Added"),
-            automerge::PatchAction::SpliceText { .. } => "Edited text".to_string(),
+            automerge::PatchAction::SpliceText { .. } => t("activity-change-edited-text"),
             automerge::PatchAction::Increment { prop, value } => {
                 let field = match prop {
                     Prop::Map(key) => humanize_field(key),
-                    Prop::Seq(_) => "a counter".to_string(),
+                    Prop::Seq(_) => t("activity-change-a-counter"),
                 };
-                if *value < 0 {
-                    format!("Decreased {field}")
-                } else {
-                    format!("Increased {field}")
-                }
+                field_change(
+                    if *value < 0 {
+                        "activity-change-decreased"
+                    } else {
+                        "activity-change-increased"
+                    },
+                    field,
+                )
             }
             automerge::PatchAction::Conflict { prop } => match prop {
-                Prop::Map(key) => format!("Concurrent changes to {}", humanize_field(key)),
-                Prop::Seq(_) => "Concurrent list changes".to_string(),
+                Prop::Map(key) => {
+                    field_change("activity-change-concurrent-field", humanize_field(key))
+                }
+                Prop::Seq(_) => t("activity-change-concurrent-list"),
             },
-            automerge::PatchAction::DeleteSeq { length, .. } => plural(*length, "item", "Removed"),
-            automerge::PatchAction::Mark { .. } => "Changed text formatting".to_string(),
+            automerge::PatchAction::DeleteSeq { length, .. } => {
+                counted("activity-change-removed-items", *length)
+            }
+            automerge::PatchAction::Mark { .. } => t("activity-change-formatting"),
         };
         if !labels.contains(&label) {
             labels.push(label);
@@ -6726,7 +6771,7 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
 fn humanize_field(field: &str) -> String {
     let words = field.replace(['_', '-'], " ");
     if words.trim().is_empty() {
-        "content".to_string()
+        t("activity-change-content")
     } else {
         words
     }
@@ -6749,7 +6794,7 @@ fn draw_replay_layout(
     if shown == 0 {
         tr.draw_text(
             scene,
-            "The workspace did not exist at this checkpoint",
+            &t("activity-replay-no-workspace"),
             type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, bounds.x0 + 16.0, bounds.y0 + 16.0),
@@ -6805,10 +6850,11 @@ fn draw_replay_layout(
                     .tabs
                     .get(group.active)
                     .or_else(|| group.tabs.first())
-                    .map_or("Empty window", String::as_str);
+                    .cloned()
+                    .unwrap_or_else(|| t("activity-replay-empty-window"));
                 tr.draw_text(
                     scene,
-                    title,
+                    &title,
                     type_size(tr, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.text_primary,
                     at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
@@ -6893,7 +6939,7 @@ fn draw_presence_trail(
 ) {
     tr.draw_text(
         scene,
-        "Presence trail",
+        &t("activity-presence-trail"),
         (type_size(tr, theme.tokens.typography.scale.sm) - 1.0).max(10.0),
         theme.tokens.colors.text_dim,
         at(transform, bounds.x0, bounds.y0 + 2.0),
@@ -7078,11 +7124,7 @@ fn draw_brief_card(
         provenance.push_str(&brief.resources.join(", "));
     }
     if provenance.is_empty() {
-        provenance = if brief.changes == 1 {
-            "1 underlying action".to_string()
-        } else {
-            format!("{} underlying actions", brief.changes)
-        };
+        provenance = counted("activity-brief-underlying", brief.changes);
     }
     let provenance = tr.elide_to_width(
         &provenance,
@@ -7152,15 +7194,15 @@ fn draw_brief_card(
             action_y += m.action_pitch();
         }
     }
-    let affordance = if expanded {
-        "Open this work session in Explorer →"
+    let affordance = t(if expanded {
+        "activity-brief-open-explorer"
     } else {
-        "Show affected resources and actions ⌄"
-    };
+        "activity-brief-show-affected"
+    });
     let action_count = if expanded { brief.actions.len() } else { 0 };
     tr.draw_text(
         scene,
-        affordance,
+        &affordance,
         type_size(tr, theme.tokens.typography.scale.sm),
         if expanded {
             theme.tokens.colors.accent[4]
@@ -7593,11 +7635,11 @@ fn draw_chip_row_paginated<T: Clone>(
             None,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
         );
-        let more = "More…";
-        let (mw, mh) = tr.measure(more, size, None);
+        let more = t("activity-more");
+        let (mw, mh) = tr.measure(&more, size, None);
         tr.draw_text(
             scene,
-            more,
+            &more,
             size,
             colors.text_primary,
             at(
@@ -7789,7 +7831,7 @@ impl PatchCounts {
                 {
                     self.grants.push(describe_capability(&cap));
                 } else {
-                    self.grants.push("a capability".to_string());
+                    self.grants.push(t("activity-capability-unknown"));
                 }
             }
             (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
@@ -7850,74 +7892,84 @@ impl PatchCounts {
     fn describe(&self) -> Option<(String, OpClass)> {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
             return Some((
-                plural(self.workspaces_removed, "workspace", "Removed"),
+                counted("activity-event-removed-workspaces", self.workspaces_removed),
                 OpClass::Tombstone,
             ));
         }
         if self.workspaces_added > 0 {
             let s = match self.names.len() {
-                0 => plural(self.workspaces_added, "workspace", "Recorded"),
-                1 => format!(
-                    "Recorded workspace \u{201c}{}\u{201d}",
-                    self.names.first().map_or("", String::as_str)
+                0 => counted("activity-event-recorded-workspaces", self.workspaces_added),
+                1 => t_args(
+                    "activity-event-recorded-workspace",
+                    &[("name", self.names.first().map_or("", String::as_str).into())],
                 ),
-                n => format!("Recorded {n} workspaces: {}", join_titles(&self.names)),
+                n => t_args(
+                    "activity-event-recorded-named-workspaces",
+                    &[
+                        ("count", n.into()),
+                        ("names", join_titles(&self.names).into()),
+                    ],
+                ),
             };
             return Some((s, OpClass::Splice));
         }
 
         if !self.grants.is_empty() {
             let s = if self.grants.len() == 1 {
-                format!("Granted {}", self.grants.first().map_or("", String::as_str))
+                t_args(
+                    "activity-event-granted",
+                    &[(
+                        "capability",
+                        self.grants.first().map_or("", String::as_str).into(),
+                    )],
+                )
             } else {
-                format!("Granted {} capabilities", self.grants.len())
+                counted("activity-event-granted-capabilities", self.grants.len())
             };
             return Some((s, OpClass::Govern));
         }
         if self.revokes > 0 {
-            let s = if self.revokes == 1 {
-                "Revoked a capability".to_string()
-            } else {
-                format!("Revoked {} capabilities", self.revokes)
-            };
-            return Some((s, OpClass::Govern));
-        }
-        if self.owner_set {
-            return Some(("Set the workspace owner".to_string(), OpClass::Govern));
-        }
-        if self.room_set {
             return Some((
-                "Assigned the workspace identity".to_string(),
+                counted("activity-event-revoked-capabilities", self.revokes),
                 OpClass::Govern,
             ));
         }
+        if self.owner_set {
+            return Some((t("activity-event-owner"), OpClass::Govern));
+        }
+        if self.room_set {
+            return Some((t("activity-event-identity"), OpClass::Govern));
+        }
         if let Some(name) = self.names.first() {
             let s = if name.is_empty() {
-                "Renamed the workspace".to_string()
+                t("activity-event-renamed")
             } else {
-                format!("Named the workspace \u{201c}{name}\u{201d}")
+                t_args("activity-event-named", &[("name", name.into())])
             };
             return Some((s, OpClass::EditMeta));
         }
         if self.tabs_added > 0 {
             let s = if self.tab_titles.is_empty() {
-                plural(self.tabs_added, "window", "Opened")
+                counted("activity-event-opened-windows", self.tabs_added)
             } else {
-                format!("Opened {}", join_titles(&self.tab_titles))
+                t_args(
+                    "activity-event-opened",
+                    &[("titles", join_titles(&self.tab_titles).into())],
+                )
             };
             return Some((s, OpClass::Splice));
         }
         if self.tabs_removed > 0 {
             return Some((
-                plural(self.tabs_removed, "window", "Closed"),
+                counted("activity-event-closed-windows", self.tabs_removed),
                 OpClass::Tombstone,
             ));
         }
         if self.groups_moved > 0 {
-            return Some(("Rearranged the strip".to_string(), OpClass::Move));
+            return Some((t("activity-event-rearranged"), OpClass::Move));
         }
         if self.geometry > 0 {
-            return Some(("Resized a window group".to_string(), OpClass::EditMeta));
+            return Some((t("activity-event-resized"), OpClass::EditMeta));
         }
         if self.active_switched {
             return Some((
@@ -7925,7 +7977,7 @@ impl PatchCounts {
                 // "active" adds no useful distinction there and caused the
                 // workspace-switch confirmation to truncate at accessibility
                 // text sizes.
-                "Switched workspace".to_string(),
+                t("activity-event-switched"),
                 OpClass::EditMeta,
             ));
         }
@@ -7975,36 +8027,56 @@ fn describe_capability(cap: &CapOverride) -> String {
         Verb::Admin => "admin",
     };
     let effect = match cap.effect {
-        Effect::Grant => "",
-        Effect::Restrict => "restricted ",
+        Effect::Grant => "grant",
+        Effect::Restrict => "restrict",
     };
-    format!(
-        "{effect}{verb} on {} to {}",
-        describe_scope(&cap.scope),
-        describe_subject(&cap.subject)
+    t_args(
+        "activity-capability",
+        &[
+            ("effect", effect.into()),
+            ("verb", verb.into()),
+            ("scope", describe_scope(&cap.scope).into()),
+            ("subject", describe_subject(&cap.subject).into()),
+        ],
     )
 }
 
 fn describe_scope(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace | Scope::Room(_) => "this workspace".to_string(),
+        Scope::Workspace | Scope::Room(_) => t("activity-capability-this-workspace"),
         Scope::App(a) => a.clone(),
-        Scope::ResourceType(k) => format!("every {k:?}"),
-        Scope::ResourceInstance(_) => "one artifact".to_string(),
+        Scope::ResourceType(k) => t_args(
+            "activity-capability-every-type",
+            &[("kind", format!("{k:?}").into())],
+        ),
+        Scope::ResourceInstance(_) => t("activity-capability-one-artifact"),
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file
         // across rename/move and the stable id is not useful activity copy.
-        Scope::FsRecord(_) => "one shared file".to_string(),
+        Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
-        Scope::NetHost(h) => format!("network {h}"),
+        Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
         Scope::Action { app, action } => format!("{app}:{action}"),
     }
 }
 
 fn describe_subject(subject: &Subject) -> String {
     match subject {
-        Subject::Role(r) => format!("{r:?}s"),
-        Subject::User(_) => "a person".to_string(),
+        Subject::Role(role) => t_args(
+            "activity-capability-role",
+            &[(
+                "role",
+                match role {
+                    collab_types::role::Role::Owner => "owner",
+                    collab_types::role::Role::Editor => "editor",
+                    collab_types::role::Role::Commenter => "commenter",
+                    collab_types::role::Role::Viewer => "viewer",
+                    collab_types::role::Role::Denied => "denied",
+                }
+                .into(),
+            )],
+        ),
+        Subject::User(_) => t("activity-capability-a-person"),
         Subject::Principal(p) => describe_principal(p),
     }
 }
@@ -8013,9 +8085,9 @@ fn describe_principal(p: &Principal) -> String {
     match p {
         Principal::Person(id) => short(id),
         Principal::App(a) => a.clone(),
-        Principal::Agent(a) => format!("agent {a}"),
-        Principal::Token(_) => "an invite token".to_string(),
-        Principal::Room(_) => "this workspace".to_string(),
+        Principal::Agent(a) => t_args("activity-capability-agent", &[("agent", a.into())]),
+        Principal::Token(_) => t("activity-capability-invite-token"),
+        Principal::Room(_) => t("activity-capability-this-workspace"),
     }
 }
 
@@ -8033,12 +8105,50 @@ fn short(id: &str) -> String {
     out
 }
 
-fn plural(n: usize, noun: &str, verb: &str) -> String {
-    if n == 1 {
-        format!("{verb} 1 {noun}")
-    } else {
-        format!("{verb} {n} {noun}s")
-    }
+/// A catalogue message whose only variable is `$count`, so the catalogue's
+/// plural rules pick the wording.
+fn counted(key: &str, count: usize) -> String {
+    t_args(key, &[("count", count.into())])
+}
+
+/// A catalogue message naming one document field.
+fn field_change(key: &str, field: String) -> String {
+    t_args(key, &[("field", field.into())])
+}
+
+/// Append one more ` · `-separated part to a header line.
+fn push_part(line: &mut String, part: &str) {
+    line.push_str(" \u{00b7} ");
+    line.push_str(part);
+}
+
+/// A task's status as the card shows it.
+fn task_status_label(status: WorkspaceTaskStatus) -> String {
+    t(match status {
+        WorkspaceTaskStatus::Queued => "activity-task-status-queued",
+        WorkspaceTaskStatus::InProgress => "activity-task-status-in-progress",
+        WorkspaceTaskStatus::Waiting => "activity-task-status-waiting",
+        WorkspaceTaskStatus::Done => "activity-task-status-done",
+        WorkspaceTaskStatus::Cancelled => "activity-task-status-cancelled",
+    })
+}
+
+/// How a task runs, as the card and the composer show it.
+fn task_route_label(route: WorkspaceTaskRoute) -> String {
+    t(match route {
+        WorkspaceTaskRoute::Manual => "activity-task-route-manual",
+        WorkspaceTaskRoute::RulesOnly => "activity-task-route-rules-only",
+        WorkspaceTaskRoute::Model => "activity-task-route-model",
+    })
+}
+
+/// How an action with no summary of its own ended.
+fn receipt_status_label(status: &tilo_actions::EffectReceiptStatus) -> String {
+    t(match status {
+        tilo_actions::EffectReceiptStatus::Succeeded => "activity-receipt-completed",
+        tilo_actions::EffectReceiptStatus::Failed { .. } => "activity-receipt-failed",
+        tilo_actions::EffectReceiptStatus::Cancelled => "activity-receipt-cancelled",
+    })
 }
 
 /// Name up to two windows, then count the rest — the row has a line, not a
@@ -8049,8 +8159,18 @@ fn join_titles(titles: &[String]) -> String {
     match titles.len() {
         0 => String::new(),
         1 => first().to_string(),
-        2 => format!("{} and {}", first(), second()),
-        n => format!("{}, {} and {} more", first(), second(), n.saturating_sub(2)),
+        2 => t_args(
+            "activity-titles-two",
+            &[("first", first().into()), ("second", second().into())],
+        ),
+        n => t_args(
+            "activity-titles-more",
+            &[
+                ("first", first().into()),
+                ("second", second().into()),
+                ("count", n.saturating_sub(2).into()),
+            ],
+        ),
     }
 }
 

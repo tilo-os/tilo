@@ -79,6 +79,12 @@ FROM ${RPMS_REF} AS rpms
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
 FROM ${BASE_REF} AS public-trust-tools
 
+# Restore the runtime resolver only after transient-state cleanup. A RUN with
+# /etc/resolv.conf pointing into /run/NetworkManager makes BuildKit mount its
+# build-time DNS file there, so /run cannot be emptied by bootc's lint gate.
+FROM ${BASE_REF} AS runtime-resolver-link
+RUN mkdir -p /out && ln -s ../run/NetworkManager/resolv.conf /out/resolv.conf
+
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
 # os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
@@ -828,24 +834,35 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the 5 MiB application wire limit.
+# A full WPE browser is much larger than the application wire limit.
 # Keep its executable in a separately signed runtime and package only a tiny
 # entrypoint. This leaves the canonical app-size policy intact while giving
 # the browser the same app-store and sandbox route as every other app. The
 # special runtime is needed only when the main app collection was prebuilt;
 # source builds already make the browser thin in the unified runtime graph.
-RUN : > /out/browser-runtime-publisher.hex \
+ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
+RUN --mount=type=secret,id=browser_runtime_identity \
+    : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          test "${RUNTIME_VERSION}" = 2026.07 \
          && test -x /out/optional/browser \
-         && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+         && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+              test -s /run/secrets/browser_runtime_identity \
+              && actual="$(/out/tilo-runtime-bundle key pubkey \
+                   --identity /run/secrets/browser_runtime_identity)" \
+              && test "$actual" = "$TILO_BROWSER_RUNTIME_PUBLISHER" \
+              && identity=/run/secrets/browser_runtime_identity; \
+            else \
+              /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+              && identity=/out/browser-runtime-identity.json; \
+            fi \
          && /out/tilo-runtime-bundle build \
               --version 2026.7.0-browser --arch "$(uname -m)" --from / \
               --include /out/optional/browser \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               --out /usr/lib/tilo-runtime/2026.7.0-browser \
          && /out/tilo-runtime-bundle key pubkey \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               > /out/browser-runtime-publisher.hex \
          && /out/tilo-runtime-bundle verify \
               /usr/lib/tilo-runtime/2026.7.0-browser \
@@ -872,7 +889,9 @@ RUN : > /out/browser-runtime-publisher.hex \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN BIN_DIR=/out/thin-apps \
+RUN --mount=type=secret,id=browser_app_identity \
+    export TILO_IMAGE_BUILD=1 \
+    && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
@@ -889,9 +908,19 @@ RUN BIN_DIR=/out/thin-apps \
                  > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
             && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
                  /tmp/browser-package-repo/apps/browser/tilo-app.toml \
+            && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+                 test -s /run/secrets/browser_app_identity \
+                 && browser_app_identity=/run/secrets/browser_app_identity \
+                 && browser_app_publisher="$TILO_APP_COLLECTION_PUBLISHER"; \
+               else \
+                 browser_app_identity= \
+                 browser_app_publisher=; \
+               fi \
             && REPO=/tmp/browser-package-repo \
             BIN_DIR=/out/browser-app \
             TAPP_DIR= \
+            IDENTITY_JSON="$browser_app_identity" \
+            EXPECTED_PUBKEY="$browser_app_publisher" \
             PKG_BIN=/out/tilo-app-package \
             INSTALL_BIN=/out/tilo-install \
             BUNDLE_BIN=/out/tilo-runtime-bundle \
@@ -2562,6 +2591,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
       | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
     find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
       | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
+    # ldconfig -r in dracut requires absolute include patterns. Fedora's
+    # default relative pattern resolves to the same directory without -r.
+    sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
         --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
@@ -2749,7 +2781,10 @@ RUN case "${TILO_GENERATION}" in \
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
 # warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
 # recreated on first boot rather than baked into the image.
-RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+# Replace the runtime symlink with a build-only regular file in a separate
+# layer. Its current RUN may still mount DNS under /run; the next one will not.
+RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2778,8 +2813,14 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
-    && python3 /run/tilo-clean-bootc-transient-state.py \
+    && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
+
+# COPY is a separate build operation, with no DNS mount in /run. Copy the
+# containing directory so builders preserve its only entry, the symlink,
+# instead of dereferencing a single-file source with an absent /run target.
+# Restore the NetworkManager resolver before split/ukify seal the rootfs.
+COPY --from=runtime-resolver-link /out/ /etc/
 
 # ---------------------------------------------------------------------------
 # The sealed layout: split the kernel out, build the UKI over what remains
@@ -2800,7 +2841,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
 # os/dev/build-image.sh instead of being copied into the image.
 
 FROM rootfs AS split
-RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
+    && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 # A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
 # out of the same digest-pinned base and the same frozen RPM snapshot as

@@ -618,14 +618,27 @@ impl CloudSource for DavSource {
                 upload::Condition::Create,
             ),
         };
+        // Nextcloud can keep the `ETag` across an overwrite; the session
+        // needs the revision it replaces to make sure it ends at a new one.
+        let replaced = match &precondition {
+            _ if !self.config.is_nextcloud() => None,
+            upload::Condition::Match(Some(revision)) => Some(revision.clone()),
+            upload::Condition::Match(None) => match self.stat(&id) {
+                Ok(item) => item.revision,
+                Err(Error::NotFound) => None,
+                Err(error) => return Err(error),
+            },
+            upload::Condition::Create => None,
+        };
         if self.config.is_nextcloud() && size > self.config.upload_chunk {
-            return upload::Chunked::begin(self, id, precondition, size)
+            return upload::Chunked::begin(self, id, precondition, replaced, size)
                 .map(|s| Box::new(s) as Box<dyn UploadSession>);
         }
         Ok(Box::new(upload::SinglePut::new(
             self,
             id,
             precondition,
+            replaced,
             size,
         )))
     }

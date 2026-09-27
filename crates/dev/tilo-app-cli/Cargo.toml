@@ -34,5 +34,8 @@ tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tilo-test-env = { path = "../test-env" }
+
 [lints]
 workspace = true

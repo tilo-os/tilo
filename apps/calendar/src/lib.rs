@@ -4,7 +4,7 @@
 //! month / week / day / agenda views, a Planify-style sidebar of smart
 //! lists + projects, events with recurrence + reminders, checkable tasks
 //! with priorities and subtasks, and rich-text **notes** on any event or
-//! task using the same `BlockEditor` the Notes app is built on.
+//! task using the SDK rich-text editor.
 //!
 //! State lives in the Automerge CRDT (`doc`), interop is via iCalendar
 //! (`ics`), and `app_root()` is the single integration point used by both

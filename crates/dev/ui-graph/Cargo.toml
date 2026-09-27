@@ -10,7 +10,10 @@ description = "Pure schema and structural editor for Tilo serialized UI graphs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

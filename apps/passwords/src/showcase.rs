@@ -5634,6 +5634,9 @@ fn demo_items() -> Vec<SecretItem> {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[expect(
         clippy::float_cmp,
         reason = "layout offsets are sums of exactly representable constants"
@@ -6525,7 +6528,8 @@ mod tests {
             ));
             ui::host::scoped(&services, || app.request_import());
             assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            while std::time::Instant::now() < deadline {
                 app.poll_transfers();
                 if app.transfer_dialog.is_some() {
                     break;
@@ -6543,7 +6547,8 @@ mod tests {
                 ui::portal::OpenedFile::new(selected, "passwords.csv"),
             ));
             ui::host::scoped(&services, || app.request_import());
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            while std::time::Instant::now() < deadline {
                 app.poll_transfers();
                 if app.transfer_dialog.is_some() {
                     break;
