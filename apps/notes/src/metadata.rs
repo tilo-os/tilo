@@ -163,11 +163,14 @@ mod tests {
             );
             apply(
                 &mut doc,
-                actions::edit_body_action(
+                actions::apply_block_ops_action(
                     a,
-                    qdoc_rich_text::RichTextAction::AppendParagraph {
+                    vec![ui::widget::BlockEditOp::Insert {
+                        block_id: PageId::new_v4().to_string(),
+                        after: None,
+                        kind: "paragraph".into(),
                         text: "Hello".into(),
-                    },
+                    }],
                 ),
                 300,
             );
@@ -276,11 +279,14 @@ mod tests {
             );
             apply(
                 &mut second,
-                actions::edit_body_action(
+                actions::apply_block_ops_action(
                     page,
-                    qdoc_rich_text::RichTextAction::AppendParagraph {
+                    vec![ui::widget::BlockEditOp::Insert {
+                        block_id: PageId::new_v4().to_string(),
+                        after: None,
+                        kind: "paragraph".into(),
                         text: "Remote text".into(),
-                    },
+                    }],
                 ),
                 300,
             );

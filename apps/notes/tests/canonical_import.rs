@@ -1,5 +1,4 @@
 use crate::component_support::canonical as support;
-use crate::component_support::kind_at;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use notes::{
     actions::{InlineMark, InlineMarkSpan},
@@ -62,6 +61,7 @@ fn rich_import_preserves_content_and_replays_with_stable_ids() {
                 assert_eq!(NotesDoc::list_tags(doc), f.workspace.data.tags);
                 assert_eq!(NotesDoc::list_tag_assignments(doc), vec![(f.child, f.tag)]);
                 let rows = NotesDoc::page_block_snapshots(doc, f.child);
+                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
                 let expected = [
                     ("heading1", "Heading one"),
                     ("heading2", "Heading two"),
@@ -81,9 +81,18 @@ fn rich_import_preserves_content_and_replays_with_stable_ids() {
                 assert_eq!(rows.len(), expected.len());
                 let marks = NotesDoc::page_block_marks(doc, f.child);
                 for (index, ((id, text), (kind, want))) in rows.iter().zip(expected).enumerate() {
-                    assert!(!id.is_empty());
+                    assert!(!Uuid::parse_str(id).unwrap().is_nil());
                     assert_eq!(text, want);
-                    assert_eq!(kind_at(doc, f.child, index), kind);
+                    assert_eq!(NotesDoc::block_kind(doc, &list, index), kind);
+                    let (_, block) = doc.get(&list, index).unwrap().unwrap();
+                    assert_eq!(
+                        doc.get(&block, "notes_marks_version")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .as_i64(),
+                        Some(1)
+                    );
                     let mut actual = marks[index].1.clone();
                     actual.sort_by_key(|m| (m.start, m.end));
                     let expected_marks = match index {
@@ -634,13 +643,20 @@ fn canonical_validation_refuses_versions_and_malformed_shapes_without_reset() {
         "title",
         "parent",
         "order",
-        "body",
+        "blocks",
+        "block-id",
+        "kind",
+        "text",
+        "marks-version",
+        "native-mark",
     ] {
         let f = LegacyFixture::rich();
         let outcome = imported(&f);
         let mut doc = f.records.read(&outcome.checkout.id, Clone::clone).unwrap();
         let (_, pages) = doc.get(ROOT, "pages").unwrap().unwrap();
         let (_, page) = doc.get(&pages, f.child.to_string()).unwrap().unwrap();
+        let list = NotesDoc::page_blocks_list(&doc, f.child).unwrap();
+        let (_, block) = doc.get(&list, 0).unwrap().unwrap();
         match case {
             "missing-version" => {
                 doc.delete(ROOT, "notes_schema_version").unwrap();
@@ -668,8 +684,29 @@ fn canonical_validation_refuses_versions_and_malformed_shapes_without_reset() {
             "page-id" => {
                 doc.put_object(&pages, "invalid", ObjType::Map).unwrap();
             }
-            "title" | "parent" | "order" | "body" => {
+            "title" | "parent" | "order" | "blocks" => {
                 doc.put(&page, case, 42).unwrap();
+            }
+            "block-id" => {
+                doc.put(&block, "id", "bad").unwrap();
+            }
+            "kind" => {
+                doc.put(&block, "kind", "unknown").unwrap();
+            }
+            "text" => {
+                doc.put(&block, "text", "bad").unwrap();
+            }
+            "marks-version" => {
+                doc.delete(&block, "notes_marks_version").unwrap();
+            }
+            "native-mark" => {
+                let text = NotesDoc::block_text_obj(&doc, &list, 0).unwrap();
+                doc.mark(
+                    &text,
+                    automerge::marks::Mark::new("notes.inline.bold".into(), "wrong", 0, 2),
+                    automerge::marks::ExpandMark::Both,
+                )
+                .unwrap();
             }
             _ => unreachable!(),
         }

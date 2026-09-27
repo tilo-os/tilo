@@ -161,13 +161,14 @@ fn seeded_notes() -> ScopedAppFixture {
             parent: None,
             order: 0,
         };
-        let blocks = ::notes::MainPanel::seed_blocks(
+        let (ops, marks) = ::notes::MainPanel::seed_block_ops_with_marks(
             "Original committed body.\n\n[Scoped link](https://example.com/scoped-notes)\n",
             |_| None,
         );
         let action = ::notes::actions::NotesAction::ImportPage {
             page: ::notes::actions::PageData::from_meta(&meta),
-            blocks: blocks.iter().map(::notes::actions::PageBlock::of).collect(),
+            ops,
+            marks,
             assets: vec![],
         };
         tilo_actions::apply_local(doc, &action, ::notes::actions::encode(&action)).unwrap();
