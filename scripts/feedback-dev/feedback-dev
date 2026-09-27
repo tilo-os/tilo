@@ -100,6 +100,13 @@ What `up` does, each step skipped when already done:
                <reporter>` — the private feedback room, carried by the relay
   teammate     (`up --teammate`) a second team member joins like anyone, then
                the owner runs `public-room grant ROOM <teammate> --role editor`
+  apps         (`up --ci-apps RUN`) the tapps and runtime a release-apps.yml run
+               built, installed into every session; the run's runtime publisher
+               joins each session's trust list. (`--worktree-apps`: package
+               this worktree's chat thin instead, with rcargo.)
+  #feedback    with apps: team opens Chat in the community room, runs Chat's
+               `add-feedback-channel` and `mark-feedback`; then the reporter's
+               Chat must see #feedback and offer `post` there
 
 Logs: {DATA}/<name>/log (shells), {DATA}/relay/log. State: {STATE}.
 """
@@ -241,6 +248,54 @@ def host_guard_problems(env: dict) -> list[str]:
     return problems
 
 
+# ------------------------------------------------------ session keyring -----
+#
+# Encrypted rooms (the team's private room with a reporter) keep their channel
+# state in a Secret Service. Each session gets its own: a gnome-keyring on the
+# session's private bus, its keyring files in the session's data directory,
+# unlocked with a password only this tool uses. Every step that touches a
+# session's identity runs inside it, so its keys live in one custody.
+
+KEYRING_PASSWORD = "feedback-dev"
+IN_SESSION = (
+    'printf %s "$FEEDBACK_DEV_KEYRING" | gnome-keyring-daemon --unlock --components=secrets '
+    '>/dev/null 2>&1 || { echo "feedback-dev: the session keyring did not unlock" >&2; exit 70; }; '
+    'exec "$@"'
+)
+
+
+def in_session(argv: list[str], env: dict) -> tuple[list[str], dict]:
+    """`argv` on a fresh private session bus whose keyring is unlocked."""
+    env = {key: value for key, value in env.items() if key != "DBUS_SESSION_BUS_ADDRESS"}
+    env["FEEDBACK_DEV_KEYRING"] = KEYRING_PASSWORD
+    return ["dbus-run-session", "--", "sh", "-c", IN_SESSION, "feedback-dev-session", *argv], env
+
+
+def keyring_problem() -> str | None:
+    """Store and read back one secret in a throwaway session keyring."""
+    import tempfile
+    with tempfile.TemporaryDirectory(dir=DATA) as scratch:
+        root = pathlib.Path(scratch)
+        env = {
+            "PATH": guarded_path(),
+            "HOME": str(root),
+            "XDG_DATA_HOME": str(root / "data"),
+            "XDG_RUNTIME_DIR": str(root / "run"),
+            "DBUS_SYSTEM_BUS_ADDRESS": "disabled:",
+        }
+        (root / "run").mkdir(mode=0o700)
+        argv, env = in_session(["sh", "-c",
+                                "printf probe | secret-tool store --label=feedback-dev feedback-dev probe"
+                                " && secret-tool lookup feedback-dev probe"], env)
+        try:
+            result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return f"a session keyring could not be started: {error}"
+        if result.returncode != 0 or result.stdout.strip() != "probe":
+            return f"a session keyring did not keep a secret: {(result.stderr or result.stdout).strip()}"
+    return None
+
+
 # ------------------------------------------------------------ binaries -----
 
 def binary(name: str) -> str:
@@ -280,14 +335,21 @@ def session_env(name: str, headless: bool) -> dict:
         "RUST_LOG": os.environ.get("FEEDBACK_DEV_LOG", "info"),
         # The worktree's launcher, which knows this branch's app contract.
         "TILO_LAUNCHER_BIN": str(TARGET / "tilo-launcher"),
-        # Two dev identities never belong in the desktop's keyring, and a
-        # dev shell never reaches logind or systemd: the system bus is
-        # unreachable, and each shell gets a private session bus of its own
-        # (`dbus-run-session`, below). Without the host's Secret Service the
-        # identity service keeps these identities in its file custody.
+        # Dev identities never belong in the desktop's keyring, and a dev
+        # shell never reaches logind or systemd: the system bus is
+        # unreachable, and each session runs on a private session bus of its
+        # own with its own keyring (`in_session`); until then, none at all.
         "DBUS_SYSTEM_BUS_ADDRESS": "disabled:",
         "DBUS_SESSION_BUS_ADDRESS": "disabled:",
+        # A dev session nobody is touching must stay drivable: it never locks
+        # itself (a locked shell hands every control action to its password
+        # field), blanks, or asks to suspend.
+        "TILO_IDLE_LOCK_SECS": "0",
+        "TILO_IDLE_BLANK_SECS": "0",
+        "TILO_IDLE_SUSPEND_SECS": "0",
     }
+    if trusted_publishers(name).exists():
+        env["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = str(trusted_publishers(name))
     endpoint = load_state().get("relay_endpoint")
     if endpoint:
         env["TILO_COLLAB_HOSTS"] = json.dumps([endpoint])
@@ -324,11 +386,9 @@ def provision(name: str) -> None:
     ).exists():
         return
     say(f"provisioning the {name} identity")
-    env = session_env(name, headless=True)
-    result = subprocess.run(
-        [binary("shell"), "--provision-identity", "--disable-peer-sync"],
-        env=env, capture_output=True, text=True, timeout=120,
-    )
+    argv, env = in_session([binary("shell"), "--provision-identity", "--disable-peer-sync"],
+                           session_env(name, headless=True))
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise Fix(
             f"`shell --provision-identity` failed for {name}:\n{result.stdout}{result.stderr}",
@@ -382,8 +442,8 @@ def start_shell(name: str, headless: bool) -> None:
     if problems:
         raise Fix("refusing to start a shell that could act on this machine: " + "; ".join(problems),
                   "feedback-dev doctor")
-    env.pop("DBUS_SESSION_BUS_ADDRESS", None)
-    spawn(name, ["dbus-run-session", "--", binary("shell"), "--backend", backend], env, log)
+    argv, env = in_session([binary("shell"), "--backend", backend], env)
+    spawn(name, argv, env, log)
     for _ in range(240):
         if sock.exists():
             return
@@ -395,7 +455,74 @@ def start_shell(name: str, headless: bool) -> None:
 
 # ----------------------------------------------------------------- apps ----
 
-def package_apps(rebuild: bool) -> list[pathlib.Path]:
+class Apps:
+    """Packages to install into every session, and the runtime they run on."""
+
+    def __init__(self, packages: list[pathlib.Path], runtime: pathlib.Path | None,
+                 runtime_publishers: tuple[str, ...] = ()):
+        self.packages = packages
+        self.runtime = runtime
+        # Runtime publishers these apps' sessions trust besides the image's
+        # own list — a nonpublishing CI run signs with a key of its own.
+        self.runtime_publishers = runtime_publishers
+
+
+NO_APPS = Apps([], None)
+
+
+def runtime_apps(packages: list[pathlib.Path], runtime: pathlib.Path) -> Apps:
+    """Apps on the runtime bundle beside them, trusting that bundle's publisher.
+
+    Both a nonpublishing CI run and a local package sign their runtime with a
+    key of their own and name it in `runtime-bundle-publisher.hex`.
+    """
+    publisher = runtime / "runtime-bundle-publisher.hex"
+    return Apps(packages, runtime, (publisher.read_text().strip(),) if publisher.exists() else ())
+
+
+def ci_apps(run: str) -> Apps:
+    """The tapps and runtime bundle a `release-apps.yml` run built.
+
+    The run's `tilo-apps-x86_64` artifact carries thin tapps and the runtime
+    bundle they were linked against — the shipped shape, built in CI, never on
+    this machine.
+    """
+    if not run.isdigit():
+        raise Fix(f"`{run}` is not a run number", "fgj run list --workflow release-apps.yml")
+    dest = DATA / "apps" / f"ci-{run}"
+    archive = dest / "tilo-apps-x86_64.zip"
+    if not archive.exists():
+        say(f"downloading the apps release-apps run #{run} built")
+        dest.mkdir(parents=True, exist_ok=True)
+        partial = dest / "download.zip"
+        result = subprocess.run(
+            ["fgj", "run", "artifacts", run, "-d", "tilo-apps-x86_64", "-o", str(partial)],
+            cwd=REPO, capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode != 0:
+            raise Fix(
+                f"run #{run} has no tilo-apps-x86_64 artifact: {result.stdout}{result.stderr}".strip(),
+                'fgj workflow run release-apps.yml -r <branch> -f apps="chat notes file-explorer" '
+                "-f architectures=x86_64 -f publish=false, then `fgj run watch <run>`",
+            )
+        partial.rename(archive)
+    unpacked = dest / "unpacked"
+    if not (unpacked / "tapp").is_dir():
+        import zipfile
+        shutil.rmtree(unpacked, ignore_errors=True)
+        with zipfile.ZipFile(archive) as bundle:
+            for entry in bundle.infolist():
+                target = bundle.extract(entry, unpacked)
+                mode = entry.external_attr >> 16
+                if mode:
+                    os.chmod(target, mode & 0o7777)
+    packages = sorted((unpacked / "tapp").glob("*.tapp"))
+    if not packages:
+        raise Fix(f"run #{run}'s artifact holds no tapps", f"see {unpacked}")
+    return runtime_apps(packages, unpacked / "runtime")
+
+
+def package_apps(rebuild: bool) -> Apps:
     packages = []
     for app in WORKTREE_APPS:
         out = DATA / "apps" / f"{app}.tapp"
@@ -418,17 +545,39 @@ def package_apps(rebuild: bool) -> list[pathlib.Path]:
             )
         if result.returncode != 0:
             raise Fix(f"packaging apps/{app} failed:\n{tail(log)}", f"see {log}")
-    return packages
+    return runtime_apps(packages, DATA / "apps" / "runtime")
 
 
-def install_apps(name: str, packages: list[pathlib.Path]) -> None:
+def trusted_publishers(name: str) -> pathlib.Path:
+    return session_dir(name) / "runtime-bundle-trusted-publishers.txt"
+
+
+def trust_runtime_publishers(name: str, publishers: tuple[str, ...]) -> None:
+    """The session's runtime trust list: the image's own, plus these apps'.
+
+    The launcher reads it from TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE, the
+    developer build's stand-in for /etc/tilo/runtime-bundle-trusted-publishers.txt.
+    """
+    path = trusted_publishers(name)
+    if not publishers:
+        path.unlink(missing_ok=True)
+        return
+    system = pathlib.Path("/etc/tilo/runtime-bundle-trusted-publishers.txt")
+    lines = system.read_text().splitlines() if system.exists() else []
+    lines = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    path.write_text("".join(f"{key}\n" for key in dict.fromkeys([*lines, *publishers])))
+
+
+def install_apps(name: str, apps: Apps) -> None:
+    trust_runtime_publishers(name, apps.runtime_publishers)
+    packages = apps.packages
     marker = session_dir(name) / "apps-installed"
     stamp = "\n".join(f"{p}:{p.stat().st_mtime_ns}" for p in packages)
     if marker.exists() and marker.read_text() == stamp:
         return
     env = session_env(name, headless=True)
-    bundles = DATA / "apps" / "runtime" / "tilo-runtime"
-    for bundle in sorted(bundles.iterdir()) if bundles.is_dir() else []:
+    bundles = apps.runtime / "tilo-runtime" if apps.runtime else None
+    for bundle in sorted(bundles.iterdir()) if bundles and bundles.is_dir() else []:
         say(f"installing runtime bundle {bundle.name} into the {name} session")
         result = subprocess.run(
             [binary("tilo-install"), "runtime", "install", "--bundle", str(bundle), "--force"],
@@ -459,11 +608,14 @@ def relay_config() -> pathlib.Path:
     return relay_dir() / "relay.toml"
 
 
-def relay_admin(*args: str) -> str:
-    result = subprocess.run(
-        [binary("tilo-relay-admin"), "--config", str(relay_config()), *args],
-        capture_output=True, text=True, timeout=120,
-    )
+def relay_admin(*args: str, as_team: bool = False) -> str:
+    """Run `tilo-relay-admin`; `as_team` when it signs with the team's identity,
+    which only the team's session keyring opens."""
+    argv = [binary("tilo-relay-admin"), "--config", str(relay_config()), *args]
+    env = dict(os.environ)
+    if as_team:
+        argv, env = in_session(argv, session_env("team", headless=True))
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise Fix(
             f"tilo-relay-admin {' '.join(args[:2])} failed:\n{result.stdout}{result.stderr}",
@@ -487,13 +639,15 @@ def enrol_relay() -> None:
             stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
         )
         time.sleep(1.0)
-        approve = subprocess.run(
+        approve_argv, approve_env = in_session(
             [binary("tilo-enroll"), "approve-room-host",
              "--identity-root", str(session_dir("team") / "identity-root"),
              "--identity-dir", str(identity_dir("team")),
              "--timeout", "60"],
-            env=team_env, stdout=out, stderr=subprocess.STDOUT, timeout=120,
+            team_env,
         )
+        approve = subprocess.run(approve_argv, env=approve_env, stdout=out,
+                                 stderr=subprocess.STDOUT, timeout=120)
         try:
             pair.wait(timeout=90)
         except subprocess.TimeoutExpired:
@@ -600,7 +754,7 @@ def ensure_hosting(room: str) -> None:
         return
     say("delegating Commenter admission for the room to the relay")
     relay_admin("community", "host", "--room", room,
-                "--owner-identity-dir", str(identity_dir("team")))
+                "--owner-identity-dir", str(identity_dir("team")), as_team=True)
     state["hosted_room"] = room
     save_state(state)
     start_relay(restart=True)
@@ -661,9 +815,9 @@ def join_reporter(room: str) -> dict:
     return join_community("reporter", room)
 
 
-def add_teammate(room: str, headless: bool, packages: list[pathlib.Path]) -> dict:
+def add_teammate(room: str, headless: bool, apps: Apps) -> dict:
     provision("teammate")
-    install_apps("teammate", packages)
+    install_apps("teammate", apps)
     start_shell("teammate", headless)
     join_community("teammate", room)
     status = answer("teammate", {"op": "community_status"})
@@ -690,6 +844,159 @@ def open_private_room() -> dict:
     )
 
 
+# ------------------------------------------------------------ #feedback ----
+#
+# The team's Chat in the community room carries #feedback, marked as the
+# feedback channel. Everything here goes through what a person or agent uses:
+# the workspace switcher in the top bar, the Applications action that opens
+# Chat, and the actions Chat publishes (`add-feedback-channel`, then
+# `mark-feedback` on `chat.channel:c_feedback`).
+
+FEEDBACK_CHANNEL = "c_feedback"
+
+
+def state_dump(name: str) -> dict:
+    return control(name, {"op": "state_dump"}).get("state", {})
+
+
+def active_room(name: str) -> str | None:
+    tree = state_dump(name).get("workspace_tree", {})
+    desktop = tree.get("desktop", tree)
+    for workspace in desktop.get("workspaces", []):
+        if workspace.get("id") == desktop.get("active"):
+            return workspace.get("room")
+    return None
+
+
+def activate_room(name: str, room: str) -> None:
+    """Step through the top bar's workspace switcher until `room` is active."""
+    tree = state_dump(name).get("workspace_tree", {})
+    count = len(tree.get("desktop", tree).get("workspaces", []))
+    for _ in range(count + 1):
+        if active_room(name) == room:
+            return
+        answer(name, {"op": "click_named", "name": "topbar_workspace_down"})
+        time.sleep(0.3)
+    raise Fix(f"the {name} shell never made room {room} its active workspace",
+              f"feedback-dev ctl {name} -- state-dump --pretty")
+
+
+def app_actions(name: str, query: str) -> list[dict]:
+    rows = answer(name, {"op": "actions_enumerate", "query": query}).get("actions", [])
+    return [row for row in rows if row.get("provider") == "app-actions"]
+
+
+def chat_action(name: str, resource: str, action: str, query: str) -> dict | None:
+    for row in app_actions(name, query):
+        if row.get("resource") == resource and row["id"].endswith("\x1f" + action):
+            return row
+    return None
+
+
+def ensure_chat(name: str, room: str) -> None:
+    """Chat running in `room` in this shell, opened as a person would."""
+    activate_room(name, room)
+    def running_here() -> bool:
+        apps = answer(name, {"op": "inspect_apps"}).get("apps", [])
+        return any(app.get("app_id") == "so.tilo.chat" and app.get("room") == room for app in apps)
+    # A room restores the windows it had, Chat among them, soon after start.
+    for _ in range(30):
+        if running_here():
+            return
+        time.sleep(1.0)
+    say(f"opening Chat in the community room in the {name} shell")
+    # The shell's application index answers empty while it rebuilds, which
+    # on a loaded machine can take minutes after start.
+    for _ in range(600):
+        if running_here():
+            return
+        response = control(name, {"op": "actions_invoke", "provider": "applications",
+                                  "id": "so.tilo.chat", "args": {}})
+        if "err" not in response:
+            break
+        time.sleep(1.0)  # the catalogue fills in just after the shell starts
+    else:
+        raise Fix(f"the {name} shell never offered Chat: {response['err']}",
+                  "install the apps: feedback-dev up --ci-apps RUN (or --worktree-apps)")
+    for _ in range(90):
+        if running_here():
+            return
+        time.sleep(1.0)
+    raise Fix(f"Chat did not start in the {name} shell", f"grep so.tilo.chat {session_dir(name) / 'log'}")
+
+
+def invoke_chat(name: str, resource: str, action: str, query: str) -> None:
+    for _ in range(180):
+        row = chat_action(name, resource, action, query)
+        if row:
+            answer(name, {"op": "actions_invoke", "provider": row["provider"], "id": row["id"], "args": {}})
+            return
+        time.sleep(1.0)
+    raise Fix(f"Chat in the {name} shell does not offer `{action}` on {resource}",
+              f"feedback-dev ctl {name} -- actions list feedback")
+
+
+def until_chat_offers(name: str, resource: str, action: str, query: str, what: str) -> None:
+    for _ in range(180):
+        if chat_action(name, resource, action, query):
+            return
+        time.sleep(1.0)
+    raise Fix(f"{what} did not happen in the {name} shell", f"see {session_dir(name) / 'log'}")
+
+
+def feedback_channel_state() -> tuple[str | None, list[str]]:
+    """What the team's Chat says about #feedback, once it has said anything:
+    `marked`, `unmarked` or `None` (no such channel), and the Chat
+    workspaces it could be added to."""
+    channel = f"chat.channel:{FEEDBACK_CHANNEL}"
+    for _ in range(180):  # Chat publishes its actions once it has drawn
+        rows = app_actions("team", "feedback")
+        workspaces = [row["resource"] for row in rows if row["id"].endswith("\x1fadd-feedback-channel")]
+        if not workspaces and not any(row.get("resource") == channel for row in rows):
+            time.sleep(1.0)
+            continue
+        for row in rows:
+            if row.get("resource") == channel and row["id"].endswith("\x1funmark-feedback"):
+                return "marked", workspaces
+        for row in rows:
+            if row.get("resource") == channel and row["id"].endswith("\x1fmark-feedback"):
+                return "unmarked", workspaces
+        return None, workspaces
+    raise Fix("the team's Chat never published its actions",
+              "feedback-dev ctl team -- actions list feedback")
+
+
+def ensure_feedback_channel(room: str) -> None:
+    ensure_chat("team", room)
+    channel = f"chat.channel:{FEEDBACK_CHANNEL}"
+    state, workspaces = feedback_channel_state()
+    if state is None:
+        if not workspaces:
+            raise Fix("the team's Chat offers no `add-feedback-channel`",
+                      "feedback-dev ctl team -- actions list feedback")
+        say("the team adds #feedback to the community room's Chat")
+        invoke_chat("team", workspaces[0], "add-feedback-channel", "feedback")
+        for _ in range(180):
+            state, _ = feedback_channel_state()
+            if state is not None:
+                break
+            time.sleep(1.0)
+        else:
+            raise Fix("#feedback never appeared in the team's Chat",
+                      f"see {session_dir('team') / 'log'}")
+    if state == "unmarked":
+        say("the team marks #feedback as the feedback channel")
+        invoke_chat("team", channel, "mark-feedback", "feedback")
+        until_chat_offers("team", channel, "unmark-feedback", "feedback", "marking #feedback")
+
+
+def reporter_sees_feedback(room: str) -> None:
+    """The reporter's Chat reads #feedback and may post there, as a Commenter."""
+    ensure_chat("reporter", room)
+    until_chat_offers("reporter", f"chat.channel:{FEEDBACK_CHANNEL}", "post", "feedback",
+                      "the reporter seeing #feedback")
+
+
 # ------------------------------------------------------------- commands ----
 
 def available_mib() -> int:
@@ -712,6 +1019,14 @@ def doctor(quiet: bool = False) -> list[Fix]:
             f"about {MIN_AVAILABLE_MIB} MiB",
             "stop other builds or sessions, or set FEEDBACK_DEV_MIN_MIB to accept the risk",
         ))
+    if not shutil.which("gnome-keyring-daemon") or not shutil.which("secret-tool"):
+        problems.append(Fix("gnome-keyring-daemon and secret-tool are needed for each session's keyring",
+                            "install gnome-keyring and libsecret"))
+    elif shutil.which("dbus-run-session"):
+        DATA.mkdir(parents=True, exist_ok=True)
+        problem = keyring_problem()
+        if problem:
+            problems.append(Fix(problem, "check `gnome-keyring-daemon --unlock` works on a private bus"))
     if not shutil.which("dbus-run-session"):
         problems.append(Fix("dbus-run-session is not installed; each dev shell needs a private session bus",
                             "install dbus (the dbus-daemon package)"))
@@ -727,7 +1042,8 @@ def doctor(quiet: bool = False) -> list[Fix]:
         if not problems:
             print("  ok    binaries built, memory available, pairing port free,")
             print("        dev shells isolated from the host's session and power (private D-Bus,")
-            print("        no system bus, session commands stubbed)")
+            print("        no system bus, session commands stubbed), each with its own unlocked")
+            print("        keyring for encrypted rooms")
     return problems
 
 
@@ -736,12 +1052,19 @@ def cmd_up(args: argparse.Namespace) -> None:
     if problems:
         raise problems[0]
     headless = not args.nested
-    packages = package_apps(args.rebuild_apps) if args.worktree_apps else []
+    if args.ci_apps and args.worktree_apps:
+        raise Fix("--ci-apps and --worktree-apps both choose the apps", "pass one of them")
+    if args.ci_apps:
+        apps = ci_apps(args.ci_apps)
+    elif args.worktree_apps:
+        apps = package_apps(args.rebuild_apps)
+    else:
+        apps = NO_APPS
     for name in SESSIONS:
         if name in OPTIONAL_SESSIONS:
             continue
         provision(name)
-        install_apps(name, packages)
+        install_apps(name, apps)
     enrol_relay()
     write_relay_config()
     start_relay()
@@ -753,7 +1076,11 @@ def cmd_up(args: argparse.Namespace) -> None:
     start_shell("reporter", headless)
     status = join_reporter(room)
     private = open_private_room()
-    teammate = add_teammate(room, headless, packages) if args.teammate else None
+    teammate = add_teammate(room, headless, apps) if args.teammate else None
+    feedback = bool(apps.packages)
+    if feedback:
+        ensure_feedback_channel(room)
+        reporter_sees_feedback(room)
     state = load_state()
     state["private_room"] = private["room"]
     state["mode"] = "headless" if headless else "nested"
@@ -762,6 +1089,10 @@ def cmd_up(args: argparse.Namespace) -> None:
     say(f"up: private room {private['room']}: the team holds {private['role']}")
     if teammate:
         say(f"up: the teammate holds {teammate['role']} in the public room")
+    if feedback:
+        say("up: #feedback is the community's feedback channel; the reporter's Chat can post there")
+    else:
+        say("up: no apps installed, so no #feedback (pass --ci-apps RUN or --worktree-apps)")
     say("next: feedback-dev ctl reporter -- community team-room   |   feedback-dev status")
 
 
@@ -811,6 +1142,8 @@ def main() -> int:
     mode.add_argument("--nested", action="store_true", help="both shells as windows in this session")
     up.add_argument("--teammate", action="store_true",
                     help="also a second team member, admitted and made Editor by the owner")
+    up.add_argument("--ci-apps", metavar="RUN",
+                    help="install the tapps and runtime a release-apps.yml run built into every session")
     up.add_argument("--worktree-apps", action="store_true",
                     help="package and install this worktree's chat into both sessions")
     up.add_argument("--rebuild-apps", action="store_true",
