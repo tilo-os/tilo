@@ -206,6 +206,13 @@ class TransformTests(unittest.TestCase):
                     self.assertFalse(any(call[0] == 'commit' for call in calls))
 
     def test_subprocess_bounds_and_diagnostics(self):
+        with self.subTest(phase="early_dracut_error_survives_bounded_diagnostic"):
+            log = ('dracut[E]: cannot open key Bearer secret-token\n'
+                   + 'ordinary progress\n' * 300)
+            diagnostic = transform.dracut_failure_diagnostic(log)
+            self.assertIn('dracut[E]: cannot open key Bearer [REDACTED]', diagnostic)
+            self.assertNotIn('secret-token', diagnostic)
+            self.assertLess(len(diagnostic), 2100)
         with self.subTest(phase="real_subprocess_output_time_and_exit_bounds"):
             if not (os.name == 'posix'):
                 self.skipTest('Linux process-group and pipe semantics')
