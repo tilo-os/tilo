@@ -202,12 +202,22 @@ UNRECORDED_TEST_SECONDS = 20
 TEST_SHARD_SECONDS = 1_000
 MAX_TEST_SHARDS = 4
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
-# release-matrix tests over real FUSE, and the Cloud host and action broker
-# suites that commit a durable Store or relay journal on every step. On one
-# runner their fsyncs queue behind each other (6-9 ms each) until the Cloud
+# release-matrix tests over real FUSE (with fs-native and private-fs), and the
+# host suites that commit a durable Store, owner journal or relay journal on
+# every step. On one runner their fsyncs queue behind each other until the host
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
-TEST_SHARD_APART = (frozenset({"fs"}), frozenset({"tilo-cloud-host", "tilo-action-broker"}))
+TEST_SHARD_APART = (
+    frozenset({"fs", "fs-native", "private-fs"}),
+    frozenset({
+        "tilo-action-broker",
+        "tilo-cloud-host",
+        "tilo-device-host",
+        "tilo-peer-state",
+        "tilo-relay",
+        "tilo-workspace-host",
+    }),
+)
 
 
 def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
