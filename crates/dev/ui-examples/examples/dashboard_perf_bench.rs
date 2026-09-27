@@ -741,8 +741,11 @@ mod damage_verifier_tests {
                 total_us: 99_999,
                 ..Phase::default()
             };
-            assert_eq!(redraw_frame_totals(&[idle.clone()]), None);
-            assert_eq!(mean_frame_budget_passes(&[idle.clone()], 8_000), None);
+            assert_eq!(redraw_frame_totals(std::slice::from_ref(&idle)), None);
+            assert_eq!(
+                mean_frame_budget_passes(std::slice::from_ref(&idle), 8_000),
+                None
+            );
             let redraws = [
                 idle,
                 Phase {
