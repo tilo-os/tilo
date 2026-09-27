@@ -348,9 +348,13 @@ impl State {
         {
             return Ok(None);
         }
+        let before = self.doc.get_heads();
         let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
         if changed {
             self.undo.rebase(&mut self.doc);
+            // What arrived came from the route; it is not sent back out as
+            // this device's own change.
+            self.outbound.observe_changes_after(&mut self.doc, &before);
         }
         Ok(Some(changed))
     }

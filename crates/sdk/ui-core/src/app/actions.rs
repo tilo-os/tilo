@@ -1571,19 +1571,35 @@ impl App {
                 );
                 tilo_actions::InvocationUpdate::Accepted { invocation }
             }
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: crate::bound_dispatch::door_error_code(&error).to_string(),
-                    message: error.to_string(),
-                    details: None,
-                    retryable: false,
-                },
-            },
+            Err(error) => {
+                tracing::warn!(
+                    resource = %address.resource,
+                    action = %address.action,
+                    %error,
+                    "refused an action the broker directed here"
+                );
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: crate::bound_dispatch::door_error_code(&error).to_string(),
+                        message: error.to_string(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            }
         };
-        self.collaboration
+        if !self
+            .collaboration
             .manager
-            .send(CollabRequest::UpdateInvocation { id, update });
+            .send(CollabRequest::UpdateInvocation { id, update })
+        {
+            tracing::warn!(
+                resource = %address.resource,
+                action = %address.action,
+                "could not report an action's outcome to the broker"
+            );
+        }
     }
 
     fn resolve_resource_invocation<'a>(

@@ -2968,6 +2968,14 @@ impl RecordStore {
                 actions.generation = actions.generation.and_then(|value| value.checked_add(1));
             }
             // Keep valid changes with dependencies still in flight, too.
+            let waiting = candidate.get_missing_deps(&[]);
+            if !waiting.is_empty() {
+                tracing::debug!(
+                    record = %checkout.id,
+                    waiting_on = ?waiting,
+                    "a remote change waits for changes this copy lacks"
+                );
+            }
             *doc = candidate;
             Ok((changed, observed))
         })

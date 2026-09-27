@@ -1435,7 +1435,7 @@ impl AppHandler {
         if app.needs_sync {
             floating_content_changed = true;
             full_redraw_required = true;
-            app.root_widget.sync(&mut app.state.doc, &app.state.root);
+            app.sync_root();
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
@@ -3395,7 +3395,7 @@ impl App {
             self.needs_sync = true;
         }
         if self.needs_sync {
-            self.root_widget.sync(&mut self.state.doc, &self.state.root);
+            self.sync_root();
             self.invalidate_widget_resource_cache();
             self.needs_sync = false;
         }

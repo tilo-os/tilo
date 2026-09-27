@@ -921,10 +921,14 @@ impl CollaborationManager {
     }
 
     /// Move this connection's primary route to `record` in the same app and
-    /// room, keeping the route it leaves joined — one process, one
-    /// transport, its routes multiplexed. Returns the route left behind (the
-    /// room's unqualified route, which carries the room's record index), or
-    /// `None` when there is no connection or no primary route to move.
+    /// room, keeping the room's unqualified route joined — one process, one
+    /// transport, its routes multiplexed. Returns that route (it carries the
+    /// room's record index), or `None` when there is no connection or no
+    /// primary route to move.
+    ///
+    /// The route left may itself name a record — a launched window starts
+    /// on its continuation instance's — so the room's route is its
+    /// unqualified sibling, never simply the route left.
     pub fn move_primary_to_record(
         &mut self,
         record: &crate::record::RecordId,
@@ -932,10 +936,13 @@ impl CollaborationManager {
         if matches!(self.backend, Backend::Disabled(_)) {
             return None;
         }
-        let previous = self.primary_route.requested.clone()?;
+        let room = RouteSpec {
+            record: None,
+            ..self.primary_route.requested.clone()?
+        };
         let hello = CollabRequest::Hello {
-            app_id: previous.app_id.clone(),
-            cluster_id: previous.cluster_id,
+            app_id: room.app_id.clone(),
+            cluster_id: room.cluster_id,
             record: Some(record.as_str().to_string()),
             handle: self.hello_handle.clone(),
         };
@@ -945,8 +952,8 @@ impl CollaborationManager {
         if !self.awaiting_primary {
             self.confirm_primary_route_in_background();
         }
-        self.join_route(previous.clone());
-        Some(previous)
+        self.join_route(room.clone());
+        Some(room)
     }
 
     /// Explicitly disconnected construction: no identity, service or worker discovery.

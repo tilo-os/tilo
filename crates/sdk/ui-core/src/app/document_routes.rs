@@ -236,11 +236,17 @@ impl App {
                             store.schedule_committed_history(&checkout.id);
                         }
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        tracing::debug!(
+                            "collab: a remote change waits for this record's own edits to settle"
+                        );
+                        break;
+                    }
                     Err(error) => {
                         let reason = format!(
                             "Remote document could not be applied: {error}. Synchronization needs recovery."
                         );
+                        tracing::warn!(%reason, "collab: a remote change was not applied");
                         if error.is_invalid_mutation() {
                             entry.pending.quarantine_invalid_front(reason);
                             continue;
@@ -257,11 +263,18 @@ impl App {
                     self.document_routes.primary.pop_applied();
                     changed |= applied;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    tracing::debug!(
+                        pending_ops = self.state.doc.pending_ops(),
+                        "collab: a remote change waits for this copy's own edits to settle"
+                    );
+                    break;
+                }
                 Err(error) => {
                     let reason = format!(
                         "Remote document could not be applied: {error}. Synchronization needs recovery."
                     );
+                    tracing::warn!(%reason, "collab: a remote change was not applied");
                     if error.is_invalid_mutation() {
                         self.document_routes
                             .primary
@@ -372,6 +385,10 @@ impl App {
         }
         self.refresh_document_routes();
         let Some(witness) = self.document_routes.witness.as_ref() else {
+            tracing::debug!(
+                seq = envelope.seq,
+                "collab: a document change arrived before this app chose its document"
+            );
             return;
         };
         // Signature/role/replay verification remains the SDK's responsibility.
@@ -398,6 +415,10 @@ impl App {
                     .is_none_or(|set| set.active().is_none()),
             };
         if owned.is_none() && !primary_matches {
+            tracing::debug!(
+                seq = envelope.seq,
+                "collab: a document change for a route this app does not hold"
+            );
             return;
         }
         // Brokers enforce the class rule; the receiver holds it too, and
