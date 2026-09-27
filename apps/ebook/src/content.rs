@@ -35,6 +35,12 @@ pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 /// The shelf location of a bundled book: inside the app, never shared.
 const BUNDLED_PATH: &str = "sample.epub";
 
+/// The shelf location of a book held in the host's content store: not a
+/// file, and never shared as one.
+pub(crate) fn content_path(hash: &str) -> PathBuf {
+    PathBuf::from("content").join(format!("{hash}.epub"))
+}
+
 /// Environment override (platform-separated absolute paths: `;` on Windows,
 /// `:` on Unix) for extra folders to
 /// watch. Lets the OS point the reader at a synced library (e.g. a
@@ -190,6 +196,64 @@ pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String
     Ok((book, destination))
 }
 
+/// A book a host handed over as bytes ([`ui::application::OpenFile`]),
+/// parsed and kept where the library finds it again.
+pub struct HandedBook {
+    pub book: Book,
+    /// The bytes' full content hash when a content store now holds them.
+    pub content: Option<String>,
+}
+
+/// Parse a handed-over EPUB under the usual byte and archive bounds, then
+/// keep its bytes in `store` so every mount of the library (and a reload in
+/// the same session) can read the book by the hash its library row names.
+///
+/// # Errors
+/// A reader-safe reason when the bytes are not a readable EPUB or the store
+/// refuses them.
+pub fn open_handed_book(
+    bytes: &[u8],
+    store: Option<&tilo_content::ContentStore>,
+) -> Result<HandedBook, String> {
+    let mut book = parse_epub(bytes, 0, "").map_err(|error| error.to_string())?;
+    book.cover_tint = tint_for(&book.id);
+    let content = store
+        .map(|store| store.put(bytes))
+        .transpose()
+        .map_err(|error| format!("the book could not be kept: {error}"))?;
+    Ok(HandedBook { book, content })
+}
+
+/// The library row for a handed-over book.
+pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
+    LibraryEntry {
+        id: handed.book.id.clone(),
+        shared: false,
+        title: handed.book.title.clone(),
+        author: handed.book.author.clone(),
+        subject: handed.book.subject.clone(),
+        added: unix_now_ms(),
+        content: handed.content.clone(),
+    }
+}
+
+/// A recorded book whose bytes a content store holds, verified against both
+/// the hash the row names and the row's content id.
+fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Option<LoadedBook> {
+    let hash = entry.content.as_deref()?;
+    let bytes = store.read(hash)?;
+    let mut book = parse_epub(&bytes, 0, "EPUB").ok()?;
+    if book.id != entry.id {
+        tracing::warn!(expected = %entry.id, actual = %book.id, "ebook: refused content whose id does not match its library row");
+        return None;
+    }
+    book.cover_tint = tint_for(&book.id);
+    Some(LoadedBook {
+        book,
+        path: content_path(hash),
+    })
+}
+
 /// Commit a previously parsed book to the library CRDT. Call this only on the
 /// UI/document owner after [`parse_path_detailed`] has completed.
 pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, book: Book) -> Book {
@@ -211,6 +275,7 @@ pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry
         author: book.author.clone(),
         subject: book.subject.clone(),
         added: unix_now_ms(),
+        content: None,
     };
     (book, entry)
 }
@@ -303,6 +368,16 @@ pub fn load_library<S: BuildHasher>(
     watched_folders: &[PathBuf],
     local_books: &HashMap<String, PathBuf, S>,
 ) -> Vec<LoadedBook> {
+    load_library_with_content(doc, watched_folders, local_books, None)
+}
+
+/// [`load_library`], also reading books whose rows name bytes in `content`.
+pub fn load_library_with_content<S: BuildHasher>(
+    doc: &mut AutoCommit,
+    watched_folders: &[PathBuf],
+    local_books: &HashMap<String, PathBuf, S>,
+    content: Option<&tilo_content::ContentStore>,
+) -> Vec<LoadedBook> {
     // A path used to be replicated alongside this metadata. Remove it before
     // doing any local discovery: source locations are capabilities, not
     // collaborative data.
@@ -339,6 +414,13 @@ pub fn load_library<S: BuildHasher>(
             None
         };
         let Some(path) = path else {
+            if let Some(loaded) = content.and_then(|store| content_book(&entry, store)) {
+                out.push(loaded);
+                if out.len() >= MAX_LIBRARY {
+                    break;
+                }
+                continue;
+            }
             // A row naming a book compiled into the app stays readable on a
             // device that holds no copy, such as the browser.
             if let Some(mut book) = bundled_book(&entry.id) {
@@ -950,5 +1032,56 @@ mod tests {
         assert_eq!(library[0].book.id, id);
         assert_eq!(library[0].book.title, "The Lantern-Keeper's Almanac");
         assert!(bundled_book("book:0000").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn a_handed_book_is_read_back_from_the_content_store_its_row_names() {
+        let workspace = tempfile::NamedTempFile::new().unwrap();
+        let _workspace = workspace_env(workspace.path());
+        let bytes = crate::test_epub::long_classic(3, 2);
+        let store = tilo_content::ContentStore::memory();
+        let handed = open_handed_book(&bytes, Some(&store)).unwrap();
+        let hash = tilo_content::hash_bytes(&bytes);
+        assert_eq!(handed.content.as_deref(), Some(hash.as_str()));
+        assert_eq!(store.read(&hash).as_deref(), Some(bytes.as_slice()));
+
+        let mut doc = AutoCommit::new();
+        crate::actions::restore_library_book_action(&handed_book_entry(&handed))
+            .apply(&mut doc)
+            .unwrap();
+        let entries = BooksDoc::read_library_entries(&doc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content.as_deref(), Some(hash.as_str()));
+        assert!(!entries[0].shared, "a handed book is nobody's shared file");
+
+        let library = load_library_with_content(&mut doc, &[], &HashMap::new(), Some(&store));
+        assert_eq!(library.len(), 1);
+        assert_eq!(library[0].book.id, handed.book.id);
+        assert_eq!(library[0].book.chapters.len(), 3);
+        // A device without the bytes keeps the row but has nothing to show.
+        let elsewhere = tilo_content::ContentStore::memory();
+        assert!(
+            load_library_with_content(&mut doc, &[], &HashMap::new(), Some(&elsewhere)).is_empty()
+        );
+        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
+
+        // Content that is not the row's book is never shown as it.
+        let other = crate::test_epub::long_classic(2, 1);
+        let other_hash = store.put(&other).unwrap();
+        let mut forged = AutoCommit::new();
+        let mut entry = handed_book_entry(&handed);
+        entry.content = Some(other_hash);
+        BooksDoc::upsert_library_entry(&mut forged, &entry);
+        assert!(
+            load_library_with_content(&mut forged, &[], &HashMap::new(), Some(&store)).is_empty()
+        );
+        assert!(
+            crate::actions::restore_library_book_action(&entry)
+                .apply(&mut AutoCommit::new())
+                .is_err(),
+            "the action refuses a hash that does not name its book"
+        );
+        assert!(open_handed_book(b"not a zip", Some(&store)).is_err());
     }
 }

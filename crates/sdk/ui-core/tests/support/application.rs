@@ -237,6 +237,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         record_kind: RecordKind::new("probe"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create,
     }
 }

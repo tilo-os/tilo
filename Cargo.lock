@@ -3456,6 +3456,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-content",
  "tilo-rich-text",
  "tilo-test-env",
  "tracing",

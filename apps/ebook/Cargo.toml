@@ -25,6 +25,9 @@ tilo-automerge.workspace = true
 # so annotations + reading progress follow the file across paths, devices and
 # peers. Same hash family the Tilo filesystem uses.
 blake3.workspace = true
+# Where a host that has no files for it (the browser) keeps an opened book's
+# bytes, by content hash; the library row names the hash.
+tilo-content = { path = "../../crates/system/content", default-features = false }
 # The Tilo ACTION model: Books' `actions` module exports its annotation-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
