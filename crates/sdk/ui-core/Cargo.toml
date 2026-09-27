@@ -22,7 +22,7 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content", "syntax-definitions"]
+native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -324,6 +324,10 @@ workspace = true
 winit = { workspace = true, features = ["android-native-activity"] }
 # The APK's asset manager, which holds the font catalog (`font_catalog::android`).
 ndk = { version = "0.9.0", default-features = false }
+# Soft-keyboard input reaches the runner through the activity's
+# `TiloTextInput` view (`app/android_text_input`).
+jni = { version = "0.21.1", optional = true }
+ndk-context = { version = "0.1.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
