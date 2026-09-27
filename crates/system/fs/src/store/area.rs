@@ -220,11 +220,7 @@ pub struct FileArea {
 }
 
 fn hex(key: &AreaKey) -> String {
-    use std::fmt::Write as _;
-    key.iter().fold(String::with_capacity(64), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
+    hex::encode(key)
 }
 
 fn db_error(error: impl std::fmt::Display) -> io::Error {
@@ -1233,13 +1229,7 @@ impl Drop for FileArea {
 
 fn parse_hex(name: &str) -> Option<AreaKey> {
     let mut key = [0_u8; 32];
-    if name.len() != 64 {
-        return None;
-    }
-    for (i, b) in key.iter_mut().enumerate() {
-        let at = i.checked_mul(2)?;
-        *b = u8::from_str_radix(name.get(at..at.checked_add(2)?)?, 16).ok()?;
-    }
+    hex::decode_to_slice(name, &mut key).ok()?;
     Some(key)
 }
 

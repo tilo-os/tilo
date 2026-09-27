@@ -23,6 +23,7 @@ cloud = ["dep:iroh", "dep:iroh-base"]
 dylink = []
 
 [dependencies]
+hex.workspace = true
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

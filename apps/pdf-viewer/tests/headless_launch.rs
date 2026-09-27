@@ -143,6 +143,30 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     )
 }
 
+/// A dumped comment's text: the paragraphs of its rich text, a line each.
+fn comment_text(comment: &Value) -> String {
+    let mut blocks: Vec<(String, String)> = comment["text"]["blocks"]
+        .as_object()
+        .map(|blocks| {
+            blocks
+                .values()
+                .map(|block| {
+                    (
+                        block["order"].to_string(),
+                        block["text"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    blocks.sort();
+    blocks
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn find_canvas<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
     if node["name"] == "Page 1 of 3" {
         found.push(node);
@@ -197,7 +221,7 @@ fn cli_note_survives_other_document_and_restart() {
     assert_eq!(edited["annotations"].as_array().unwrap().len(), 1);
     assert_eq!(edited["comments"].as_array().unwrap().len(), 1);
     assert_eq!(edited["annotations"][0]["kind"], "note");
-    assert_eq!(edited["comments"][0]["body"], marker);
+    assert_eq!(comment_text(&edited["comments"][0]), marker);
     assert_eq!(edited["tilo:record"]["id"], record);
     let (other, _) = run(&root, "b-open", &b, vec![]);
     assert_ne!(other["tilo:record"]["id"], record);

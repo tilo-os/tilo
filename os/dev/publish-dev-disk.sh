@@ -189,7 +189,14 @@ for format in $DISK_FORMATS; do
   case "$format" in
     # Compressed clusters are read transparently by QEMU (UTM, libvirt), so
     # the download is small and needs no unpacking.
-    qcow2) qemu-img convert -p -f qcow2 -O qcow2 -c -o compression_type=zstd "$SOURCE_DISK" "$out/$file" ;;
+    qcow2)
+      if qemu-img info --output=json "$SOURCE_DISK" | jq -e '."format-specific".data."compression-type" == "zstd"' >/dev/null; then
+        # The CI dev-disk lane already wrote zstd qcow2 clusters. A hard link
+        # gives the package its versioned name without allocating another disk.
+        ln -- "$SOURCE_DISK" "$out/$file"
+      else
+        qemu-img convert -p -f qcow2 -O qcow2 -c -o compression_type=zstd "$SOURCE_DISK" "$out/$file"
+      fi ;;
     vhdx) qemu-img convert -p -f qcow2 -O vhdx -o subformat=dynamic "$SOURCE_DISK" "$out/$file" ;;
     *) die "unsupported disk format: $format" ;;
   esac

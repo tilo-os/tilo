@@ -46,7 +46,24 @@ pub enum Mark {
     Transclusion(PageId),
     /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
+    /// `@Ada` — a reference to a participant, by the owning model's id; the
+    /// marked text is the label shown. Renders bold in the participant's
+    /// colours ([`MentionPaint`]), accent-coloured by default.
+    Mention(String),
 }
+
+/// How a mention of one participant is painted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MentionColors {
+    /// The label's text colour.
+    pub ink: vello::peniko::Color,
+    /// A band drawn behind the label, if any (a mention of the viewer).
+    pub band: Option<vello::peniko::Color>,
+}
+
+/// The colours a mention of the participant with this id is painted in,
+/// supplied by the owning model (it knows who the participant is).
+pub type MentionPaint = std::rc::Rc<dyn Fn(&str) -> MentionColors>;
 
 impl Mark {
     /// True iff `other` is the same *kind* of mark, regardless of payload
@@ -62,6 +79,7 @@ impl Mark {
                 | (Mark::Link(_), Mark::Link(_))
                 | (Mark::Transclusion(_), Mark::Transclusion(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
+                | (Mark::Mention(_), Mark::Mention(_))
         )
     }
 }
@@ -297,6 +315,8 @@ pub struct MarkSegment {
     pub strikethrough: bool,
     pub link: Option<PageId>,
     pub external_link: bool,
+    /// The participant a mention covering this segment refers to.
+    pub mention: Option<String>,
 }
 
 impl MarkSegment {
@@ -310,6 +330,7 @@ impl MarkSegment {
             strikethrough: false,
             link: None,
             external_link: false,
+            mention: None,
         }
     }
 }
@@ -358,6 +379,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
                     Mark::ExternalLink(_) => seg.external_link = true,
+                    Mark::Mention(id) => seg.mention = Some(id.clone()),
                 }
             }
         }

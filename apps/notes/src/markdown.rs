@@ -590,6 +590,8 @@ fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
         Mark::Link(_) => ("[[", Some("]]"), 5),
         Mark::Transclusion(_) => ("![[", Some("]]"), 6),
         Mark::ExternalLink(_) => ("[", None, 7),
+        // Markdown has no mention syntax: the label is the text.
+        Mark::Mention(_) => ("", Some(""), 8),
     }
 }
 

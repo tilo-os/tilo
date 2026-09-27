@@ -168,14 +168,7 @@ impl Caller {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(
-        String::with_capacity(bytes.len().saturating_mul(2)),
-        |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        },
-    )
+    hex::encode(bytes)
 }
 
 /// Which published action an invocation names on the host.

@@ -400,14 +400,9 @@ fn control_socket_drags_types_snapshots_and_dumps_state() {
             "snapshot should respond with `ok`; got {response:?}"
         );
 
-        // The file write happens in the same calloop tick as the response, so a
-        // small sleep only covers a write deferred behind a relayout.
-        std::thread::sleep(Duration::from_millis(200));
-
-        assert!(
-            png_path.exists(),
-            "snapshot command should have written a PNG at {png_path:?}"
-        );
+        // The file write happens in the same calloop tick as the response; wait
+        // for the path rather than sleeping in case a relayout deferred it.
+        tilo_test_env::wait_until("snapshot command wrote the PNG", || png_path.exists());
         let bytes = std::fs::read(&png_path).expect("read snapshot PNG");
         assert_eq!(
             &bytes[..8],
