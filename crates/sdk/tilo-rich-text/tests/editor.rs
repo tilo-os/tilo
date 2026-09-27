@@ -191,6 +191,22 @@ fn text_nobody_is_named_for_stays_unattributed() {
 }
 
 #[test]
+fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
+    let mut app = open();
+    app.harness().type_text("first");
+    app.harness().key("Enter");
+    app.harness().type_text("second");
+    app.harness().set_modifiers(&["alt".into()]);
+    app.harness().key("ArrowUp");
+    app.harness().set_modifiers(&[]);
+    assert_eq!(paragraphs(&app), ["second", "first"]);
+    let last = app.versions().pop().unwrap();
+    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["first", "second"]);
+}
+
+#[test]
 fn shift_enter_is_a_line_break_inside_the_paragraph() {
     let mut app = open();
     app.harness().type_text("Alpha");
