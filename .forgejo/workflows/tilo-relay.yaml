@@ -352,6 +352,8 @@ jobs:
         true
       }}
     uses: ./.forgejo/workflows/snapshot-rpms.yml
+    # Forgejo requires OIDC opt-in on the caller as well as the nested signing jobs.
+    enable-openid-connect: true
     secrets: inherit
 
   build-and-push:
