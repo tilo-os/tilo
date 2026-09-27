@@ -3132,7 +3132,17 @@ mod tests {
                 ready: Some(&ready_tx),
             })
         });
-        tilo_test_env::recv("the approval listener to become ready", &ready_rx);
+        match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
+            Ok(()) => {}
+            // An approver that ended before listening dropped the sender; its
+            // own error names why, such as the shared pairing port.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the approver ended before listening: {:?}", approval.join())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("the approval listener did not become ready within the hang bound")
+            }
+        }
         // Other nearby-pairing surfaces on this host (an open discovery
         // view, another approval sheet) share the well-known port. Which of
         // them the kernel hands a unicast datagram must not decide whether
