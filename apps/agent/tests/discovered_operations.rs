@@ -204,6 +204,7 @@ fn run(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 let resources = word_processor_resources(&replica, &content);
                 let update = typed_peer::service_document_invocation(
@@ -748,6 +749,7 @@ fn drive_photo_peer(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 let resources = photos_resources(&photo_replica);
                 let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
@@ -892,6 +894,7 @@ fn drive_word_processor_peer(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 let resources = word_processor_resources(&wp_replica, content);
                 let update = typed_peer::service_document_invocation(

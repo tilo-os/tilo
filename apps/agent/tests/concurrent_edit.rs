@@ -192,6 +192,7 @@ fn drive_peer_and_type(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 invocation_actor = Some(actor.clone());
                 let resources = word_processor_resources(replica);

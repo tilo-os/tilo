@@ -308,6 +308,7 @@ fn drive_peer_to_table(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 invocation_actor = Some(actor.clone());
                 service_word_processor_invocation(
@@ -727,6 +728,7 @@ fn drive_word_processor_to_table(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 service_word_processor_invocation(
                     &mut wp_peer,
@@ -914,6 +916,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     argument,
                     actor,
                     context,
+                    ..
                 } => {
                     service_word_processor_invocation(
                         &mut peer,

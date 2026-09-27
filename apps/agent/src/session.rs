@@ -2157,7 +2157,7 @@ impl Session {
                     address: descriptor.address,
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                context: None,
+                context: self.task_context(),
                 confirmation: match confirmation {
                     ConfirmationEvidence::None => None,
                     ConfirmationEvidence::Confirm => {
@@ -2868,7 +2868,8 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
         RichTextAction::EditTable { table, .. } => object_anchor(table),
         RichTextAction::InsertParagraph { after, .. }
-        | RichTextAction::InsertTable { after, .. } => object_anchor(after),
+        | RichTextAction::InsertTable { after, .. }
+        | RichTextAction::InsertFilledTable { after, .. } => object_anchor(after),
         RichTextAction::InsertImage { block, .. }
         | RichTextAction::InsertPageBreak { block, .. }
         | RichTextAction::SetImageCrop { block, .. }
@@ -4234,6 +4235,7 @@ mod tests {
                             action,
                             argument,
                             actor,
+                            context,
                             ..
                         } = event
                         {
@@ -4279,6 +4281,7 @@ mod tests {
                                     action,
                                     argument.as_deref(),
                                     &actor,
+                                    context.as_deref(),
                                 )
                             };
                             client
