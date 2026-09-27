@@ -769,6 +769,10 @@ fn configure_pipewire(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real pipeline on a loaded runner can take seconds to start;
+    /// the waits below exit as soon as audio flows and only bound a hang.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use crate::voice::RECEIVE_LIFETIME;
     use std::sync::atomic::{AtomicBool, Ordering};
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -780,7 +784,7 @@ mod tests {
         guard
     }
     fn wait_for_null(element: &impl IsA<gst::Element>) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while element.current_state() != gst::State::Null {
             assert!(
                 Instant::now() < deadline,
@@ -881,7 +885,7 @@ mod tests {
     }
 
     fn wait_for_worker_exit(stop: &CaptureStop) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while !stop.finished() {
             assert!(
                 Instant::now() < deadline,
@@ -891,7 +895,7 @@ mod tests {
         }
     }
     fn wait_for_device_workers() {
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while device::outstanding_workers() != 0 {
             assert!(
                 Instant::now() < deadline,
@@ -901,7 +905,7 @@ mod tests {
         }
     }
     fn wait_for_gate(gate: &delayed::Gate) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while !gate.entered.load(Ordering::Acquire) {
             assert!(
                 Instant::now() < deadline,
@@ -993,7 +997,7 @@ mod tests {
         pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
         source.link(&sink).unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while audio.output.pipeline.current_state() == gst::State::Null {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -1011,7 +1015,7 @@ mod tests {
         let mut frame = gst::Buffer::from_slice(vec![0u8; 1920]);
         frame.get_mut().unwrap().set_pts(gst::ClockTime::ZERO);
         audio.output_source.push_buffer(frame).unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while !audio.output_ready() {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -1128,7 +1132,7 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while !audio.output_ready() {
             assert!(Instant::now() < deadline, "software output did not start");
             std::thread::sleep(Duration::from_millis(1));
@@ -1137,7 +1141,7 @@ mod tests {
     }
 
     fn wait_for_capture(audio: &mut VoiceAudio) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while audio.poll_capture(Instant::now()).unwrap().is_empty() {
             assert!(
                 Instant::now() < deadline,
@@ -1230,7 +1234,7 @@ mod tests {
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
         assert!(!audio.capture_active());
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         loop {
             if !audio.poll_capture(Instant::now()).unwrap().is_empty() {
                 break;
@@ -1320,7 +1324,7 @@ mod tests {
             audio
                 .start_capture_element(&source, Arc::new(|| true))
                 .unwrap();
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = Instant::now() + HANG_BOUND;
             let frames = loop {
                 let frames = audio.poll_capture(Instant::now()).unwrap();
                 if !frames.is_empty() {
