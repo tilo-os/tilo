@@ -12,6 +12,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::shell::i18n::{t, t_args};
+
 /// Offscreen wgpu + vello PNG writer shared by the system-surface review
 /// fixtures (OSD, power menu, lock screen, notifications) — surfaces the
 /// ux-bench cannot open on macOS, photographed straight from their paint
@@ -124,13 +126,13 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn caption(self) -> &'static str {
+    pub fn caption(self) -> String {
         match self {
-            Transport::Play => "Play",
-            Transport::Pause => "Pause",
-            Transport::Next => "Next track",
-            Transport::Previous => "Previous track",
-            Transport::Stop => "Stop",
+            Transport::Play => t("osd-play"),
+            Transport::Pause => t("osd-pause"),
+            Transport::Next => t("osd-next-track"),
+            Transport::Previous => t("osd-previous-track"),
+            Transport::Stop => t("osd-stop"),
         }
     }
 }
@@ -281,36 +283,45 @@ impl Osd {
     /// The one-line caption under the bar.
     pub fn caption(&self) -> String {
         match self.kind {
-            OsdKind::Volume { muted: true } => "Muted".to_string(),
-            OsdKind::Volume { muted: false } => {
-                format!("Volume {}%", level_to_percent(self.level))
-            }
-            OsdKind::Brightness => format!("Brightness {}%", level_to_percent(self.level)),
-            OsdKind::MicMute { muted: true } => "Microphone muted".to_string(),
-            OsdKind::MicMute { muted: false } => "Microphone on".to_string(),
-            OsdKind::Transport(t) => t.caption().to_string(),
-            OsdKind::KeyboardBacklight if self.level <= 0.0 => "Keyboard backlight off".to_string(),
-            OsdKind::KeyboardBacklight => {
-                format!("Keyboard backlight {}%", level_to_percent(self.level))
-            }
-            OsdKind::NoBacklight => "No adjustable display".to_string(),
-            OsdKind::AirplaneMode { on: true } => "Airplane mode on".to_string(),
-            OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
-            OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
-            OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => {
-                "Magnifier off".to_string()
-            }
-            OsdKind::Magnifier { zoom } => {
-                format!("Magnifier {}", settings_store::magnifier::zoom_label(zoom))
-            }
-            OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
-            OsdKind::PointerHeld { held: true } => format!(
-                "Pointer held by app · {} releases",
-                crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
+            OsdKind::Volume { muted: true } => t("osd-muted"),
+            OsdKind::Volume { muted: false } => t_args(
+                "osd-volume",
+                &[("percent", level_to_percent(self.level).into())],
             ),
-            OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
-            OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
-            OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
+            OsdKind::Brightness => t_args(
+                "osd-brightness",
+                &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::MicMute { muted: true } => t("osd-microphone-muted"),
+            OsdKind::MicMute { muted: false } => t("osd-microphone-on"),
+            OsdKind::Transport(transport) => transport.caption(),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-keyboard-backlight-off"),
+            OsdKind::KeyboardBacklight => t_args(
+                "osd-keyboard-backlight",
+                &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::NoBacklight => t("osd-no-backlight"),
+            OsdKind::AirplaneMode { on: true } => t("osd-airplane-mode-on"),
+            OsdKind::AirplaneMode { on: false } => t("osd-airplane-mode-off"),
+            OsdKind::Touchpad { enabled: true } => t("osd-touchpad-on"),
+            OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => {
+                t("osd-magnifier-off")
+            }
+            OsdKind::Magnifier { zoom } => t_args(
+                "osd-magnifier",
+                &[("zoom", settings_store::magnifier::zoom_label(zoom).into())],
+            ),
+            OsdKind::Touchpad { enabled: false } => t("osd-touchpad-off"),
+            OsdKind::PointerHeld { held: true } => t_args(
+                "osd-pointer-held",
+                &[(
+                    "chord",
+                    crate::compositor::pointer_lock::RELEASE_CHORD_LABEL.into(),
+                )],
+            ),
+            OsdKind::PointerHeld { held: false } => t("osd-pointer-released"),
+            OsdKind::MouseKeys { enabled: true } => t("osd-mouse-keys-on"),
+            OsdKind::MouseKeys { enabled: false } => t("osd-mouse-keys-off"),
             OsdKind::InputSource(name) => name.as_str().to_string(),
             OsdKind::KeysCaptured { captured: true } => format!(
                 "App receives all keys · {} restores shortcuts",

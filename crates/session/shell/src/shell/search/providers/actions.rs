@@ -1413,7 +1413,7 @@ impl Action {
             |st, _| {
                 crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
                     |err| {
-                        let message = err.user_message().to_string();
+                        let message = err.user_message();
                         st.push_warning_notification("Can't duplicate this tab", &message);
                         Err(ActionError::Refused(message))
                     },
@@ -1430,7 +1430,7 @@ impl Action {
             "Close the focused tab; its window closes with it if it was the last",
             |st, _| {
                 crate::shell::window_actions::close_active_tab(st).map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't close this tab", &message);
                     ActionError::Refused(message)
                 })
@@ -1457,7 +1457,7 @@ impl Action {
                 )
                 .map(|_| ())
                 .map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't split this tab", &message);
                     ActionError::Refused(message)
                 })
@@ -1474,7 +1474,7 @@ impl Action {
                 )
                 .map(|_| ())
                 .map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't move this tab", &message);
                     ActionError::Refused(message)
                 })

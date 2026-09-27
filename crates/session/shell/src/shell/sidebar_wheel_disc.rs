@@ -1244,7 +1244,10 @@ impl Widget for SidebarWheelDisc {
                 let key = Self::spoke_action_target(idx);
                 let placed = self.spoke_hit_rects.get(idx).copied().unwrap_or(Rect::ZERO);
                 let mut node = AccessNode::new(Role::Button)
-                    .with_name(format!("Switch to {}", spoke.text))
+                    .with_name(crate::shell::i18n::t_args(
+                        "a11y-shell-wheel-switch",
+                        &[("workspace", (&spoke.text).into())],
+                    ))
                     .with_semantic_key(key.clone())
                     .with_action_target(key)
                     .with_key(u64::try_from(idx).unwrap_or(u64::MAX))
@@ -1260,7 +1263,7 @@ impl Widget for SidebarWheelDisc {
             })
             .collect();
         let mut add = AccessNode::new(Role::Button)
-            .with_name("Add a workspace")
+            .with_name(crate::shell::i18n::t("a11y-shell-wheel-add"))
             .with_semantic_key(Self::ADD_ACTION_TARGET)
             .with_action_target(Self::ADD_ACTION_TARGET)
             .with_key(u64::try_from(self.spokes.len()).unwrap_or(u64::MAX))
@@ -1274,7 +1277,7 @@ impl Widget for SidebarWheelDisc {
         children.push(add);
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Workspace wheel")
+                .with_name(crate::shell::i18n::t("a11y-shell-wheel"))
                 .with_semantic_key("wheel")
                 .with_children(children),
         )

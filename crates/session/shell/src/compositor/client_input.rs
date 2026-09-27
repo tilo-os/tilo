@@ -1151,13 +1151,13 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
     fb.with_chrome(|chrome| {
         chrome.push_notification_full(
             Notification::new(
-                "Remote input stopped",
+                crate::shell::i18n::t("notification-remote-input-stopped"),
                 match revoked {
-                    0 => "Remote control and sharing sessions were stopped.".to_string(),
-                    1 => "Remote control was removed and sharing was stopped.".to_string(),
-                    n => {
-                        format!("Remote control was removed from {n} shares; sharing was stopped.")
-                    }
+                    0 => crate::shell::i18n::t("notification-remote-input-stopped-sessions"),
+                    n => crate::shell::i18n::t_args(
+                        "notification-remote-input-stopped-shares",
+                        &[("count", n.into())],
+                    ),
                 },
             )
             .with_severity(NotificationSeverity::Warning)
