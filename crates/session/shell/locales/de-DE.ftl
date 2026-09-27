@@ -79,6 +79,11 @@ window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, z
 window-switcher-untitled = Unbenanntes Fenster
 window-switcher-caption-paged = { $title } ({ $position } von { $count })
 
+# Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
+overview-windows-title = Fenster in diesem Arbeitsbereich
+overview-windows-description = Zuletzt verwendete zuerst. Links und Rechts wechseln zwischen ihnen, Enter öffnet eines. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke mit der mittleren Taste, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
+overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
+
 # Feste Tastenkombinationen der Shell, wie Tastaturhilfe und Tastaturübersicht sie nennen
 shortcut-screenshot = Bildschirmfoto
 shortcut-switch-windows = Fenster wechseln
