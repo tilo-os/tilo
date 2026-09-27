@@ -8,6 +8,9 @@
 //! ([`crate::apps`]) and records the grants people give apps for other
 //! apps' actions in its own workspace; every other host service is absent,
 //! and the broker answers as it does for any host that does not provide one.
+//! What this host keeps durably is in the profile: grants, effect and task
+//! records in its own workspace file, the invocation journal and
+//! collaboration history.
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
 use std::{
@@ -19,14 +22,20 @@ use std::{
 use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::BrokerChannels,
+    collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{AppActionGrants, HostServices, LauncherServices, WorkspaceAuthority},
+    services::{
+        AppActionGrants, HostServices, LauncherServices, LegacyWorkspaceProjection,
+        WorkspaceAuthority,
+    },
 };
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::{
+    DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTaskStatus,
+};
 use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
@@ -37,6 +46,12 @@ use tilo_identity_host::{
 const DESKTOP_WORKSPACE: &str = "workspace.json";
 /// This host's own workspace file, for a profile the desktop never served.
 const STANDALONE_WORKSPACE: &str = "desktop.json";
+/// The broker's durable invocation journal: a retried invocation id never
+/// starts twice, across restarts too.
+const INVOCATION_JOURNAL: &str = "invocations";
+/// Durable collaboration history, where the desktop session keeps it under
+/// the profile's `XDG_STATE_HOME`.
+const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -109,9 +124,10 @@ impl RuntimeServices for Standalone {
                     workspace: Arc::clone(&workspace),
                     apps,
                 })),
+                legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 ..HostServices::default()
             },
-            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(Mutex::new(channels(root))),
             Arc::new(FanoutState::new()),
         )?;
         let blob_socket = root.join(BLOB_SOCKET);
@@ -213,8 +229,24 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     }
 }
 
+/// The broker's channel state, with the profile's durable collaboration
+/// history. Without it scrollback is limited to memory, as in the desktop
+/// session, and the host still serves.
+fn channels(root: &Path) -> BrokerChannels {
+    let mut channels = BrokerChannels::default();
+    match CollabHistoryStore::open(root.join(COLLABORATION_HISTORY)) {
+        Ok(history) => channels.history = Some(history),
+        Err(error) => tracing::warn!(
+            %error,
+            "durable collaboration history unavailable; scrollback is limited to memory"
+        ),
+    }
+    channels
+}
+
 /// The profile's committed workspace tree.
 struct ProfileWorkspace {
+    root: PathBuf,
     tree: RwLock<DesktopTree>,
     /// Where this host keeps the tree; `None` when the desktop session's
     /// file is authoritative and read only.
@@ -230,6 +262,7 @@ impl ProfileWorkspace {
             // The desktop session versions this file by its native layout,
             // which only adds fields this host ignores; it is read only here.
             return Ok(Self {
+                root: root.to_path_buf(),
                 tree: RwLock::new(parse_tree(&std::fs::read(&desktop)?)?),
                 path: None,
             });
@@ -244,6 +277,7 @@ impl ProfileWorkspace {
             return Err(io::Error::other("runtime profile has no workspace"));
         }
         Ok(Self {
+            root: root.to_path_buf(),
             tree: RwLock::new(tree),
             path: Some(path),
         })
@@ -313,6 +347,27 @@ impl ProfileWorkspace {
         }
         drop(tree);
         Some(result)
+    }
+
+    /// Apply `change` to the workspace of `room` and persist it, refused
+    /// when this host does not govern the tree.
+    fn record(
+        &self,
+        room: &str,
+        change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
+    ) -> Result<(), String> {
+        if !self.governs() {
+            return Err("the desktop session's workspace is read only in the runtime".into());
+        }
+        self.update(|tree| {
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == room)?
+                .id;
+            change(tree, workspace)
+        })
+        .ok_or_else(|| format!("room {room} has no such record target, or it was not saved"))
     }
 }
 
@@ -391,12 +446,68 @@ fn unix_now() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// Effect and task records the broker keeps in this host's own workspace.
+/// A profile adopted from the desktop session refuses them: its file is
+/// that host's to write.
+impl LegacyWorkspaceProjection for ProfileWorkspace {
+    fn record_effect(
+        &self,
+        room: &str,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+    ) -> Result<(), String> {
+        let completed_at = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        self.record(room, |tree, workspace| {
+            // A retried invocation keeps its first receipt.
+            tree.append_workspace_effect_receipt_at(
+                workspace,
+                invocation,
+                actor,
+                context,
+                status,
+                completed_at,
+            );
+            Some(())
+        })
+    }
+
+    fn record_task_update(
+        &self,
+        room: &str,
+        task: &str,
+        actor: &str,
+        status: Option<WorkspaceTaskStatus>,
+        summary: String,
+    ) -> Result<(), String> {
+        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        self.record(room, |tree, workspace| {
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.id == workspace)?;
+            if let Some(status) = status {
+                workspace.set_task_status_at(task, status, actor, now);
+            }
+            workspace.append_task_audit_at(task, actor, summary, now)?;
+            Some(())
+        })
+    }
+}
+
 impl WorkspaceAuthority for ProfileWorkspace {
     fn snapshot(&self) -> Result<DesktopTree, String> {
         self.tree
             .read()
             .map(|tree| tree.clone())
             .map_err(|_| "runtime workspace lock poisoned".to_owned())
+    }
+
+    /// This host's own journal, also for an adopted profile: the desktop
+    /// session's files stay untouched.
+    fn legacy_journal_root(&self) -> Option<PathBuf> {
+        Some(self.root.join(INVOCATION_JOURNAL))
     }
 }
 

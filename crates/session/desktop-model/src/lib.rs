@@ -32,6 +32,7 @@ pub mod ids;
 pub mod layout;
 pub mod partition;
 pub mod projection;
+pub mod records;
 pub mod serde_ids;
 pub mod service_member;
 pub mod shared_surfaces;

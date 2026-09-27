@@ -84,6 +84,10 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    // Durable collaboration history and the invocation journal live in the
+    // profile.
+    assert!(root.join(COLLABORATION_HISTORY).is_dir());
+    assert!(root.join(INVOCATION_JOURNAL).exists());
     assert!(
         Standalone::start_reporting(&root, &mut |_| {}).is_err(),
         "a second host must not serve a held profile"
@@ -196,6 +200,131 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     });
     assert_eq!(seen.as_deref(), Some("Home"));
     reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
+}
+
+fn task(id: &str) -> tilo_desktop_model::WorkspaceTask {
+    tilo_desktop_model::WorkspaceTask {
+        id: id.into(),
+        title: "Draft".into(),
+        created_by: "person-1".into(),
+        assigned_agent: None,
+        route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
+        status: WorkspaceTaskStatus::Queued,
+        resource: None,
+        created_at: 1,
+        updated_at: 1,
+        audit: Vec::new(),
+    }
+}
+
+#[test]
+fn effect_and_task_records_persist_in_the_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].tasks.push(task("task-1"));
+    let room = tree.workspaces[0].room.to_string();
+    std::fs::write(
+        temp.path().join(STANDALONE_WORKSPACE),
+        serde_json::to_vec_pretty(&tree).unwrap(),
+    )
+    .unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+    let context = tilo_actions::ActionContext {
+        action_label: "Send".into(),
+        ..tilo_actions::ActionContext::default()
+    };
+    let status = tilo_actions::EffectReceiptStatus::Succeeded;
+    for _ in 0..2 {
+        workspace
+            .record_effect(
+                &room,
+                invocation,
+                "agent-1",
+                context.clone(),
+                status.clone(),
+            )
+            .unwrap();
+    }
+    workspace
+        .record_task_update(
+            &room,
+            "task-1",
+            "agent-1",
+            Some(WorkspaceTaskStatus::Done),
+            "Wrote the outline".into(),
+        )
+        .unwrap();
+    assert!(
+        workspace
+            .record_task_update(&room, "absent", "agent-1", None, "x".into())
+            .is_err()
+    );
+    assert!(
+        workspace
+            .record_effect(&RoomId::new().to_string(), invocation, "a", context, status)
+            .is_err()
+    );
+
+    let reopened = ProfileWorkspace::open(temp.path())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    let workspace = &reopened.workspaces[0];
+    assert_eq!(
+        workspace.effect_receipts.len(),
+        1,
+        "a retry keeps one receipt"
+    );
+    assert_eq!(workspace.effect_receipts[0].invocation, invocation);
+    let task = &workspace.tasks[0];
+    assert_eq!(task.status, WorkspaceTaskStatus::Done);
+    let summaries: Vec<_> = task.audit.iter().map(|event| &*event.summary).collect();
+    assert_eq!(
+        summaries,
+        [
+            format!("Status · {}", WorkspaceTaskStatus::Done.label()).as_str(),
+            "Wrote the outline"
+        ]
+    );
+}
+
+#[test]
+fn the_desktop_sessions_workspace_refuses_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].set_owner("desktop-owner".to_owned());
+    tree.workspaces[0].tasks.push(task("task-1"));
+    let room = tree.workspaces[0].room.to_string();
+    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+    let desktop = temp.path().join(DESKTOP_WORKSPACE);
+    std::fs::write(&desktop, &bytes).unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+    let status = tilo_actions::EffectReceiptStatus::Succeeded;
+    assert!(
+        workspace
+            .record_effect(
+                &room,
+                invocation,
+                "agent-1",
+                tilo_actions::ActionContext::default(),
+                status
+            )
+            .is_err()
+    );
+    assert!(
+        workspace
+            .record_task_update(&room, "task-1", "agent-1", None, "x".into())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+    let tree = workspace.snapshot().unwrap();
+    assert!(tree.workspaces[0].effect_receipts.is_empty());
+    assert!(tree.workspaces[0].tasks[0].audit.is_empty());
+    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
 }
 
 #[test]
