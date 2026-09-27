@@ -14656,6 +14656,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -14679,6 +14680,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-test-env",
  "uuid",
  "web-time",
 ]
@@ -15238,6 +15240,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "tts",
@@ -15643,6 +15646,7 @@ version = "0.1.0"
 dependencies = [
  "rayon",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "workspace-hack",
