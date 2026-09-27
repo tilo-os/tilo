@@ -157,8 +157,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14", features = ["x509-parser"] }
 read-fonts = { version = "0.39" }
-regex = { version = "1" }
-regex-automata = { version = "0.4" }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider", "stream"] }
 resvg = { version = "0.47" }
@@ -193,7 +192,6 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
-tempfile = { version = "3" }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -379,8 +377,7 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14", features = ["x509-parser"] }
 read-fonts = { version = "0.39" }
-regex = { version = "1" }
-regex-automata = { version = "0.4" }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider", "stream"] }
 resvg = { version = "0.47" }
@@ -415,7 +412,6 @@ stable_deref_trait = { version = "1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
-tempfile = { version = "3" }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
@@ -469,6 +465,7 @@ ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
@@ -476,6 +473,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
+regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -507,6 +505,7 @@ ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
@@ -514,6 +513,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
+regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -545,6 +545,7 @@ ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
@@ -552,6 +553,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
+regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -583,6 +585,7 @@ ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
@@ -590,6 +593,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 profiling = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
+regex = { version = "1" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }

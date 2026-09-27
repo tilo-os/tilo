@@ -82,6 +82,8 @@ pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;
 #[cfg(target_os = "linux")]
+pub mod tablet_pad;
+#[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
 pub mod text_commit;

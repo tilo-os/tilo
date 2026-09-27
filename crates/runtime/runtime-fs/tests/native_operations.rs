@@ -14,11 +14,7 @@ use runtime_fs::{
     DirectoryGrant, EntryName, FsError, FsOwner, FsRight, FsSession, GrantedEntry,
     NativeGrantAuthority,
 };
-use std::{
-    fs,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{fs, sync::Arc, time::Instant};
 use tempfile::TempDir;
 
 fn name(value: &str) -> EntryName {
@@ -154,7 +150,7 @@ impl Fixture {
     }
 }
 fn drain(job: &mut FsJob) -> Vec<FsUpdate> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut all = Vec::new();
     loop {
         all.extend(job.poll().unwrap());
@@ -450,7 +446,7 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         let id = job.operation_id();
         f.session.close();
         drop(job);
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while f.store.report(&id).unwrap().state == OperationState::Running {
             assert!(
                 Instant::now() < deadline,
