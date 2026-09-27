@@ -26,9 +26,6 @@ runs:
 
     - name: Select the compiler cache
       shell: bash
-      env:
-        FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-        FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
       run: bash tools/ci/compiler_cache_env.sh
 
     - name: Configure optional compiler cache
