@@ -6590,13 +6590,15 @@ mod tests {
                             order: 0,
                         },
                     );
-                    NotesDoc::fill_page_body(
+                    NotesDoc::apply_block_ops(
                         doc,
                         page,
-                        &[ui::widget::BlockContent::paragraph(
-                            "",
-                            "quasar-notes-body-only",
-                        )],
+                        &[ui::widget::BlockEditOp::Insert {
+                            block_id: uuid::Uuid::new_v4().to_string(),
+                            after: None,
+                            kind: "paragraph".into(),
+                            text: "quasar-notes-body-only".into(),
+                        }],
                     )
                     .unwrap();
                     notes::notebook::validate(doc).unwrap();

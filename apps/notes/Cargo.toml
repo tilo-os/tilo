@@ -26,10 +26,6 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 app-state = { path = "../../crates/system/app-state" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
-# Page bodies are rich text, edited in the SDK rich-text editor.
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
-tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
 # Content addressing everywhere; the on-disk and device stores only natively
 # (the browser build keeps content in memory).

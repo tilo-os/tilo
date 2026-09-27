@@ -115,9 +115,8 @@ fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     }
 }
 
-/// The qdoc mark an editor mark is stored as: its name and value, for an
-/// edit that sets it ([`RichTextAction::SetMark`](qdoc_rich_text::RichTextAction::SetMark)).
-pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
+/// The qdoc mark an editor mark is stored as.
+pub(crate) fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
     match mark {
         Mark::Bold => ("strong", MarkVal::Bool(true)),
         Mark::Italic => ("em", MarkVal::Bool(true)),

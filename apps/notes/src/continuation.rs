@@ -28,7 +28,7 @@ pub(crate) enum BuilderDomain {
     },
     Duplicate {
         source: PageId,
-        pages: Vec<PageId>,
+        pages: Vec<(PageId, Vec<String>)>,
     },
     DailyCreate {
         title: String,
@@ -94,10 +94,12 @@ impl BuilderDomain {
                     source.as_bytes().to_vec(),
                     (pages.len() as u64).to_be_bytes().to_vec(),
                 ];
-                for page in pages {
+                for (page, blocks) in pages {
                     parts.push(page.as_bytes().to_vec());
+                    parts.push((blocks.len() as u64).to_be_bytes().to_vec());
+                    parts.extend(blocks.iter().map(|block| block.as_bytes().to_vec()));
                 }
-                ("duplicate-exact-source-map-fresh-ids/v2", parts)
+                ("duplicate-exact-source-map-fresh-ids/v1", parts)
             }
             Self::DailyCreate { title, order } => (
                 "daily-create-v4-uuid/v1",
@@ -271,11 +273,11 @@ mod tests {
         assert_ne!(
             draft(BuilderDomain::Duplicate {
                 source: page,
-                pages: vec![page]
+                pages: vec![(page, vec!["a".into(), "b".into()])]
             }),
             draft(BuilderDomain::Duplicate {
                 source: page,
-                pages: vec![page, Uuid::from_u128(2)]
+                pages: vec![(page, vec!["b".into(), "a".into()])]
             })
         );
         assert_ne!(
