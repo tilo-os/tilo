@@ -645,6 +645,17 @@ pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
     stages.enter("binding the native endpoint");
     let listener = UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    if let Some(config) = crate::mcp_http::Config::from_env()? {
+        stages.enter("binding the MCP HTTP endpoint");
+        let endpoint = crate::mcp_http::Endpoint::new(
+            host.clone(),
+            session.room().to_owned(),
+            session.actor().to_owned(),
+            config.token.clone(),
+        );
+        let bound = crate::mcp_http::spawn(&config, endpoint)?;
+        tracing::info!(%bound, "MCP HTTP endpoint listening");
+    }
     stages.enter("answering the status probe");
     drop(stages);
     let status = Status {
