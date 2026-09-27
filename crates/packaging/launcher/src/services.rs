@@ -79,6 +79,19 @@ const BLOB_HANDOFF_PROTOCOL: u16 = 1;
 const BLOB_CHILD_FD: i32 = 30;
 /// Slot of the automatic identity service.
 const IDENTITY_CHILD_FD: i32 = 31;
+/// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
+/// They sit above bwrap's own descriptors and outside the numbers declared
+/// services are handed on, so no service can replace a filter.
+pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
+pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
+/// Every fixed child slot; declared services are numbered around them.
+pub(crate) const RESERVED_CHILD_FDS: [i32; 5] = [
+    runtime_identity::broker::BROKER_CHILD_FD,
+    BLOB_CHILD_FD,
+    IDENTITY_CHILD_FD,
+    CLONE3_COMPAT_SECCOMP_CHILD_FD,
+    BASELINE_SECCOMP_CHILD_FD,
+];
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
@@ -622,7 +635,7 @@ fn resolve_service_binds_inner(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
-        while next_child_fd == BLOB_CHILD_FD || next_child_fd == IDENTITY_CHILD_FD {
+        while RESERVED_CHILD_FDS.contains(&next_child_fd) {
             next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;
