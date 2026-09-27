@@ -350,16 +350,14 @@ pub enum MoveTabError {
 }
 
 impl MoveTabError {
-    pub fn user_message(self) -> &'static str {
-        match self {
-            MoveTabError::UnknownTab => "That window is no longer open.",
-            MoveTabError::UnknownWorkspace => "That workspace is gone.",
-            MoveTabError::SameWorkspace => "The window is already in that workspace.",
-            MoveTabError::Pinned => "This window belongs to its workspace and cannot move.",
-            MoveTabError::DocumentRefused => {
-                "The workspace document did not accept the change, so nothing was moved."
-            }
-        }
+    pub fn user_message(self) -> String {
+        crate::shell::i18n::t(match self {
+            MoveTabError::UnknownTab => "window-move-unknown-tab",
+            MoveTabError::UnknownWorkspace => "window-move-unknown-workspace",
+            MoveTabError::SameWorkspace => "window-move-same-workspace",
+            MoveTabError::Pinned => "window-move-pinned",
+            MoveTabError::DocumentRefused => "window-move-document-refused",
+        })
     }
 }
 

@@ -2299,7 +2299,7 @@ impl SearchProvider for ActionsProvider {
                 provider_id: self.id().into(),
                 id: descriptor.id,
                 title: descriptor.label,
-                subtitle: Some("Local workspace view".into()),
+                subtitle: Some(t("search-action-workspace-view-subtitle")),
                 badge: None,
                 score,
                 params: vec![],

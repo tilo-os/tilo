@@ -1539,6 +1539,7 @@ search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one na
 # Search: search sources and workspace governance rows
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
+search-action-workspace-view-subtitle = Local workspace view
 search-action-provider-enable = Enable { $source } search
 search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
 search-action-provider-disable = Disable { $source } search
@@ -2281,3 +2282,351 @@ quiet-status-dnd = Do Not Disturb
 quiet-status-dnd-presenting = Do Not Disturb while presenting
 quiet-status-dnd-sharing = Do Not Disturb while sharing
 quiet-status-focus-until = Focus until { $time }
+
+# Saved workspaces that could not be opened at startup
+state-notice-newer-title = Your workspaces were not opened
+state-notice-unreadable-title = Your workspaces could not be read
+state-notice-newer-body = Saved by a newer version of Tilo. Nothing was changed.
+state-notice-unreadable-body = The file could not be read. Nothing was changed.
+state-notice-newer-detail = { $path } was written by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed, and nothing has been written over it — this session runs without saving, so it cannot be. Update again, or roll forward, to get back to your own workspaces.
+state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
+
+# People popover
+people-panel-here-now = { $count } here now
+people-panel-screen-visible = Screen visible now
+people-panel-only-you = Only you are here
+people-panel-status-typing = Type a status, then press Enter
+people-panel-status-empty = Set what you're working toward…
+people-panel-own-status = You · { $status }
+people-panel-sharing-auto = ✦ Auto
+people-panel-sharing-manual = Manual
+people-panel-sharing-hidden = Hidden
+people-panel-agent-tag = agent
+people-panel-invited-tag = invited
+people-panel-following = Following
+people-panel-following-activity = Following · { $activity }
+people-panel-viewing = Viewing { $title }
+people-panel-follow = Follow
+people-panel-stop-following = Stop
+people-panel-invite = Invite
+people-panel-join = Join
+
+# Workspace overview: who is in a room and what it shares
+overview-empty-window = Empty window
+overview-access-nobody = No one has access
+overview-access-private = Private to you
+overview-access-shared-one = Shared with { $name }
+overview-access-shared-two = Shared with { $first } and { $second }
+overview-access-shared-many = { $count ->
+    [one] Shared with { $name } and 1 other
+   *[other] Shared with { $name } and { $count } others
+}
+overview-items-shared = { $count ->
+    [one] 1 item shared
+   *[other] { $count } items shared
+}
+overview-presence-you = You are here
+overview-presence-you-and-one = You and { $name } are here
+overview-presence-you-and-many = You and { $count } others are here
+overview-presence-one = { $name } is here
+overview-presence-many = { $count } people are here
+overview-collaborators-here = { $count } collaborators are here
+
+# Windows and documents the shell hosts
+shell-window-restoring = Restoring this window…
+shell-document-unavailable = Document unavailable
+shell-named-document-unavailable = { $name } unavailable
+shell-path-open-failed = Cannot open { $path }: { $error }
+shell-path-read-failed = Cannot read { $path }: { $error }
+editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
+editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
+editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
+editor-hint-click = Click to edit
+notes-empty-title = This note is empty
+notes-empty-body = Jot anything here. Changes are saved as you type.
+notes-empty-action = Start writing
+window-move-unknown-tab = That window is no longer open.
+window-move-unknown-workspace = That workspace is gone.
+window-move-same-workspace = The window is already in that workspace.
+window-move-pinned = This window belongs to its workspace and cannot move.
+window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
+
+# Empty-workspace launchpad and the default command list
+launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
+launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
+global-search-create-workspace = Create Workspace
+global-search-rename-workspace = Rename Workspace
+global-search-switch-workspace = Switch Workspace…
+global-search-open-settings = Open Settings
+global-search-open-file = Open File
+
+# Shortcut steps that ask before they run, and keyboard capture
+shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
+shortcut-step-type-phrase = Type “{ $phrase }” to confirm.
+shortcut-step-confirm-title = { $action }?
+shortcut-step-confirm = Confirm
+shortcut-step-ask-detail = “{ $shortcut }” asks for { $param }.
+shortcut-step-continue = Continue
+shortcut-step-yes = Yes
+shortcut-step-no = No
+shortcut-trigger-failed = The shortcut didn't run
+osd-keys-captured = App receives all keys · { $chord } restores shortcuts
+osd-keys-released = Shortcuts restored
+workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
+
+# Peer views, opening documents, identity backup and invitations
+peer-view-surface-title = Peer surface #{ $id }
+peer-view-awaiting = Awaiting peer surface…
+doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
+doc-open-no-file-type = { $name } has no file type to open it by
+doc-open-no-workspace = there is no active workspace to open it in
+identity-backup-busy = Finish the current identity flow before creating another backup.
+identity-backup-locate-failed = Could not locate the active identity: { $error }
+invite-workspace-verified-identity = Workspace-verified identity
+palette-query-permission-roles = permission role
+
+# Accessibility tree: the hardware-key readout
+a11y-status-readout = Status readout
+
+# Compositor notices: lock screen status, X11 compatibility, collaboration, nearby drops, captures
+lock-screen-status = Lock status
+xwayland-unavailable-title = X11 compatibility unavailable
+xwayland-unavailable-body = Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.
+collab-unavailable-services-root = The service directory could not be created: { $error }
+collab-unavailable-socket-taken = Another session on this machine already owns the collaboration socket.
+collab-unavailable-broker = The broker could not start: { $error }
+fabric-focus-app-for-controller = Focus an app before forwarding a controller
+fabric-focus-app-for-remote-input = Focus an app before using a remote input
+launch-held-network-failed = the desktop's network could not start ({ $error })
+nearby-drop-your-device = your device
+nearby-drop-sending = Sending nearby
+nearby-drop-sending-body = { $file } to { $device }
+nearby-drop-sent = Sent nearby
+nearby-drop-sent-body = { $file } to { $device }
+nearby-drop-failed = Nearby drop failed
+nearby-drop-failed-body = { $file } · { $device }
+nearby-drop-received = Received nearby
+nearby-drop-received-body = { $file } from { $device }
+capture-screenshot-sent = Screenshot sent
+capture-screenshot-not-sent = Screenshot not sent
+capture-recording-audio-lost = Recording continues without audio
+capture-recording-audio-lost-body = { $path } · { $reason }
+capture-recent-audio-lost = Recent capture continues without audio
+capture-failed = Capture failed
+idle-inhibit-unnamed-app = An app
+
+# Sending a screenshot to a device or into the workspace files
+screenshot-send-offered = Offered to { $device }; accept it there to save
+screenshot-send-saved = Saved to workspace files as { $name }
+screenshot-send-gone = The screenshot { $path } is gone
+screenshot-send-device-offline = That device is no longer online
+screenshot-send-create-failed = Cannot create { $path }: { $error }
+screenshot-send-no-file-name = { $path } has no file name
+screenshot-send-read-failed = Cannot read { $path }: { $error }
+screenshot-send-save-failed = Cannot save to workspace files: { $error }
+screenshot-send-too-many = The workspace Screenshots folder has too many files with this name
+screenshot-send-sync-off = Device sync is not running
+screenshot-send-no-folder = { $path } has no folder
+
+# A window whose frames cannot be shown
+foreign-window-unshowable = This window can't be shown.
+foreign-window-not-responding = This app isn't responding.
+
+# Why a speaker-group request failed, as Settings shows it
+speaker-error-too-many-groups = too many speaker groups
+speaker-error-group-exists = that speaker group already exists
+speaker-error-group-gone = that speaker group no longer exists
+speaker-error-not-in-group = that speaker is not in the group
+speaker-error-calibration-range = those calibration values are out of range
+speaker-error-request-expired = that speaker group request expired
+speaker-error-group-changed = that speaker group changed; ask again from its device
+speaker-error-too-many-memberships = this device is already in too many speaker groups
+speaker-error-not-a-member = this device is not in that speaker group
+speaker-error-too-many-sessions = too many speaker group sessions are active
+speaker-error-group-unavailable = that speaker group is not available
+speaker-error-none-ready = no speaker in that group is ready
+speaker-error-session-gone = that speaker group session is no longer active
+speaker-error-name = give the speakers a name of up to 64 characters
+speaker-error-roles = each speaker needs its own output and its own role, and a stereo pair needs both sides
+speaker-error-unavailable = speaker groups are unavailable
+device-fabric-error-no-identity = this device has no certified personal identity
+speaker-error-speaker-unavailable = that speaker is not available right now
+speaker-error-output-disconnected = that output is no longer connected
+speaker-error-already-playing = a speaker is already playing its sound
+speaker-error-speaker-output-gone = that speaker's output is no longer connected
+speaker-error-play-failed = could not play the sound: { $error }
+speaker-error-device-invalid = that device id is not valid
+speaker-error-output-invalid = that output is not valid
+speaker-error-group-invalid = that speaker group is not valid
+speaker-error-media-off = Turn on Media in Devices & Sync to use speakers across your devices
+speaker-error-no-calibration = there is no finished calibration to apply
+speaker-error-no-applied-calibration = there is no applied calibration to revert
+speaker-error-calibration-unavailable = calibration is unavailable
+speaker-error-calibration-gone = that calibration is no longer available
+speaker-error-network-unavailable = the device network is unavailable
+speaker-error-microphone-invalid = that microphone is not valid
+speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
+speaker-error-microphone-unavailable = that microphone is not available
+speaker-error-not-all-ready = every speaker must be ready before calibrating
+speaker-error-request-failed = the speaker request failed
+speaker-error-app-stopped = that application stopped playing
+speaker-error-audio-unavailable = speaker group audio is unavailable
+speaker-error-other-session = another speaker group session is already playing from this device
+
+# Measuring speakers for calibration
+speaker-calibration-reason-remote-microphone = calibrate with a microphone on the device that set up the speakers
+speaker-calibration-reason-microphone-gone = that microphone is no longer connected
+speaker-calibration-reason-output-gone = that speaker's output is no longer connected
+speaker-calibration-reason-play-failed = could not play the sweep: { $error }
+speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-failed = Could not measure { $speaker }: { $reason }
+speaker-calibration-cancelled = Calibration was cancelled
+
+# Wireless display projection
+projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
+projection-service-exited = Projection service exited with { $status }
+projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
+projection-mode-unsupported = { $device } does not support { $mode } mode
+projection-service-unavailable = Projection service is unavailable
+projection-service-stopped = Projection service stopped
+
+# Why an action on your devices failed, as its notification says
+device-fabric-error-nearby-busy = Nearby Send staging is busy; retry when another transfer finishes
+device-fabric-error-bt-identity-invalid = that Bluetooth accessory identity is invalid
+device-fabric-error-bt-not-connected = only a paired accessory currently connected to this device can be handed off
+device-fabric-error-bt-name-invalid = the local Bluetooth accessory name is invalid
+device-fabric-error-bt-already-here = the Bluetooth accessory is already on this device
+device-fabric-error-target-not-enrolled = the target is not an enrolled device
+device-fabric-error-target-offline = the target device is offline
+device-fabric-error-bt-coordinator = Bluetooth handoff coordinator is unavailable
+device-fabric-error-bt-too-many = too many Bluetooth handoffs are already in progress
+device-fabric-error-bt-approval-gone = that Bluetooth handoff approval is no longer pending
+device-fabric-error-bt-inactive = that Bluetooth handoff is no longer active
+device-fabric-error-bt-no-retry = that Bluetooth handoff cannot be retried
+device-fabric-error-media-session-gone = that media session is no longer available
+device-fabric-error-no-route = target has no current authenticated personal route
+device-fabric-error-handoff-gone = that media handoff is no longer available
+device-fabric-error-handoff-not-pending = that media handoff is no longer pending
+device-fabric-error-handoff-no-retry = only a failed or cancelled media handoff can be retried
+device-fabric-error-name-not-portable = file name is not portable
+device-fabric-error-drop-one-item = nearby drop requires one regular file or folder
+device-fabric-error-drop-empty = nearby drop cannot send an empty file
+device-fabric-error-file-changed = file changed while being read
+device-fabric-error-transfer-inactive = nearby transfer is not active
+device-fabric-error-destination-unapproved = Nearby Send requires an approved destination
+device-fabric-error-consent-expired = nearby transfer consent expired
+device-fabric-error-destination-expired = Nearby Send destination expired
+device-fabric-error-transfer-unrecoverable = nearby transfer is no longer recoverable
+device-fabric-error-transfer-no-retry = nearby transfer is no longer retryable
+device-fabric-nearby-device = Nearby device
+device-fabric-error-output-gone = that audio output is no longer connected
+device-fabric-error-input-gone = that input is no longer connected
+device-fabric-error-spatial-unavailable = spatial calibration is unavailable
+device-fabric-error-proposal-stale = that calibration proposal is no longer current
+device-fabric-error-no-applied-calibration = there is no applied calibration to revert
+device-fabric-error-no-placement = this device has no published display placement
+device-fabric-error-target-not-display = the target is not an online controllable display
+device-fabric-error-target-no-display = the target has no published display
+device-fabric-error-side-taken = another enrolled display already occupies that side
+device-fabric-error-controller-not-enrolled = the controller is not an enrolled device
+device-fabric-error-controller-no-input = the controller has no online pointer or keyboard capability
+device-fabric-error-no-lease = that device does not have an active control lease
+device-fabric-error-control-not-granted = that device has not granted control
+device-fabric-error-lease-input = the active lease does not allow that input device
+device-fabric-error-display-local = this display is already local
+device-fabric-error-display-coordinator = personal display coordinator is unavailable
+device-fabric-error-display-busy = that device already has an active display stream
+device-fabric-error-no-video = the certified target cannot receive video
+device-fabric-error-mirror-coordinator = display mirror coordinator is unavailable
+device-fabric-error-mirror-too-many = too many display mirror sessions are active
+device-fabric-error-mirror-consent-gone = that display mirror consent is no longer pending
+device-fabric-error-display-receiving = this display is already receiving another stream
+device-fabric-error-mirror-inactive = that display mirror session is no longer active
+device-fabric-error-gamepad-capacity = typed-gamepad forwarding capacity is exhausted
+device-fabric-error-gamepad-decided = typed-gamepad authorization is unknown or already decided
+device-fabric-error-gamepad-no-lease = typed-gamepad target has not granted a lease
+device-fabric-error-inspect-failed = source cannot be inspected: { $error }
+device-fabric-error-transfer-start = nearby transfer could not start: { $error }
+device-fabric-error-open-failed = file cannot be opened: { $error }
+device-fabric-error-read-failed = file cannot be read: { $error }
+continuity-disabled-clipboard = clipboard continuity is disabled on this device
+continuity-disabled-notifications = notification continuity is disabled on this device
+continuity-disabled-wifi-settings = Wi-Fi/settings continuity is disabled on this device
+continuity-disabled-media = media continuity is disabled on this device
+continuity-disabled-display-input = display/input continuity is disabled on this device
+continuity-disabled-file-transfer = file-transfer continuity is disabled on this device
+continuity-disabled-realtime = realtime-session continuity is disabled on this device
+continuity-disabled-gamepad = typed-gamepad continuity is disabled on this device
+continuity-disabled-app-continuations = app-continuation continuity is disabled on this device
+remote-audio-all-system-audio = All system audio
+remote-audio-error-target-not-output = the target is not an online audio output
+remote-audio-error-unavailable = remote audio service is unavailable
+remote-audio-error-too-many = too many remote audio routes are active
+remote-audio-error-source-expired = that audio source picker entry expired
+remote-audio-error-request-expired = that remote audio request expired
+remote-audio-error-route-inactive = that remote audio route is no longer active
+remote-audio-speaker-group = Speaker group
+remote-audio-error-no-output = no local PipeWire output is available
+remote-audio-error-stream-ended = that application audio stream ended
+remote-capture-error-unavailable = remote capture service is unavailable
+remote-capture-error-busy = remote capture service is busy
+remote-capture-error-capacity = remote capture request capacity is exhausted
+remote-capture-error-receiver-busy = remote capture receiver is busy
+remote-capture-error-cannot-receive = this device cannot receive the requested remote input
+remote-capture-error-unknown-request = unknown remote capture request
+remote-capture-error-unknown-session = unknown remote capture session
+tethering-error-continuity-off = Wi-Fi Continuity is disabled on this device
+tethering-error-choose-phone = choose an online certified phone
+tethering-error-unavailable = tethering coordinator is unavailable
+tethering-error-too-many = too many tethering requests are already active
+tethering-error-history-full = tethering history is temporarily full
+tethering-error-session-inactive = that tethering session is no longer active
+tethering-error-request-gone = that tethering request is no longer pending
+gamepad-error-unavailable = physical gamepad manager is unavailable
+gamepad-error-no-identity = local certified-device identity is unavailable
+gamepad-error-target-unknown = target is not in the certified device fabric
+gamepad-error-target-offline = target device is not an online remote device
+gamepad-error-disconnected = that game controller is no longer connected
+gamepad-error-already-forwarded = that game controller is already being forwarded
+gamepad-error-busy = game controller input was busy while starting; try again
+gamepad-error-unknown = physical gamepad forwarding is unknown
+gamepad-error-open-failed = could not open game controller: { $error }
+gamepad-error-prime-failed = could not prime game controller: { $error }
+
+# Why a Wi-Fi network could not be shared with your devices
+wifi-share-error-enterprise = enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device
+wifi-share-error-no-passphrase = this Wi-Fi security mode has no portable passphrase
+wifi-share-error-unknown-security = unrecognized Wi-Fi security cannot be shared safely
+wifi-share-error-unvalidated = Wi-Fi security could not be validated for sharing
+wifi-share-error-no-presence = this device has not published fabric presence yet
+
+# Why installing an app from the catalogue failed
+catalogue-error-missing = this system has no app catalogue (app is missing)
+catalogue-error-spawn = could not start loading it
+catalogue-error-run = could not run the app catalogue: { $error }
+catalogue-error-exited = the app catalogue exited { $status }
+
+# Why sending to a nearby device failed
+nearby-error-destination-not-folder = Nearby Send destination is not a directory
+nearby-error-too-large = nearby transfer exceeds the size limit
+nearby-error-destination-name = Nearby Send destination name is unavailable
+nearby-error-outside-grant = Nearby Send source is outside this Files grant
+nearby-error-one-item = Nearby Send requires one regular file or folder
+nearby-error-queue-full = nearby transfer queue is full
+nearby-error-quota-full = nearby transfer quota is full
+nearby-error-too-many = too many nearby transfers
+nearby-error-not-regular = source is not a regular file
+nearby-error-folder-too-many = folder contains too many entries
+nearby-error-folder-special = folder contains a link or special file
+nearby-error-folder-too-large = folder exceeds the size limit
+nearby-error-source-changed = nearby transfer source changed while staging
+nearby-error-name-not-portable = source name is not portable
+
+# A document a tab could not restore
+hosted-document-unavailable = { $path } is unavailable: { $error }
+
+# A camera, microphone or scanner shared from another of your devices
+remote-capture-source-label = { $app } on certified device
+
+# Print jobs: the title a print queue shows when the app gave none
+print-untitled-document = Document
