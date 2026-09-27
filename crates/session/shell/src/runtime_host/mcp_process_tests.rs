@@ -1,11 +1,7 @@
-use super::{
-    AppManifest, AppSpec, Frame, MAX_REQUEST_BYTES, parse_args, read_frame, serve,
-    validate_manifest, write_reply,
-};
-use serde_json::json;
+use crate::runtime_host::Session;
 use std::{
-    ffi::{OsStr, OsString},
-    io::{BufReader, Cursor, Read},
+    ffi::OsStr,
+    io::{Cursor, Read},
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -14,7 +10,7 @@ use std::{
 /// The merged test whose phases each need a fresh process; libtest selects it
 /// by this exact path, so a phase's own (nested) name would select nothing.
 const PROCESS_TEST: &str =
-    "runtime_host::mcp_process::tests::mcp_process_owns_and_reaps_its_children";
+    "runtime_host::mcp_process_tests::mcp_process_owns_and_reaps_its_children";
 /// Names the one phase an isolated child process runs.
 const PROCESS_PHASE: &str = "TILO_MCP_PROCESS_TEST_PHASE";
 
@@ -102,6 +98,21 @@ impl std::io::Write for BrokenWriter {
     }
 }
 
+use tilo_runtime::mcp_process::{AppManifest, AppSpec, validate_manifest};
+
+fn serve<R, W>(
+    profile: &std::path::Path,
+    manifest: tilo_runtime::mcp_process::ValidatedManifest,
+    reader: R,
+    writer: W,
+) -> std::io::Result<()>
+where
+    R: Read + Send + 'static,
+    W: std::io::Write,
+{
+    tilo_runtime::mcp_process::serve::<Session, _, _>(profile, manifest, reader, writer)
+}
+
 /// A helper app's collaboration manager once it has joined the broker.
 /// Construction returns while the connection is still being made; the
 /// helper polls until it settles.
@@ -116,139 +127,6 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     }
     assert!(manager.is_connected(), "{:?}", manager.state());
     manager
-}
-
-#[test]
-#[expect(
-    clippy::naive_bytecount,
-    reason = "counts the newlines of one short test reply"
-)]
-fn stdio_framing_is_bounded_line_based_and_flushed() {
-    // Phase `bounded_framing_recovers_after_an_oversized_line`.
-    {
-        let mut bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
-        bytes.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
-        let mut input = BufReader::new(bytes.as_slice());
-
-        assert_eq!(read_frame(&mut input).unwrap(), Frame::TooLong);
-        let Frame::Line(next) = read_frame(&mut input).unwrap() else {
-            panic!("expected the complete request after the oversized line");
-        };
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&next).unwrap()["method"],
-            "ping"
-        );
-        assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
-    }
-    // Phase `line_at_the_one_mib_limit_is_accepted`.
-    {
-        let mut bytes = vec![b' '; MAX_REQUEST_BYTES];
-        bytes.push(b'\n');
-        let mut input = BufReader::new(bytes.as_slice());
-        let Frame::Line(line) = read_frame(&mut input).unwrap() else {
-            panic!("line at limit must be accepted");
-        };
-        assert_eq!(line.len(), MAX_REQUEST_BYTES);
-    }
-    // Phase `framing_joins_lines_split_across_buffer_refills`.
-    {
-        // A three-byte buffer forces every line to span several `fill_buf` calls,
-        // including a refill that starts exactly at a newline.
-        let bytes = b"abcdef\r\n\nxy\nlast";
-        let mut input = BufReader::with_capacity(3, bytes.as_slice());
-        assert_eq!(
-            read_frame(&mut input).unwrap(),
-            Frame::Line(b"abcdef".to_vec())
-        );
-        assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(Vec::new()));
-        assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(b"xy".to_vec()));
-        assert_eq!(
-            read_frame(&mut input).unwrap(),
-            Frame::Line(b"last".to_vec())
-        );
-        assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
-    }
-    // Phase `protocol_writer_emits_one_json_line_and_flushes`.
-    {
-        #[derive(Default)]
-        struct Output {
-            bytes: Vec<u8>,
-            flushes: usize,
-        }
-        impl std::io::Write for Output {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.bytes.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.flushes += 1;
-                Ok(())
-            }
-        }
-        let mut output = Output::default();
-        write_reply(&mut output, &json!({"jsonrpc":"2.0","id":1,"result":{}})).unwrap();
-        assert_eq!(output.flushes, 1);
-        assert_eq!(output.bytes.last(), Some(&b'\n'));
-        assert_eq!(
-            output.bytes.iter().filter(|byte| **byte == b'\n').count(),
-            1
-        );
-        serde_json::from_slice::<serde_json::Value>(&output.bytes).unwrap();
-    }
-}
-
-#[test]
-fn cli_and_manifest_are_validated_before_launch() {
-    // Phase `manifest_validation_precedes_launch_and_accepts_duplicate_ids`.
-    {
-        let executable = std::env::current_exe().unwrap();
-        let duplicates = AppManifest {
-            apps: vec![
-                AppSpec {
-                    id: "dev.tilo.same".into(),
-                    executable: executable.clone(),
-                    args: vec![],
-                },
-                AppSpec {
-                    id: "dev.tilo.same".into(),
-                    executable,
-                    args: vec!["--help".into()],
-                },
-            ],
-        };
-        assert_eq!(validate_manifest(duplicates).unwrap().apps.len(), 2);
-
-        let invalid = AppManifest {
-            apps: vec![
-                AppSpec {
-                    id: "dev.tilo.valid".into(),
-                    executable: std::env::current_exe().unwrap(),
-                    args: vec![],
-                },
-                AppSpec {
-                    id: "dev.tilo.invalid".into(),
-                    executable: PathBuf::from("relative"),
-                    args: vec![],
-                },
-            ],
-        };
-        let error = validate_manifest(invalid).unwrap_err();
-        assert!(error.to_string().contains("absolute"));
-    }
-    // Phase `cli_requires_profile_and_manifest_paths`.
-    {
-        let parsed = parse_args([
-            OsString::from("--profile"),
-            OsString::from("/tmp/profile"),
-            OsString::from("--apps"),
-            OsString::from("/tmp/apps.json"),
-        ])
-        .unwrap();
-        assert_eq!(parsed.profile, PathBuf::from("/tmp/profile"));
-        assert_eq!(parsed.apps, PathBuf::from("/tmp/apps.json"));
-        assert!(parse_args([OsString::from("--profile"), OsString::from("/tmp/profile")]).is_err());
-        assert!(parse_args([OsString::from("--unknown")]).is_err());
-    }
 }
 
 #[test]
@@ -300,7 +178,7 @@ fn mcp_process_owns_and_reaps_its_children() {
             assert_eq!(std::env::var_os(name), *expected, "serve mutated {name}");
         }
 
-        let held = crate::runtime_host::Session::start(&root).unwrap();
+        let held = Session::start(&root).unwrap();
         let error = serve(
             &root,
             validate_manifest(AppManifest { apps: vec![] }).unwrap(),
@@ -417,7 +295,7 @@ fn mcp_process_owns_and_reaps_its_children() {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
-        let reopened = crate::runtime_host::Session::start(&root).unwrap();
+        let reopened = Session::start(&root).unwrap();
         drop(reopened);
     }
     // Phase `duplicate_app_ids_publish_as_distinct_normal_sdk_instances`.
@@ -434,7 +312,7 @@ fn mcp_process_owns_and_reaps_its_children() {
         let Some(root) = isolated_root(PHASE) else {
             return;
         };
-        let session = crate::runtime_host::Session::start(&root).unwrap();
+        let session = Session::start(&root).unwrap();
         let executable = std::env::current_exe().unwrap();
         let mut children = Vec::new();
         for index in 0..2 {
