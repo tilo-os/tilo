@@ -153,6 +153,7 @@ suites = [
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
+  "os/tests/test_wpe_recipe_inputs.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
