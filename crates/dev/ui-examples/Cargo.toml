@@ -36,6 +36,7 @@ tempfile.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
 wgpu.workspace = true
