@@ -905,16 +905,19 @@ def ensure_chat(name: str, room: str) -> None:
             return
         time.sleep(1.0)
     say(f"opening Chat in the community room in the {name} shell")
-    # The shell's application index answers empty while it rebuilds, which
-    # on a loaded machine can take minutes after start.
-    for _ in range(600):
+    # An action is invoked by the address a listing gave: the listing is also
+    # what has the shell index its applications, so the first may be empty.
+    for _ in range(120):
         if running_here():
             return
-        response = control(name, {"op": "actions_invoke", "provider": "applications",
-                                  "id": "so.tilo.chat", "args": {}})
-        if "err" not in response:
-            break
-        time.sleep(1.0)  # the catalogue fills in just after the shell starts
+        listed = answer(name, {"op": "actions_enumerate", "query": "chat"}).get("actions", [])
+        if any(row.get("provider") == "applications" and row.get("id") == "so.tilo.chat"
+               for row in listed):
+            response = control(name, {"op": "actions_invoke", "provider": "applications",
+                                      "id": "so.tilo.chat", "args": {}})
+            if "err" not in response:
+                break
+        time.sleep(1.0)
     else:
         raise Fix(f"the {name} shell never offered Chat: {response['err']}",
                   "install the apps: feedback-dev up --ci-apps RUN (or --worktree-apps)")
