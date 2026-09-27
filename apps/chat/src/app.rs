@@ -5296,6 +5296,7 @@ mod reports_read_aloud {
             pinned: false,
             work: None,
             report: None,
+            approved: None,
         }
     }
 
