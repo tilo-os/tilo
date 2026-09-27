@@ -10,13 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::{document_mutation, typed_collab::TypedBroker};
-use tilo_ui::collaboration::{
-    CollabEvent, CollabRequest, CollaborationManager, PresencePayload, RouteSpec,
-};
+use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use tilo_ui::presence::PresenceKey;
 use uuid::Uuid;
 
@@ -27,7 +22,6 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         let broker = TypedBroker::new();
         let mut peer_a = broker.manager("peer-a");
         let mut peer_b = broker.manager("peer-b");
-        thread::sleep(Duration::from_millis(100));
 
         peer_a.send(CollabRequest::document_incremental(b"hello".to_vec()));
         let mut events = Vec::new();
@@ -81,15 +75,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         let broker = TypedBroker::new();
         let mut sender = broker.manager("agent");
         let mut primary_observer = broker.manager("primary-observer");
-        let mut photos = CollaborationManager::for_route_fd(
-            broker.connect("photos"),
-            "photos",
-            Uuid::nil(),
-            None,
-            Some("photos".into()),
-        )
-        .expect("photos route connects");
-        thread::sleep(Duration::from_millis(100));
+        let mut photos = broker.route_manager("photos", "photos");
 
         // A route refuses documents until it is joined and its document mode is
         // resolved; the refused attempt starts that join.

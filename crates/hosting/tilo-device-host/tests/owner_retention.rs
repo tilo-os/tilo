@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
@@ -59,7 +59,7 @@ fn apply(peer: &mut StatePeer, author: [u8; 32], data: &[u8]) {
     );
 }
 async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription) {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tilo_test_env::within("the native subscription's Ready", async {
         while !session.is_ready() {
             match session.recv().await.expect("native Ready") {
                 Inbound::Delta { author, data } => {
@@ -76,8 +76,7 @@ async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription
             }
         }
     })
-    .await
-    .unwrap();
+    .await;
 }
 async fn observer(
     host: &LocalHost,
@@ -182,7 +181,7 @@ impl Output {
     }
 }
 async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> Output {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tilo_test_env::within("the observer's replay up to Ready", async {
         let mut output = Output::default();
         loop {
             match session.recv().await.expect("observer Ready") {
@@ -199,14 +198,13 @@ async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> O
         }
     })
     .await
-    .unwrap()
 }
 async fn converge(
     session: &RelayCoeditSession,
     peer: &mut StatePeer,
     owner: &SessionOwner,
 ) -> Output {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tilo_test_env::within("the observer to converge on the owner's receipts", async {
         let mut output = Output::default();
         while !exact(peer, owner.peer()) {
             match session.recv().await.expect("live selected activation") {
@@ -220,7 +218,6 @@ async fn converge(
         output
     })
     .await
-    .unwrap()
 }
 fn census(path: &Path) -> (usize, u64, usize, u64) {
     use std::os::unix::fs::MetadataExt;

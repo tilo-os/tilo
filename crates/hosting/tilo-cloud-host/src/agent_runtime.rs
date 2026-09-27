@@ -1158,7 +1158,7 @@ mod tests {
         );
         let unmounted = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
         assert!(!unmounted.required_services_ready);
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let state = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
             if state.publication_revision != "unavailable" {

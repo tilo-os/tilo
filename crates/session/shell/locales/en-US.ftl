@@ -1544,6 +1544,9 @@ search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one na
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
 search-action-workspace-view-subtitle = Local workspace view
+search-action-quick-settings-unavailable = Quick Settings service is unavailable
+# Extra words a search for a workspace view matches; not shown.
+search-action-workspace-view-keywords = workspace activity history
 search-action-provider-enable = Enable { $source } search
 search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
 search-action-provider-disable = Disable { $source } search
