@@ -90,6 +90,17 @@ Tilo apps through winit's IME). Candidate windows are `zwp_input_popup_surface_v
 surfaces placed directly below the field's caret rectangle, flipped above it
 at the bottom of an output, and kept on that output.
 
+X11 apps compose through XIM on their workspace's own X display. X11 host
+launches get `XMODIFIERS=@im=fcitx`. Once a workspace's X server has run for
+a real client for a second, the compositor asks the running Fcitx5 over the
+session bus (`org.fcitx.Fcitx.Controller1.OpenX11Connection`) to serve that
+display. First it refreshes the composer's `XAUTHORITY` file with every
+workspace display's cookie. Each server and composer pair is asked once. The
+composer's connection never keeps a server alive: the 60-second idle stop
+counts clients by their peer socket inode (`sock_diag`) and excludes inodes
+held by the composer's process group. When the server stops, the connection
+dies with it.
+
 Hosted development mode receives already-translated physical key events from
 the host compositor, so Tilo cannot override that host keyboard. Its embedded
 Wayland seat still publishes the configured Tilo map. Production DRM sessions
