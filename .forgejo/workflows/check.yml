@@ -234,6 +234,12 @@ jobs:
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh
 
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. It compiles the CLI, so it runs beside the gcc install.
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
   suites:
@@ -276,7 +282,9 @@ jobs:
       # The native ARM runner has enough memory for one of the largest test
       # links, but not four simultaneously. Most compile work is served by
       # sccache, so serialize ARM rustc/linker processes without slowing x86.
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+      # The x86 runners have 16 or 24 CPUs; four jobs left the uncached test
+      # crates and links queueing behind each other.
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '8' }}
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -355,6 +363,10 @@ jobs:
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
+      # `--tests` builds the targets whose tests run: libraries, binaries and
+      # integration tests. Examples are type-checked by Clippy and built by
+      # nightly; linking them here tested nothing.
+      #
       # tools/test-env.sh is the suite's whole runtime environment (LANG=C.UTF-8,
       # TZ=UTC, a fresh HOME/XDG tree, lavapipe, NTFS fixtures, headless audio),
       # shared with nightly and with runs outside CI. The NTFS images are
@@ -373,7 +385,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/test-env.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
+          bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
       # A package reached only through outside inputs its manifest entry
@@ -383,6 +395,8 @@ jobs:
         if: matrix.scoped_tests != ''
         env:
           SCOPED_TESTS: ${{ matrix.scoped_tests }}
+          # As above: only the NTFS helper's own tests read the native images.
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.scoped_tests, '"tilo-ntfs-helper"') && '1' || '0' }}
           TILO_REQUIRE_MEDIA: "1"
           TILO_REQUIRE_AUDIO: "1"
           TILO_REQUIRE_GPU: "1"
@@ -525,7 +539,7 @@ jobs:
     runs-on: ${{ matrix.check_runner }}
     timeout-minutes: 120
     env:
-      CARGO_BUILD_JOBS: '4'
+      CARGO_BUILD_JOBS: '8'
     strategy:
       fail-fast: false
       max-parallel: 2

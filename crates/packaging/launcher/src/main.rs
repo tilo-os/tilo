@@ -121,8 +121,8 @@ enum Cmd {
         /// Files and mounted read-only at its fixed projection path.
         #[arg(long)]
         trusted_identities: Option<PathBuf>,
-        /// App id the capabilities are addressed to; defaults to the manifest's
-        /// package id. Capabilities naming another app are ignored.
+        /// App id the caller launched; must equal the manifest's package id.
+        /// Capabilities naming another app are ignored.
         #[arg(long)]
         app_id: Option<String>,
         /// Exact host identity record selected for this workspace. The shell

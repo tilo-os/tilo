@@ -56,9 +56,6 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
-    /// Per-window state handed to the next in-place reload. Keyed by the
-    /// window id that stays for the life of the process.
-    dev_window_state: std::collections::HashMap<String, Vec<u8>>,
 }
 
 struct AudiencePresentationWindow {
@@ -1426,25 +1423,24 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.root_widget.update(&mut app.state.doc, &app.state.root) {
+        if app.update_model() {
             floating_content_changed = true;
             full_redraw_required = true;
-            app.invalidate_widget_resource_cache();
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
-        if app.needs_sync {
+        if app.sync_model(false) {
             floating_content_changed = true;
             full_redraw_required = true;
-            app.root_widget.sync(&mut app.state.doc, &app.state.root);
-            app.invalidate_widget_resource_cache();
-            app.needs_sync = false;
         }
         if app.root_widget.take_window_close_intent() {
-            event_loop.exit();
-            return;
+            if app.admit_native_close_request() {
+                event_loop.exit();
+                return;
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
@@ -1676,19 +1672,22 @@ impl AppHandler {
         }
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
-        app.root_widget.mark_drawn();
-        record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
+        complete_native_frame_content(app, |app| {
+            record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
 
-        // `update_if_active` only builds + sends when an AT is
-        // attached, so this is free on the common no-reader path.
-        if let Some(adapter) = self.a11y_adapter.as_mut() {
-            let app_ref: &mut App = app;
-            let scale = f64::from(scale_factor);
-            adapter.update_if_active(|| {
-                crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
-            });
-        }
-        record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
+            // `update_if_active` only builds + sends when an AT is
+            // attached, so this is free on the common no-reader path.
+            if let Some(adapter) = self.a11y_adapter.as_mut() {
+                let app_ref: &mut App = app;
+                let scale = f64::from(scale_factor);
+                adapter.update_if_active(|| {
+                    crate::accesskit_bridge::native_tree_update(
+                        app_ref.build_a11y_tree_update(scale),
+                    )
+                });
+            }
+            record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
+        });
 
         // Painted last, after the frame timing was committed above,
         // so the HUD's own cost never enters its numbers.
@@ -1950,8 +1949,16 @@ impl AppHandler {
                         .command_modifier_down(app.input.modifiers.state())
             );
             if !is_ctrl_k
-                && matches!(event, WindowEvent::KeyboardInput { .. })
-                && app.action_palette_handle_key(&event)
+                && matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. }
+                        | WindowEvent::Ime(_)
+                        | WindowEvent::CursorMoved { .. }
+                        | WindowEvent::CursorLeft { .. }
+                        | WindowEvent::MouseInput { .. }
+                        | WindowEvent::MouseWheel { .. }
+                )
+                && app.action_palette_handle_event(&event, window.scale_factor())
             {
                 handled = true;
             }
@@ -2238,6 +2245,12 @@ impl AppHandler {
             }
         }
 
+        // Alt+Arrow remains host directional navigation when the focused
+        // widget leaves it unhandled. Running this after widget dispatch lets
+        // editors consume platform word/selection shortcuts first, while
+        // keeping Alt navigation ahead of the plain range-control fallback.
+        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
+
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
@@ -2298,30 +2311,7 @@ impl AppHandler {
             }
         }
 
-        if !handled
-            && app.keyboard_nav_allowed(modal_rect)
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let Some(d) = dir {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
+        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
 
         if app.dispatch_control_invocations() != 0 {
             handled = true;
@@ -2434,88 +2424,6 @@ impl AppHandler {
     }
 }
 
-impl AppHandler {
-    /// Rebuild into the windows this process already owns.
-    ///
-    /// The primary window, every live floating window, and an audience window
-    /// stay. Reload does not call `create_window`.
-    fn reload_open_windows_in_place(&mut self) {
-        let mut windows = Vec::new();
-        if let Some(window) = &self.window {
-            windows.push(("primary".to_owned(), window.clone()));
-        }
-        for surface in &self.floating_windows {
-            if !surface.suspended {
-                windows.push((surface.id.clone(), surface.window.clone()));
-            }
-        }
-        if self.audience_presentation.is_some() {
-            if let Some(audience) = &self.audience_presentation {
-                windows.push(("audience".to_owned(), audience.window.clone()));
-            }
-        }
-        let Some(session) = crate::host::environment().dev_session.clone() else {
-            return;
-        };
-        let library = std::fs::read_to_string(session.join("reload.path"))
-            .ok()
-            .map(|text| std::path::PathBuf::from(text.trim()))
-            .filter(|path| path.is_file());
-        let Some(library) = library else {
-            // A build that did not publish a library keeps the code already
-            // running. Catalogs on disk still replace the strings baked into
-            // this process.
-            super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
-            self.app.needs_sync = true;
-            for (_, window) in &windows {
-                window.request_redraw();
-            }
-            return;
-        };
-        let _ = super::write_dev_checkpoint(&self.app, &session);
-        let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
-        let slots = windows
-            .iter()
-            .map(|(id, _)| super::DevWindowSlot {
-                id: id.clone(),
-                state: self
-                    .dev_window_state
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| checkpoint.clone()),
-            })
-            .collect::<Vec<_>>();
-        let reloaded = match super::reload_from_library(&library, &slots) {
-            Ok(reloaded) => reloaded,
-            Err(error) => {
-                eprintln!("tilo: reload rejected; keeping the last good app\n{error}");
-                return;
-            }
-        };
-        if let Some(root) = reloaded.root {
-            if !self.app.install_reloaded_view(root) {
-                eprintln!(
-                    "tilo: the open windows could not take the new view; keeping the running one"
-                );
-                return;
-            }
-            self.app.init_layout();
-        }
-        self.dev_window_state = reloaded
-            .windows
-            .into_iter()
-            .map(|window| (window.id, window.state))
-            .collect();
-        super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
-        self.app.needs_sync = true;
-        let count = windows.len();
-        for (_, window) in &windows {
-            window.request_redraw();
-        }
-        eprintln!("tilo: reloaded {count} open window(s) in place");
-    }
-}
-
 impl ApplicationHandler<UserEvent> for AppHandler {
     // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
     // DeviceId is opaque and the dispatch chain never inspects it (same
@@ -2557,10 +2465,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::DevSessionStop => {
                 self.app.autosave_flush();
                 super::checkpoint_and_exit(&self.app, event_loop);
-                return;
-            }
-            UserEvent::DevSessionReload => {
-                self.reload_open_windows_in_place();
                 return;
             }
             other => other,
@@ -2675,8 +2579,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
-            | UserEvent::DevSessionStop
-            | UserEvent::DevSessionReload => {}
+            | UserEvent::DevSessionStop => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -3070,9 +2973,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
-        if app.poll_directed_invocations() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
+        if app.poll_model_invocations() {
             request_primary_redraw();
         }
         app.publish_playback_handoff();
@@ -3086,19 +2987,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        if app.dispatch_control_invocations() != 0 {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
+        let idle_model = app.service_idle_model();
+        if idle_model.changed {
             request_primary_redraw();
         }
 
-        if app.service_history() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            request_primary_redraw();
-        }
-
-        if app.root_widget.needs_commit() {
+        if idle_model.local_commit {
             if let Some(origin) = self.native_input_origin {
                 crate::native_scenario::log::emit_json(
                     "tilo-native-commit-redraw",
@@ -3108,16 +3002,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }),
                 );
             }
-            app.commit_action();
-            app.root_widget.on_commit();
-            app.needs_sync = true;
-            request_primary_redraw();
-        }
-
-        // Level-triggered rather than hooked into individual mutations:
-        // widgets write to the document from many places.
-        if let Err(error) = app.autosave_tick() {
-            crate::diag!("[app] component autosave tick refused: {error:?}");
         }
 
         if app.reconcile_fullscreen(&window) {
@@ -3353,13 +3237,20 @@ impl AppHandler {
         }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
-            WindowEvent::CloseRequested => {
-                if self.app.request_close() && self.app.finish_close_if_ready() {
-                    event_loop.exit();
-                } else {
+            WindowEvent::CloseRequested => match self.app.root_widget.on_window_close_requested() {
+                crate::widget::WindowCloseAdmission::Allow => {
+                    if self.app.admit_native_close_request() {
+                        event_loop.exit();
+                    } else {
+                        window.request_redraw();
+                    }
+                }
+                crate::widget::WindowCloseAdmission::Defer => {
+                    self.app.needs_sync = true;
+                    self.app.layout.layout_dirty = true;
                     window.request_redraw();
                 }
-            }
+            },
             WindowEvent::Resized(_) => {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -3518,7 +3409,6 @@ impl App {
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
-            dev_window_state: std::collections::HashMap::new(),
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

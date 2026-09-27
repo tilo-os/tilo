@@ -21,6 +21,7 @@ on:
       - "os/dev/promote-native-index.py"
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
+      - "crates/system/advisory-lock/**"
       - "crates/system/atomic-file/**"
       - "tools/ci/check-build-env.sh"
       - "tools/ci/builder_workflow_plan.py"

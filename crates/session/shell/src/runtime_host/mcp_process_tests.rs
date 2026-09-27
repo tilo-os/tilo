@@ -256,7 +256,8 @@ fn cli_and_manifest_are_validated_before_launch() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
+    clippy::significant_drop_tightening,
+    reason = "each phase keeps one former test's body verbatim, and the duplicate-app phase holds its session and broker handles for the whole scenario on purpose"
 )]
 fn mcp_process_owns_and_reaps_its_children() {
     // Phase `zero_app_stdio_is_json_only_and_profile_contention_is_refused`.

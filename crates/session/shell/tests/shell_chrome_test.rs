@@ -388,7 +388,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             ..Default::default()
         };
         tree.desktop.active = tree.desktop.workspaces[0].id;
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         let colors = chrome.collaborator_colors();
         assert_eq!(colors.len(), 2);
         // Two peers with distinct ids must resolve to distinct hues; otherwise
@@ -414,7 +414,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             },
             ..Default::default()
         };
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         assert_eq!(
             chrome.clock_text_weight(),
             TextWeight::Bold,
@@ -458,7 +458,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             },
             ..Default::default()
         };
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         assert!(
             chrome.active_dot_radius() > chrome.inactive_dot_radius(),
             "active dot radius {} must exceed inactive {}",

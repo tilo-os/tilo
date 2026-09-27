@@ -92,7 +92,7 @@ fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
 /// so a test can push bytes down the exact channel the reader thread uses.
 /// This exercises the production `sync` → `pump` drain path (which is what
 /// snaps the scrollback viewport back to the live bottom on fresh output).
-fn build_test_widget_io() -> (
+pub(crate) fn build_test_widget_io() -> (
     TerminalWidget,
     std::sync::mpsc::Receiver<Vec<u8>>,
     std::sync::mpsc::Sender<Vec<u8>>,
@@ -353,7 +353,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
-fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
         out.extend_from_slice(&b);

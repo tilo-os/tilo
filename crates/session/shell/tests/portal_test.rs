@@ -1228,6 +1228,11 @@ async fn print_reaches_the_spooler_only_when_allowed_and_to_a_real_destination()
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
 /// Legacy toolkits read the OS appearance through `ReadAll`/`Read` and follow
 /// it through `SettingChanged`; all three carry the GNOME interface keys the
 /// settings file resolves to.

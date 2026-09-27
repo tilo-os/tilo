@@ -1486,8 +1486,8 @@ mod tests {
     #[test]
     fn input_method_sources_compile_no_group_and_select_the_primary_layout() {
         let section = serde_json::json!({
-            "keyboard_layout": "ime/pinyin",
-            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+            "keyboard_layout": "ime/rime",
+            "keyboard_layouts": ["de", "ime/rime", "fr"]
         })
         .as_object()
         .unwrap()
@@ -1502,7 +1502,7 @@ mod tests {
 
         let section = serde_json::json!({
             "keyboard_layout": "fr",
-            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+            "keyboard_layouts": ["de", "ime/rime", "fr"]
         })
         .as_object()
         .unwrap()

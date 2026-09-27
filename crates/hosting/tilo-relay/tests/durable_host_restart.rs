@@ -197,7 +197,14 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     // ---- Host boots; A publishes an edit and leaves. B has never
     //      connected. ----
     let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+    let host1 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host1_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr1 = host1.node_addr();
 
     // B never connected, so the edit must be queued to disk for it.
@@ -225,7 +232,14 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     );
 
     let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-    let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+    let host2 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host2_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr2 = host2.node_addr();
 
     // ---- B connects for the very first time, to the restarted host. ----

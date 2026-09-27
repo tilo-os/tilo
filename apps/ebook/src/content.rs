@@ -65,15 +65,11 @@ pub fn workspace_books_dir() -> PathBuf {
     workspace_root().join("Books")
 }
 
+/// The default mount root is an absolute path only where Tilo mounts the
+/// workspace there; elsewhere an absolute override must configure it.
 fn workspace_configured() -> bool {
-    #[cfg(windows)]
-    {
-        std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| PathBuf::from(root).is_absolute())
-    }
-    #[cfg(not(windows))]
-    {
-        true
-    }
+    Path::new(DEFAULT_WORKSPACE).is_absolute()
+        || std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| Path::new(&root).is_absolute())
 }
 
 /// Whether a path lives on the collaborative workspace (shared with peers).

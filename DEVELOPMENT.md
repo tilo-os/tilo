@@ -1445,10 +1445,12 @@ Enable the repo's git hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-`pre-commit` runs `scripts/check-workspace-complete.sh`, which parses the root
-manifest and rejects missing, duplicate, excluded, or stale workspace members.
-Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
-Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
+`pre-commit` checks the staged change the way CI's quality job would: rustfmt
+on the staged Rust files, workspace membership
+(`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
+lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
+declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
+CI (`.forgejo/workflows/check.yml`).
 
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
 except a declared single-crate update. Name the `cargo update` you ran (several

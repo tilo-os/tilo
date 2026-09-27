@@ -35,6 +35,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -133,21 +137,32 @@ async fn p2_returns_and_drains(
     c2_r1_again
         .send(Envelope::Subscribe { workspace_id: 3 })
         .unwrap();
+    // Pending delivery is at-least-once: a queued delta is acknowledged only
+    // after wire delivery (WorkspaceStore::load_pending), so the delta p2
+    // received live just before closing may be redelivered once. That
+    // duplicate is harmless (signed deltas are idempotent); the queued delta
+    // must still arrive exactly once.
     let mut got_delta = false;
-    for _ in 0..2 {
+    let mut ready = false;
+    let mut redelivered = 0_u32;
+    while !(ready && got_delta) {
         let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
             .await
             .unwrap()
             .unwrap();
         match env {
-            Envelope::Delta { delta, .. } => {
-                assert_eq!(delta, b"queued-on-relay1".to_vec());
+            Envelope::Delta { delta, .. } if delta == b"queued-on-relay1" => {
+                assert!(!got_delta, "the queued delta was delivered twice");
                 got_delta = true;
+            }
+            Envelope::Delta { delta, .. } if delta == b"via-relay1" => {
+                redelivered = redelivered.saturating_add(1);
+                assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
             Envelope::Ready {
                 workspace_id: 3,
-                pending_deltas: 1,
-            } => {}
+                pending_deltas,
+            } if pending_deltas == 1 || pending_deltas == 2 => ready = true,
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -170,8 +185,8 @@ async fn peers_use_several_relays_and_fail_over() {
 
         let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-        let relay1 = spawn_relay(&user, relay_dev_1, &[3], &members).await;
-        let relay2 = spawn_relay(&user, relay_dev_2, &[3], &members).await;
+        let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[3], &members)).await;
+        let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[3], &members)).await;
 
         // Peers dial relay1 first — verify they can both dial and
         // fan-out works via relay1.
@@ -268,7 +283,7 @@ async fn peers_use_several_relays_and_fail_over() {
         let user = TestUser::fresh("Alice");
         let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let relay = spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()]).await;
+        let relay = Box::pin(spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()])).await;
         let real_addr = relay.relay.node_addr();
 
         // Ghost address: a randomly-generated node id nobody listens on.

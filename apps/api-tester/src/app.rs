@@ -1147,7 +1147,7 @@ impl ApiTesterApp {
             state,
             API_TESTER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.ApiTester", "API Tester", action),
+            tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
         self.dirty = true;

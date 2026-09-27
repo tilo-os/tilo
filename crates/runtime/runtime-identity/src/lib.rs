@@ -25,6 +25,8 @@
 )]
 
 mod client;
+#[cfg(unix)]
+pub mod connected;
 pub use client::BrokerSigningIdentity;
 mod async_client;
 pub use async_client::AsyncBrokerSigningIdentity;

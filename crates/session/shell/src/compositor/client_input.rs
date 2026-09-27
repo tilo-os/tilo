@@ -1898,6 +1898,10 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     clippy::float_cmp,
     reason = "deterministic pointer-coordinate fixtures use exactly representable values"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::persist;

@@ -243,7 +243,7 @@ impl MlsGovernanceFrameV1 {
         if !context.governors.contains(&self.signed_by) {
             return Err(MlsGovernanceError::Unauthorized);
         }
-        verify_event(&self.signing_view(), &self.signature, &self.signed_by)
+        self.verify_signature()
             .map_err(|error: VerifyError| MlsGovernanceError::Signature(error.to_string()))?;
         match &self.action {
             action @ (MlsGovernanceAction::Add { .. }

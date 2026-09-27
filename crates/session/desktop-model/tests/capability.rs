@@ -176,11 +176,11 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
     {
         // The grant key must be a real app-id, in the same namespace as
         // an adopted client's `set_app_id` — never the display label.
-        assert_eq!(AppKind::FileExplorer.app_id(), "org.tilo.Files");
-        assert_eq!(AppKind::Terminal.app_id(), "org.tilo.Terminal");
-        assert_eq!(AppKind::Browser.app_id(), "org.tilo.Browser");
-        assert_eq!(AppKind::Settings.app_id(), "org.tilo.Settings");
-        // A bare `Other` label is namespaced under the compositor prefix.
+        assert_eq!(AppKind::FileExplorer.app_id(), "so.tilo.file-explorer");
+        assert_eq!(AppKind::Terminal.app_id(), "so.tilo.terminal");
+        assert_eq!(AppKind::Browser.app_id(), "so.tilo.browser");
+        assert_eq!(AppKind::Settings.app_id(), "so.tilo.settings");
+        // A bare `Other` label no package answers to keeps its built-in id.
         assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
         // The app-id is distinct from the display label for every kind.
         for kind in [

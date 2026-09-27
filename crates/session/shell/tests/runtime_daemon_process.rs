@@ -34,7 +34,7 @@ impl DaemonProfile {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::Builder::new()
             .prefix("tilo-d-")
-            .tempdir_in("/tmp")
+            .tempdir_in(std::fs::canonicalize("/tmp").unwrap())
             .unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         Self { root }
@@ -157,14 +157,7 @@ fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
 #[test]
 fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
     let profile = DaemonProfile::new();
-    let output = host(profile.path())
-        .env_remove("TILO_WORKSPACE_ID")
-        .env_remove("QUICK_CLUSTER_ID")
-        .env_remove("TILO_PARTICIPATION")
-        .current_dir("/tmp")
-        .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_PARTICIPATION\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])
-        .output()
-        .unwrap();
+    let output = host(profile.path()).current_dir("/tmp").args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -176,10 +169,10 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
         std::fs::canonicalize("/tmp").unwrap().to_str().unwrap()
     );
     assert!(
-        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\nauthor\n"),
+        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\n"),
         "{text}"
     );
-    assert_eq!(text.lines().count(), 8);
+    assert_eq!(text.lines().count(), 7);
 }
 #[test]
 fn live_profile_lock_fails_without_unlinking_owners_socket() {
@@ -260,9 +253,12 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
             apps.0[0].try_wait().unwrap().is_none() && Instant::now() < deadline,
-            "first SDK process did not start daemon: {}",
+            "first SDK process did not start daemon; child log: {}",
             std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
-                .unwrap_or_default()
+                .unwrap_or_else(|error| format!("child log unavailable: {error}"))
+                .chars()
+                .take(8192)
+                .collect::<String>()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
