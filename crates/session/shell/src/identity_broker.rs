@@ -3,7 +3,7 @@
 use crate::shell::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use crate::shell::state::{RoomId, Workspace, WorkspaceTreeHandle};
 use std::{io, path::PathBuf, sync::Arc};
-use tilo_identity_host::broker::{ChannelKeySource, WorkspaceMembership};
+use tilo_identity_host::broker::{ChannelKeySource, ChannelKeys, WorkspaceMembership};
 pub use tilo_identity_host::broker::{
     IdentityBrokerHandle, LocalDeviceIdentity, trusted_current_device_public,
 };
@@ -46,7 +46,7 @@ impl ChannelKeySource for ChannelKeyProvider {
         room: RoomId,
         channel: collab_types::ChannelId,
         known_generation: u64,
-    ) -> Option<Result<(runtime_identity::wire::ChannelAccess, u64, Vec<u8>), String>> {
+    ) -> Option<Result<ChannelKeys, String>> {
         use runtime_identity::wire::ChannelAccess as Wire;
         let channels = self.get()?;
         let (access, generation) = channels.access(room, channel);
