@@ -145,8 +145,36 @@ async fn enrolled_task(
     network: &mut mpsc::Receiver<NeighbourMsg>,
     certified: bool,
 ) -> Task {
-    let grants = workers.publications().unwrap().grants;
+    let grants = offered_grants(workers, documents, network).await;
     enrolled_task_granted(workers, documents, network, certified, grants).await
+}
+
+/// The grants of the current spawn offer, once the workers publish one.
+///
+/// A committed step makes the Writer republish, and until it has, the
+/// publication is not ready and offers no grants. `publications` holds the
+/// last ready offer only for a short while, so a caller that reads it right
+/// after a step on a slow runner gets an empty offer: pump until ready, as a
+/// spawning client waits for the offer.
+async fn offered_grants(
+    workers: &mut AgentWorkers,
+    documents: &mut mpsc::Receiver<PendingHostDocument>,
+    network: &mut mpsc::Receiver<NeighbourMsg>,
+) -> Vec<GrantAction> {
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
+    loop {
+        let publication = workers.publications().unwrap();
+        if publication.ready {
+            return publication.grants;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "workers never offered grants again"
+        );
+        workers.pump().unwrap();
+        drain(workers, documents, network);
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }
 
 /// [`enrolled_task`] with explicit retained grants (v1 tuples or v2 scopes).
@@ -726,7 +754,7 @@ async fn scoped_grants_authorize_steps_by_record_class_and_revocation() {
     use tilo_agent_control_protocol::{
         GrantScope, OperationClass, ScopeBudgets, decode_scope_carrier, scope_carrier,
     };
-    let (directory, owner) = super::tests::selected();
+    let (directory, owner, clock) = super::tests::selected_with_clock();
     let (mut workers, mut documents, mut network) = started(directory.path(), owner).await;
     let live: Vec<_> = workers
         .broker
@@ -907,8 +935,10 @@ async fn scoped_grants_authorize_steps_by_record_class_and_revocation() {
             "type-text",
         )
     };
+    // Owner policy time stands still until the test advances it, so the
+    // budget is measured in policy time, however slow the runner is.
     authorize().unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    clock.advance_monotonic(std::time::Duration::from_millis(1_100));
     let refused = authorize().unwrap_err().to_string();
     assert!(refused.contains("wall-clock"), "{refused}");
 }
@@ -1236,7 +1266,7 @@ async fn writer_ops_stay_offered_after_content_and_restart() {
 async fn agent_participant_has_labelled_writer_presence() {
     let (directory, owner) = super::tests::selected();
     let (mut workers, mut documents, mut network) = started(directory.path(), owner).await;
-    let grants = workers.publications().unwrap().grants;
+    let grants = offered_grants(&mut workers, &mut documents, &mut network).await;
     // Content first, so the document end is a non-empty block.
     let task = enrolled_task(&mut workers, &mut documents, &mut network, true).await;
     let broker = workers.app_broker().unwrap();

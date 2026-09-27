@@ -117,7 +117,7 @@ fn catalogue_json(surfaces: &[PublishedSurface]) -> String {
 async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
     let (directory, owner) = super::super::tests::selected();
     let (mut workers, mut documents, mut network) = started(directory.path(), owner).await;
-    let grants = workers.publications().unwrap().grants;
+    let grants = offered_grants(&mut workers, &mut documents, &mut network).await;
     let scopes = tilo_agent_control_protocol::scopes_from_grants(&grants).unwrap();
     assert!(
         scopes
@@ -154,9 +154,10 @@ async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
                     .any(|a| a.resource == open && a.action == "open")
         })
         .expect("desktop publishes Open Notes");
+    let offered = offered_grants(&mut workers, &mut documents, &mut network).await;
     let catalogue = tilo_action_broker::agent_control::scoped::filter_scoped_catalogue(
         &catalogue_json(std::slice::from_ref(&desktop)),
-        &workers.publications().unwrap().grants,
+        &offered,
     )
     .unwrap();
     assert!(
