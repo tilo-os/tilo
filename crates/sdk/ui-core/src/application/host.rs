@@ -250,6 +250,21 @@ impl NativeProfile {
         })
     }
 
+    /// This process's own profile and continuity instance, when the trusted
+    /// launcher started it as an instance of a room's app.
+    pub(crate) fn of_launch() -> Option<(Self, InstanceId)> {
+        let environment = NativeProcessEnvironment::capture();
+        let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
+        let root = environment.persistent_profile_root().ok()?;
+        let room = environment
+            .workspace_id
+            .as_deref()
+            .or(environment.quick_workspace_id.as_deref());
+        Self::open(&root, room)
+            .ok()
+            .map(|profile| (profile, instance))
+    }
+
     pub fn store(&self) -> &Rc<dyn durable_store::DurableStore> {
         &self.store
     }
@@ -861,7 +876,7 @@ mod native_process_tests {
             profile.store(),
             probe::APP,
             room,
-            &carried,
+            &crate::record::transfer::Origin::Record(carried.clone()),
             crate::record::transfer::Retirement::Moved,
         )
         .unwrap();
