@@ -1441,6 +1441,7 @@ dependencies = [
  "base64",
  "blake3",
  "bounded-zip",
+ "fnv",
  "host-info",
  "pollster",
  "private-fs",
@@ -1570,6 +1571,7 @@ dependencies = [
  "automerge",
  "chrono",
  "chrono-tz",
+ "fnv",
  "mail",
  "pim-lines",
  "qdoc-rich-text",
@@ -1899,6 +1901,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "emoji",
+ "fnv",
  "hex",
  "image",
  "iroh",
@@ -3240,6 +3243,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3282,6 +3286,7 @@ dependencies = [
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3938,6 +3943,7 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
+ "fnv",
  "hex",
  "quick-xml 0.41.0",
  "reqwest",
@@ -6609,6 +6615,7 @@ dependencies = [
  "app-registry",
  "clap",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "getrandom 0.4.3",
  "hex",
  "package-store",
@@ -7429,6 +7436,7 @@ dependencies = [
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "hex",
  "landlock",
  "libc",
@@ -8048,6 +8056,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "futures-util",
  "hex",
  "lettre",
@@ -8105,6 +8114,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "fnv",
  "hex",
  "reqwest",
  "runtime-dylib",
@@ -8427,6 +8437,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "gstreamer",
  "hex",
  "host-info",
@@ -9930,6 +9941,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "fnv",
  "image",
  "runtime-dylib",
  "serde",
@@ -13031,6 +13043,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fluent",
+ "fnv",
  "fs",
  "futures-util",
  "gbm",
@@ -13120,6 +13133,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -14881,6 +14895,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "fluent",
+ "fnv",
  "hex",
  "notes",
  "serde",
@@ -15241,6 +15256,7 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
+ "fnv",
  "hex",
  "neighbour-wire",
  "postcard",
@@ -15516,6 +15532,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-search"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "tantivy",
+ "tracing",
+ "unicode-normalization",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
@@ -15559,6 +15586,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
+ "fnv",
  "form_urlencoded",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -15609,6 +15637,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui-graph",
@@ -15620,7 +15649,6 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
- "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -16422,6 +16450,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "flate2",
+ "fnv",
  "hex",
  "media",
  "private-fs",
@@ -17108,6 +17137,7 @@ dependencies = [
  "atomic-file",
  "bounded-command",
  "collab-types",
+ "fnv",
  "landlock",
  "libc",
  "runtime-portal",
@@ -17338,6 +17368,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "collab-types",
+ "fnv",
  "media",
  "runtime-dylib",
  "serde",
@@ -18812,6 +18843,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "fnv",
  "qdoc",
  "qdoc-codecs",
  "qdoc-pdf",
@@ -18914,7 +18946,6 @@ dependencies = [
  "guillotiere",
  "half",
  "harfrust",
- "hashbrown 0.15.5",
  "hashbrown 0.16.1",
  "hashbrown 0.17.1",
  "hayro-syntax",
@@ -19025,6 +19056,7 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syntect",
+ "tantivy",
  "thiserror 2.0.18",
  "time",
  "time-macros",

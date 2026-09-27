@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+fnv.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde = { workspace = true, features = ["derive"] }

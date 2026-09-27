@@ -1517,6 +1517,33 @@ jobs:
           echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
           [[ $manifest != failed ]]
 
+      # A failed digest gate previously left only two opaque manifest hashes:
+      # the independent archive disappears with its runner. Retain a tiny,
+      # source-bound list of layer/config digests from each lane, with no blob
+      # payload or environment values, so the first difference is actionable.
+      - name: Record OCI layer digests
+        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          role=primary
+          archive=/var/tmp/tilo-image.tar
+          if [[ '${{ matrix.role }}' == reproduce ]]; then
+            role=reproduce
+            archive=/var/tmp/tilo-image-repro.tar
+          fi
+          python3 os/scripts/oci-archive-layer-report.py "$archive" oci-layer-report.json \
+            --source '${{ github.sha }}' --run-id '${{ github.run_id }}' \
+            --arch '${{ matrix.arch }}' --role "$role"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        continue-on-error: true
+        with:
+          name: oci-layer-report-${{ matrix.arch }}-${{ matrix.role == 'reproduce' && 'reproduce' || 'primary' }}
+          path: oci-layer-report.json
+          if-no-files-found: warn
+
       # The publication lane: the uncached rebuild ran in parallel in the
       # reproduction lane of this run. Wait for its manifest digest.
       - name: Wait for the independent rebuild

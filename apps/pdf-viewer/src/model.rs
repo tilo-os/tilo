@@ -10,7 +10,6 @@
 //! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
-use ui::search::SearchTokenizer as _;
 use uuid::Uuid;
 
 /// US-Letter page geometry, in PDF points.
@@ -835,7 +834,7 @@ pub(crate) fn search_text(
         let mut pairs = vec![(0, 0)];
         let mut normalized_end = 0;
         for (source_start, scalar) in text.char_indices() {
-            ui::search::UnicodeTokenizer.fold_char(scalar, &mut |folded| {
+            ui::search::fold_char(scalar, &mut |folded| {
                 normalized_end += folded.len_utf8();
             });
             pairs.push((normalized_end, source_start + scalar.len_utf8()));

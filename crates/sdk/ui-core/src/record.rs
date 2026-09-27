@@ -378,16 +378,12 @@ mod file_identity {
     }
 }
 
-/// FNV-1a, 64-bit. Written out rather than imported: this hash names
-/// directories on disk, so it must be stable across every future crate
-/// version — a guarantee a library's default hasher does not make.
+/// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
+/// the directory names it produces stay stable.
 fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// What kind of thing a record is — `document`, `annotation-set`, `book`,

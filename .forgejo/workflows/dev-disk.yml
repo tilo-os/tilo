@@ -443,6 +443,7 @@ jobs:
             os/dev/check-dev-vm.sh
             os/dev/publish-dev-disk.sh
             os/dev/_common.sh
+            os/dev/probe-kvm.py
           sparse-checkout-cone-mode: false
 
       - name: Apply reviewed disk tooling only
@@ -457,7 +458,7 @@ jobs:
           # the reviewed helper with the reviewed disk script, after the dev
           # image was built from the unmodified OS source.
           for file in disk-image.sh hold-loop-partition-nodes.py private_disk_image.py \
-                      check-dev-vm.sh publish-dev-disk.sh _common.sh; do
+                       check-dev-vm.sh publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"
             install -m 0755 ".ci-disk-tooling/os/dev/$file" "os/dev/$file"
           done
