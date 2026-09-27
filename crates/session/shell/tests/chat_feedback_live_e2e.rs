@@ -25,7 +25,10 @@ use shell::shell::replay::headless::{HeadlessOptions, HeadlessReplay};
 
 const CHAT: &str = "so.tilo.chat";
 const REPORT: &str = "Send does nothing when the To field ends with a comma";
-const RUN: &str = "rcargo test -p shell -p chat -p launcher --test it chat_feedback_live_e2e::";
+/// Build the binaries this test runs, then run it. A test build does not
+/// produce the apps' binaries, so the first step is not optional.
+const RUN: &str = "rcargo build -p chat -p launcher -p shell --bins && \
+                   rcargo test -p shell --test it chat_feedback_live_e2e::";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -44,7 +47,7 @@ fn built(name: &str) -> PathBuf {
         .join(name);
     assert!(
         path.exists(),
-        "{} is not built, so this test cannot run the real app. Build it with the test: {RUN}",
+        "{} is not built, so this test cannot run the real app. Build it, then run the test: {RUN}",
         path.display()
     );
     path
