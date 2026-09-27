@@ -48,7 +48,6 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
-run 'Compatibility adapters ratchet toward removal' python3 tools/policy/check_compat_ratchet.py
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py

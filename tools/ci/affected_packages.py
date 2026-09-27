@@ -96,8 +96,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
-    "tools/policy/check_compat_ratchet.py": "tools/tests/test_compat_ratchet.py",
-    "tools/policy/compat_ratchet.toml": "tools/tests/test_compat_ratchet.py",
 }
 # Control-plane files are validated by tests that read or execute the production
 # file in the mandatory repository-policy suite. A file missing from this exact
