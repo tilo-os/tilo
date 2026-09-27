@@ -732,11 +732,11 @@ fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<Strin
 
 fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {
     let mut notification = crate::shell::notification::Notification::new(
-        "X11 compatibility unavailable",
-        "Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.",
+        crate::shell::i18n::t("xwayland-unavailable-title"),
+        crate::shell::i18n::t("xwayland-unavailable-body"),
     )
     .with_severity(crate::shell::notification::NotificationSeverity::Error)
-    .with_app_name("System")
+    .with_app_name(crate::shell::i18n::t("host-source-system"))
     .with_dismiss_after(crate::shell::notification::PERSISTENT_DISMISS);
     // A broken compatibility service is machine state, not an app's social
     // notification. Do Not Disturb must not conceal the only explanation for

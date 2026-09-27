@@ -33,7 +33,8 @@ pub struct HostApp {
     /// The identity `run-host` resolves and window correlation matches on.
     pub desktop_id: String,
     pub name: String,
-    /// `Flatpak` or `System`, shown so provenance is visible without opening.
+    /// `Flatpak` or `System`: the entry's provenance, as a stable name. People
+    /// read it through [`HostApp::source_display`].
     pub source_label: &'static str,
     pub categories: Vec<String>,
     pub keywords: Vec<String>,
@@ -137,6 +138,15 @@ impl HostApp {
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
             icon: entry.icon.clone(),
+        }
+    }
+
+    /// The provenance as people read it, so it is visible without opening.
+    pub fn source_display(&self) -> String {
+        if self.is_flatpak() {
+            crate::shell::i18n::t("host-app-source-flatpak")
+        } else {
+            crate::shell::i18n::t("host-app-source-system")
         }
     }
 

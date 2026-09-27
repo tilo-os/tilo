@@ -5223,17 +5223,17 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        if !self.has_document {
+        // A document is not open for interaction until the host admits its
+        // markup record: until then every event and action is refused, so it
+        // is still opening, not a page anyone can act on.
+        let opening = self.pending_open.is_some() || self.awaiting_markup_record;
+        if !self.has_document || self.awaiting_markup_record {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(if self.pending_open.is_some() {
-                        "Opening PDF"
-                    } else {
-                        "Open a PDF"
-                    })
+                    .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
                     .with_hashed_key("pdf.empty.heading"),
             ];
-            if self.pending_open.is_some() {
+            if opening {
                 children.push(
                     AccessNode::new(Role::StaticText)
                         .with_name("Opening PDF")
@@ -6267,6 +6267,11 @@ mod tests {
                 assert!(app.awaiting_markup_record);
                 assert!(app.has_pending_visual_work());
                 assert!(Widget::resources(&app, &st.doc).is_empty());
+                let semantics = format!("{:?}", Widget::accessibility(&app));
+                assert!(
+                    semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
+                    "a document awaiting its record offers no page to act on"
+                );
                 assert!(!app.perform_semantic_action(
                     "pdf.tool:2",
                     &ui::a11y::Action::Activate,
