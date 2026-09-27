@@ -260,6 +260,9 @@ pub struct DrmDispatchState {
     /// touch, but the third simultaneous contact transfers it to shell
     /// gestures and cancels the client stream that began before that upgrade.
     direct_touch: DirectTouchOwnership,
+    /// Class of the last physical input reported as [`BackendEvent::InputUsed`],
+    /// so a stream of key presses or pointer motion reports it once.
+    last_input_used: Option<ui::InputModality>,
     /// Set whenever the output set changed, so the backend refreshes its cached list and the compositor re-syncs its `wl_output` globals.
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
@@ -979,6 +982,7 @@ impl DrmDispatchState {
                 ..GestureConfig::default()
             }),
             direct_touch: DirectTouchOwnership::default(),
+            last_input_used: None,
             outputs_changed: false,
             output_meta: HashMap::new(),
             display_capabilities: Vec::new(),
@@ -1048,6 +1052,16 @@ impl DrmDispatchState {
 
     pub fn push(&mut self, ev: BackendEvent) {
         self.events.push(ev);
+    }
+
+    /// Report the class of a physical event when it differs from the last
+    /// one. Emitted ahead of the event itself, so the compositor has already
+    /// switched modality when it handles that event.
+    fn note_input_used(&mut self, modality: ui::InputModality) {
+        if self.last_input_used != Some(modality) {
+            self.last_input_used = Some(modality);
+            self.push(BackendEvent::InputUsed(modality));
+        }
     }
 
     /// Publish the live hardware contract for Settings. Failure is benign in
@@ -2286,6 +2300,7 @@ impl DrmDispatchState {
             | InputEvent::PointerMotion { .. }
             | InputEvent::PointerButton { .. }
             | InputEvent::PointerAxis { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_pointer_event(event);
             }
             // Keyboard: run the libinput keycode through xkb to get a
@@ -2294,6 +2309,9 @@ impl DrmDispatchState {
             // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
             InputEvent::Keyboard { event } => {
                 let pressed = matches!(event.state(), KeyState::Pressed);
+                if pressed {
+                    self.note_input_used(ui::InputModality::Keyboard);
+                }
                 self.handle_keyboard_key(event.key_code(), pressed);
             }
             InputEvent::GestureSwipeBegin { .. }
@@ -2304,19 +2322,26 @@ impl DrmDispatchState {
             | InputEvent::GesturePinchEnd { .. }
             | InputEvent::GestureHoldBegin { .. }
             | InputEvent::GestureHoldEnd { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_gesture_event(event);
             }
-            InputEvent::TouchDown { .. }
-            | InputEvent::TouchMotion { .. }
+            InputEvent::TouchDown { .. } => {
+                self.note_input_used(ui::InputModality::Touch);
+                self.handle_libinput_touch_event(event);
+            }
+            InputEvent::TouchMotion { .. }
             | InputEvent::TouchUp { .. }
             | InputEvent::TouchCancel { .. }
             | InputEvent::TouchFrame { .. } => {
                 self.handle_libinput_touch_event(event);
             }
+            // Using a stylus means the person is pointing rather than typing
+            // or touching.
             InputEvent::TabletToolAxis { .. }
             | InputEvent::TabletToolProximity { .. }
             | InputEvent::TabletToolTip { .. }
             | InputEvent::TabletToolButton { .. } => {
+                self.note_input_used(ui::InputModality::Pointer);
                 self.handle_libinput_tablet_event(&event);
             }
             // Switches (lid, tablet mode) are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered. Tablet pads are read from their own context (`PadInput`), since this backend drops their events.
@@ -2463,6 +2488,10 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
                 self.remember_touch_output_binding(&device);
+                self.push(BackendEvent::InputDeviceAdded {
+                    id: device.id(),
+                    capabilities: device_input_capabilities(&device),
+                });
                 if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad)
                     && let Some(pads) = self.tablets.pads.as_mut()
                 {
@@ -2497,6 +2526,7 @@ impl DrmDispatchState {
                     pads.remove(&device);
                 }
                 self.touch_output_bindings.remove(&device.id());
+                self.push(BackendEvent::InputDeviceRemoved { id: device.id() });
                 self.devices.retain(|d| *d != device);
                 self.publish_input_snapshot();
             }
@@ -3904,6 +3934,31 @@ fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEven
         force: None,
         id: u64::from(slot),
     })
+}
+
+/// What a libinput device contributes to the session's input availability.
+///
+/// Power buttons, lid switches and video-bus hotkeys all claim the keyboard
+/// capability; only a device that can type letters counts as a keyboard, or
+/// every tablet would appear to have one. A drawing tablet steers the pointer.
+fn device_input_capabilities(device: &smithay::reexports::input::Device) -> ui::InputAvailability {
+    use smithay::reexports::input::DeviceCapability;
+    const KEY_A: u32 = 30;
+    let mut capabilities = ui::InputAvailability::NONE;
+    if device.has_capability(DeviceCapability::Keyboard)
+        && device.keyboard_has_key(KEY_A).unwrap_or(false)
+    {
+        capabilities = capabilities.with(ui::InputDevice::Keyboard);
+    }
+    if device.has_capability(DeviceCapability::Pointer)
+        || device.has_capability(DeviceCapability::TabletTool)
+    {
+        capabilities = capabilities.with(ui::InputDevice::Pointer);
+    }
+    if device.has_capability(DeviceCapability::Touch) {
+        capabilities = capabilities.with(ui::InputDevice::Touch);
+    }
+    capabilities
 }
 
 /// Build a `WindowEvent::MouseInput`.

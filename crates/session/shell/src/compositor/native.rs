@@ -91,6 +91,7 @@ use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceS
 use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
@@ -1925,6 +1926,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
+            // The input hardware and last-used modality the chrome adapts
+            // to, and the language the desktop help overlay is written in.
+            "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
@@ -2093,6 +2097,10 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Attached input devices and the last kind of input used, from the
+    /// backend or from injected test-control input alike. The shell chrome's
+    /// shortcut help follows it.
+    input: InputEnvironment,
 }
 
 impl TestControlCtx {
@@ -2104,6 +2112,41 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            input: InputEnvironment::default(),
+        }
+    }
+
+    /// Hand the current input environment to the shell chrome.
+    fn publish_input_environment(&self, fb: &mut FrameBuilder) {
+        fb.host_mut()
+            .apply_input_environment(self.input.environment());
+    }
+
+    /// Fold injected test-control input into the input environment exactly
+    /// as a backend reports physical devices: a named touch device is
+    /// attached by its first contact, and every event class counts as used.
+    fn note_injected_input(&mut self, action: &PlannedAction, fb: &mut FrameBuilder) {
+        let changed = match action {
+            PlannedAction::Touch { device, phase, .. } => {
+                let attached = self.input.device_added(
+                    format!("test-control:{device}"),
+                    ui::InputAvailability::NONE.with(ui::InputDevice::Touch),
+                );
+                let used = matches!(phase, TouchPhaseKind::Down)
+                    && self.input.note_used(ui::InputModality::Touch);
+                attached || used
+            }
+            PlannedAction::KeyboardKey { pressed: true, .. } => {
+                self.input.note_used(ui::InputModality::Keyboard)
+            }
+            PlannedAction::CursorMoved { .. }
+            | PlannedAction::MouseLeftButton { .. }
+            | PlannedAction::MousePointerButton { .. }
+            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            _ => false,
+        };
+        if changed {
+            self.publish_input_environment(fb);
         }
     }
 }
@@ -2272,7 +2315,12 @@ fn pump_controller_navigation(
         // the next intent so it lands in the window now in front.
         frame_builder.host_mut().flush_active_tab_writeback();
         client_input::sync_keyboard_focus(state, frame_builder);
-        frame_builder.host_mut().note_controller_input(family);
+        // Controller use is classified here, at its source. The keystrokes
+        // it synthesised above never reach the input environment, so they
+        // do not count as typing on a keyboard.
+        if ctx.input.note_controller(family) {
+            ctx.publish_input_environment(frame_builder);
+        }
     }
     true
 }
@@ -2448,6 +2496,38 @@ fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
             button: MouseButton::Left,
         },
     ]
+}
+
+/// Wire name of an input modality in `state-dump`.
+fn input_modality_name(modality: ui::InputModality) -> &'static str {
+    match modality {
+        ui::InputModality::Pointer => "pointer",
+        ui::InputModality::Touch => "touch",
+        ui::InputModality::Keyboard => "keyboard",
+        ui::InputModality::Controller => "controller",
+    }
+}
+
+/// `state-dump`'s view of the chrome's input environment.
+fn input_environment_json(
+    environment: ui::InteractionEnvironment,
+    help_modality: ui::InputModality,
+) -> serde_json::Value {
+    let available = [
+        (ui::InputDevice::Keyboard, "keyboard"),
+        (ui::InputDevice::Pointer, "pointer"),
+        (ui::InputDevice::Touch, "touch"),
+        (ui::InputDevice::Controller, "controller"),
+    ]
+    .into_iter()
+    .filter(|(device, _)| environment.available.contains(*device))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "modality": input_modality_name(environment.modality),
+        "available": available,
+        "help_modality": input_modality_name(help_modality),
+    })
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -2675,6 +2755,7 @@ fn execute_planned_action(
     state: Option<&mut State>,
 ) -> Option<Result<crate::shell::search::InvocationDisposition, InvokeFailure>> {
     let mut state = state;
+    ctx.note_injected_input(action, fb);
     match action {
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
@@ -6048,6 +6129,9 @@ pub fn run() {
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    // Nothing is known about the input hardware until the backend announces
+    // devices; the chrome must not keep the toolkit's desktop assumption.
+    test_control_ctx.publish_input_environment(&mut frame_builder);
     frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
@@ -7132,6 +7216,24 @@ pub fn run() {
                         for event in touch_tap_pointer_events(x, y).into_iter().rev() {
                             pending_events.push_front(BackendEvent::Input(event));
                         }
+                    }
+                }
+                BackendEvent::InputDeviceAdded { id, capabilities } => {
+                    if test_control_ctx.input.device_added(id, capabilities) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::InputDeviceRemoved { id } => {
+                    if test_control_ctx.input.device_removed(&id) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::InputUsed(modality) => {
+                    if test_control_ctx.input.note_used(modality) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
                     }
                 }
                 BackendEvent::Focus(focused) => {
