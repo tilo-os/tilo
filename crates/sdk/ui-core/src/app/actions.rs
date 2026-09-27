@@ -2803,12 +2803,19 @@ impl App {
         &self,
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
+        // The app whose actions these are is the one this app collaborates
+        // as: the broker decides by the route's app, and so does this. For a
+        // launched app that is its own package; a headless participant
+        // running an app for an agent collaborates as that app.
+        let app_id = self
+            .collaboration
+            .manager
+            .requested_primary_route()
+            .map_or_else(crate::collaboration::local_app_id, |route| {
+                route.app_id.clone()
+            });
         resource.actions.retain(|action| {
-            crate::bound_dispatch::permits_local_action(
-                &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                action,
-            )
+            crate::bound_dispatch::permits_local_action(&self.permission_ctx, &app_id, action)
         });
         resource.children = resource
             .children

@@ -2519,7 +2519,14 @@ async fn drive_shovel(
                 record,
                 handle,
             }) => {
-                participant_handle = handle;
+                // An agent's handle is the workspace agent it acts as, fixed
+                // when it connected. An app running for it re-announces its
+                // route (with the record it opened) without knowing that, and
+                // must not turn the session back into a nameless agent.
+                participant_handle = match (participant_kind, handle) {
+                    ("agent", None) => participant_handle.take(),
+                    (_, handle) => handle,
+                };
                 let spec = RouteSpec {
                     app_id,
                     cluster_id,
