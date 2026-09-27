@@ -26,6 +26,7 @@ workspace-hack = { version = "0.1" }
 watch = ["dep:notify"]
 
 [dev-dependencies]
+atomic-file = { path = "../atomic-file", features = ["test-support"] }
 tempfile.workspace = true
 
 [lints]

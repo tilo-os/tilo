@@ -53,12 +53,12 @@ fn text_of(doc: &AutoCommit) -> String {
     }
 }
 
-fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |rd| {
-        rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    })
+fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
+    tilo_relay::store::WorkspaceStore::open(state_root, workspace, false)
+        .unwrap()
+        .load_retained()
+        .unwrap()
+        .len()
 }
 
 /// Drain `session` until an `Inbound::Delta` arrives, applying each
@@ -98,7 +98,14 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         let state = tempfile::tempdir().unwrap();
         let host_dev = user.enrol("home-server", DeviceCapabilities::host());
-        let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
+        let host = Box::pin(spawn_relay_on(
+            state.path(),
+            &user,
+            host_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr = host.node_addr();
 
         // Both peers connect and join the workspace's co-edit session.
@@ -172,29 +179,37 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
         //      connected. ----
         let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-        let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+        let host1 = Box::pin(spawn_relay_on(
+            &state_root,
+            &user,
+            host1_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr1 = host1.node_addr();
 
-        // B never connected, so the co-edit must be queued on disk for it.
-        let b_hex = hex::encode(b.device_pubkey());
-        let pending_dir = state_root
-            .join("workspaces")
-            .join(WS.to_string())
-            .join("pending")
-            .join(&b_hex);
-        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &pending_dir).await;
+        // Shared durable coverage serves B even though it has never connected.
+        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &state_root).await;
 
         // ---- The host restarts on the same state directory. ----
         drop(host1);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            pending_count(&pending_dir),
+            retained_count(&state_root, WS),
             1,
             "the queued co-edit must survive the host process dying"
         );
 
         let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-        let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+        let host2 = Box::pin(spawn_relay_on(
+            &state_root,
+            &user,
+            host2_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr2 = host2.node_addr();
 
         // ---- B connects for the very first time, to the restarted host. ----
@@ -206,10 +221,16 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             doc_b.get_heads(),
             "B converges with A across a host restart, never having been online together"
         );
+        let store = tilo_relay::store::WorkspaceStore::open(&state_root, WS, false).unwrap();
         assert_eq!(
-            pending_count(&pending_dir),
+            store.count_pending(&b.device_pubkey()).unwrap(),
             0,
-            "queue drains after delivery"
+            "retained delivery must not create per-device copies"
+        );
+        assert_eq!(
+            store.load_retained().unwrap().len(),
+            1,
+            "the same coverage remains available to newly invited devices"
         );
 
         drop(host2);
@@ -224,7 +245,7 @@ async fn publish_offline_coedit(
     user: &TestUser,
     a: &crate::common::TestDevice,
     ws: u64,
-    pending_dir: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
         client_endpoint().await,
@@ -253,13 +274,16 @@ async fn publish_offline_coedit(
 
     let mut queued = 0;
     for _ in 0..40 {
-        queued = pending_count(pending_dir);
+        queued = retained_count(state_root, ws);
         if queued >= 1 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's co-edit must be persisted for the offline B");
+    assert_eq!(
+        queued, 1,
+        "A's co-edit must be durably retained for the offline B"
+    );
 
     // A disconnects; now neither device is online.
     drop(a_session);

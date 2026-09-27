@@ -226,12 +226,22 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        Decorator::resources_for(self, None, doc)
+    }
+
+    // The resource is the same for every participant (an agent task sees and
+    // invokes the same actions); only the content's tree is per participant.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
         let mut resources = vec![tilo_resource::publish::<R>(
             self.dispatch.resource_id(),
             &self.label,
             &self.live.get(),
         )];
-        resources.extend(self.content.resources(doc));
+        resources.extend(self.content.resources_for(participant, doc));
         resources
     }
 

@@ -422,8 +422,18 @@ impl ActivityTimeline {
     /// Use selection/inspection without offering metadata or direct revert actions.
     #[must_use]
     pub fn with_preview_selection(mut self) -> Self {
-        self.preview_selection = true;
+        self.set_preview_selection(true);
         self
+    }
+
+    /// Enable inspection without mutation affordances. Revocation cancels an
+    /// in-progress naming field before it can emit a metadata write intent.
+    pub fn set_preview_selection(&mut self, preview: bool) {
+        self.preview_selection = preview;
+        if preview {
+            self.naming = None;
+        }
+        self.dirty = true;
     }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {

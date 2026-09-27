@@ -24,6 +24,7 @@ use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 use crate::draw::{self, Icon};
 use crate::model::{Container, ContainerStatus, DistroBox, Image, Stats, Volume};
 use crate::podman::{Action, ImageAction};
+use crate::presentation::{create_form_fields, create_form_geometry, draw_field_frame};
 
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
@@ -2700,9 +2701,7 @@ impl ContainersApp {
             None,
             &full,
         );
-        let mw = 520.0_f64.min(full.width() - 48.0);
-        let mh = 540.0_f64.min(full.height() - 32.0);
-        let modal = Rect::from_center_size(full.center(), (mw, mh));
+        let modal = create_form_geometry(full).modal;
         // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
@@ -2760,54 +2759,20 @@ impl ContainersApp {
         presence: &PresenceCtx,
         modal: Rect,
     ) -> Option<Rect> {
-        let c = &theme.tokens.colors;
         // Deferred so the caller can overlay the combobox dropdown on top of
         // the fields below it.
         let mut combo_input: Option<Rect> = None;
-
-        let row_step = 56.0;
-        let mut y = modal.y0 + 68.0;
-        for field in &CreateField::ALL {
-            let focused = self.create_focus == *field;
-            draw::text(
-                scene,
-                tr,
-                field.label(),
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                Point::new(modal.x0 + 24.0, y),
-                TextWeight::Medium,
-            );
-            let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            if focused {
-                draw::fill_round(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    c.surfaces.base,
-                );
-                draw::stroke_round(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    2.0,
-                    c.border_focus,
-                );
-            } else {
-                draw::card(
-                    scene,
-                    input,
-                    f64::from(theme.tokens.radii.md),
-                    c.surfaces.base,
-                );
-            }
-            let is_image = *field == CreateField::Image;
+        for geometry in create_form_fields(modal) {
+            let field = geometry.field;
+            let input = geometry.input;
+            draw_field_frame(scene, tr, theme, geometry, self.create_focus == field);
+            let is_image = field == CreateField::Image;
             let text_right = if is_image {
                 input.x1 - 38.0
             } else {
                 input.x1 - 12.0
             };
-            let editor = self.create_input_mut(*field);
+            let editor = self.create_input_mut(field);
             editor.apply_layout_external(Rect::new(
                 input.x0 + 12.0,
                 input.y0,
@@ -2815,13 +2780,12 @@ impl ContainersApp {
                 input.y1,
             ));
             Widget::draw(editor, scene, Affine::IDENTITY, tr, theme, presence);
-            self.push_hit(input, Hit::CreateField(*field));
+            self.push_hit(input, Hit::CreateField(field));
             if is_image {
                 // Dropdown chevron toggles the suggestion list.
                 self.draw_create_field_combo_toggle(scene, tr, theme, input);
                 combo_input = Some(input);
             }
-            y += row_step;
         }
         combo_input
     }
@@ -3430,7 +3394,7 @@ impl ContainersApp {
 
     /// Pull whatever is typed into the create-form image field, or prompt
     /// via a quick image pull dialog when empty.
-    fn apply_hit_pull_typed(&mut self, doc: &mut AutoCommit) {
+    fn apply_hit_pull_typed(&mut self, doc: &AutoCommit) {
         let typed = ViewDoc::create_field(doc, CreateField::Image);
         if typed.trim().is_empty() {
             self.prompt = Some(crate::app::Prompt {
@@ -3510,10 +3474,15 @@ impl ContainersApp {
     /// app running `distrobox enter <box>` (see [`crate::terminal`]).
     fn enter_distrobox(&mut self, name: &str) {
         if self.engine.live {
-            self.pending_control_invocation = Some(ui::tilo_actions::ControlInvocation {
-                address: ui::tilo_actions::ActionAddress::new(format!("distrobox:{name}"), "enter"),
-                arguments: serde_json::Map::new(),
-            });
+            let _ = self
+                .pending_control_invocation
+                .emit(ui::tilo_actions::ControlInvocation {
+                    address: ui::tilo_actions::ActionAddress::new(
+                        format!("distrobox:{name}"),
+                        "enter",
+                    ),
+                    arguments: serde_json::Map::new(),
+                });
             self.show_toast(format!("Enter {name} requested"), false);
         } else if !self.live {
             self.show_toast(format!("terminal → distrobox enter {name}"), false);
@@ -3699,7 +3668,7 @@ impl ContainersApp {
 
     /// Number of locally-installed images matching the currently-typed image
     /// query — drives the combobox highlight clamp.
-    fn filtered_image_len(&self, doc: &mut AutoCommit) -> usize {
+    fn filtered_image_len(&self, doc: &AutoCommit) -> usize {
         let typed = ViewDoc::create_field(doc, CreateField::Image);
         let options = self.engine.image_references();
         combobox::filter_options(&options, &typed).len()
@@ -3739,6 +3708,57 @@ mod row_layout_tests {
             .expect("the sample engine has a running container")
     }
 
+    #[test]
+    fn control_custody_containers_all_five_boundaries_copy_empty_descriptors_and_offline_preserves_last()
+     {
+        let (mut app, _requests, _results) = ContainersApp::history_test_runtime_root();
+        app.engine = ContainersApp::history_test_runtime_engine("controlled Podman", true);
+
+        let pending = |app: &ContainersApp| {
+            let invocation = app
+                .pending_control_invocation
+                .controlled_pending_for_test()
+                .expect("retained private descriptor");
+            assert!(invocation.arguments.is_empty());
+            invocation.address
+        };
+
+        app.apply_action(Action::Restart, "armed-container");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("container:armed-container", "restart")
+        );
+        app.remove_image("quay.io/example/image:1");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("image:quay.io/example/image:1", "remove")
+        );
+        app.remove_volume("example-volume");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("volume:example-volume", "remove")
+        );
+        app.attach_shell("armed-container");
+        assert_eq!(
+            pending(&app),
+            ui::tilo_actions::ActionAddress::new("container:armed-container", "shell")
+        );
+        app.enter_distrobox("example-box");
+        let last = pending(&app);
+        assert_eq!(
+            last,
+            ui::tilo_actions::ActionAddress::new("distrobox:example-box", "enter")
+        );
+
+        app.engine.live = false;
+        app.remove_volume("offline-volume");
+        assert_eq!(
+            pending(&app),
+            last,
+            "an offline attempt does not clear the older descriptor"
+        );
+    }
+
     /// Narrow rows stack the status pill before it reaches the actions, and heading and row names share one x.
     #[expect(
         clippy::float_cmp,
@@ -3747,9 +3767,6 @@ mod row_layout_tests {
     #[test]
     fn list_rows_stack_status_when_narrow_and_align_names() {
         // --- phase: narrow_list_stacks_status_when_the_pill_would_reach_the_actions ---
-        // The status pill sits beside the name only while it ends before the
-        // lifecycle buttons start; a 240px list beside an open detail pane does
-        // not have that room and stacks the status under the name instead.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -3778,9 +3795,6 @@ mod row_layout_tests {
         }
 
         // --- phase: name_heading_and_row_name_share_one_x ---
-        // The `NAME` heading and the row name it labels are painted on one x.
-        // Both are read back from real draw passes (glyph-run origins), not from
-        // the constants that produce them.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();

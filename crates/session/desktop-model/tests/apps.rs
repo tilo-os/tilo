@@ -9,12 +9,10 @@
 )]
 
 use automerge::AutoCommit;
-use tilo_desktop_model::apps::{
-    BindRecordError, app_label, bind_tab_record, canonical_app_id, record_routes,
-};
-use tilo_desktop_model::projection::project_owned_contents;
+use tilo_desktop_model::apps::{BindRecordError, bind_tab_record, canonical_app_id, record_routes};
+use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
 use tilo_desktop_model::{
-    APP_ID_PREFIX, AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, compose_id,
+    AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, compose_id,
 };
 
 #[test]
@@ -27,7 +25,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
         };
         assert_eq!(
             canonical_app_id(&terminal),
-            Some(format!("{APP_ID_PREFIX}.Terminal"))
+            Some("so.tilo.terminal".to_owned())
         );
         let foreign = TileContent::Foreign {
             app_id: "org.gimp.GIMP".into(),
@@ -61,7 +59,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             maximized: false,
         });
         let mut doc = AutoCommit::new();
-        project_owned_contents(&mut doc, &[strip], salt, None).unwrap();
+        project_owned_contents(&mut doc, &[strip], salt, None, EmptyStrips::Skip).unwrap();
         assert!(record_routes(&doc).is_empty());
 
         bind_tab_record(&mut doc, StripId(strip_id), group_id, tab_id, "rec-1").unwrap();
@@ -79,19 +77,17 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             Err(BindRecordError::MissingTab)
         ));
     }
-    // Phase `the_label_is_derived_from_the_canonical_id`.
+    // Phase `a_builtin_label_answers_to_its_package_when_one_exists`.
     {
-        for kind in [
-            AppKind::Terminal,
-            AppKind::FileExplorer,
-            AppKind::Browser,
-            AppKind::Settings,
-            AppKind::Other("Notes".into()),
-            AppKind::Other("org.gimp.GIMP".into()),
-        ] {
-            assert_eq!(app_label(&kind.app_id()), kind.as_str(), "{kind:?}");
-        }
-        assert_eq!(app_label("org.tilo."), "org.tilo.");
-        assert_eq!(app_label("org.tilonet.App"), "org.tilonet.App");
+        assert_eq!(AppKind::Other("Notes".into()).app_id(), "so.tilo.notes");
+        assert_eq!(
+            AppKind::Other("Files".into()).app_id(),
+            AppKind::FileExplorer.app_id()
+        );
+        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
+        assert_eq!(
+            AppKind::Other("org.gimp.GIMP".into()).app_id(),
+            "org.gimp.GIMP"
+        );
     }
 }

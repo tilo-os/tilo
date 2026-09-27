@@ -39,7 +39,7 @@ use super::driver::ShellDriver;
 #[derive(Debug, Clone)]
 #[allow(
     dead_code,
-    reason = "the screenshot scenario DSL intentionally keeps actions available before every variant has a catalogue caller"
+    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
 )]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
@@ -1365,6 +1365,10 @@ fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::Sh
 /// Serialise the chrome's externally-observable state into a compact
 /// JSON object. Hand-rolled instead of pulling `serde_derive` because
 /// `ChromeState` lives in another crate we don't want to annotate.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let st = driver.chrome();
     let host = driver.host();
@@ -3404,7 +3408,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 // Back to the first window, which pans the strip home the way
                 // focus always does — the starting position for the travel.
                 Action::SelectGroup(Some(0)),
-                Action::Wait(6),
+                Action::Wait(PAN_SETTLE_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
                 Action::StripPan(10_000.0),
                 Action::Relayout,
@@ -3720,10 +3724,19 @@ pub fn lookup(name: &str) -> Option<Scenario> {
 // Tests
 // =====================================================================
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
-    use shell::shell::state::WorkspaceAuthority as _;
 
     /// Counter sink for assertions: records each `(name, query)` pair
     /// without writing any files. Lets the unit test verify the

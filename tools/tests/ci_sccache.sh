@@ -23,6 +23,7 @@ export PATH="$work/bin:$PATH"
 export TILO_SCCACHE_KEY_PREFIX=tilo/test
 export GITHUB_ENV="$work/github-env"
 export RUSTC=/fixture/rustc
+unset CARGO_INCREMENTAL
 export FAKE_SCCACHE_PROBE_ENV="$work/probe-env"
 unset RUSTUP_AUTO_INSTALL
 
@@ -30,6 +31,7 @@ FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
   bash "$repo/tools/ci/sccache.sh" prepare > "$work/healthy.log"
 grep -Fxq "RUSTC_WRAPPER=$work/bin/sccache" "$GITHUB_ENV"
 grep -Fxq 'SCCACHE_S3_KEY_PREFIX=tilo/test' "$GITHUB_ENV"
+grep -Fxq 'CARGO_INCREMENTAL=0' "$GITHUB_ENV"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/healthy.log"
 # The rustup-proxy check inside the probe, and every later compile, must not
 # download a `stable` toolchain the image does not carry.
@@ -60,5 +62,10 @@ FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
     test "$RUSTUP_AUTO_INSTALL" = 0
   ' _ "$repo" "$work" > "$work/shell.log"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/shell.log"
+! grep -Fq 'CARGO_INCREMENTAL=' "$GITHUB_ENV"
+
+: > "$GITHUB_ENV"
+CARGO_INCREMENTAL=1 FAKE_SCCACHE_STATUS=0 bash "$repo/tools/ci/sccache.sh" prepare > "$work/override.log"
+grep -Fxq 'CARGO_INCREMENTAL=1' "$GITHUB_ENV"
 
 echo 'sccache fail-open contract OK'

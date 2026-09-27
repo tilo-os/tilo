@@ -1615,13 +1615,14 @@ fn scope_phrase(scope: &Scope, object: bool) -> String {
         },
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
-        Scope::Action { app, action } => (
-            "workspace-settings-scope-action",
-            vec![
-                ("action", action.into()),
-                ("app", tilo_desktop_model::apps::app_label(app).into()),
-            ],
-        ),
+        Scope::Action { app, action } => {
+            let name = crate::shell::launcher::display_name_for_app_id(app)
+                .unwrap_or_else(|| crate::shell::launcher::display_name_for_package_id(app));
+            (
+                "workspace-settings-scope-action",
+                vec![("action", action.into()), ("app", name.into())],
+            )
+        }
         Scope::ResourceType(kind) => (
             "workspace-settings-scope-resource-type",
             vec![("kind", artifact_kind_selector(*kind).into())],
@@ -1793,7 +1794,9 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
             SubjectKind::App | SubjectKind::AppAction => {
-                tilo_desktop_model::apps::app_label(&self.id).to_string()
+                crate::shell::launcher::display_name_for_app_id(&self.id).unwrap_or_else(|| {
+                    crate::shell::launcher::display_name_for_package_id(&self.id)
+                })
             }
             _ => self.id.clone(),
         }

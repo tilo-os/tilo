@@ -2921,6 +2921,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     clippy::float_cmp,
     reason = "exact frame geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;

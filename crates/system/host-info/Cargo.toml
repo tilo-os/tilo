@@ -1,0 +1,19 @@
+[package]
+name = "host-info"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Facts about the host operating system (processes, network) for portable Tilo apps"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bounded-command = { path = "../bounded-command" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }

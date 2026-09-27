@@ -22,7 +22,6 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -39,3 +38,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+# The browser runtime embeds this app in wasm32, where the toolkit is the
+# portable build: no native desktop runner, no broker transport, no portal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

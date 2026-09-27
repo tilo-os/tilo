@@ -549,12 +549,14 @@ fn super_period_thumbs_enter_commits_through_the_compositor_when_no_input_method
     }
     assert_eq!(h.state.input_method_owner_kind(), None);
     let later = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+    let offers_input_method_manager = h.clients[later]
+        .peer
+        .globals
+        .iter()
+        .any(|(_, name, _)| name == "zwp_input_method_manager_v2");
+    drop(h);
     assert!(
-        !h.clients[later]
-            .peer
-            .globals
-            .iter()
-            .any(|(_, name, _)| name == "zwp_input_method_manager_v2"),
+        !offers_input_method_manager,
         "an idle seat is only ever lent to the compositor"
     );
 }
@@ -584,16 +586,17 @@ fn a_pick_is_committed_in_the_on_screen_keyboards_session_when_it_owns_the_seat(
         Some(TrustedInputMethod::OnScreenKeyboard),
         "the owner keeps the seat"
     );
+    let owner_connected = h
+        .display
+        .handle()
+        .backend_handle()
+        .get_client_data(h.clients[osk].server.id())
+        .is_ok();
+    let owner_activations = h.clients[osk].peer.activated;
+    drop(h);
+    assert!(owner_connected, "the owner stays connected");
     assert!(
-        h.display
-            .handle()
-            .backend_handle()
-            .get_client_data(h.clients[osk].server.id())
-            .is_ok(),
-        "the owner stays connected"
-    );
-    assert!(
-        h.clients[osk].peer.activated >= 2,
+        owner_activations >= 2,
         "the field re-activated the owner when it got the keyboard back"
     );
 }
@@ -621,7 +624,9 @@ fn escape_cancels_and_nothing_is_committed() {
     for _ in 0..16 {
         assert!(h.tick(&field).is_empty());
     }
-    assert!(h.peer(&field).committed.is_empty());
+    let committed_after_chord = h.peer(&field).committed.clone();
+    drop(h);
+    assert!(committed_after_chord.is_empty());
 }
 
 #[test]
@@ -641,9 +646,11 @@ fn recents_list_the_latest_pick_first() {
         ["🍕".to_string(), "👍".to_string()]
     );
     h.key(Key::Character(".".into()), ModifiersState::SUPER);
-    let items = h.host.emoji_picker().items();
+    let items = h.host.emoji_picker().items().to_vec();
+    let selected = h.host.emoji_picker().selected().map(str::to_owned);
+    drop(h);
     assert_eq!(&items[..2], ["🍕".to_string(), "👍".to_string()]);
-    assert_eq!(h.host.emoji_picker().selected(), Some("🍕"));
+    assert_eq!(selected.as_deref(), Some("🍕"));
 }
 
 #[test]
@@ -657,9 +664,12 @@ fn a_password_field_gets_the_emoji_but_it_is_not_remembered() {
     let delivered = h.tick_until_delivered(&field);
     assert_eq!(delivered.len(), 1);
     assert!(delivered[0].sensitive);
-    assert_eq!(h.peer(&field).committed, [Some("👍".to_string())]);
+    let committed = h.peer(&field).committed.clone();
+    let recents = h.host.emoji_picker().recents().to_vec();
+    drop(h);
+    assert_eq!(committed, [Some("👍".to_string())]);
     assert!(
-        h.host.emoji_picker().recents().is_empty(),
+        recents.is_empty(),
         "nothing typed into a secret field is remembered"
     );
 }

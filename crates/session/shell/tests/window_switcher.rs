@@ -266,13 +266,13 @@ fn holding_alt_through_two_tabs_then_releasing_focuses_the_third_most_recent_win
     assert_eq!(selected.as_deref(), Some("Browser 2"));
 
     h.release_alt();
-    assert_eq!(
-        h.focused(),
-        2,
-        "releasing Alt goes to the third most recent"
-    );
-    assert!(h.switcher_on_screen().is_none());
-    assert!(!h.host.window_switcher_active());
+    let focused = h.focused();
+    let on_screen = h.switcher_on_screen().is_some();
+    let active = h.host.window_switcher_active();
+    drop(h);
+    assert_eq!(focused, 2, "releasing Alt goes to the third most recent");
+    assert!(!on_screen);
+    assert!(!active);
 }
 
 #[test]
@@ -293,7 +293,9 @@ fn a_quick_alt_tab_goes_back_to_the_previous_window_without_showing_the_switcher
     h.hold_alt();
     h.tab_with_alt();
     h.release_alt();
-    assert_eq!(h.focused(), 1, "and again goes back once more");
+    let focused = h.focused();
+    drop(h);
+    assert_eq!(focused, 1, "and again goes back once more");
 }
 
 #[test]
@@ -316,7 +318,9 @@ fn escape_cancels_and_the_later_alt_release_changes_nothing() {
         ElementState::Released,
         ModifiersState::empty(),
     );
-    assert_eq!(h.focused(), 2, "Escape stays on the window it began from");
+    let focused = h.focused();
+    drop(h);
+    assert_eq!(focused, 2, "Escape stays on the window it began from");
 }
 
 #[test]
@@ -361,7 +365,9 @@ fn alt_grave_cycles_the_focused_apps_windows() {
         ElementState::Released,
         ModifiersState::empty(),
     );
-    assert_eq!(h.focused(), 4);
+    let focused = h.focused();
+    drop(h);
+    assert_eq!(focused, 4);
 }
 
 #[test]
@@ -413,6 +419,9 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         },
         ModifiersState::ALT,
     ));
-    assert_eq!(h.focused(), 4);
-    assert!(!h.host.window_switcher_active());
+    let focused = h.focused();
+    let active = h.host.window_switcher_active();
+    drop(h);
+    assert_eq!(focused, 4);
+    assert!(!active);
 }

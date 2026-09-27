@@ -550,7 +550,8 @@ impl PageJumpPalette {
         let row_size = 14.0;
         if self.visible.is_empty() {
             let label = "No notes match";
-            let y = list_top + (ROW_HEIGHT * scale - f64::from(row_size) * scale) / 2.0;
+            let (_, label_h) = text_renderer.measure(label, row_size, None);
+            let y = list_top + (ROW_HEIGHT * scale - f64::from(label_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -595,10 +596,11 @@ impl PageJumpPalette {
                 );
             }
             let subtitle = self.subtitles.get(&row.id);
+            let (_, title_h) = text_renderer.measure(&row.title, row_size, None);
             let ty = if subtitle.is_some() {
                 row_rect.y0 + 7.0 * scale
             } else {
-                row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0
+                row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0
             };
             let available = (row_rect.width() - 24.0 * scale).max(0.0) as f32;
             let title = text_renderer.elide_to_width(&row.title, row_size, available);
