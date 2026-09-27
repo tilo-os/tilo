@@ -61,7 +61,7 @@ path = "src/lib.rs"
 
 [dependencies.atspi-common]
 version = "0.13.0"
-path = "../atspi-common"
+path = "../atspi-common-0.13.0"
 features = ["zbus"]
 default-features = false
 
@@ -85,7 +85,7 @@ tracing = "0.1.40"
 
 [dev-dependencies.atspi-common]
 version = "0.13.0"
-path = "../atspi-common"
+path = "../atspi-common-0.13.0"
 
 [dev-dependencies.futures-lite]
 version = "2.6.0"

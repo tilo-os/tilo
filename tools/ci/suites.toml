@@ -420,11 +420,13 @@ readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
-# Scaffolding and the dev loop locate the SDK and the UI builder in the tree.
+# Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
+# standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
+  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs"]
+readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
