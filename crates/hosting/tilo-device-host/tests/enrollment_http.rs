@@ -110,6 +110,21 @@ async fn enroll(origin: &str, route: &str, body: String, cap: &str) -> (u16, ser
         wait_subscribed(origin, deadline).await;
     }
 }
+/// Enrollment must not drop the host's native subscription. A reconnecting 503
+/// here means the in-process relay backed up while membership ran.
+async fn enroll_without_subscription_drop(
+    origin: &str,
+    route: &str,
+    body: String,
+    cap: &str,
+) -> (u16, serde_json::Value) {
+    let (code, response) = request(origin, route, Some(body), Some(cap)).await;
+    assert!(
+        !reconnecting(code, &response),
+        "host dropped its native relay subscription under enrollment load: {response}"
+    );
+    (code, response)
+}
 async fn proof(origin: &str, cap: &str, key: &SigningKey, id: u8) -> enrollment::CompleteRequest {
     let request_body = serde_json::to_string(&ChallengeRequest {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
@@ -138,7 +153,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
         tasks.push(tokio::spawn(async move {
             let key = SigningKey::from_bytes(&[n; 32]);
             let complete = proof(&origin, &cap, &key, n).await;
-            let (code, response) = enroll(
+            let (code, response) = enroll_without_subscription_drop(
                 &origin,
                 "/enrollment/complete",
                 serde_json::to_string(&complete).unwrap(),
