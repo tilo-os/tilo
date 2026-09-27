@@ -25,6 +25,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 mod json;
 mod pack;
 pub mod portability;
+pub mod size;
 pub mod standalone;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -503,6 +504,7 @@ pub struct PackageRequest {
 pub struct PackageOutcome {
     pub output: PathBuf,
     pub entrypoints: Vec<PathBuf>,
+    pub size: size::SizeReport,
 }
 
 /// One validated edit to a serialized UI object graph.
@@ -4591,15 +4593,11 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             spec.app_dir.join("Cargo.toml").display()
         );
     }
-    let profile = request.profile.clone().unwrap_or_else(|| {
-        if request.static_link {
-            "release"
-        } else {
-            "thin-app"
-        }
-        .to_owned()
-    });
-    validate_profile_name(&profile)?;
+    let profile = package_profile(request)?;
+    let budget = std::fs::read_to_string(&spec.manifest_path)
+        .map_err(anyhow::Error::from)
+        .and_then(|source| size::Budget::from_manifest(&source))
+        .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?;
     let output = request.output.as_ref().map_or_else(
         || {
             spec.app_dir
@@ -4664,6 +4662,12 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         tilo_app_package::SigningIdentity::generate()
     };
     let packed = pack::pack_payload(&spec.manifest_path, &payload, &staged_package, &identity)?;
+    let entrypoints: Vec<PathBuf> = spec
+        .entrypoints
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect();
+    let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(
@@ -4674,8 +4678,49 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     );
     Ok(PackageOutcome {
         output,
-        entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
+        entrypoints,
+        size,
     })
+}
+
+fn package_profile(request: &PackageRequest) -> Result<String> {
+    let profile = request.profile.clone().unwrap_or_else(|| {
+        if request.static_link {
+            "release"
+        } else {
+            "thin-app"
+        }
+        .to_owned()
+    });
+    validate_profile_name(&profile)?;
+    Ok(profile)
+}
+
+/// Prints where the staged package's bytes go and refuses it when it exceeds
+/// the app's `[budget]`, before anything replaces `output`.
+fn within_budget(
+    payload: &Path,
+    entrypoints: &[PathBuf],
+    archive: u64,
+    budget: size::Budget,
+    output: &Path,
+) -> Result<size::SizeReport> {
+    let size = size::SizeReport::measure(payload, entrypoints, archive, budget)?;
+    eprintln!("{}", size.render());
+    let overruns = size.overruns();
+    if !overruns.is_empty() {
+        let kept = if output.exists() {
+            "the previous package was kept"
+        } else {
+            "nothing was written"
+        };
+        bail!(
+            "over budget, so {kept} at {}:\n  {}",
+            output.display(),
+            overruns.join("\n  ")
+        );
+    }
+    Ok(size)
 }
 
 fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
