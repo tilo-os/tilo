@@ -1282,22 +1282,81 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )?;
+    bind_control_listener(path, "test_control")
+}
+
+/// Environment variable naming the agent-control socket.
+pub const AGENT_CONTROL_ENV: &str = "TILO_AGENT_CONTROL";
+
+/// Resolve the agent-control socket path. Only a build with the
+/// non-default `agent-control` feature, running the headless backend (a
+/// hosted machine an agent drives, with no local person or lock screen),
+/// binds one; `enabled` and `headless` are parameters so every branch is
+/// testable from any build.
+pub(crate) fn agent_control_path(
+    enabled: bool,
+    headless: bool,
+    raw: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if !enabled || !headless {
+        return None;
+    }
+    raw.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
+fn bind_agent_control_socket(headless: bool) -> Option<(UnixListener, UnlinkOnDrop)> {
+    let path = agent_control_path(
+        cfg!(feature = "agent-control"),
+        headless,
+        std::env::var_os(AGENT_CONTROL_ENV),
+    )?;
+    bind_control_listener(path, "agent_control")
+}
+
+fn bind_control_listener(path: PathBuf, label: &str) -> Option<(UnixListener, UnlinkOnDrop)> {
     // Replaces a stale socket; only this user can ever connect.
     match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
-                eprintln!("tilo compositor: test_control set_nonblocking: {e}");
+                eprintln!("tilo compositor: {label} set_nonblocking: {e}");
                 return None;
             }
-            eprintln!(
-                "tilo compositor test_control listening on {}",
-                path.display()
-            );
+            eprintln!("tilo compositor {label} listening on {}", path.display());
             let guard = UnlinkOnDrop(path);
             Some((listener, guard))
         }
         Err(e) => {
-            eprintln!("tilo compositor: test_control bind {}: {e}", path.display());
+            eprintln!("tilo compositor: {label} bind {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Register a duplicate of a control listener as a wake token so a driver
+/// which connects to an idle compositor is serviced immediately. Accepting
+/// and executing requests stays on the compositor thread; this source only
+/// prevents the outer calloop from sleeping through the listener's
+/// readability.
+fn control_listener_wake(
+    listener: &UnixListener,
+    handle: &calloop::LoopHandle<'static, State>,
+) -> Option<calloop::RegistrationToken> {
+    let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        eprintln!(
+            "tilo compositor: control listener duplicate: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+    match handle.insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+        Ok(PostAction::Continue)
+    }) {
+        Ok(token) => Some(token),
+        Err(error) => {
+            eprintln!("tilo compositor: control listener wake source: {error}");
             None
         }
     }
@@ -1384,6 +1443,9 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    /// Accepted on the agent-control socket: only
+    /// [`test_control::Command::agent_permitted`] commands are served.
+    agent: bool,
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
@@ -1419,13 +1481,14 @@ impl PendingTestControlInvocation {
 }
 
 impl TestControlConn {
-    fn new(stream: UnixStream) -> Option<Self> {
+    fn new(stream: UnixStream, agent: bool) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
             eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
             return None;
         }
         Some(Self {
             reader: BufReader::new(stream),
+            agent,
             wake: None,
             closed: false,
             pending_invocation: None,
@@ -3220,6 +3283,14 @@ fn pump_test_control_conn(
             }
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
+                    Ok(cmd) if conn.agent && !cmd.agent_permitted() => (
+                        test_control::Response::Err {
+                            code: "not_permitted".to_string(),
+                            message: "the agent-control socket serves input and screenshots only"
+                                .to_string(),
+                        },
+                        Vec::new(),
+                    ),
                     Ok(cmd) => {
                         // Settle layout before anything reads a rect. The relayout after an action
                         // (below) covers a tree the *socket* changed, not one a **client** changed
@@ -6148,38 +6219,25 @@ pub fn run() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
     };
+    // The agent-control socket (`TILO_AGENT_CONTROL`, `agent-control`
+    // builds on the headless backend only) serves the input and screenshot
+    // subset of the same protocol to an agent driving a hosted machine.
+    let (agent_control_listener, agent_control_unlink) =
+        match bind_agent_control_socket(backend_kind == BackendKind::Headless) {
+            Some((l, g)) => (Some(l), Some(g)),
+            None => (None, None),
+        };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
-    // A test-control client is itself an event source.  Register a duplicate
-    // of the listener as a wake token so a driver which connects to an idle
-    // compositor is serviced immediately.  Accepting and executing requests
-    // stays below on the compositor thread; this source only prevents the
-    // outer calloop from sleeping through the listener's readability.  Each
-    // accepted stream gets its own wake (see `TestControlConn::watch`), because
-    // a connection is accepted as soon as it exists, which is often before
-    // the request bytes that follow it have arrived.
-    let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
-        let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-        if duplicate < 0 {
-            eprintln!(
-                "tilo compositor: test_control listener duplicate: {}",
-                std::io::Error::last_os_error()
-            );
-            return None;
-        }
-        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-        match event_loop
-            .handle()
-            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
-                Ok(PostAction::Continue)
-            }) {
-            Ok(token) => Some(token),
-            Err(error) => {
-                eprintln!("tilo compositor: test_control listener wake source: {error}");
-                None
-            }
-        }
-    });
+    // A control client is itself an event source. Each accepted stream gets
+    // its own wake (see `TestControlConn::watch`), because a connection is
+    // accepted as soon as it exists, which is often before the request bytes
+    // that follow it have arrived.
+    let _test_control_listener_wake = test_control_listener
+        .as_ref()
+        .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
+    let _agent_control_listener_wake = agent_control_listener
+        .as_ref()
+        .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -9449,18 +9507,22 @@ pub fn run() {
         // iteration, so a request already written is answered without
         // another calloop sleep. One written after this drain wakes the loop
         // through the connection's own source.
-        if let Some(listener) = &test_control_listener {
+        for (listener, agent) in [
+            (test_control_listener.as_ref(), false),
+            (agent_control_listener.as_ref(), true),
+        ] {
+            let Some(listener) = listener else { continue };
             loop {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        if let Some(mut conn) = TestControlConn::new(stream) {
+                        if let Some(mut conn) = TestControlConn::new(stream, agent) {
                             conn.watch(&event_loop.handle());
                             test_control_conns.push(conn);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        eprintln!("tilo compositor: test_control accept: {e}");
+                        eprintln!("tilo compositor: control accept: {e}");
                         break;
                     }
                 }
@@ -9650,6 +9712,7 @@ pub fn run() {
     // Explicitly drop service guards in dependency order so the next session
     // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);
+    drop(agent_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
@@ -10679,6 +10742,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn agent_control_binds_only_for_an_agent_control_build_on_the_headless_backend() {
+        let raw = || Some(std::ffi::OsString::from("/run/tilo/agent.sock"));
+        assert_eq!(agent_control_path(false, true, raw()), None);
+        assert_eq!(agent_control_path(true, false, raw()), None);
+        assert_eq!(
+            agent_control_path(true, true, raw()),
+            Some(PathBuf::from("/run/tilo/agent.sock"))
+        );
+        assert_eq!(agent_control_path(true, true, None), None);
+        assert_eq!(
+            agent_control_path(true, true, Some("relative.sock".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn the_agent_control_socket_serves_input_and_screenshots_only() {
+        use test_control::Command;
+        for permitted in [
+            r#"{"op":"click_at","x":1,"y":2}"#,
+            r#"{"op":"type","text":"hi"}"#,
+            r#"{"op":"key_down","key":"Control"}"#,
+            r#"{"op":"snapshot","path":"/tmp/x.png"}"#,
+            r#"{"op":"pointer_button","pressed":true,"button":"right"}"#,
+            r#"{"op":"clipboard_paste"}"#,
+        ] {
+            let command: Command = serde_json::from_str(permitted).unwrap();
+            assert!(command.agent_permitted(), "{permitted}");
+        }
+        for refused in [
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"revoke","id":"x"}"#,
+            r#"{"op":"state_dump"}"#,
+            r#"{"op":"actions_invoke","provider":"actions","id":"x"}"#,
+            r#"{"op":"mint_host_launch_activation","desktop_id":"x","display_name":"x"}"#,
+            r#"{"op":"seed_files_drag","paths":[]}"#,
+        ] {
+            let command: Command = serde_json::from_str(refused).unwrap();
+            assert!(!command.agent_permitted(), "{refused}");
+        }
+    }
+
     // developer surfaces are absent from a shipped build
 
     #[test]
@@ -10787,7 +10893,7 @@ mod tests {
                     .get_mut()
                     .set_nonblocking(true)
                     .expect("nonblocking client");
-                let mut conn = TestControlConn::new(server).expect("server connection");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
 
                 writer
                     .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
@@ -10853,7 +10959,7 @@ mod tests {
                     .get_mut()
                     .set_nonblocking(true)
                     .expect("nonblocking second client");
-                let mut other_conn = TestControlConn::new(other_server).expect("second connection");
+                let mut other_conn = TestControlConn::new(other_server, false).expect("second connection");
                 other_writer
                     .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
                     .expect("second connection request");
@@ -11011,7 +11117,7 @@ mod tests {
                     .get_mut()
                     .set_nonblocking(true)
                     .expect("nonblocking client");
-                let mut conn = TestControlConn::new(server).expect("server connection");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
                 let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
                 writer.write_all(enumerate).expect("cold directory query");
                 pump_test_control_conn(
@@ -11125,7 +11231,7 @@ mod tests {
                     .get_mut()
                     .set_nonblocking(true)
                     .expect("nonblocking client");
-                let mut conn = TestControlConn::new(server).expect("server connection");
+                let mut conn = TestControlConn::new(server, false).expect("server connection");
 
                 let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
                 writer.write_all(enumerate).expect("cold directory query");
@@ -11259,7 +11365,7 @@ mod tests {
 
             let (server, mut client) = UnixStream::pair().expect("socket pair");
             client.set_nonblocking(true).expect("nonblocking client");
-            let mut conn = TestControlConn::new(server).expect("server connection");
+            let mut conn = TestControlConn::new(server, false).expect("server connection");
             let response = test_control::Response::Answer(serde_json::json!({
                 "blob": "x".repeat(8 * 1024 * 1024),
             }));
@@ -11324,7 +11430,7 @@ mod tests {
         let display: Display<State> = Display::new().expect("display");
         let mut state = State::new(event_loop.handle(), display.handle());
         let (server, mut client) = UnixStream::pair().expect("socket pair");
-        let mut conn = TestControlConn::new(server).expect("server connection");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
         conn.watch(&event_loop.handle());
 
         // Nothing to read yet, so the loop sleeps out its whole timeout.

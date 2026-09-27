@@ -1027,6 +1027,34 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
     })
 }
 
+impl Command {
+    /// Whether an agent-control connection may send this command: pointer,
+    /// keyboard and clipboard input, screenshots and read-only frame and
+    /// target inventories. Everything that grants, invokes, seeds fixtures
+    /// or reaches around the input path stays test-only.
+    #[must_use]
+    pub const fn agent_permitted(&self) -> bool {
+        matches!(
+            self,
+            Self::ListTargets
+                | Self::ClickAt { .. }
+                | Self::Drag { .. }
+                | Self::ForeignFrames
+                | Self::Key { .. }
+                | Self::KeyDown { .. }
+                | Self::KeyUp { .. }
+                | Self::Scroll { .. }
+                | Self::Type { .. }
+                | Self::Modifiers { .. }
+                | Self::Snapshot { .. }
+                | Self::PointerMove { .. }
+                | Self::PointerButton { .. }
+                | Self::ClipboardCopy { .. }
+                | Self::ClipboardPaste { .. }
+        )
+    }
+}
+
 /// Serialise a response to a single JSON line (the transport adds the newline).
 pub fn serialise_response(resp: &Response) -> String {
     serde_json::to_string(resp).unwrap_or_else(|error| {
