@@ -48,6 +48,8 @@ third-party = [
 #   (os/kernel/project-crate.py).
 # - tilo-vm, its protocol and xdg-paths are the tilo-vm Windows CLI's whole
 #   workspace graph; keep that cross build to the crates it uses.
+# - atomic-file is the builder image's sccache canary, compiled cold into an
+#   empty namespace (build-builder-image.yml); it must stay small.
 workspace-members = [
     # tilo-desktop-model and its member dependencies
     "collab-types",
@@ -64,4 +66,6 @@ workspace-members = [
     "tilo-vm",
     "tilo-vm-protocol",
     "xdg-paths",
+    # builder sccache canary
+    "atomic-file",
 ]
