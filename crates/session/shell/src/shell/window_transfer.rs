@@ -33,10 +33,14 @@
 //! 4. A **Copy** stops after step 2: the source keeps its window and record,
 //!    and the two histories diverge from there.
 //!
+//! A native app without records keeps one document for itself in the room
+//! ([`ui::persist`]); that document is what its window carries, arriving as
+//! a record the new instance opens by its saved presentation.
+//!
 //! An app that keeps its state only in its running process (an X11 or plain
-//! Wayland client, or a native app without a saved record) cannot carry it.
-//! Its sheet says so and offers a new, empty window in the destination; the
-//! old window is never asked to close.
+//! Wayland client with no Tilo profile) cannot carry it. Its sheet says so
+//! and offers a new, empty window in the destination; the old window is
+//! never asked to close.
 //!
 //! Workspaces hosted by a room owner keep their records with that owner, not
 //! in this device's app profiles, so a transfer into or out of one is refused
@@ -49,7 +53,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::oneshot;
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
-use ui::record::transfer::{self, Retirement, TransferError};
+use ui::record::transfer::{self, Origin, Retirement, TransferError};
 use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::chrome_state::ChromeState;
@@ -115,7 +119,7 @@ enum Carry {
     /// resume projection it last reported.
     Record {
         instance: u64,
-        record: RecordCheckout,
+        origin: Origin,
         view: Box<SavedInstanceView>,
         resume: Option<(u16, Vec<u8>)>,
         /// Why Move is not offered, when another window still shows the record.
@@ -141,12 +145,23 @@ struct Plan {
 
 /// The record once it has arrived in the destination.
 struct Carried {
-    record: RecordCheckout,
+    origin: Origin,
     target: RecordCheckout,
     known: Vec<ChangeHash>,
     source_root: PathBuf,
     destination_root: PathBuf,
     instance: u64,
+}
+
+impl Carried {
+    /// The record the source room's activity names as the one that left:
+    /// the record itself, or for an app's own document the record it became.
+    fn left(&self) -> &RecordCheckout {
+        match &self.origin {
+            Origin::Record(record) => record,
+            Origin::AppDocument(_) => &self.target,
+        }
+    }
 }
 
 enum Phase {
@@ -325,31 +340,51 @@ fn instance_of(
     })
 }
 
-/// The record `instance` shows in the profile at `directory`, when it saved
-/// one that can travel.
-fn saved_record(
+/// What `instance` of `app_id` shows in the profile at `directory`, when it
+/// can travel: the record its saved presentation names, else the document
+/// the app keeps for itself in the room ([`ui::persist`]), with the
+/// presentation it carries along.
+fn shown(
     directory: &Path,
     room: RoomId,
+    app_id: &str,
     instance: u64,
-) -> Option<(RecordCheckout, SavedInstanceView)> {
+) -> Option<(Origin, SavedInstanceView)> {
     if !directory.is_dir() {
         return None;
     }
     let profile = NativeProfile::open(directory, Some(&room.to_string())).ok()?;
-    let view = profile.saved_view(instance).ok()??;
-    let id = RecordId::parse(&view.record_id)?;
-    if id.is_package_primary() {
-        return None;
+    let readable = |origin: &Origin| {
+        transfer::read(profile.store(), app_id, profile.workspace_id(), origin).is_ok()
+    };
+    if let Some(view) = profile.saved_view(instance).ok().flatten()
+        && view.app_id == app_id
+        && let Some(id) = RecordId::parse(&view.record_id).filter(|id| !id.is_package_primary())
+    {
+        let origin = Origin::Record(RecordCheckout::new(
+            id,
+            ui::record::RecordKind::new(view.record_kind.clone()),
+        ));
+        if readable(&origin) {
+            return Some((origin, view));
+        }
     }
-    let record = RecordCheckout::new(id, ui::record::RecordKind::new(view.record_kind.clone()));
-    transfer::read(
-        profile.store(),
-        &view.app_id,
-        profile.workspace_id(),
-        &record,
-    )
-    .ok()?;
-    Some((record, view))
+    let kind = ui::record::RecordKind::new(transfer::APP_DOCUMENT_KIND);
+    let origin = Origin::AppDocument(kind.clone());
+    readable(&origin).then(|| {
+        let view = SavedInstanceView {
+            version: 2,
+            app_id: app_id.to_owned(),
+            device_id: profile.device_id().to_owned(),
+            workspace_id: profile.workspace_id().to_owned(),
+            instance_id: instance,
+            record_id: RecordId::for_tab(instance).as_str().to_owned(),
+            record_kind: kind.as_str().to_owned(),
+            view: ui::view::View::default(),
+            application: None,
+        };
+        (origin, view)
+    })
 }
 
 fn plan(
@@ -397,7 +432,7 @@ fn plan(
         .and_then(|home| {
             let instance = instance_of(tree, tab, source.room, &tile_app, &app_id)?;
             let root = profile_root(home, source.room, &app_id);
-            let (record, view) = saved_record(&root, source.room, instance)?;
+            let (origin, view) = shown(&root, source.room, &app_id, instance)?;
             let launch = LaunchIntent::app(app_id.clone()).ok()?;
             let resume = crate::shell::personal_continuity_registry::global_registry()
                 .lock()
@@ -415,13 +450,17 @@ fn plan(
                     (other_app == app_id).then_some((other.id, other_tile_app))
                 })
                 .any(|(other, other_tile_app)| {
-                    instance_of(tree, other, source.room, &other_tile_app, &app_id)
-                        .and_then(|other_instance| saved_record(&root, source.room, other_instance))
-                        .is_some_and(|(shown, _)| shown.id == record.id)
+                    match instance_of(tree, other, source.room, &other_tile_app, &app_id) {
+                        Some(other) => shown(&root, source.room, &app_id, other)
+                            .is_some_and(|(other, _)| other == origin),
+                        // An instance nothing is known about shares the app's
+                        // own document, the one thing every window opens.
+                        None => matches!(origin, Origin::AppDocument(_)),
+                    }
                 });
             Some(Carry::Record {
                 instance,
-                record,
+                origin,
                 view: Box::new(view),
                 resume,
                 move_blocked,
@@ -916,7 +955,7 @@ fn transfer_reason(error: &TransferError) -> String {
 /// it had. Returns the arrived record and the source heads it was read at.
 fn import(
     plan: &Plan,
-    record: &RecordCheckout,
+    origin: &Origin,
     view: &SavedInstanceView,
     instance: u64,
     source_root: &Path,
@@ -929,12 +968,13 @@ fn import(
     let destination =
         NativeProfile::open(destination_root, Some(&plan.destination.room.to_string()))
             .map_err(storage)?;
-    let snapshot = transfer::read(source.store(), &plan.app_id, source.workspace_id(), record)
+    let snapshot = transfer::read(source.store(), &plan.app_id, source.workspace_id(), origin)
         .map_err(|error| transfer_reason(&error))?;
     let known = snapshot.clone().get_heads();
     let mut rehomed = transfer::rehome(
         &snapshot,
-        record,
+        origin,
+        source.workspace_id(),
         destination.workspace_id(),
         &RecordId::minted(),
     )
@@ -961,7 +1001,7 @@ fn begin(
 ) -> Option<Phase> {
     let Carry::Record {
         instance,
-        record,
+        origin,
         view,
         resume,
         move_blocked,
@@ -994,7 +1034,7 @@ fn begin(
     };
     let arrived = import(
         plan,
-        record,
+        origin,
         view,
         instance,
         &source_root,
@@ -1008,7 +1048,7 @@ fn begin(
         }
     };
     let carried = Box::new(Carried {
-        record: record.clone(),
+        origin: origin.clone(),
         target,
         known,
         source_root,
@@ -1120,7 +1160,7 @@ fn roll_back(
             destination.store(),
             &plan.app_id,
             destination.workspace_id(),
-            &carried.target,
+            &Origin::Record(carried.target.clone()),
             Retirement::Abandoned,
         );
     }
@@ -1207,7 +1247,7 @@ fn release(
         source.store(),
         &plan.app_id,
         source.workspace_id(),
-        &carried.record,
+        &carried.origin,
     ) {
         Ok(false) => return Some(Phase::Releasing { tab, carried }),
         Ok(true) => {}
@@ -1220,7 +1260,7 @@ fn release(
         source.store(),
         &plan.app_id,
         source.workspace_id(),
-        &carried.record,
+        &carried.origin,
     ) {
         Ok(last) => last,
         Err(error) => {
@@ -1357,7 +1397,7 @@ fn finish_move(
             source.store(),
             &plan.app_id,
             source.workspace_id(),
-            &carried.record,
+            &carried.origin,
             Retirement::Moved,
         )
     {
@@ -1369,7 +1409,7 @@ fn finish_move(
         plan.source.workspace,
         &plan.app_id,
         &plan.title,
-        &carried.record,
+        carried.left(),
         t_args(
             "window-transfer-receipt-moved-out",
             &[

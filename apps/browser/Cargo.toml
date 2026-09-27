@@ -26,6 +26,7 @@ wpe = ["ui/webview"]
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+fnv.workspace = true
 private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
 advisory-lock = { path = "../../crates/system/advisory-lock" }
