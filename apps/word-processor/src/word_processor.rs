@@ -307,8 +307,14 @@ impl WordProcessor {
 
     /// Selection endpoints in document order, if non-empty.
     pub fn selection_span(&self, state: &AutoCommit) -> Option<(Caret, Caret)> {
+        // Bail before `ordered_blocks`: a lone caret must not scan the body
+        // list (see `framework_host` keystroke-cost test).
+        let anchor = self.selection_anchor.as_ref()?;
+        if anchor == &self.caret {
+            return None;
+        }
         let blocks = self.ordered_blocks(state);
-        ordered_selection_span(self.selection_anchor.as_ref(), &self.caret, |id| {
+        ordered_selection_span(Some(anchor), &self.caret, |id| {
             blocks.iter().position(|b| b == id)
         })
     }
