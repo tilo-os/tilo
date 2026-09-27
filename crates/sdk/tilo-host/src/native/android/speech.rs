@@ -73,7 +73,7 @@ impl tts::Speaker for AndroidSpeaker {
                 self.refusing = true;
             }
             Err(error) => {
-                tracing::warn!(target: "tilo_ui::speech", %error, "text-to-speech failed")
+                tracing::warn!(target: "tilo_ui::speech", %error, "text-to-speech failed");
             }
         }
     }
