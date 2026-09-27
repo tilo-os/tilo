@@ -10,9 +10,6 @@ const NATIVE_CONSENT_CHILD_PROOF: &str = "TILO_NATIVE_CONSENT_CHILD_PROOF";
 const NATIVE_CONSENT_FIXTURE_ROOT: &str = "TILO_NATIVE_CONSENT_FIXTURE_ROOT";
 const MISLEADING_TILO_USER_ID: &str = "environment-owner-must-not-select-identity";
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn wait_for_native_consent_child(
     child: &mut std::process::Child,
     test_name: &str,

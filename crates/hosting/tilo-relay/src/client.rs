@@ -1297,9 +1297,6 @@ fn poll_queued<T>(
 mod scheduling_tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     struct GatedWrite {
         started: Option<tokio::sync::oneshot::Sender<()>>,
         release: tokio::sync::oneshot::Receiver<()>,
@@ -1925,9 +1922,6 @@ mod session_carrier_tests {
     use super::*;
     use crate::session_carrier::{SessionCarrier, SessionChannels};
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
-
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
     struct TestCarrier {
         events: Arc<Mutex<Vec<&'static str>>>,

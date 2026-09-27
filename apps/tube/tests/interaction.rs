@@ -24,9 +24,6 @@ use tube::model::Route;
 
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 #[test]
 #[allow(
     clippy::too_many_lines,

@@ -24,9 +24,6 @@ use std::time::{Duration, Instant};
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 fn name(byte: char) -> String {
     format!("{}/{}", "a".repeat(64), byte.to_string().repeat(64))
 }

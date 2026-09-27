@@ -268,9 +268,6 @@ impl LockController {
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::compositor::lock_auth::{FixedVerifier, PasswordVerifier};
     use std::sync::{Condvar, Mutex};

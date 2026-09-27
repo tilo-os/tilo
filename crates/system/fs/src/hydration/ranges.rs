@@ -673,8 +673,6 @@ impl Hydrator {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use crate::content::{ChunkRef, ChunkTier};
 
     fn manifest(lens: &[u32]) -> Manifest {

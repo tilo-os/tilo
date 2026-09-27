@@ -10285,7 +10285,6 @@ pub mod tests {
     use std::time::SystemTime;
 
     #[cfg(test)]
-    use crate::HANG_BOUND;
     #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]

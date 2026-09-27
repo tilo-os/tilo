@@ -2998,8 +2998,6 @@ mod search_screen_tests {
     use std::sync::Arc;
     use taffy::prelude::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::widget::Widget;

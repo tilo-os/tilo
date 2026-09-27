@@ -23,9 +23,6 @@ use ui::State;
 use ui::a11y::Role;
 use ui::headless::Driver;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn driver() -> Driver {
     // The demo build populates collections / environments / history / a
     // response so every control class is present.

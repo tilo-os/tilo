@@ -390,9 +390,6 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     fn header(kind: u16, size: u32) -> Vec<u8> {
         let mut bytes = b"TLD3".to_vec();
         bytes.extend_from_slice(&3u16.to_le_bytes());

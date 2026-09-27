@@ -76,9 +76,6 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     #[test]
     fn an_atomic_rewrite_is_reported_and_sibling_files_are_not() {
         let root = crate::tests::tmpdir();

@@ -12,9 +12,6 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),

@@ -690,7 +690,6 @@ mod tests {
     use std::sync::mpsc::TryRecvError;
 
     use super::*;
-    use crate::HANG_BOUND;
     use crate::wake::{WakeEvent, WakeScope};
 
     fn bound_scope() -> (WakeScope, Receiver<WakeEvent>) {

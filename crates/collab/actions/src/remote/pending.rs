@@ -299,9 +299,6 @@ impl<T> Future for Pending<T> {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     /// A pending answer is polled, awaited or continued; dropping a mapped answer abandons the
     /// original; waiting across threads sees the answer or times out; a ready answer resolves as a
     /// future without a runtime.

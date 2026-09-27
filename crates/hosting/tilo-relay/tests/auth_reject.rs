@@ -29,7 +29,7 @@ use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(

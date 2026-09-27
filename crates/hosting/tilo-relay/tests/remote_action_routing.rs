@@ -19,9 +19,7 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{
-    HANG_BOUND, TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps,
-};
+use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
 
 const WS: u64 = 11;
 

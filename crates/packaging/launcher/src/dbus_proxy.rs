@@ -282,7 +282,6 @@ impl Drop for DBusProxyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HANG_BOUND;
 
     #[test]
     fn proxy_paths_env_and_binary_lookup() {

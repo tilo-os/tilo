@@ -19,9 +19,6 @@ pub mod route;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
-#[cfg(test)]
-pub(crate) const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 // Room admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
 #[cfg(test)]

@@ -11,9 +11,6 @@ use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 struct Host(std::process::Child);
 impl Drop for Host {
     fn drop(&mut self) {
@@ -2521,7 +2518,7 @@ async fn active_replacement(
             message: operation,
         }))
         .unwrap();
-    let deadline = Instant::now() + HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     let mut accepted = false;
     let generation = loop {
         let status = request(origin, "/status", None, None).await.1;

@@ -82,7 +82,7 @@ async fn cross_user_peer_relay_is_rejected() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 42 }).unwrap();
-    let _ = tokio::time::timeout(HANG_BOUND, a.recv()).await;
+    let _ = tokio::time::timeout(tilo_test_env::hang_bound(), a.recv()).await;
     a.send(Envelope::Delta {
         workspace_id: 42,
         author_device_public_key: a_client_dev.device_pubkey(),

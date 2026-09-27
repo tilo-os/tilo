@@ -6,9 +6,6 @@ use ui::headless::test_support::{a11y_node_labelled, find_semantic};
 use ui::history_mode::pending_controls::PendingControlStatus;
 use ui::widget::Widget;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 type ArmedReplacement = (
     std::sync::mpsc::Receiver<crate::app::ControlledRuntimeRequest>,
     std::rc::Rc<std::cell::Cell<bool>>,

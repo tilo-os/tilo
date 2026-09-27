@@ -34,7 +34,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
 /// `seed` — mirroring what a toolkit editor binds to.

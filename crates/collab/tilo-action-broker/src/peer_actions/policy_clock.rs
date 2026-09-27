@@ -229,7 +229,6 @@ impl PolicyTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HANG_BOUND;
     use std::time::Duration;
 
     #[test]
