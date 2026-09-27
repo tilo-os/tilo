@@ -74,25 +74,27 @@ impl LaunchpadAction {
         }
     }
 
-    const fn label(self) -> &'static str {
+    fn label(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::Chat => "Discuss",
-            Self::Notes => "Notes",
-            Self::Tasks => "Tasks",
-            Self::Meet => "Plan a meeting",
-            Self::Invite => "Invite people",
-            Self::Activity => "Catch up",
+            Self::Chat => t("a11y-shell-launchpad-discuss"),
+            Self::Notes => t("a11y-shell-launchpad-notes"),
+            Self::Tasks => t("a11y-shell-launchpad-tasks"),
+            Self::Meet => t("a11y-shell-launchpad-meet"),
+            Self::Invite => t("a11y-shell-launchpad-invite"),
+            Self::Activity => t("a11y-shell-launchpad-activity"),
         }
     }
 
-    const fn detail(self) -> &'static str {
+    fn detail(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::Chat => "Open the shared conversation",
-            Self::Notes => "Write ideas together",
-            Self::Tasks => "Plan work in Calendar",
-            Self::Meet => "Open Chat, then start a voice or video call",
-            Self::Invite => "Bring someone into this workspace",
-            Self::Activity => "See what changed and why",
+            Self::Chat => t("a11y-shell-launchpad-discuss-detail"),
+            Self::Notes => t("a11y-shell-launchpad-notes-detail"),
+            Self::Tasks => t("a11y-shell-launchpad-tasks-detail"),
+            Self::Meet => t("a11y-shell-launchpad-meet-detail"),
+            Self::Invite => t("a11y-shell-launchpad-invite-detail"),
+            Self::Activity => t("a11y-shell-launchpad-activity-detail"),
         }
     }
 
@@ -329,7 +331,11 @@ impl Widget for CollaborationLaunchpad {
         let small = theme.tokens.typography.scale.sm / scale;
         let caption = theme.tokens.typography.scale.xs / scale;
         let heading = theme.tokens.typography.scale.x3l / scale;
-        let (button_w, button_h) = text.measure("Open an app", base, None);
+        let (button_w, button_h) = text.measure(
+            &crate::shell::i18n::t("a11y-shell-launchpad-open-app"),
+            base,
+            None,
+        );
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
@@ -351,7 +357,11 @@ impl Widget for CollaborationLaunchpad {
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
-        let title = text.elide_to_width("Make something together", heading, panel_width as f32);
+        let title = text.elide_to_width(
+            &crate::shell::i18n::t("a11y-shell-launchpad-title"),
+            heading,
+            panel_width as f32,
+        );
         text.draw_text(
             scene,
             &title,
@@ -417,7 +427,7 @@ impl Widget for CollaborationLaunchpad {
             action
                 .icon()
                 .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
-            let label = text.elide_to_width(action.label(), base, (rect.width() - 72.0) as f32);
+            let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,
                 &label,
@@ -427,11 +437,11 @@ impl Widget for CollaborationLaunchpad {
                 None,
             );
             let (_, label_h) = text.measure(&label, base, None);
-            let (_, detail_h) = text.measure(action.detail(), caption, None);
+            let (_, detail_h) = text.measure(&action.detail(), caption, None);
             let detail_y = (16.0 + f64::from(label_h) + 6.0).max(47.0);
             if detail_y + f64::from(detail_h) + 6.0 <= rect.height() {
                 let detail =
-                    text.elide_to_width(action.detail(), caption, (rect.width() - 72.0) as f32);
+                    text.elide_to_width(&action.detail(), caption, (rect.width() - 72.0) as f32);
                 text.draw_text(
                     scene,
                     &detail,
@@ -454,11 +464,14 @@ impl Widget for CollaborationLaunchpad {
             transform,
             text,
             theme,
-            &ButtonFace::new(button, "Open an app")
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
-                .text_size(base)
-                .focused(self.focused && self.selected == 6)
-                .hovered(button.contains(self.last_cursor)),
+            &ButtonFace::new(
+                button,
+                &crate::shell::i18n::t("a11y-shell-launchpad-open-app"),
+            )
+            .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
+            .text_size(base)
+            .focused(self.focused && self.selected == 6)
+            .hovered(button.contains(self.last_cursor)),
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
@@ -591,11 +604,9 @@ impl Widget for CollaborationLaunchpad {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Make something together")
+                .with_name(crate::shell::i18n::t("a11y-shell-launchpad-title"))
                 .with_bounds(self.content_bounds())
-                .with_description(
-                    "Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.",
-                )
+                .with_description(crate::shell::i18n::t("a11y-shell-launchpad-description"))
                 .with_children(
                     LaunchpadAction::ALL
                         .into_iter()
@@ -613,11 +624,17 @@ impl Widget for CollaborationLaunchpad {
                                     ..Default::default()
                                 })
                         })
-                        .chain(std::iter::once(AccessNode::new(Role::Button)
-                            .with_name("Open an app")
-                            .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
-                            .with_bounds(self.app_button_rect())
-                            .with_state(AccessState { focusable: true, focused: self.focused && self.selected == 6, ..Default::default() })))
+                        .chain(std::iter::once(
+                            AccessNode::new(Role::Button)
+                                .with_name(crate::shell::i18n::t("a11y-shell-launchpad-open-app"))
+                                .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
+                                .with_bounds(self.app_button_rect())
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    focused: self.focused && self.selected == 6,
+                                    ..Default::default()
+                                }),
+                        ))
                         .collect(),
                 ),
         )

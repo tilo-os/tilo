@@ -8,6 +8,9 @@ jobs = 4
 # IBT is disabled because stable Rust does not emit the required landing pads.
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
+# Tests never see the caller's desktop session: every test binary runs inside
+# tools/with-test-environment.sh (see tools/cargo-runner.sh).
+runner = "tools/cargo-runner.sh"
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -20,6 +23,9 @@ rustflags = [
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))']
+# Tests never see the caller's desktop session: every test binary runs inside
+# tools/with-test-environment.sh (see tools/cargo-runner.sh).
+runner = "tools/cargo-runner.sh"
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",

@@ -919,7 +919,6 @@ pub(super) mod test_support {
         collections::HashMap,
         path::{Path, PathBuf},
         sync::{Mutex, OnceLock, mpsc},
-        time::Duration,
     };
     type Hook = (usize, mpsc::Sender<()>, mpsc::Receiver<()>);
     static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
@@ -945,7 +944,7 @@ pub(super) mod test_support {
         };
         if let Some((_, entered, release)) = hook {
             let _ = entered.send(());
-            release.recv_timeout(Duration::from_secs(10)).unwrap();
+            release.recv_timeout(crate::HANG_BOUND).unwrap();
         }
     }
 }
@@ -1155,7 +1154,7 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
             while !root.join("owner-ready").exists() {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();

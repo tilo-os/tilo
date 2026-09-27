@@ -736,6 +736,14 @@ pub fn touch_target(
     let BackendTouchEvent::Down { x, y, .. } = touch else {
         return None;
     };
+    surface_at(state, fb, (*x, *y))
+}
+
+/// The client surface at global `point` and its global origin: the
+/// keyboard, popups, fullscreen and floating windows before tiles, and a
+/// tile's subsurface before the tile.
+fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u64, (f64, f64))> {
+    let (x, y) = (&point.0, &point.1);
     if let Some((surface_id, rect)) = fb.osk_surface_hit((*x, *y))
         && state.osk_surface == Some(surface_id)
         && state.client_input.surfaces.contains_key(&surface_id)
@@ -1036,6 +1044,30 @@ pub fn sync_pointer_image(
     Some(image)
 }
 
+/// Route one pen event. A client that took a tablet seat gets the tool over
+/// `zwp_tablet_tool_v2`; for anything else — other apps, shell chrome, the
+/// lock screen — the pen stands in for the pointer, and the returned events
+/// go through the ordinary pointer path.
+pub fn route_tablet_event(
+    state: &mut State,
+    fb: &FrameBuilder,
+    input: &crate::compositor::backend::TabletInput,
+    session_locked: bool,
+) -> Vec<crate::compositor::backend::BackendEvent> {
+    let target = (!session_locked && !chrome_captures_input(fb))
+        .then(|| surface_at(state, fb, input.position))
+        .flatten()
+        .filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id));
+    state.forward_tablet(input, target);
+    if target.is_some() {
+        return Vec::new();
+    }
+    crate::compositor::tablet::tablet_pointer_events(input)
+        .into_iter()
+        .map(crate::compositor::backend::BackendEvent::Input)
+        .collect()
+}
+
 /// Grant, adjust or withdraw a client's pointer lock/confinement for this
 /// tick. Only the surface that both holds keyboard focus and sits under the
 /// local pointer may hold it, and never while the session is locked or
@@ -1119,13 +1151,13 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
     fb.with_chrome(|chrome| {
         chrome.push_notification_full(
             Notification::new(
-                "Remote input stopped",
+                crate::shell::i18n::t("notification-remote-input-stopped"),
                 match revoked {
-                    0 => "Remote control and sharing sessions were stopped.".to_string(),
-                    1 => "Remote control was removed and sharing was stopped.".to_string(),
-                    n => {
-                        format!("Remote control was removed from {n} shares; sharing was stopped.")
-                    }
+                    0 => crate::shell::i18n::t("notification-remote-input-stopped-sessions"),
+                    n => crate::shell::i18n::t_args(
+                        "notification-remote-input-stopped-shares",
+                        &[("count", n.into())],
+                    ),
                 },
             )
             .with_severity(NotificationSeverity::Warning)
@@ -1444,8 +1476,8 @@ fn route_keyboard_input(
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
-            || configured_shortcut
-            || is_shell_chord(event, &modifiers, overlay_open)
+            || (!shortcuts_inhibited(state)
+                && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
             || state.global_shortcuts.claims(&key.physical_key, modifiers);
         return if shell_owns {
             false
@@ -1464,7 +1496,10 @@ fn route_keyboard_input(
     // real app holds focus because that app consumes the press first.
     let configured_shortcut =
         pressed && fb.host().owns_configured_chord(&key.logical_key, modifiers);
-    let shell_chord = configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+    // A VM or remote desktop that inhibits shortcuts gets the shell's
+    // chords too; the compositor's own reserved keys never reach here.
+    let shell_chord = !shortcuts_inhibited(state)
+        && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open));
     // An approved GlobalShortcuts grant fires over whatever app holds
     // focus: shell chords win, then the grant, then the client. Its release
     // is withheld too (the press never reached the client) and sends
@@ -1485,7 +1520,20 @@ fn route_keyboard_input(
         return false;
     }
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
-    state.deliver_client_key(code, pressed, forward)
+    let delivered = state.deliver_client_key(code, pressed, forward);
+    // A held chord ends on its modifier's release: Alt+Tab commits when Alt
+    // comes up. The client that saw the press still gets its release, and
+    // the shell sees it too, whoever holds keyboard focus.
+    let ends_held_chord =
+        !pressed && is_modifier_key(&key.logical_key) && fb.host().window_switcher_active();
+    delivered && !ends_held_chord
+}
+
+fn shortcuts_inhibited(state: &State) -> bool {
+    state
+        .client_input
+        .keyboard_focus
+        .is_some_and(|surface_id| state.shortcut_inhibit.inhibits(surface_id))
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.
