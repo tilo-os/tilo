@@ -478,7 +478,10 @@ pub struct Reply {
     /// in their parent comment's list.
     pub id: String,
     pub author: String,
+    /// The reply's plain text: what export, search and labels read.
     pub body: String,
+    /// The reply as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Reply {
@@ -494,11 +497,14 @@ pub struct Comment {
     pub anno_id: Option<String>,
     pub page: usize,
     pub author: String,
+    /// The comment's plain text: what export, search and labels read.
     pub body: String,
     /// Monotonic ordinal for stable sort (seed time / creation order).
     pub created: i64,
     pub resolved: bool,
     pub replies: Vec<Reply>,
+    /// The comment as written, as the editor shows it.
+    pub blocks: Vec<ui::widget::BlockContent>,
 }
 
 impl Comment {

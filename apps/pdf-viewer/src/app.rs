@@ -1601,13 +1601,16 @@ impl PdfApp {
                         id: Reply::new_id(),
                         author: "Bob".into(),
                         body: "Good catch — folded it into section 1.2.".into(),
+                        blocks: Vec::new(),
                     },
                     Reply {
                         id: Reply::new_id(),
                         author: "Alice".into(),
                         body: "Perfect, thanks.".into(),
+                        blocks: Vec::new(),
                     },
                 ],
+                blocks: Vec::new(),
             },
         );
         PdfDoc::add_comment(
@@ -1622,6 +1625,7 @@ impl PdfApp {
                 created: 2,
                 resolved: false,
                 replies: vec![],
+                blocks: Vec::new(),
             },
         );
         PdfDoc::add_comment(
@@ -1635,6 +1639,7 @@ impl PdfApp {
                 created: 3,
                 resolved: true,
                 replies: vec![],
+                blocks: Vec::new(),
             },
         );
 
@@ -5048,6 +5053,8 @@ impl Widget for PdfApp {
             self.pin_source(state);
             self.adopt_existing(state);
         }
+        // Comments written before their text was rich text come across once.
+        PdfDoc::migrate_comment_text(state);
         self.reload(state);
         self.sync_reader_markup(state);
         self.refresh_search_catalog(state);
@@ -9678,13 +9685,16 @@ mod tests {
                         id: "high-text-reply-one".into(),
                         author: "Bob".into(),
                         body: "A long reply that also wraps, proving the history is allotted its own measured vertical space.".into(),
+                        blocks: Vec::new(),
                     },
                     Reply {
                         id: "high-text-reply-two".into(),
                         author: "Alice".into(),
                         body: "A second reply remains below the first rather than colliding with the editor.".into(),
+                        blocks: Vec::new(),
                     },
                 ],
+                blocks: Vec::new(),
             };
             let scale = 2.0;
             let inner_w = SIDEBAR_W - 28.0 * scale;

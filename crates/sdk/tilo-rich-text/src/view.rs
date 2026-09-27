@@ -44,6 +44,14 @@ impl RichTextView {
         }
     }
 
+    /// Set the view's type `factor` times the theme's (a comment set smaller
+    /// than body text).
+    #[must_use]
+    pub fn with_text_scale(mut self, factor: f32) -> Self {
+        self.host.set_text_scale(factor);
+        self
+    }
+
     /// Show `blocks`. Returns whether anything changed.
     pub fn show(&mut self, blocks: &[BlockContent]) -> bool {
         self.host.widget_mut().present_blocks(blocks)

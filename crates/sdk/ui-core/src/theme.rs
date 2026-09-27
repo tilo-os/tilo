@@ -833,6 +833,25 @@ impl Theme {
         self
     }
 
+    /// This theme with its type `factor` times its current size: text scale
+    /// and type sizes together. Unlike [`Self::with_text_scale`] it composes
+    /// with a scale already applied, for a part of a surface set in smaller
+    /// or larger type than the rest (a comment bubble, a caption).
+    #[must_use]
+    pub fn scaled_by(&self, factor: f32) -> Self {
+        let mut theme = self.clone();
+        let factor = if factor.is_finite() { factor } else { 1.0 };
+        let target = (self.text_scale * factor).clamp(0.5, 4.0);
+        let applied = if self.text_scale > 0.0 {
+            target / self.text_scale
+        } else {
+            1.0
+        };
+        theme.text_scale = target;
+        theme.multiply_type_sizes(applied);
+        theme
+    }
+
     fn multiply_type_sizes(&mut self, factor: f32) {
         let scale = &mut self.tokens.typography.scale;
         scale.xs *= factor;
