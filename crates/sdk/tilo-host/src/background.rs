@@ -569,8 +569,6 @@ mod tests {
     use super::*;
     use crate::wake::WakeScope;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 

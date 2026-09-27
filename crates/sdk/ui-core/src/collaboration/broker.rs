@@ -5508,7 +5508,6 @@ mod tests {
         keys
     }
 
-    use crate::HANG_BOUND;
     use crate::time::{Duration, Instant};
     use std::cell::RefCell;
     #[cfg(unix)]

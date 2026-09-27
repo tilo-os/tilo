@@ -407,11 +407,21 @@ async fn started(
                 })
                 .await
             })
-            .await
-        })
-    };
-    let deadline = tilo_test_env::hang_deadline();
-    while !ready.exists() {
+        };
+        let deadline = tilo_test_env::hang_deadline();
+        while !ready.exists() && !server.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server never published its Ready record"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if !server.is_finished() || ready.exists() {
+            break (stop, server);
+        }
+        // The fixture's free address was taken by another test process
+        // before the service bound it: assign another and start again.
+        let error = format!("{:#}", server.await.unwrap().unwrap_err());
         assert!(
             attempt < 8 && error.contains("Address already in use"),
             "server stopped before Ready: {error}"

@@ -4933,9 +4933,6 @@ pub(crate) async fn get_or_autobind_workspace(
 mod autobind_tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn autobind_open_releases_registry_lock_and_shares_one_runtime() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5551,9 +5548,6 @@ mod private_transport_tests {
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
         sign_device_cert,
     };
-
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
     pub(super) fn certified_device(
         root: &ed25519_dalek::SigningKey,

@@ -250,12 +250,6 @@ mod tests {
     use super::*;
     use ui::widget::Widget;
 
-    /// How long a loop waiting on the decoder may run before it counts as
-    /// hung. Every such loop ends as soon as the pipeline gets there, which
-    /// takes milliseconds; a loaded test machine can stall `GStreamer`'s
-    /// initialization and streaming threads for seconds.
-    const DECODER_HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     #[test]
     #[allow(
         clippy::too_many_lines,

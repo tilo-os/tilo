@@ -11,7 +11,7 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -894,9 +894,6 @@ impl TransformService {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     struct Fixed(&'static str);
 
     impl TransformModel for Fixed {

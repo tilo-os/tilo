@@ -719,9 +719,6 @@ fn project(
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     #[tokio::test]
     async fn authority_frames_are_little_endian_length_then_postcard() {
         let mut wire = Vec::new();

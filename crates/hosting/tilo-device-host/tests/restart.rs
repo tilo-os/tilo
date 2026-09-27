@@ -4,9 +4,6 @@ use std::{fs, process::Command};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_workspace_host::SessionOwner;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 #[cfg(unix)]
 fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;

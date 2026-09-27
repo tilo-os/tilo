@@ -4,7 +4,6 @@
     reason = "the fake servers return the concrete capnp Promise, as the broker's own fake servers do"
 )]
 use super::*;
-use crate::HANG_BOUND;
 use crate::collaboration::RouteSpec;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};

@@ -1059,9 +1059,6 @@ mod tests {
     use super::*;
     use vello::kurbo::Point;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     /// Tile addressing (zoom, parent, visible set, bounds), indexed-PNG decoding, and
     /// the label-free, theme-tracking basemap style.
     #[test]

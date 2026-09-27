@@ -1,5 +1,4 @@
 use super::*;
-use crate::HANG_BOUND;
 use std::sync::{MutexGuard, TryLockError, mpsc};
 use std::time::Duration;
 

@@ -11,9 +11,6 @@ use std::{
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 struct Host(Child);
 impl Drop for Host {
     fn drop(&mut self) {

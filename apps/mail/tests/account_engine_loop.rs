@@ -39,9 +39,6 @@ fn unique_root() -> PathBuf {
     ))
 }
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 fn recv(
     rx: &std::sync::mpsc::Receiver<EngineEvent>,
 ) -> Result<EngineEvent, std::sync::mpsc::RecvTimeoutError> {

@@ -1578,9 +1578,6 @@ mod tests {
     use zbus::connection::Builder;
     use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
     const TEST_P2P_PATH: &str = "/org/freedesktop/NetworkManager/Devices/7";
     const TEST_PEER_PATH: &str = "/org/freedesktop/NetworkManager/WifiP2PPeer/9";

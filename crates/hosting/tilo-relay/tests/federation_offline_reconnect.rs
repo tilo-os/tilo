@@ -38,7 +38,7 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
 };
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Build a fresh signing key + signed cert with `can_act_as_host`.
 /// Returns the cert AND the signing key so callers can re-use them

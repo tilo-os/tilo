@@ -11973,9 +11973,6 @@ mod history_reconcile_tests {
 mod history_interruption_tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         let heads = doc.get_heads();
         let plan = ui::history_mode::restore::prepare_content_restore(

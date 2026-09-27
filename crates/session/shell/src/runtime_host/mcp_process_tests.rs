@@ -18,9 +18,6 @@ const PROCESS_TEST: &str =
 /// Names the one phase an isolated child process runs.
 const PROCESS_PHASE: &str = "TILO_MCP_PROCESS_TEST_PHASE";
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// In the parent, runs `phase` in a fresh child process and returns `None`;
 /// in that child, returns its isolated root for `phase` only and `None` for
 /// every other phase, so the child runs exactly the selected phase.

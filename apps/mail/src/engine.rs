@@ -1583,9 +1583,6 @@ pub mod live {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     #[test]
     #[allow(
         clippy::too_many_lines,

@@ -189,9 +189,6 @@ impl Prefetcher {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: web_time::Duration = web_time::Duration::from_secs(30);
-
     #[test]
     fn ring_and_prefetcher_keep_the_trailing_window_and_report_progress() {
         // Phase `ring_slides_and_keeps_the_trailing_window`.

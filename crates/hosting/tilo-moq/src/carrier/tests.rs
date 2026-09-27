@@ -18,8 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const NAME: &str = "call/a";
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 struct Permit;
 impl SessionAuthorization for Permit {

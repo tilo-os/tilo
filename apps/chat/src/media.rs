@@ -746,9 +746,6 @@ mod live {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     #[test]
     fn media_object_wire_round_trips_and_rejects_malformed_frames() {
         // Phase: media_object_wire_round_trips.

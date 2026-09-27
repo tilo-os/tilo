@@ -3926,8 +3926,6 @@ impl ChannelHandle {
 mod resolved_invocation_tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
@@ -4547,8 +4545,6 @@ impl ChannelHandle {
 mod reliable_invocation_tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};

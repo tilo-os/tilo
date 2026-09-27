@@ -39,7 +39,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_relay::{Envelope, RelayClient, apply_sync_response, send_sync_request};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {

@@ -40,9 +40,6 @@
 pub mod appdir;
 pub mod capabilities;
 pub mod capture;
-/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
-#[cfg(test)]
-pub(crate) const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;

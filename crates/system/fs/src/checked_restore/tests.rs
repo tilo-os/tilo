@@ -3,9 +3,6 @@ use collab_types::files::CheckedHistoryOperationV1;
 use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 struct Fixture {
     directory: tempfile::TempDir,
     endpoint: Endpoint,

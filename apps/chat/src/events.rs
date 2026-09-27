@@ -1786,9 +1786,6 @@ mod tests {
     use crate::model;
     use tilo_automerge::ApplyIncoming;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: ui::clock::Duration = ui::clock::Duration::from_secs(30);
-
     fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
         app.native_voice
             .submit(ui::native_media::Command::Join {

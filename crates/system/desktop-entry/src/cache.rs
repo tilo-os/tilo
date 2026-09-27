@@ -115,9 +115,6 @@ fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
-
     #[test]
     fn cache_fingerprints_track_watched_directories_and_invalidation() {
         // Phase `the_cache_is_warm_on_the_second_call_and_cold_after_invalidate`.

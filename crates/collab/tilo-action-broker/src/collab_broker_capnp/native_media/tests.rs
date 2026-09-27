@@ -1,6 +1,5 @@
 //! Actual kernel peer-process observation; this does not fabricate launcher admission.
 use super::*;
-use crate::HANG_BOUND;
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

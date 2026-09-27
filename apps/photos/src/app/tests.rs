@@ -5,9 +5,6 @@ use crate::shots_pattern;
 use automerge::ROOT;
 use tilo_actions::{Action, ResourceProvider};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
     resource.id.0 == id
         || resource

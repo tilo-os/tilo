@@ -29,7 +29,7 @@ use tilo_relay::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint};
+use crate::common::{TestUser, client_endpoint};
 
 fn interactive_binding(
     workspace_id: u64,

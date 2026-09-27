@@ -2477,9 +2477,6 @@ mod tests {
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
         device: &ed25519_dalek::SigningKey,

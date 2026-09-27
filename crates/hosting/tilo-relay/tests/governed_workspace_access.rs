@@ -24,7 +24,7 @@ use tilo_peer_state::GovernedAccess;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint};
+use crate::common::{TestUser, client_endpoint};
 
 fn binding(id: u64) -> WorkspaceBinding {
     WorkspaceBinding {

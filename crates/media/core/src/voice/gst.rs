@@ -770,9 +770,6 @@ fn configure_pipewire(
 mod tests {
     use super::*;
 
-    /// A real pipeline on a loaded runner can take seconds to start;
-    /// the waits below exit as soon as audio flows and only bound a hang.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
     use crate::voice::RECEIVE_LIFETIME;
     use std::sync::atomic::{AtomicBool, Ordering};
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());

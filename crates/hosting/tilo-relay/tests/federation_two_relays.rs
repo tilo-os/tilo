@@ -24,7 +24,7 @@
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn op_on_relay1_reaches_device_on_relay2() {

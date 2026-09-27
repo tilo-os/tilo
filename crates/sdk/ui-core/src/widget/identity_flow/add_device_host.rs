@@ -628,7 +628,6 @@ impl Widget for AddDeviceHostScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HANG_BOUND;
     use threshold_identity::ThresholdIdentity;
 
     fn fixture_host() -> (AddDeviceHostScreen, [u8; 16]) {

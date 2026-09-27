@@ -311,7 +311,6 @@ mod tests {
         PublishedInput,
     };
     use super::*;
-    use crate::HANG_BOUND;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
     const APP: &str = "so.tilo.files";
