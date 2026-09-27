@@ -29,6 +29,8 @@ mod apps_integration;
 mod blend_layer_cost;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
+#[path = "capture_protection.rs"]
+mod capture_protection;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
 #[path = "collab_policy_state.rs"]

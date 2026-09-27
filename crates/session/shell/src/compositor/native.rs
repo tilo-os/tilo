@@ -943,6 +943,17 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
+                    protected,
+                } => {
+                    // The app id is the one the launcher vouched for, so a
+                    // request can only ever withhold the asking app's own
+                    // windows. It narrows what leaves the display, never
+                    // widens it, so any app may ask.
+                    foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    tracing::debug!(connection, %app_id, protected, "capture protection requested");
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);
                     capture.dismiss_external_floating(internal.clone());
@@ -961,6 +972,7 @@ fn pump_floating_surface_service(
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
@@ -2909,7 +2921,9 @@ fn write_snapshot_png(
         );
         fb.compose_layout_scene(&feedback, &mut scene);
     }
-    let scene = scene;
+    // The snapshot leaves the display — to a script, a test or an agent — so
+    // it sees protected windows and secret prompts as a capture does.
+    let scene = fb.capture_scene(&scene).into_owned();
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
     //
     // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
@@ -7700,6 +7714,10 @@ pub fn run() {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
+        state.sync_popup_capture_protection();
+        state.set_capture_placeholder_fill(
+            crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
+        );
         let mut transient_surfaces = state.popup_surfaces();
         transient_surfaces.extend(state.input_method_popup_surfaces());
         frame_builder.set_transient_surfaces(&transient_surfaces);
@@ -8539,6 +8557,7 @@ pub fn run() {
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
+            frame_builder.set_session_locked(session.is_locked());
             let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output, centred on each (single on
@@ -8878,7 +8897,8 @@ pub fn run() {
                     viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                     viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
-                let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
+                let source = frame_builder.capture_scene(&frame_paint.scene);
+                let _ = projection_capture.submit_scene(&source, clamped_viewport);
             }
             // The idle dim goes on last, after captures and casts took their clean copy, so only
             // the local panel darkens.

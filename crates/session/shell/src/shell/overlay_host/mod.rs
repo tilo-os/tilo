@@ -3904,6 +3904,34 @@ impl ShellOverlayHost {
         self.resync_workspace_content()
     }
 
+    /// Shell chrome on screen that holds a secret: the administrator
+    /// authentication and network-secrets sheets, and the quick-settings
+    /// pane while it asks for a Wi-Fi passphrase. A capture always draws
+    /// these as the placeholder — see [`crate::shell::capture_protection`].
+    pub fn secret_prompt_rects(&self) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        if self.portal_dialogs.view().is_some_and(|view| {
+            matches!(
+                view,
+                crate::shell::portal_dialog::DialogView::Authentication { .. }
+                    | crate::shell::portal_dialog::DialogView::NetworkSecrets { .. }
+            )
+        }) && let Some(layout) = self.portal_dialogs.layout(self.rect)
+        {
+            rects.push(layout.sheet);
+        }
+        let asks_passphrase = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().quick_settings.wifi_password.is_some());
+        if asks_passphrase && self.qs_transition.is_visible(Instant::now()) {
+            // The dropdown's own paint clip: it covers the pane at every
+            // point of its open/close scale.
+            rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
+        }
+        rects
+    }
+
     /// On-screen rect of the tile hosting foreign wayland surface
     /// `surface_id`, or `None` when no *visible* tile hosts it. Walks the
     /// live widget tree, not persisted state, so the answer is what's
@@ -7409,7 +7437,7 @@ impl ShellOverlayHost {
     /// Live app surfaces offered by the capture studio. The full virtual rect
     /// is retained even when Tilo's continuous strip has moved most of the app
     /// past this monitor; only `visible_rect` is clipped to the output.
-    fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
+    pub(crate) fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
         let mut targets = self.capture_target_candidates();
         targets.sort_by_key(|(focused, _)| !*focused);
         targets.into_iter().map(|(_, target)| target).collect()
