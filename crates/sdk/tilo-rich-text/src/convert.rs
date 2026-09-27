@@ -111,6 +111,7 @@ fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
                 .map_or_else(|| Mark::ExternalLink(target.clone()), Mark::Link),
         ),
         ("transclusion", MarkValue::Str(page)) => page.parse().ok().map(Mark::Transclusion),
+        ("mention", MarkValue::Str(id)) if !id.is_empty() => Some(Mark::Mention(id.clone())),
         _ => None,
     }
 }
@@ -127,13 +128,14 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
         Mark::Link(page) => ("link", MarkVal::Str(format!("{PAGE_LINK_PREFIX}{page}"))),
         Mark::Transclusion(page) => ("transclusion", MarkVal::Str(page.to_string())),
         Mark::ExternalLink(target) => ("link", MarkVal::Str(target.clone())),
+        Mark::Mention(id) => ("mention", MarkVal::Str(id.clone())),
     }
 }
 
 /// The marks the editor can show, by name. A document mark the editor has no
 /// form for (a colour, a comment anchor, a serif family) is neither shown nor
 /// ever written by the editor.
-pub(crate) const EDITOR_MARKS: [&str; 7] = [
+pub(crate) const EDITOR_MARKS: [&str; 8] = [
     "strong",
     "em",
     "underline",
@@ -141,6 +143,7 @@ pub(crate) const EDITOR_MARKS: [&str; 7] = [
     "fontFamily",
     "link",
     "transclusion",
+    "mention",
 ];
 
 /// A paragraph as the paste vocabulary carries it: kind, text, marks and

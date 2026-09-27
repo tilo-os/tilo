@@ -5,8 +5,9 @@
 //! rather than trusted.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
-use crate::{Catalogue, Emoji, Gender, Group, SkinTone, Subgroup, search};
+use crate::{Catalogue, Emoji, Gender, Group, SkinTone, Subgroup};
 
 const VS16: char = '\u{FE0F}';
 
@@ -211,7 +212,6 @@ pub(crate) fn build(
         }
     }
 
-    let keys = emoji.iter().map(search::Key::new).collect();
     Catalogue {
         locale,
         emoji,
@@ -221,6 +221,6 @@ pub(crate) fn build(
         toned,
         genders,
         neutral_of,
-        keys,
+        search: OnceLock::new(),
     }
 }

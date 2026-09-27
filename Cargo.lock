@@ -3646,6 +3646,8 @@ dependencies = [
  "miniz_oxide",
  "serde",
  "serde_json",
+ "tilo-search",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -14547,6 +14549,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-resource",
+ "tilo-search",
  "tilo-ui",
  "tracing",
  "workspace-hack",
@@ -17415,6 +17418,7 @@ dependencies = [
  "advisory-lock",
  "anyhow",
  "automerge",
+ "fnv",
  "gstreamer",
  "gstreamer-app",
  "media",

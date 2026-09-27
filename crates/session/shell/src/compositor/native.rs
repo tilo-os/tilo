@@ -4800,6 +4800,12 @@ fn attach_collab_broker_bridges(
     broker: &crate::shell::collab_broker::BrokerHandle,
 ) {
     let dispatcher = broker.follow_dispatcher();
+    let handoff = dispatcher.clone();
+    frame_builder.with_chrome(move |chrome| {
+        chrome.window_transfers.set_handoff_link(Box::new(
+            crate::shell::window_transfer::BrokerHandoff::new(handoff),
+        ));
+    });
     frame_builder
         .host_mut()
         .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {

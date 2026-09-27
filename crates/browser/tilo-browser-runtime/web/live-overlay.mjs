@@ -36,8 +36,8 @@ export const PEER_PALETTE = Object.freeze([
 ]);
 const PINNED = {me: '#6366f1', alice: '#ec4899', bob: '#f97316', charlie: '#10b981'};
 const FNV_OFFSET = 0xcbf29ce484222325n;
-// Rust spells the multiplier `0x10_0000_01b3` (0x10000001b3); match it exactly.
-const FNV_PRIME = 0x10000001b3n;
+// The standard 64-bit FNV-1a prime, as the Rust side's `fnv` crate uses.
+const FNV_PRIME = 0x100000001b3n;
 const MASK64 = (1n << 64n) - 1n;
 const colorCache = new Map();
 

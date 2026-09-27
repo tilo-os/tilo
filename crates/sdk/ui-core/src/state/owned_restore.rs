@@ -40,7 +40,7 @@ pub(crate) fn restore_reviewed_history(
     source: &crate::history_mode::HistorySourceRegistration,
     controller: &crate::history_mode::HistoryController,
     review: &crate::history_mode::RestoreReview,
-    schema: &'static crate::history_mode::restore::HistoryRestoreSchema,
+    schema: Option<&'static crate::history_mode::restore::HistoryRestoreSchema>,
     authority: &PermissionContext,
     author: &UserId,
     title: &str,
@@ -72,15 +72,27 @@ pub(crate) fn restore_reviewed_history(
             }
             _ => "This review no longer matches the selected document version.".to_owned(),
         })?;
-    let prepared = crate::history_mode::restore::prepare_content_restore(
-        &document,
-        schema,
-        review.reviewed_live_heads(),
-        review.selected_heads(),
-    )
-    .map_err(
-        |_| "This version cannot be restored safely with this application's content format.",
-    )?;
+    // With a registered content schema only the declared content returns;
+    // without one the whole document returns to the selected version, the
+    // way `git revert` of every later change would.
+    let prepared = schema
+        .map(|schema| {
+            crate::history_mode::restore::prepare_content_restore(
+                &document,
+                schema,
+                review.reviewed_live_heads(),
+                review.selected_heads(),
+            )
+            .map_err(|_| crate::i18n::I18nManager::lookup_plain("history-restore-unsupported"))
+        })
+        .transpose()?;
+    let write = prepared.as_ref().map_or(
+        RestoreWrite::WholeDocument {
+            current: review.reviewed_live_heads(),
+            target: review.selected_heads(),
+        },
+        RestoreWrite::Content,
+    );
     let context = tilo_actions::ActionContext::for_resource(
         "Restore version",
         review.resource().record_id.as_str(),
@@ -122,10 +134,10 @@ pub(crate) fn restore_reviewed_history(
         };
         let receipt = match source {
             HistorySourceRegistration::HostDocument { .. } => {
-                state.restore_prepared_owned(&admitted, &prepared)
+                state.restore_write_owned(&admitted, write)
             }
             HistorySourceRegistration::OwnedDocument { owner, .. } => {
-                owner.restore_prepared(&mut state.doc, &admitted, &prepared)
+                owner.restore_write(&mut state.doc, &admitted, write)
             }
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::CheckedFiles { .. } => {
@@ -207,8 +219,29 @@ pub(crate) fn same_frontier(left: &[ChangeHash], right: &[ChangeHash]) -> bool {
     normalize(left) == normalize(right)
 }
 
+/// What a confirmed restore writes: the schema-declared content of a version,
+/// or, for a resource without a content schema, the whole document returned to
+/// the version's frontier as one forward change.
+#[derive(Clone, Copy)]
+pub(crate) enum RestoreWrite<'a> {
+    Content(&'a PreparedContentRestore),
+    WholeDocument {
+        current: &'a [ChangeHash],
+        target: &'a [ChangeHash],
+    },
+}
+impl RestoreWrite<'_> {
+    pub(crate) fn current_heads(&self) -> &[ChangeHash] {
+        match self {
+            Self::Content(prepared) => prepared.current_heads(),
+            Self::WholeDocument { current, .. } => current,
+        }
+    }
+}
+
 /// Exclusive loan of the original document and its own undo log. Its only
-/// writer is the prepared content engine; no committing callback is accepted.
+/// writers are the prepared content engine and the whole-document revert; no
+/// committing callback is accepted.
 pub(crate) struct OwnedContentAction<'a> {
     doc: &'a mut AutoCommit,
     history: &'a mut UndoLog,
@@ -251,12 +284,22 @@ impl<'a> OwnedContentAction<'a> {
             finished: false,
         })
     }
-    pub(crate) fn apply_restore(
+    pub(crate) fn apply(
         mut self,
-        prepared: &PreparedContentRestore,
+        write: RestoreWrite<'_>,
     ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
-        let outcome = apply_prepared_content_restore(self.doc, prepared)
-            .map_err(OwnedRestoreError::Engine)?;
+        let outcome = match write {
+            RestoreWrite::Content(prepared) => apply_prepared_content_restore(self.doc, prepared)
+                .map_err(OwnedRestoreError::Engine)?,
+            RestoreWrite::WholeDocument { current, target } => {
+                super::write_revert_patches(self.doc, current, target);
+                if self.doc.pending_ops() > 0 {
+                    RestoreOutcome::Changed
+                } else {
+                    RestoreOutcome::Unchanged
+                }
+            }
+        };
         match (outcome, self.doc.pending_ops() > 0) {
             (RestoreOutcome::Unchanged, false) => Ok(OwnedActionReceipt {
                 before: self.before.clone(),
@@ -322,19 +365,27 @@ impl UndoLog {
     }
 }
 impl State {
+    #[cfg(test)]
     pub(crate) fn restore_prepared_owned(
         &mut self,
         admitted: &ConfirmedRestore<'_>,
         prepared: &PreparedContentRestore,
     ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
+        self.restore_write_owned(admitted, RestoreWrite::Content(prepared))
+    }
+    pub(crate) fn restore_write_owned(
+        &mut self,
+        admitted: &ConfirmedRestore<'_>,
+        write: RestoreWrite<'_>,
+    ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
         OwnedContentAction::begin_clean(
             &mut self.doc,
             &mut self.undo,
-            prepared.current_heads(),
+            write.current_heads(),
             admitted,
             None,
         )?
-        .apply_restore(prepared)
+        .apply(write)
     }
 }
 

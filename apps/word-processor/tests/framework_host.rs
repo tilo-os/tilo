@@ -290,3 +290,204 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
     assert!(app.undo());
     assert_eq!(snapshot(&app).blocks, before.blocks);
 }
+
+/// What the History preview pane shows, as assistive technology reads it.
+fn preview_text(app: &mut TestApp<WordProcessorApp>) -> String {
+    fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some("history-preview") {
+            return Some(node);
+        }
+        node.children.iter().find_map(find)
+    }
+    let inspection = app.harness().inspection();
+    find(&inspection.root)
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|semantics| semantics.name.clone())
+        .expect("History shows a preview of the selected version")
+}
+
+fn heads(app: &TestApp<WordProcessorApp>) -> Vec<automerge::ChangeHash> {
+    app.read_document(|doc| doc.clone().get_heads())
+}
+
+fn targets(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+    out.extend(node.action_target.clone());
+    for child in &node.children {
+        targets(child, out);
+    }
+}
+
+fn timeline(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some("activity_timeline") {
+        return Some(node);
+    }
+    node.children.iter().find_map(timeline)
+}
+
+fn action_ids(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+    out.extend(resource.actions.iter().map(|action| action.id.clone()));
+    for child in &resource.children {
+        action_ids(child, out);
+    }
+}
+
+/// Open History and select the change whose result is `version`.
+fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::ChangeHash]) {
+    let [hash] = version else {
+        panic!("a single-author edit leaves one head");
+    };
+    if !app.harness().targets().contains_key("history-back-live") {
+        app.harness().click_named("history-open").unwrap();
+    }
+    let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
+    // A typed word is a run of keystrokes; expand runs until the change shows.
+    for _ in 0..4 {
+        let inspection = app.harness().inspection();
+        let mut published = Vec::new();
+        if let Some(semantics) = timeline(&inspection.root).and_then(|node| node.semantics.as_ref())
+        {
+            targets(semantics, &mut published);
+        }
+        if published.contains(&entry) {
+            break;
+        }
+        for group in published
+            .iter()
+            .filter(|target| target.starts_with("timeline-group:"))
+        {
+            let _ = app.harness().perform_semantic_named(
+                "activity_timeline",
+                Some(group),
+                &ui::a11y::Action::Expand,
+            );
+        }
+        app.harness().relayout();
+    }
+    app.harness()
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&entry),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness().relayout();
+}
+
+fn confirm_restore(app: &mut TestApp<WordProcessorApp>) {
+    let confirm = app
+        .harness()
+        .a11y_node_named("Restore version")
+        .expect("the review offers Restore version");
+    app.harness()
+        .perform_a11y_action(confirm, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.harness().relayout();
+}
+
+#[test]
+fn history_previews_a_version_and_restores_it_like_a_revert() {
+    let mut app = open();
+    app.harness().type_text("alpha");
+    app.flush().unwrap();
+    let v1 = heads(&app);
+    app.harness().type_text(" beta");
+    app.flush().unwrap();
+    let v2 = heads(&app);
+    app.harness().type_text(" gamma");
+    app.flush().unwrap();
+    let v3 = heads(&app);
+    assert_eq!(paragraphs(&app), ["alpha beta gamma"]);
+    let mut actions = Vec::new();
+    for resource in app.harness().resources() {
+        action_ids(&resource, &mut actions);
+    }
+    assert!(actions.iter().any(|id| id == "outline"), "{actions:?}");
+    assert!(
+        !actions.iter().any(|id| id == "history"),
+        "the editor's own version strip is not offered beside the shared History"
+    );
+    assert!(app.harness().targets().contains_key("history-open"));
+
+    select_version(&mut app, &v1);
+    let shown = preview_text(&mut app);
+    assert!(shown.contains("alpha"), "{shown}");
+    assert!(
+        !shown.contains("beta"),
+        "the preview is v1, not live: {shown}"
+    );
+    assert_eq!(
+        paragraphs(&app),
+        ["alpha beta gamma"],
+        "previewing writes nothing"
+    );
+    assert_eq!(heads(&app), v3);
+
+    let before = app.versions().len();
+    app.harness().click_named("history-restore").unwrap();
+    confirm_restore(&mut app);
+    assert_eq!(paragraphs(&app), ["alpha"]);
+    let versions = app.versions();
+    assert_eq!(versions.len(), before + 1, "one forward change");
+    for kept in [&v2[0], &v3[0]] {
+        assert!(
+            versions.iter().any(|version| version.hash == *kept),
+            "later versions stay in history"
+        );
+    }
+
+    // Back in the live document, Ctrl+Z takes the restore back.
+    app.harness().click_named("history-back-live").unwrap();
+    assert!(app.undo(), "Ctrl+Z reverses the restore");
+    assert_eq!(paragraphs(&app), ["alpha beta gamma"]);
+}
+
+#[test]
+fn a_stale_review_and_a_viewer_cannot_restore() {
+    let mut app = open();
+    app.harness().type_text("alpha");
+    app.flush().unwrap();
+    let v1 = heads(&app);
+    app.harness().type_text(" beta");
+    app.flush().unwrap();
+
+    select_version(&mut app, &v1);
+    app.harness().click_named("history-restore").unwrap();
+    app.merge_peer_edit(|doc| {
+        use automerge::transaction::Transactable;
+        doc.put(automerge::ROOT, "peer_note", "arrived during review")
+            .unwrap();
+    });
+    let moved = heads(&app);
+    confirm_restore(&mut app);
+    assert_eq!(heads(&app), moved, "a stale review writes nothing");
+    assert_eq!(paragraphs(&app), ["alpha beta"]);
+    assert!(
+        app.harness().a11y_node_named("Refresh review").is_some(),
+        "the review asks to be refreshed"
+    );
+
+    ui::i18n::I18nManager::init("en-US");
+    let mut viewer = TestApp::<WordProcessorApp>::with_role(Role::Viewer).unwrap();
+    viewer.merge_peer_edit(|doc| {
+        use automerge::transaction::Transactable;
+        doc.put(automerge::ROOT, "peer_note", "first").unwrap();
+    });
+    let first = heads(&viewer);
+    viewer.merge_peer_edit(|doc| {
+        use automerge::transaction::Transactable;
+        doc.put(automerge::ROOT, "peer_note", "second").unwrap();
+    });
+    let latest = heads(&viewer);
+    select_version(&mut viewer, &first);
+    viewer.harness().click_named("history-restore").unwrap();
+    confirm_restore(&mut viewer);
+    assert_eq!(heads(&viewer), latest, "a viewer's restore writes nothing");
+    assert!(
+        viewer
+            .harness()
+            .inspection_json()
+            .unwrap()
+            .contains("no longer have permission"),
+        "the refusal names the missing permission"
+    );
+}

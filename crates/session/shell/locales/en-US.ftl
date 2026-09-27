@@ -1914,6 +1914,9 @@ window-transfer-lost-title = “{ $window }” closed while it was moving
 window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
 window-transfer-late-edits-title = Your last edits in “{ $window }” came along
 window-transfer-late-edits-detail = Changes made in { $from } while the window was moving were added to the document.
+window-transfer-moved-away-title = “{ $window }” was moved to another workspace
+window-transfer-moved-away-to = { $person } moved it to { $to }. What you see here is how it was when it left; it can't be edited here any more.
+window-transfer-moved-away-elsewhere = { $person } moved it to a workspace you're not in. What you see here is how it was when it left; it can't be edited here any more.
 
 # Empty-workspace launchpad and the default command list
 global-search-create-workspace = Create Workspace

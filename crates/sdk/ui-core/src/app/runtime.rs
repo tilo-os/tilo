@@ -263,6 +263,9 @@ pub(super) struct ContinuationRuntime {
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    /// The document this window shows has left its workspace, and the
+    /// window knows: it stopped editing and told its desktop once.
+    pub(super) retired: bool,
 }
 
 impl ContinuationRuntime {
@@ -272,6 +275,7 @@ impl ContinuationRuntime {
             pending_restore,
             pending_view: None,
             last_private_route: None,
+            retired: false,
         }
     }
 }
