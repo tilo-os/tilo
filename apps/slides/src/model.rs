@@ -161,30 +161,44 @@ pub struct Element {
 
 impl Element {
     pub fn text(text: &str, x: f64, y: f64, w: f64, h: f64, font_size: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Text,
-            x,
-            y,
-            w,
-            h,
-            text: text.to_string(),
-            src: String::new(),
-            fill: "text".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 0.0,
-            z: 0,
-        }
+        let mut element = Element::of_kind(new_id(), ElementKind::Text, x, y, w, h);
+        element.text = text.to_string();
+        element.font_size = font_size;
+        element
     }
 
     pub fn shape(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        Element::shape_with_id(new_id(), kind, x, y, w, h)
+    }
+
+    /// An image element backed by the picture at `src` (a filesystem path).
+    /// The pixels are decoded lazily off the UI thread and cached by path.
+    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::of_kind(new_id(), ElementKind::Image, x, y, w, h);
+        element.src = src.to_string();
+        element
+    }
+
+    /// A new element of `kind` with that kind's default style and the given
+    /// id: what [`Self::text`], [`Self::image`] and the shapes start from.
+    /// Taking the id rather than minting one lets an action create an
+    /// element whose id comes from its deterministic context.
+    pub fn of_kind(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::shape_with_id(id, kind, x, y, w, h);
+        match kind {
+            ElementKind::Text => element.fill = "text".into(),
+            ElementKind::Image => {
+                element.fill = "surface".into();
+                element.radius = 12.0;
+            }
+            ElementKind::Rect | ElementKind::Ellipse | ElementKind::Line => {}
+        }
+        element
+    }
+
+    fn shape_with_id(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
         Element {
-            id: new_id(),
+            id,
             kind,
             x,
             y,
@@ -208,30 +222,6 @@ impl Element {
             bold: false,
             italic: false,
             radius: if kind == ElementKind::Rect { 16.0 } else { 0.0 },
-            z: 0,
-        }
-    }
-
-    /// An image element backed by the picture at `src` (a filesystem path).
-    /// The pixels are decoded lazily off the UI thread and cached by path.
-    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Image,
-            x,
-            y,
-            w,
-            h,
-            text: String::new(),
-            src: src.to_string(),
-            fill: "surface".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size: 32.0,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 12.0,
             z: 0,
         }
     }
@@ -487,6 +477,9 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
+    /// The `text` and `text-dim` inks for each slide background, in
+    /// [`Background::ALL`] order. See [`Palette::on`].
+    inks: [(Color, Color); 3],
 }
 
 impl Palette {
@@ -500,24 +493,67 @@ impl Palette {
             PaletteKind::Rose => c.semantic.danger,
             PaletteKind::Sky => c.semantic.info,
         };
-        Palette {
+        let mut palette = Palette {
             accent,
             accent_soft: with_alpha(accent, 56),
             accent_deep: mix(accent, c.surfaces.base, 0.62),
             surface: c.surfaces.raised,
             surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
-            // A "Deep" slide is an authored dark treatment whose ink is fixed
-            // white (`on_bg`), so it must stay dark in every OS theme — a
-            // theme-tracking neutral flips near-white in the light palette and
-            // washes the white text out. A fixed deep tone keeps it dramatic.
+            // A "Deep" slide is an authored dark treatment in every OS theme
+            // — a theme-tracking neutral flips near-white in the light
+            // palette. A fixed deep tone keeps it dramatic; its text inks
+            // are chosen against it below.
             deep: Color::from_rgb8(15, 23, 42),
             text: c.text_primary,
             text_dim: c.text_dim,
-            on_accent: Color::WHITE,
+            // White on the accent where it reads, else the legible ink.
+            on_accent: c.readable_on(accent, Color::WHITE),
             success: c.semantic.success,
             warning: c.semantic.warning,
             danger: c.semantic.danger,
             info: c.semantic.info,
+            inks: [(c.text_primary, c.text_dim); 3],
+        };
+        // The theme's text colours are chosen for the theme's own surfaces;
+        // a slide background can be the opposite (the fixed deep tone under
+        // the light theme's near-black text measured 1.05:1). Resolve the
+        // `text` and `text-dim` roles per background instead: the theme's
+        // ink wherever it clears WCAG AA on that background, otherwise the
+        // legible ink for it, and a dim ink that is a softened version of
+        // whichever text ink won — still clearing AA.
+        palette.inks = Background::ALL.map(|background| {
+            let ground = palette.slide_bg(background);
+            let text = c.readable_on(ground, c.text_primary);
+            let preferred_dim = if text == c.text_primary {
+                c.text_dim
+            } else {
+                mix(text, ground, 0.3)
+            };
+            (text, c.readable_on(ground, preferred_dim))
+        });
+        palette
+    }
+
+    /// This palette as it resolves on a slide with background `bg`: the
+    /// `text` and `text-dim` roles become the inks that contrast with that
+    /// background, so text styled with a theme text role stays legible when
+    /// its slide switches to the accent or deep treatment, in either OS
+    /// theme. Every other role is unchanged.
+    #[must_use]
+    pub fn on(&self, bg: Background) -> Palette {
+        let index = Background::ALL
+            .iter()
+            .position(|candidate| *candidate == bg)
+            .unwrap_or(0);
+        let (text, text_dim) = self
+            .inks
+            .get(index)
+            .copied()
+            .unwrap_or((self.text, self.text_dim));
+        Palette {
+            text,
+            text_dim,
+            ..*self
         }
     }
 
@@ -568,13 +604,10 @@ impl Palette {
         }
     }
 
-    /// Default body / heading text colour for a slide background — white
-    /// reads on accent & deep; the theme text colour on surface.
+    /// Default body / heading text colour for a slide background: the ink
+    /// the `text` role resolves to on it (see [`Palette::on`]).
     pub fn on_bg(&self, bg: Background) -> Color {
-        match bg {
-            Background::Surface => self.text,
-            Background::Accent | Background::Deep => Color::WHITE,
-        }
+        self.on(bg).text
     }
 }
 
@@ -958,5 +991,83 @@ mod tests {
             assert!(p.resolve_role("none").is_none());
             assert!(p.resolve_role("accent").is_some());
         }
+    }
+
+    /// Every text element a template or a layout's starting content creates
+    /// stays legible on every slide background, under every accent palette,
+    /// in the light and the dark OS theme: WCAG AA, 4.5:1 for body text and
+    /// 3:1 for large titles — measured on the colour the renderer draws.
+    #[test]
+    fn template_text_contrasts_with_every_background_in_both_themes() {
+        let mut templates: Vec<(String, Element)> = Vec::new();
+        for (name, deck) in [("starter deck", starter_deck())] {
+            for slide in deck.slides {
+                for element in slide.elements {
+                    templates.push((format!("{name}: {:?}", element.text), element));
+                }
+            }
+        }
+        for element in crate::actions::new_slide_template().elements {
+            templates.push((format!("new slide: {:?}", element.text), element));
+        }
+        templates.push((
+            "inserted text box".into(),
+            crate::actions::inserted_element_template(ElementKind::Text),
+        ));
+        let texts: Vec<&(String, Element)> = templates
+            .iter()
+            .filter(|(_, element)| element.kind == ElementKind::Text)
+            .collect();
+        assert!(
+            texts.len() >= 5,
+            "the templates carry their text: {texts:?}"
+        );
+
+        let mut failures = Vec::new();
+        for (theme_name, theme) in [
+            ("light", ui::theme::Theme::light()),
+            ("dark", ui::theme::Theme::dark()),
+        ] {
+            for kind in PaletteKind::ALL {
+                let palette = Palette::resolve(kind, &theme);
+                for background in Background::ALL {
+                    let on = palette.on(background);
+                    let ground = on.slide_bg(background);
+                    for (name, element) in &texts {
+                        // As `render::draw_text_element` resolves it.
+                        let ink = on.resolve_role(&element.fill).unwrap_or(on.text);
+                        let ratio = ui::color::contrast_ratio(ink, ground);
+                        let title = element.bold && element.font_size >= 24.0;
+                        let minimum = if title { 3.0 } else { 4.5 };
+                        if ratio < minimum {
+                            failures.push(format!(
+                                "{name} on {} ({}, {theme_name}): {ratio:.2}:1 < {minimum}:1",
+                                background.as_str(),
+                                kind.as_str(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The case that was reported: text in the theme's text role on a slide
+    /// switched to the deep background, in the light theme.
+    #[test]
+    fn theme_text_on_a_deep_slide_is_light_in_the_light_theme() {
+        let palette = Palette::resolve(PaletteKind::Indigo, &ui::theme::Theme::light());
+        let deep = palette.slide_bg(Background::Deep);
+        assert!(ui::color::contrast_ratio(palette.text, deep) < 1.5);
+        let on = palette.on(Background::Deep);
+        for role in ["text", "text-dim"] {
+            let ink = on.resolve_role(role).unwrap();
+            assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
+        }
+        // The surface keeps the theme's own text colours.
+        let surface = palette.on(Background::Surface);
+        assert_eq!(surface.text, palette.text);
+        assert_eq!(surface.text_dim, palette.text_dim);
     }
 }

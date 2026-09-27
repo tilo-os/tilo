@@ -43,7 +43,7 @@ apps/sheets/src/grid.rs literal_color 7
 apps/slides/src/app.rs literal_color 1
 apps/slides/src/app.rs white_or_black 4
 apps/slides/src/model.rs literal_color 1
-apps/slides/src/model.rs white_or_black 3
+apps/slides/src/model.rs white_or_black 2
 apps/slides/src/overview_grid.rs white_or_black 1
 apps/slides/src/presentation.rs white_or_black 4
 apps/terminal/src/main_body.rs literal_color 3

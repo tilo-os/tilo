@@ -1427,25 +1427,9 @@ fn draw_cycler(
 
 /// Truncate `text` with an ellipsis so it fits `max_w` at `size`. Text
 /// that would overflow its field is a craft defect; clipping it is not
-/// a fix, so we measure and elide.
+/// a fix, so we measure and elide through the shared renderer helper.
 fn elide(text: &str, size: f32, max_w: f64, text_renderer: &mut TextRenderer) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let (w, _) = text_renderer.measure(text, size, None);
-    if f64::from(w) <= max_w {
-        return text.to_string();
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while !chars.is_empty() {
-        chars.pop();
-        let candidate: String = chars.iter().collect::<String>() + "…";
-        let (w, _) = text_renderer.measure(&candidate, size, None);
-        if f64::from(w) <= max_w {
-            return candidate;
-        }
-    }
-    String::new()
+    text_renderer.elide_to_width(text, size, ui::num::f32_of_f64(max_w))
 }
 
 /// Paint a labelled micro-caption above a control.

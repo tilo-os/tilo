@@ -171,47 +171,10 @@ pub fn text_clip(
         weight,
     } = *style;
     let size = px(tr, size);
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    if f64::from(w) <= max_width {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            base() * Affine::translate((at.x, at.y)),
-            None,
-            weight,
-        );
-        return;
-    }
-    // Binary-search the longest prefix that fits with an ellipsis.
-    let chars: Vec<char> = s.chars().collect();
-    let ell = "…";
-    let mut lo = 0usize;
-    let mut hi = chars.len();
-    let mut best = String::new();
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars
-            .get(..mid)
-            .unwrap_or_default()
-            .iter()
-            .collect::<String>()
-            + ell;
-        let (cw, _) = tr.measure_weighted(&candidate, size, None, weight);
-        if f64::from(cw) <= max_width {
-            best = candidate;
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if best.is_empty() {
-        best = ell.to_string();
-    }
+    let clipped = tr.elide_to_width_weighted(s, size, ui::num::f32_of_f64(max_width), weight);
     tr.draw_text_weighted(
         scene,
-        &best,
+        &clipped,
         size,
         color,
         base() * Affine::translate((at.x, at.y)),

@@ -12903,6 +12903,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "tts",
  "uuid",
  "vello",
  "vello_encoding",
@@ -12920,21 +12921,6 @@ dependencies = [
  "xdg-paths",
  "zbus",
  "zeroize",
-]
-
-[[package]]
-name = "shell-redraw-bench"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "serde",
- "serde_json",
- "shell",
- "tempfile",
- "tilo-ui",
- "vello",
- "vello_encoding",
- "winit",
 ]
 
 [[package]]

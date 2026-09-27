@@ -15,9 +15,10 @@ The volume name carries the trust class, so a pull request's build scripts
 never write a directory that a push to main builds from. Publications do not
 use slot caches at all.
 
-Checkout gives every file a new mtime, and Cargo rebuilds a workspace crate
-whose sources are newer than its artifacts. `mount` restores the mtime a file
-had in the previous job when its Git blob is unchanged, from a manifest that
+Checkout gives every file and directory a new mtime, and Cargo rebuilds a
+workspace crate whose sources are newer than its artifacts. `mount` restores
+the mtime a file had in the previous job when its Git blob is unchanged, and a
+directory's when its tracked entries are, from a manifest that
 only `seal` makes valid: it drops every file a step modified after `mount`, and
 a job that never seals (cancelled, killed) leaves no manifest, so the next job
 rebuilds workspace crates instead of trusting artifacts of unknown sources.
@@ -191,19 +192,29 @@ def select_target(root: Path, key: str, now: float) -> tuple[Path, str]:
     return current, reason
 
 
-def tracked_files(workspace: Path) -> dict[str, str]:
-    """Map each tracked regular file to its blob id, from the index (no hashing)."""
+def tracked_entries(workspace: Path) -> dict[str, str]:
+    """Map each tracked regular file to its blob id, from the index (no hashing),
+    and each directory below the root that holds tracked paths, as `dir/`, to a
+    digest of the names of its tracked entries."""
     out = subprocess.run(["git", "-C", str(workspace), "ls-files", "-s", "-z"],
                          capture_output=True, check=True).stdout
-    files = {}
+    entries = {}
+    children: dict[str, set[str]] = {}
     for record in out.split(b"\0"):
         if not record:
             continue
         info, path = record.split(b"\t", 1)
         mode, blob, _stage = info.split()
+        name = path.decode("utf-8", "surrogateescape")
         if mode in (b"100644", b"100755"):
-            files[path.decode("utf-8", "surrogateescape")] = blob.decode()
-    return files
+            entries[name] = blob.decode()
+        parts = name.split("/")
+        for depth in range(1, len(parts)):
+            children.setdefault("/".join(parts[:depth]), set()).add(parts[depth])
+    for directory, names in children.items():
+        listing = "\0".join(sorted(names)).encode("utf-8", "surrogateescape")
+        entries[directory + "/"] = hashlib.sha1(listing).hexdigest()
+    return entries
 
 
 def load_manifest(path: Path) -> dict[str, tuple[str, int]]:
@@ -227,7 +238,15 @@ def write_manifest(path: Path, entries: dict[str, tuple[str, int]]) -> None:
 
 
 def restore_mtimes(workspace: Path, target: Path) -> tuple[int, int]:
-    """Give unchanged files their previous mtimes; record what this job builds from."""
+    """Give unchanged files and directories their previous mtimes; record what
+    this job builds from.
+
+    Directories count because a build script's `rerun-if-changed` on a
+    directory compares the newest mtime within it, directories included, and
+    checkout creates every directory anew. A directory is unchanged when its
+    tracked entries are; a step that adds a file to it changes its mtime, so
+    the seal drops it.
+    """
     sealed = target / SEALED
     previous = load_manifest(sealed)
     # From here on, artifacts in target may come from this checkout, which the
@@ -235,7 +254,7 @@ def restore_mtimes(workspace: Path, target: Path) -> tuple[int, int]:
     sealed.unlink(missing_ok=True)
     restored = 0
     current = {}
-    for name, blob in tracked_files(workspace).items():
+    for name, blob in tracked_entries(workspace).items():
         path = workspace / name
         old = previous.get(name)
         try:
@@ -308,7 +327,7 @@ def mount(args: argparse.Namespace) -> int:
         bind(cargo / part, cargo_home / part)
     restored, files = restore_mtimes(workspace, workspace / "target")
     total, used = store_usage(volume)
-    log(f"{args.trust} key {key} ({reason}); restored mtimes of {restored}/{files} files; "
+    log(f"{args.trust} key {key} ({reason}); restored mtimes of {restored}/{files} paths; "
         f"store {used / GIB:.0f}/{total / GIB:.0f} GiB; {time.monotonic() - started:.1f}s")
     output(enabled="true", key=key, state=reason)
     return 0
@@ -331,7 +350,7 @@ def seal(args: argparse.Namespace) -> int:
             continue
     write_manifest(target / SEALED, kept)
     pending.unlink()
-    log(f"sealed {len(kept)} unchanged files ({len(entries) - len(kept)} modified since mount)")
+    log(f"sealed {len(kept)} unchanged paths ({len(entries) - len(kept)} modified since mount)")
     return 0
 
 

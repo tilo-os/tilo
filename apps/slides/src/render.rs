@@ -50,6 +50,8 @@ pub fn draw_slide(
     images: &dyn ImageLookup,
 ) {
     let s = dest.width() / SLIDE_W;
+    // Text roles resolve against this slide's own background.
+    let palette = &palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
     scene.fill(Fill::NonZero, transform, bg, None, &card);
