@@ -934,6 +934,9 @@ jobs:
             echo '::error::reproducible publication requires a pinned prebuilt app collection'; exit 1;
           }
           [[ "$TILO_WITH_BROWSER" == 1 ]] || exit 0
+          command -v openssl >/dev/null || {
+            echo '::error::OpenSSL is required to check protected browser publishers'; exit 1;
+          }
           for name in RUNTIME_BUNDLE_SIGNING_KEY TAPP_PUBLISHER_IDENTITY; do
             value="${!name:-}"
             [[ -n "$value" ]] || { echo "::error::$name is required for reproducible publication"; exit 1; }

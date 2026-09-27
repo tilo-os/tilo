@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import unittest
 
 
@@ -13,6 +14,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class IdentityPublicKeyTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required for Ed25519 derivation")
     def test_rfc8032_ed25519_seed(self):
         identity = json.dumps({"secret_key_hex":
             "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"}).encode()
