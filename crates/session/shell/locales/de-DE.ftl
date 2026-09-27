@@ -1545,6 +1545,8 @@ remark-review-shown = Angezeigt
 remark-review-included = Was enthalten ist
 remark-review-nothing-included = In diesem Schritt wurde nichts eingegeben oder angezeigt
 remark-review-empty = In dieser Aufzeichnung wurde nichts versucht.
+remark-review-protected = Geschützt – davon wurde nichts aufgezeichnet
+replay-protected = { $apps }: geschützt, davon wurde nichts aufgezeichnet
 
 ## Nach dem Senden
 

@@ -397,7 +397,9 @@ mod tests {
             }],
             theme: "dark".into(),
             locale: "de-DE".into(),
+            protected: Vec::new(),
         });
+        trace.note_protected("so.tilo.passwords", "room-1");
         let notes = route("so.tilo.notes");
         trace.push_op(epoch, notes.clone(), "alice".into(), snapshot(1));
         let (started, failed) = interaction();

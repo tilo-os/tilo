@@ -1537,6 +1537,8 @@ remark-review-shown = On screen
 remark-review-included = What is included
 remark-review-nothing-included = Nothing typed or shown in this step
 remark-review-empty = Nothing was tried in this recording.
+remark-review-protected = Protected — nothing of it was recorded
+replay-protected = { $apps }: protected, nothing of it was recorded
 
 ## After sending
 

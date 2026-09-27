@@ -87,12 +87,16 @@ fn room_tree() -> WorkspaceTreeHandle {
 }
 
 fn connect(socket: &Path) -> CollaborationManager {
+    connect_as(socket, APP, record_id())
+}
+
+fn connect_as(socket: &Path, app: &str, record: String) -> CollaborationManager {
     let stream = UnixStream::connect(socket).unwrap();
     let mut manager = CollaborationManager::for_route_fd_with_identity(
         stream.into_raw_fd(),
-        APP,
+        app,
         ROOM,
-        Some(record_id()),
+        Some(record),
         Some("ada".into()),
         identity(),
     )
@@ -441,10 +445,14 @@ fn an_agent_connected_from_this_machine_is_on_the_roster_while_connected() {
 
 /// A real `ui::App` whose semantic tree the recorder keyframes.
 fn inspectable_app(socket: &Path) -> ui::App {
+    inspectable_app_as(socket, APP)
+}
+
+fn inspectable_app_as(socket: &Path, app: &str) -> ui::App {
     let stream = UnixStream::connect(socket).unwrap();
     let manager = CollaborationManager::for_route_fd_with_identity(
         stream.into_raw_fd(),
-        APP,
+        app,
         ROOM,
         None,
         Some("ada".into()),
@@ -554,4 +562,182 @@ fn a_recording_keeps_semantic_keyframes_only_when_the_tree_changes() {
         "what leaves the device carries the declared personal value only as a placeholder"
     );
     drop(broker);
+}
+
+/// A password manager: capture-protected for what it is.
+const PROTECTED_APP: &str = "so.tilo.passwords";
+const SECRET: &str = "hunter2-correct-horse";
+
+fn protected_record_id() -> String {
+    format!(
+        "uuid:{}",
+        uuid::Uuid::from_u128(0x0dd1_0000_0000_0000_0000_0000_0000_0002)
+    )
+}
+
+/// Answer snapshot requests for every app until `done` holds.
+fn drive_all(
+    apps: &mut [(&mut CollaborationManager, &mut AutoCommit)],
+    mut done: impl FnMut() -> bool,
+) {
+    let deadline = later(Duration::from_secs(10));
+    while Instant::now() < deadline {
+        for (app, doc) in apps.iter_mut() {
+            for event in app.poll() {
+                if let CollabEvent::DocumentSnapshotRequested { route } = event {
+                    app.send_to_route(route, CollabRequest::document_snapshot(doc.save()));
+                }
+            }
+        }
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the apps were not observed in time");
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+#[test]
+fn a_protected_app_leaves_only_a_marker_in_the_trace() {
+    assert!(shell::shell::capture_protection::holds_secrets(
+        PROTECTED_APP
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("collab.sock");
+    let tree = room_tree();
+    let device = SigningKey::from_bytes(&DEVICE_KEY)
+        .verifying_key()
+        .to_bytes();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        Arc::clone(&tree),
+        vec![device],
+    )
+    .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+
+    let mut notes_doc = AutoCommit::new();
+    notes_doc.put(ROOT, "title", "Before recording").unwrap();
+    let mut notes = connect(&socket);
+    let mut vault_doc = AutoCommit::new();
+    vault_doc.put(ROOT, "password", SECRET).unwrap();
+    let mut vault = connect_as(&socket, PROTECTED_APP, protected_record_id());
+    // The password manager's own window, which a recording would keyframe.
+    let mut vault_window = inspectable_app_as(&socket, PROTECTED_APP);
+    let actions = broker.app_action_broker().unwrap();
+    let deadline = later(Duration::from_secs(10));
+    while actions.inspectable_apps().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the app never answered inspection"
+        );
+        vault_window.pump_collab_presence();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .unwrap();
+    // Both apps answer the starting snapshot request; only one is kept.
+    drive_all(
+        &mut [(&mut notes, &mut notes_doc), (&mut vault, &mut vault_doc)],
+        || snapshot_taken(&recorder),
+    );
+    let caret = PresenceKey::Widget {
+        path: vec![PathSegment::Field("title".into())],
+    };
+    for (app, doc, value, pos) in [
+        (&mut notes, &mut notes_doc, "During recording", 6),
+        (&mut vault, &mut vault_doc, SECRET, 4_242),
+    ] {
+        let before = doc.get_heads();
+        doc.put(ROOT, "title", value).unwrap();
+        app.send(CollabRequest::document_incremental(doc.save_after(&before)));
+        app.send(CollabRequest::Presence {
+            key: caret.clone(),
+            payload: PresencePayload::Caret { pos },
+        });
+    }
+    let settle = later(Duration::from_millis(1_000));
+    drive_all(
+        &mut [(&mut notes, &mut notes_doc), (&mut vault, &mut vault_doc)],
+        || {
+            vault_window.pump_collab_presence();
+            recorder.pump(Instant::now(), &owner());
+            Instant::now() >= settle
+        },
+    );
+    let checkout = recorder.stop(&owner()).unwrap();
+    let pending = recorder.take_session(&checkout.id).unwrap();
+    assert_only_the_marker(&pending, &room);
+    drop(broker);
+}
+
+/// The session holds the protected app's marker, and nothing else of it.
+fn assert_only_the_marker(pending: &shell::shell::recorder::PendingSession, room: &str) {
+    let mut trace = pending.trace().unwrap();
+    assert_eq!(
+        trace.environment.protected,
+        vec![session_trace::ProtectedApp {
+            app_id: PROTECTED_APP.into(),
+            room: room.into(),
+        }]
+    );
+    assert!(
+        trace.routes().iter().all(|route| route.app_id == APP),
+        "{:?}",
+        trace.routes()
+    );
+    assert!(
+        trace
+            .snapshot_of(&session_trace::Route::new(APP, room, record_id()))
+            .is_some()
+    );
+    for snapshot in &trace.snapshots {
+        assert!(
+            snapshot
+                .frames
+                .iter()
+                .all(|frame| !contains(&frame.payload, SECRET.as_bytes()))
+        );
+    }
+    let mut kept_caret = false;
+    for entry in trace.events() {
+        match &entry.event {
+            Event::Op(op) => assert!(!contains(&op.envelope.payload, SECRET.as_bytes())),
+            Event::Presence(update) => {
+                assert_ne!(update.change, PresenceChange::Caret { pos: 4_242 });
+                kept_caret |= update.change == PresenceChange::Caret { pos: 6 };
+            }
+            Event::Inspect(keyframe) => assert_eq!(keyframe.route.app_id, APP),
+        }
+    }
+    assert!(kept_caret, "the normal app's presence is kept");
+    assert!(
+        trace
+            .environment
+            .surfaces
+            .iter()
+            .all(|surface| surface.app_id != PROTECTED_APP)
+    );
+    let summary = session_trace::read_summary(pending.document()).unwrap();
+    assert_eq!(summary.apps, vec![APP]);
+    assert!(
+        ui::record::references(pending.document())
+            .iter()
+            .all(|reference| reference.target.as_str() != protected_record_id()),
+        "the session does not even reference the protected app's record"
+    );
+    // Without the marker, the trace does not name the protected app at all.
+    trace.environment.protected.clear();
+    let encoded = serde_json::to_string(&trace).unwrap();
+    assert!(!encoded.contains(PROTECTED_APP));
+    assert!(!encoded.contains(&protected_record_id()));
 }

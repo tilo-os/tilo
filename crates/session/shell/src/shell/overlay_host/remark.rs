@@ -116,7 +116,7 @@ pub(crate) struct RemarkHost {
     shell_tree_at: Option<Instant>,
 }
 
-fn app_label(app_id: &str) -> String {
+pub(super) fn app_label(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
         let tail = app_id.rsplit('.').next().unwrap_or(app_id);
         let mut chars = tail.chars();

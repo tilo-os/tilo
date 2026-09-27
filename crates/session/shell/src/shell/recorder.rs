@@ -19,6 +19,11 @@
 //! blob with relation `frames`. The strip's bytes stay with the pending
 //! session in memory, like the record itself.
 //!
+//! A capture-protected app ([`crate::shell::capture_protection`]) is
+//! withheld at intake: its snapshots, ops, presence, keyframes, geometry and
+//! frames are dropped as they arrive, and the session keeps only a marker
+//! that it was present and protected ([`session_trace::ProtectedApp`]).
+//!
 //! With the recent buffer on (`feedback.recent_buffer`, off by default), the
 //! recorder also follows the rooms the user administers as they visit them
 //! and keeps the last two minutes of presence and op references in memory,
@@ -123,6 +128,12 @@ pub struct RecordedOutput {
     pub name: String,
 }
 
+/// Whether `app_id` is capture-protected, so the recorder keeps nothing of
+/// it but a marker.
+fn is_protected(app_id: &str) -> bool {
+    !app_id.is_empty() && crate::shell::foreign::store().is_app_capture_protected(app_id)
+}
+
 /// The app a tab shows, by the id its surface and grants use.
 fn tab_app_id(tile: &crate::shell::state::TileContent) -> Option<String> {
     use crate::shell::state::TileContent;
@@ -199,6 +210,31 @@ struct Capture {
     /// The scale each measured tab's surface renders at: what a captured
     /// frame's pixels are per logical pixel.
     surface_scales: Vec<(crate::shell::state::TabId, f64)>,
+    /// Capture-protected apps seen in a held room, as `(room, app)`: all a
+    /// session keeps of them.
+    protected: BTreeSet<(String, String)>,
+}
+
+impl Capture {
+    /// `app_id` is present in `room` and protected: remember it for a later
+    /// capture of the recent buffer and mark the recording that holds it.
+    fn note_protected(&mut self, room: &str, app_id: &str) {
+        let recorded = self
+            .recording
+            .as_ref()
+            .is_some_and(|recording| recording.rooms.contains(room) && recording.wants_app(app_id));
+        if !recorded && !self.recent_rooms.contains(room) {
+            return;
+        }
+        if recorded && let Some(recording) = self.recording.as_mut() {
+            recording.builder.note_protected(app_id, room);
+        }
+        if let Some(finishing) = self.finishing.as_mut() {
+            finishing.builder.note_protected(app_id, room);
+        }
+        self.protected
+            .insert((room.to_string(), app_id.to_string()));
+    }
 }
 
 struct Recording {
@@ -322,6 +358,10 @@ impl Keyframes {
             });
         let mut keep = Vec::new();
         for (route, reply) in answered {
+            // Protection that began after the ask still withholds the tree.
+            if is_protected(&route.app_id) {
+                continue;
+            }
             // A keyframe is a change of structure, not a heartbeat.
             if self.last.get(&route) == Some(&reply) || self.kept >= MAX_KEYFRAMES {
                 continue;
@@ -353,14 +393,26 @@ impl Keyframes {
     /// changed since it was last asked (or it was never asked), or a frame
     /// of it was captured, or — for an app that reports no changes — the
     /// fallback poll came round; never sooner than [`KEYFRAME_MIN_GAP`].
-    fn ask(&mut self, held: &[String], now: Instant, user: &UserId) {
+    ///
+    /// Returns the protected apps found in `held`, as `(room, app)`, which
+    /// were not asked.
+    fn ask(&mut self, held: &[String], now: Instant, user: &UserId) -> Vec<(String, String)> {
+        let mut protected = Vec::new();
         self.drain_changes();
         let caller = crate::shell::collab_broker_capnp::InspectCaller {
             person: user.clone(),
             audience: ui::a11y::Audience::LocalSession,
         };
         for app in self.broker.inspectable_apps() {
-            if !held.contains(&app.room) || self.kept >= MAX_KEYFRAMES {
+            if !held.contains(&app.room) {
+                continue;
+            }
+            // A protected app's tree is never asked for.
+            if is_protected(&app.app_id) {
+                protected.push((app.room.clone(), app.app_id.clone()));
+                continue;
+            }
+            if self.kept >= MAX_KEYFRAMES {
                 continue;
             }
             let route = Route::new(app.app_id.clone(), app.room.clone(), app.record.clone());
@@ -406,6 +458,7 @@ impl Keyframes {
                 }
             }
         }
+        protected
     }
 }
 
@@ -514,6 +567,7 @@ impl Recorder {
     pub fn inspect_now(&self, surface_id: u64) {
         if let Some(keyframes) = lock(&self.control).keyframes.as_mut()
             && let Some(app) = keyframes.broker.inspectable_app_for_surface(surface_id)
+            && !is_protected(&app.app_id)
         {
             keyframes.triggered.insert(app.peer_id);
         }
@@ -527,16 +581,20 @@ impl Recorder {
             return;
         };
         let keep = keyframes.collect(now);
-        if held.is_empty() {
+        let protected = if held.is_empty() {
             keyframes.forget();
+            Vec::new()
         } else {
-            keyframes.ask(&held, now, user);
-        }
+            keyframes.ask(&held, now, user)
+        };
         drop(control);
-        if keep.is_empty() {
+        if keep.is_empty() && protected.is_empty() {
             return;
         }
         let mut capture = lock(&self.capture);
+        for (room, app_id) in &protected {
+            capture.note_protected(room, app_id);
+        }
         for keyframe in keep {
             let route = CrdtRoute::record(
                 keyframe.route.app_id.clone(),
@@ -564,6 +622,7 @@ impl Recorder {
             .map(|surface| (surface.tab, surface.scale))
             .collect();
         let held = self.subscription.rooms();
+        let mut protected: Vec<(String, String)> = Vec::new();
         let surfaces: Vec<(String, SurfaceGeometry)> = {
             let tree = self.tree.read();
             let mut out = Vec::new();
@@ -581,6 +640,10 @@ impl Recorder {
                     let Some(app_id) = tab_app_id(&tab.tile) else {
                         continue;
                     };
+                    if is_protected(&app_id) {
+                        protected.push((room.clone(), app_id));
+                        continue;
+                    }
                     if let Some(size) = measured.iter().find(|m| m.tab == tab.id) {
                         out.push((
                             room.clone(),
@@ -599,6 +662,9 @@ impl Recorder {
             out
         };
         let mut capture = lock(&self.capture);
+        for (room, app_id) in &protected {
+            capture.note_protected(room, app_id);
+        }
         if capture.surfaces == surfaces {
             return;
         }
@@ -827,12 +893,18 @@ impl Recorder {
                 frames: pixels
                     .map(|purpose| FrameStripBuilder::new(purpose, FrameLimits::default())),
             };
-            // Surfaces already measured for a room the buffer held.
+            // Surfaces already measured, and protected apps already seen,
+            // in a room the buffer held.
             for (room, surface) in &capture.surfaces {
                 if recording.rooms.contains(room)
                     && (recording.apps.is_empty() || recording.apps.contains(&surface.app_id))
                 {
                     recording.builder.note_surface(surface.clone());
+                }
+            }
+            for (room, app_id) in &capture.protected {
+                if recording.rooms.contains(room) && recording.wants_app(app_id) {
+                    recording.builder.note_protected(app_id, room);
                 }
             }
             capture.recording = Some(recording);
@@ -913,6 +985,11 @@ impl Recorder {
         scale: f64,
         rgba: Vec<u8>,
     ) -> Result<Option<FramePush>, session_trace::frames::FrameError> {
+        // A protected app's frames are placeholders; the session's marker
+        // stands for them.
+        if is_protected(&route.app_id) {
+            return Ok(None);
+        }
         let capture = lock(&self.capture);
         let wanted = capture
             .recording
@@ -1014,6 +1091,11 @@ impl Recorder {
         for (room, surface) in &capture.surfaces {
             if capture.recent_rooms.contains(room) {
                 builder.note_surface(surface.clone());
+            }
+        }
+        for (room, app_id) in &capture.protected {
+            if capture.recent_rooms.contains(room) {
+                builder.note_protected(app_id, room);
             }
         }
         drop(capture);
@@ -1169,6 +1251,9 @@ impl Recorder {
             .filter(|room| self.admitted_in(room))
             .collect();
         self.subscription.set_rooms(held.iter().cloned().collect());
+        lock(&self.capture)
+            .protected
+            .retain(|(room, _)| held.contains(room));
         let mut control = lock(&self.control);
         if control.held == held {
             return false;
@@ -1290,6 +1375,7 @@ fn environment() -> Environment {
         locale: std::env::var("LC_ALL")
             .or_else(|_| std::env::var("LANG"))
             .unwrap_or_default(),
+        protected: Vec::new(),
     }
 }
 
@@ -1450,8 +1536,20 @@ fn presence_update(
     })
 }
 
-/// The sink: keep what was delivered, where it was asked for.
+/// The sink: keep what was delivered, where it was asked for. Nothing a
+/// protected app sends is kept — not its snapshot, ops or presence — only
+/// that it was there.
 fn observe(capture: &mut Capture, now: Instant, event: &CollabEvent, route: &CrdtRoute) {
+    let delivered = matches!(
+        event,
+        CollabEvent::Document { .. }
+            | CollabEvent::RemotePresenceUpdate { .. }
+            | CollabEvent::RemoteCursorMoved { .. }
+    );
+    if delivered && is_protected(&route.app_id) {
+        capture.note_protected(&route.cluster_id, &route.app_id);
+        return;
+    }
     match event {
         CollabEvent::Document {
             envelope,

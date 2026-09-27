@@ -15,6 +15,9 @@
 //! it reopens the room around the same windows: the apps are started again
 //! in a fresh room, ask the peer for the document, and receive it as it was
 //! at the target.
+//!
+//! A capture-protected app contributed only a marker to the session: it is
+//! not launched, and the replay room shows the capture placeholder for it.
 
 pub mod headless;
 pub mod offscreen;
@@ -99,6 +102,21 @@ fn recorded_rooms(trace: &SessionTrace) -> Vec<(String, RoomId)> {
         .collect();
     out.dedup_by(|a, b| a.0 == b.0);
     out
+}
+
+/// The capture-protected apps `trace` marks as present, each once. Nothing
+/// of them was recorded, so none is launched; the replay room shows the
+/// capture placeholder for each instead.
+fn protected_apps(trace: &SessionTrace) -> Vec<String> {
+    let mut apps: Vec<String> = trace
+        .environment
+        .protected
+        .iter()
+        .map(|marker| marker.app_id.clone())
+        .collect();
+    apps.sort();
+    apps.dedup();
+    apps
 }
 
 /// The app windows open in `workspace`: `(tab, app id, surface)`.
@@ -780,6 +798,7 @@ impl ReplayController {
             "events": replay.trace.timeline.len(),
             "step": current,
             "steps": replay.steps.iter().map(step_json).collect::<Vec<_>>(),
+            "protected": protected_apps(&replay.trace),
         });
         drop(guard);
         status

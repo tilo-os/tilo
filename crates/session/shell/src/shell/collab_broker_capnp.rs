@@ -8591,16 +8591,15 @@ impl CapnpPresenceHandle {
             );
             return;
         };
-        let route = self.route();
-        self.state
-            .publish_presence(&self.full_route(), &key, &payload);
+        let route = self.full_route();
+        self.state.publish_presence(&route, &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
             user_id: CapnpBrokerState::participant_id(&self.verified_identity),
             key,
             payload,
         };
         if let Some(fanout) = self.state.fanout.upgrade() {
-            fanout.fanout_to_route(&event, self.peer_id, &route);
+            fanout.fanout_presence(&event, self.peer_id, &route);
         }
     }
 }
@@ -8616,7 +8615,6 @@ impl presence_handle::Server for CapnpPresenceHandle {
         }
         let state = self.state.clone();
         let peer_id = self.peer_id;
-        let route = self.route();
         let full_route = self.full_route();
         let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
@@ -8634,7 +8632,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &PresencePayload::Pointer { x, y },
             );
             if let Some(t) = state.fanout.upgrade() {
-                t.fanout_to_route(&event, peer_id, &route);
+                t.fanout_presence(&event, peer_id, &full_route);
             }
             Ok(())
         })

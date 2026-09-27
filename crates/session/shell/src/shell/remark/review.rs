@@ -53,6 +53,21 @@ impl Step {
     }
 }
 
+/// The capture-protected apps a trace marks as present, each once, by the
+/// name a person knows them by.
+fn protected_apps(
+    trace: &SessionTrace,
+    app_name: &dyn Fn(&str) -> String,
+) -> Vec<(String, String)> {
+    let mut apps: Vec<(String, String)> = Vec::new();
+    for marker in &trace.environment.protected {
+        if !apps.iter().any(|(app, _)| *app == marker.app_id) {
+            apps.push((marker.app_id.clone(), app_name(&marker.app_id)));
+        }
+    }
+    apps
+}
+
 /// Whether replaying the session reproduces what its frames show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Verdict {
@@ -135,6 +150,10 @@ pub struct Review {
     pub duration: Offset,
     pub generation: Option<u64>,
     pub verdict: Verdict,
+    /// Capture-protected apps that were present, as `(app id, name)`: the
+    /// recording kept nothing of them, and the walk-through shows the
+    /// capture placeholder for each.
+    pub protected: Vec<(String, String)>,
 }
 
 /// One text of a step, with the batch it belongs to.
@@ -215,6 +234,7 @@ impl Review {
                 .as_ref()
                 .and_then(|image| image.generation),
             verdict: Verdict::Unchecked,
+            protected: protected_apps(trace, app_name),
         }
     }
 
@@ -948,6 +968,43 @@ pub(crate) mod tests {
         assert_eq!(
             apply_spans("café noir", &[Span { start: 0, end: 5 }]),
             "▮▮▮▮ noir"
+        );
+    }
+
+    #[test]
+    fn a_protected_app_is_named_once_and_has_no_step() {
+        let mut trace = trace();
+        for room in ["room-a", "room-b"] {
+            trace
+                .environment
+                .protected
+                .push(session_trace::ProtectedApp {
+                    app_id: "so.tilo.passwords".into(),
+                    room: room.into(),
+                });
+        }
+        let review = Review::from_trace("uuid:1", &trace, &|app| {
+            if app == "so.tilo.passwords" {
+                "Passwords".to_string()
+            } else {
+                "Mail".to_string()
+            }
+        });
+        assert_eq!(
+            review.protected,
+            vec![("so.tilo.passwords".to_string(), "Passwords".to_string())]
+        );
+        assert!(
+            review
+                .steps
+                .iter()
+                .all(|step| step.app_id != "so.tilo.passwords")
+        );
+        assert!(
+            !review
+                .summary(session_trace::SessionLayer::Logic)
+                .apps
+                .contains(&"so.tilo.passwords".to_string())
         );
     }
 }

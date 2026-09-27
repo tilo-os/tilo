@@ -23510,6 +23510,39 @@ impl ShellOverlayHost {
             None,
             &shape,
         );
+        // Protected apps were not recorded: the capture placeholder stands
+        // above the bar where they would have been replayed.
+        let protected: Vec<String> = field("protected")
+            .as_array()
+            .map(|apps| {
+                apps.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(remark::app_label)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !protected.is_empty() {
+            let card = Rect::new(
+                bar.x0,
+                bar.y0 - 8.0 - 96.0,
+                bar.x0 + bar.width().min(320.0),
+                bar.y0 - 8.0,
+            );
+            crate::shell::capture_protection::paint_placeholder(
+                scene, transform, card, radius, theme,
+            );
+            text_renderer.draw_text(
+                scene,
+                &crate::shell::i18n::t_args(
+                    "replay-protected",
+                    &[("apps", crate::shell::i18n::text(protected.join(", ")))],
+                ),
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((card.x0 + 12.0, card.y1 - 22.0).into()),
+                Some(ui::num::f32_of_f64((card.width() - 24.0).max(0.0))),
+            );
+        }
         let hovered = |rect: Rect| self.last_cursor.is_some_and(|p| rect.contains(p));
         let mut x = bar.x0 + 8.0;
         let button_y0 = bar.y0 + 8.0;

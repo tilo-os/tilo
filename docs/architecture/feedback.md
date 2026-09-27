@@ -103,6 +103,15 @@ in-memory buffer of the last two minutes. The buffer holds presence, inspect
 keyframes and op references only; the ops themselves are already in the
 record's history. Nothing is written or sent before review.
 
+A capture-protected app (a password manager, an authenticator, an app that
+asked for protection) contributes nothing to a session: the recorder drops
+its snapshots, ops, presence, interactions, inspect keyframes, surface
+geometry and frames at intake, for explicit recordings and the recent buffer
+alike, and keeps only a marker that it was present and protected
+(`session_trace::ProtectedApp`, in the trace's environment). Review lists it
+with the capture placeholder instead of steps, and replay does not launch it
+but shows the placeholder in the replay room.
+
 ## Two layers: structure, then pixels
 
 Replay is exact for anything the semantic layer describes. Pixels are the

@@ -568,6 +568,29 @@ impl FanoutState {
             capnp.fanout_to_route(event, except, route);
         }
     }
+
+    /// Deliver a presence `event` published on the sender's `origin` route.
+    /// Presence is room-wide, so typed subscribers get it by the room's
+    /// cluster scope as before; in-process subscribers, which hold whole
+    /// rooms, are handed `origin` itself, so the session recorder can tell
+    /// which app spoke (and keep nothing of a capture-protected one).
+    pub(crate) fn fanout_presence(&self, event: &CollabEvent, except: u64, origin: &CrdtRoute) {
+        if origin.cluster_id.is_empty() {
+            tracing::debug!(
+                "collab_broker: dropping presence with an unaddressed route \
+                 (sender never announced a cluster)"
+            );
+            return;
+        }
+        for sub in self.local_subs() {
+            if sub.wants(origin) {
+                (sub.sink)(event, origin);
+            }
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(event, except, &origin.to_cluster_scope());
+        }
+    }
 }
 
 /// Owns the typed broker and optional peer-network drain.

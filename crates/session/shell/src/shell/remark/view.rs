@@ -1802,6 +1802,13 @@ impl RemarkView {
             return;
         };
         if review.steps.is_empty() {
+            let list = Rect::new(
+                body.x0,
+                body.y0,
+                body.x0 + (body.width() * 0.34).clamp(200.0, 300.0),
+                body.y1,
+            );
+            Self::draw_protected_rows(scene, transform, tr, theme, list, 0, &review.protected);
             let message = t("remark-review-empty");
             let (w, h) = tr.measure(&message, scale.sm, None);
             line(
@@ -1967,6 +1974,15 @@ impl RemarkView {
             );
             self.push(row, target);
         }
+        Self::draw_protected_rows(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(body.x0, body.y0, body.x0 + list_w, body.y1 - verdict_h),
+            review.steps.len(),
+            &review.protected,
+        );
 
         // The chosen step.
         let detail = Rect::new(body.x0 + list_w + gap * 1.5, body.y0, body.x1, body.y1);
@@ -2147,6 +2163,71 @@ impl RemarkView {
         }
 
         self.draw_review_footer(scene, transform, tr, theme, sheet, Some(review));
+    }
+
+    /// One row per capture-protected app, below the `after` step rows of
+    /// `list`: the capture placeholder where its steps would be, and that
+    /// nothing of it was recorded.
+    fn draw_protected_rows(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+        after: usize,
+        protected: &[(String, String)],
+    ) {
+        let step_h = 52.0;
+        let gap = gap(theme);
+        let scale = &theme.tokens.typography.scale;
+        let colors = &theme.tokens.colors;
+        for (index, (_, name)) in protected.iter().enumerate() {
+            let row = Rect::from_origin_size(
+                (
+                    list.x0,
+                    list.y0 + ui::num::f64_of_usize(after.saturating_add(index)) * (step_h + 2.0),
+                ),
+                (list.width(), step_h),
+            );
+            if row.y1 > list.y1 {
+                break;
+            }
+            let mark = Rect::from_origin_size(
+                (row.x0 + gap, row.y0 + 6.0),
+                (step_h - 12.0, step_h - 12.0),
+            );
+            crate::shell::capture_protection::paint_placeholder(
+                scene,
+                transform,
+                mark,
+                f64_of(theme.tokens.radii.sm),
+                theme,
+            );
+            let x = mark.x1 + gap;
+            let (_, name_h) = tr.measure_weighted(name, scale.sm, None, TextWeight::Medium);
+            line(
+                scene,
+                transform,
+                tr,
+                name,
+                scale.sm,
+                colors.text_primary,
+                Point::new(x, row.y0 + 8.0),
+                row.x1 - x - gap,
+                TextWeight::Medium,
+            );
+            line(
+                scene,
+                transform,
+                tr,
+                &t("remark-review-protected"),
+                scale.xs,
+                colors.text_dim,
+                Point::new(x, row.y0 + 12.0 + f64::from(name_h)),
+                row.x1 - x - gap,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// One text, word by word: a hidden word is its mask, a shown one is
