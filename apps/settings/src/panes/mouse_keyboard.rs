@@ -290,11 +290,42 @@ impl MouseKeyboardPane {
             self.keyboard_card(),
             self.spell_checker_card(),
             self.input_sources_card(),
+            self.touchpad_card(),
             self.pointer_card(),
             self.touchpad_click_scroll_card(),
             self.pointer_options_card(),
             Self::pen_card(),
         ])
+    }
+
+    /// Whether the touchpad works at all. The touchpad key on a laptop
+    /// keyboard flips the same saved setting.
+    fn touchpad_card(&self) -> Box<dyn Widget> {
+        card(
+            "Touchpad",
+            rows(vec![
+                setting_row_described(
+                    "Touchpad",
+                    "Turn off to ignore the touchpad; the touchpad key does the same",
+                    Box::new(
+                        Toggle::from_state(&ui::LocalState::new(self.last.touchpad_enabled))
+                            .on_action(bool_action("touchpad-enabled"))
+                            .with_id("input.touchpad_enabled"),
+                    ),
+                ),
+                setting_row_described(
+                    "Disable touchpad while a mouse is connected",
+                    "The touchpad comes back when the mouse is unplugged",
+                    Box::new(
+                        Toggle::from_state(&ui::LocalState::new(
+                            self.last.touchpad_disabled_on_external_mouse,
+                        ))
+                        .on_action(bool_action("touchpad-disabled-with-mouse"))
+                        .with_id("input.touchpad_disabled_on_external_mouse"),
+                    ),
+                ),
+            ]),
+        )
     }
 
     fn pointer_card(&self) -> Box<dyn Widget> {
