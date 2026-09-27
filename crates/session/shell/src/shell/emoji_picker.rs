@@ -1,5 +1,10 @@
 //! The emoji picker: Super+. (rebindable) over any text field.
 //!
+//! The card opens at the focused field's caret — below it, or above it when
+//! the display ends first, kept on the display — from the cursor rectangle
+//! the field reports through `zwp_text_input_v3`. A field that reports none
+//! gets the card centred on the display.
+//!
 //! A compact card with the search field focused, the Unicode groups as tabs
 //! and a grid that lists this user's recents first, then the selected group
 //! — or, while a query is typed, the matches. Everything is reachable from
@@ -170,6 +175,9 @@ pub struct EmojiPicker {
     hover: Option<Hit>,
     commits: Vec<String>,
     viewport: Rect,
+    /// The focused field's caret in desktop coordinates, when it reported
+    /// one; the card is placed against it.
+    anchor: Option<Rect>,
     geometry: Geometry,
     spacing: ui::tokens::Spacing,
     metrics: ui::tokens::Metrics,
@@ -202,6 +210,7 @@ impl EmojiPicker {
             hover: None,
             commits: Vec::new(),
             viewport: Rect::ZERO,
+            anchor: None,
             geometry: Geometry::default(),
             spacing: ui::tokens::Spacing::BASE,
             metrics: ui::tokens::Metrics::BASE,
@@ -218,9 +227,16 @@ impl EmojiPicker {
         self.open
     }
 
-    /// Open over `viewport` in the desktop's language, search focused and
-    /// empty, the first group selected.
+    /// Open centred over `viewport` in the desktop's language, search
+    /// focused and empty, the first group selected.
     pub fn open(&mut self, viewport: Rect, locale: &str) {
+        self.open_at(viewport, None, locale);
+    }
+
+    /// [`Self::open`], placed at `caret` — the focused field's cursor
+    /// rectangle in desktop coordinates — when there is one.
+    pub fn open_at(&mut self, viewport: Rect, caret: Option<Rect>, locale: &str) {
+        self.anchor = caret;
         if !self.recents_loaded {
             self.recents_loaded = true;
             if let Some(store) = &self.store {
@@ -301,6 +317,11 @@ impl EmojiPicker {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// The field caret the open card is placed against.
+    pub fn anchor(&self) -> Option<Rect> {
+        self.anchor
     }
 
     pub fn card_rect(&self) -> Rect {
@@ -464,11 +485,17 @@ impl EmojiPicker {
         let grid_w = columns * cell;
         let grid_h = cell * f64_from_usize(GRID_ROWS);
         let height = pad * 2.0 + field_h + gap + tabs_h + gap + grid_h + gap + footer_h;
-        let x0 = viewport.center().x - width / 2.0;
-        let y0 = (viewport.y0 + viewport.height() * 0.18)
-            .min(viewport.y1 - height - edge)
-            .max(viewport.y0 + edge);
-        let card = Rect::new(x0, y0, x0 + width, y0 + height);
+        let size = (width, height);
+        let card = self.anchor.map_or_else(
+            || {
+                let x0 = viewport.center().x - width / 2.0;
+                let y0 = (viewport.y0 + viewport.height() * 0.18)
+                    .min(viewport.y1 - height - edge)
+                    .max(viewport.y0 + edge);
+                Rect::from_origin_size((x0, y0), size)
+            },
+            |caret| card_at_caret(caret, size, viewport, edge, gap),
+        );
         let inner_x0 = card.x0 + pad;
         let inner_x1 = card.x1 - pad;
         let field = Rect::new(inner_x0, card.y0 + pad, inner_x1, card.y0 + pad + field_h);
@@ -1284,6 +1311,34 @@ fn usize_from_f64(v: f64) -> usize {
     v.max(0.0) as usize
 }
 
+/// Where a card of `size` goes for a field whose caret is `caret`: its left
+/// edge on the caret, `gap` below it, or `gap` above it when the display
+/// ends first; when neither side has room, on whichever side has more, and
+/// always kept `edge` inside `viewport` (the display holding the caret).
+pub fn card_at_caret(
+    caret: Rect,
+    (width, height): (f64, f64),
+    viewport: Rect,
+    edge: f64,
+    gap: f64,
+) -> Rect {
+    let (left, right) = (viewport.x0 + edge, viewport.x1 - edge);
+    let (top, bottom) = (viewport.y0 + edge, viewport.y1 - edge);
+    let x0 = caret.x0.min(right - width).max(left);
+    let below = caret.y1 + gap;
+    let above = caret.y0 - gap - height;
+    let y0 = if below + height <= bottom {
+        below
+    } else if above >= top {
+        above
+    } else if bottom - caret.y1 >= caret.y0 - top {
+        (bottom - height).max(top)
+    } else {
+        top
+    };
+    Rect::from_origin_size((x0, y0), (width, height))
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "card-sized lengths and glyph sizes fit f32"
@@ -1297,6 +1352,42 @@ mod tests {
     use super::*;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+    #[test]
+    fn the_card_sits_below_the_caret_flips_above_it_and_stays_on_the_display() {
+        const EDGE: f64 = 16.0;
+        const GAP: f64 = 8.0;
+        let size = (400.0, 300.0);
+        let caret = |x: f64, y: f64| Rect::new(x, y, x + 2.0, y + 20.0);
+
+        let card = card_at_caret(caret(300.0, 100.0), size, VIEWPORT, EDGE, GAP);
+        assert_eq!(
+            card,
+            Rect::new(300.0, 128.0, 700.0, 428.0),
+            "below the caret"
+        );
+
+        let card = card_at_caret(caret(300.0, 700.0), size, VIEWPORT, EDGE, GAP);
+        assert_eq!(card.y1, 692.0, "above a caret near the bottom");
+
+        let card = card_at_caret(caret(1200.0, 100.0), size, VIEWPORT, EDGE, GAP);
+        assert_eq!(card.x1, VIEWPORT.x1 - EDGE, "kept inside the right edge");
+        let card = card_at_caret(caret(-50.0, 100.0), size, VIEWPORT, EDGE, GAP);
+        assert_eq!(card.x0, VIEWPORT.x0 + EDGE, "kept inside the left edge");
+
+        // A display too short for either side: the roomier side, on screen.
+        let short = Rect::new(0.0, 0.0, 1280.0, 420.0);
+        let card = card_at_caret(caret(300.0, 150.0), size, short, EDGE, GAP);
+        assert_eq!((card.y0, card.y1), (104.0, 404.0));
+        let card = card_at_caret(caret(300.0, 260.0), size, short, EDGE, GAP);
+        assert_eq!((card.y0, card.y1), (16.0, 316.0));
+
+        // Another display of the desktop: its own edges apply.
+        let right = Rect::new(1280.0, 0.0, 2560.0, 800.0);
+        let card = card_at_caret(caret(2500.0, 100.0), size, right, EDGE, GAP);
+        assert_eq!(card.x1, right.x1 - EDGE);
+        assert!(card.x0 >= right.x0 + EDGE);
+    }
 
     fn opened() -> EmojiPicker {
         let mut picker = EmojiPicker::new();
@@ -1548,10 +1639,10 @@ mod tests {
 
     #[test]
     fn the_dialog_announces_the_highlight() {
-        // A language without its own emoji names falls back to English.
+        // German names and searches in German.
         let mut picker = EmojiPicker::new();
         picker.open(VIEWPORT, "de-DE");
-        typed(&mut picker, "thumbs");
+        typed(&mut picker, "daumen");
         assert_eq!(picker.selected(), Some("👍"));
         let node = picker.accessibility().expect("open");
         assert_eq!(node.role, Role::Dialog);

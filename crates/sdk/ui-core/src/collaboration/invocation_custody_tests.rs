@@ -115,7 +115,7 @@ fn causal_scope_sdk_queue_retains_original_custody_through_host_await_and_termin
             mutation,
             authorization: Some(authorization)
         }));
-        observed.recv_timeout(HANG_BOUND).unwrap();
+        tilo_test_env::recv("the gated invocation RPC", &observed);
         assert!(host.received.lock().unwrap().is_some());
         assert!(manager.send(CollabRequest::UpdateInvocation {
             id: 91,
@@ -134,7 +134,7 @@ fn causal_scope_sdk_queue_retains_original_custody_through_host_await_and_termin
             time.store(100, Ordering::Release);
         }
         release.send(()).unwrap();
-        let result = barrier.wait(Some(crate::time::now() + Duration::from_secs(2)));
+        let result = barrier.wait(Some(tilo_test_env::hang_deadline()));
         if result.is_err() != (mode != 0) {
             failures.push(format!("mode {mode}: wrong barrier outcome"));
         }

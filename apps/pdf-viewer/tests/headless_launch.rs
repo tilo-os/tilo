@@ -116,9 +116,7 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(60))
-        .expect("a 60 s deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;

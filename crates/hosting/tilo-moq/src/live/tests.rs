@@ -22,8 +22,6 @@ use super::peer::Peer;
 use super::*;
 use std::sync::atomic::AtomicBool;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 const ROOM: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -130,7 +128,7 @@ fn url(f: &Fixture) -> url::Url {
 
 async fn try_connect(f: &Fixture, token: &[u8], publish_as: &str) -> Option<Peer> {
     tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         Peer::connect(&url(f), &f.trust, token, Some(&path(publish_as))),
     )
     .await
@@ -141,7 +139,7 @@ async fn connect(f: &Fixture, token: &[u8], publish_as: &str) -> Peer {
     try_connect(f, token, publish_as).await.expect("admitted")
 }
 async fn presence_subscriber(peer: &Peer, from: &str) -> moq_net::track::Subscriber {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let broadcast = peer.member(&path(from)).await.expect("announce");
         broadcast
             .track(PRESENCE_TRACK)
@@ -165,7 +163,7 @@ async fn first_presence(
     subscriber: &mut moq_net::track::Subscriber,
     seq: &mut u64,
 ) -> Vec<u8> {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             *seq += 1;
             assert!(publisher.publish_presence(&presence(*seq, b"hello")));
@@ -252,7 +250,7 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
     assert!(a.publish_presence(&presence(seq - 50, b"stale")));
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(a.publish_presence(&presence(seq + 1, b"fresh")));
-    let next = tokio::time::timeout(HANG_BOUND, async {
+    let next = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let datagram = from_a.recv_datagram().await.unwrap().unwrap();
             if datagram.payload[..8] != presence(seq, b"")[..8] {
@@ -325,7 +323,7 @@ async fn presence_rate_limit_drops_excess_frames() {
 }
 
 async fn ops_subscriber(peer: &Peer, from: &str) -> moq_net::track::Subscriber {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let broadcast = peer.member(&path(from)).await.expect("announce");
             // Receivers keep late groups (stream reordering) for the relay window.
@@ -360,7 +358,7 @@ async fn ops_frames_stay_ordered_and_invalid_frames_reset_only_their_group() {
             .unwrap();
     }
     group.finish().unwrap();
-    let received = tokio::time::timeout(HANG_BOUND, async {
+    let received = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let mut group = from_a.recv_group().await.unwrap().unwrap();
         let mut frames = Vec::new();
         while let Ok(Some(frame)) = group.read_frame().await {
@@ -385,7 +383,7 @@ async fn ops_frames_stay_ordered_and_invalid_frames_reset_only_their_group() {
     good.write_frame(moq_net::Timestamp::ZERO, b"ok-after".to_vec())
         .unwrap();
     good.finish().unwrap();
-    let after = tokio::time::timeout(HANG_BOUND, async {
+    let after = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let mut group = from_a.recv_group().await.unwrap().unwrap();
             let mut frames = Vec::new();
@@ -422,7 +420,7 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
     let mut from_c = ops_subscriber(&b, C).await;
     // SUBSCRIBE_OK can precede the relay accepting the egress track; an
     // injection before that has no reader and is dropped, never queued.
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !f
             .live
             .relay
@@ -433,7 +431,7 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
     })
     .await
     .expect("egress track accepted");
-    let payload = tokio::time::timeout(HANG_BOUND, async {
+    let payload = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let mut group = from_c.recv_group().await.unwrap().unwrap();
         group.read_frame().await.unwrap().unwrap().payload.to_vec()
     })
@@ -459,7 +457,7 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     f.a.store(false, Ordering::SeqCst);
     // A's namespace is withdrawn at the viewer (its tracks end or reset); the
     // viewer's own session stays connected.
-    let ended = tokio::time::timeout(HANG_BOUND, async {
+    let ended = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::select! {
             _ = a_announced.closed() => "broadcast",
             () = async {
@@ -493,7 +491,7 @@ async fn open_records_per_publisher_are_bounded() {
     for i in 0..(MAX_OPEN_RECORDS + 2) {
         assert!(a.record(&format!("{:064x}", i + 1)).is_some());
     }
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while f.live.relay.counters().records_refused < 2 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -596,7 +594,7 @@ async fn inject_and_read(
     frame: &[u8],
 ) -> Vec<u8> {
     let frame_bytes = frame;
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !f.live.relay.inject_ops(ROOM, publisher, RECORD, frame) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -677,7 +675,7 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
         .expect("revoked");
     // The withdrawn namespace closes at the subscriber (clients must watch
     // this); then resubscribe on the re-announced host-fed namespace.
-    tokio::time::timeout(HANG_BOUND, old.closed())
+    tokio::time::timeout(tilo_test_env::hang_bound(), old.closed())
         .await
         .expect("old namespace withdrawn");
     drop(from_a);
@@ -747,7 +745,7 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     let b = connect(&f, b"grant-b", B).await;
     let viewer = connect(&f, b"grant-viewer", C).await;
     let mut announces = viewer.announced();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let update = announces.next().await.expect("announce stream");
             if update.prefix.as_str() == path(A) && update.kind.is_active() {
@@ -760,7 +758,7 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     let member = viewer.member(&path(A)).await.unwrap();
     f.a.store(false, Ordering::SeqCst);
     // Inactive announcement for exactly this member, and its broadcast closes.
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let update = announces.next().await.expect("announce stream");
             if update.prefix.as_str() == path(A) {
@@ -771,7 +769,7 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     })
     .await
     .expect("member announced inactive");
-    tokio::time::timeout(HANG_BOUND, member.closed())
+    tokio::time::timeout(tilo_test_env::hang_bound(), member.closed())
         .await
         .expect("member broadcast closed");
     // Final: no re-announce (the host never fed this namespace).
@@ -790,7 +788,7 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     );
     // A clean disconnect of B is a final withdrawal as well.
     drop(b);
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let update = announces.next().await.expect("announce stream");
             if update.prefix.as_str() == path(B) && !update.kind.is_active() {
@@ -828,7 +826,7 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
             .inject_presence(ROOM, C, &presence(seq, b"agent"))
     );
     let mut from_c = presence_subscriber(&b, C).await;
-    let first = tokio::time::timeout(HANG_BOUND, async {
+    let first = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             seq += 1;
             assert!(
@@ -863,7 +861,7 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
             .relay
             .inject_presence(ROOM, C, &presence(seq + 1, b"fresh"))
     );
-    let next = tokio::time::timeout(HANG_BOUND, async {
+    let next = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let datagram = from_c.recv_datagram().await.unwrap().unwrap();
             if !datagram.payload.ends_with(b"agent") {
@@ -888,7 +886,7 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
     // The refused injection did not raise the namespace's sequence floor.
     client_seq += 1;
     assert!(a.publish_presence(&presence(client_seq, b"client-next")));
-    let after = tokio::time::timeout(HANG_BOUND, async {
+    let after = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let datagram = from_a.recv_datagram().await.unwrap().unwrap();
             assert!(
@@ -949,7 +947,7 @@ async fn a_revoked_member_receives_nothing_after_revocation() {
         "b reaches a before revocation"
     );
     f.a.store(false, Ordering::SeqCst);
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while f.live.relay.counters().revoked == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -970,7 +968,7 @@ async fn a_revoked_member_receives_nothing_after_revocation() {
     );
     // The other members are untouched.
     let mut still = 0;
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while still < 3 {
             if let Ok(Some(_)) = b_at_viewer.recv_datagram().await {
                 still += 1;

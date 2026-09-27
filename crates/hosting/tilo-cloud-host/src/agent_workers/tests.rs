@@ -195,7 +195,7 @@ async fn certified_start(
     let mut pending = queue
         .submit_certified_with_policy_time(
             evidence,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(20),
+            tokio::time::Instant::from_std(tilo_test_env::hang_deadline()),
             workers.owner.policy_time().unwrap(),
         )
         .unwrap();
@@ -311,7 +311,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
             );
             outcome.unwrap();
             commits += 1;
@@ -561,7 +561,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
             );
             outcome.unwrap();
             workers.committed().unwrap();
@@ -600,7 +600,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
         while let Ok(pending) = documents.try_recv() {
             let owner = reopened.owner.clone();
             let (complete, outcome) = pending.apply_scoped_fenced(
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                tilo_test_env::hang_deadline(),
                 |route, certificate, mutation, authorization| {
                     let mut store = owner.store()?;
                     let bytes = store
@@ -1289,7 +1289,7 @@ fn registered_source_owner() -> (
 fn settle_startup_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = pending.apply_scoped_fenced(
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        tilo_test_env::hang_deadline(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("required worker custody");
             let record = route.record.as_deref().unwrap_or("");
@@ -1714,7 +1714,7 @@ async fn pump_until(
     what: &str,
     done: impl Fn(&AgentWorkers) -> bool,
 ) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {

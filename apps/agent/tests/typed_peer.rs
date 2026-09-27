@@ -231,9 +231,7 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
     // Publishing is one-way; ask the action host until it offers what
     // was published before a test launches an agent that plans against it.
-    let deadline = std::time::Instant::now()
-        .checked_add(HANG_BOUND)
-        .expect("catalogue deadline fits in Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut deferred = Vec::new();
     let mut correlation = 0_u64;
     while std::time::Instant::now() < deadline {

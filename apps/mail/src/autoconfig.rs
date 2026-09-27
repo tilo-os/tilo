@@ -572,7 +572,7 @@ mod tests {
                     ))
                     .unwrap();
             });
-            let deadline = Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -591,7 +591,12 @@ mod tests {
                 "real HTTP request began"
             );
             cancellation.store(true, Ordering::Relaxed);
-            assert!(receiver.recv_timeout(HANG_BOUND).unwrap().is_none());
+            assert!(
+                receiver
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap()
+                    .is_none()
+            );
             stream
                 .read_to_end(&mut Vec::new())
                 .expect("cancellation closes the request socket");

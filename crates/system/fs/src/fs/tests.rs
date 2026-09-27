@@ -15,8 +15,13 @@ mod availability_control_tests {
         record: collab_types::FileRecordId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
-        wait_for_availability_with_timeout(registry, record, Duration::from_secs(30), predicate)
-            .await;
+        wait_for_availability_with_timeout(
+            registry,
+            record,
+            tilo_test_env::hang_bound(),
+            predicate,
+        )
+        .await;
     }
 
     async fn wait_for_availability_with_timeout(
@@ -487,7 +492,7 @@ mod availability_control_tests {
                 .unwrap();
 
             fs.retry_transfer(ino).unwrap();
-            tokio::time::timeout(HANG_BOUND, async {
+            tilo_test_env::within("the retry completion event", async {
                 loop {
                     let done = registry
                         .lock()
@@ -504,8 +509,7 @@ mod availability_control_tests {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .expect("retry completion event");
+            .await;
         }
         // Phase `retrying_an_empty_file_completes_without_a_blob_fetch`.
         {
@@ -570,7 +574,7 @@ mod availability_control_tests {
             .unwrap();
 
         fs.retry_transfer(ino).unwrap();
-        tokio::time::timeout(HANG_BOUND, async {
+        tilo_test_env::within("the retry failure event", async {
             loop {
                 let failure = registry
                     .lock()
@@ -588,8 +592,7 @@ mod availability_control_tests {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("retry failure event");
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

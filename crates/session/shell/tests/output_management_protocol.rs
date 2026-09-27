@@ -333,9 +333,7 @@ impl Harness {
     }
 
     fn pump(&mut self, label: &str, done: impl Fn(&Tool) -> bool) {
-        let deadline = Instant::now()
-            .checked_add(crate::support::HANG_BOUND)
-            .expect("deadline");
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             let _ = self.conn.flush();
             let _ = self.display.dispatch_clients(&mut self.state);

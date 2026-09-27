@@ -936,7 +936,9 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         // Prove the upstream pipe: send a byte, expect the echo back.
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
-            acknowledgement.recv_timeout(HANG_BOUND).unwrap(),
+            acknowledgement
+                .recv_timeout(tilo_test_env::hang_bound())
+                .unwrap(),
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );

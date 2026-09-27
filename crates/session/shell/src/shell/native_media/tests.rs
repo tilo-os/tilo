@@ -563,9 +563,10 @@ async fn source_revocation_does_not_acquire_the_outer_backend_mutex() {
         assert!(capture.lock().unwrap().remove_source("mic"));
         stopped.send(()).unwrap();
     });
-    observed
-        .recv_timeout(HANG_BOUND)
-        .expect("lease revocation must not wait on the outer backend lock");
+    tilo_test_env::recv(
+        "lease revocation must not wait on the outer backend lock",
+        &observed,
+    );
     assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
     thread.join().unwrap();
 }

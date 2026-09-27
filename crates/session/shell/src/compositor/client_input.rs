@@ -1068,6 +1068,27 @@ pub fn route_tablet_event(
         .collect()
 }
 
+/// Route one tablet pad event. Pads follow keyboard focus: a focused client
+/// that took a tablet seat gets the buttons, rings and strips over
+/// `zwp_tablet_pad_v2`; otherwise — another app, shell chrome, the lock
+/// screen — the returned fallback (what the pad's settings map the control
+/// to) goes through the ordinary input path.
+pub fn route_pad_event(
+    state: &mut State,
+    fb: &FrameBuilder,
+    event: crate::compositor::backend::PadEvent,
+    session_locked: bool,
+) -> Vec<crate::compositor::backend::BackendEvent> {
+    let target = (!session_locked && !chrome_captures_input(fb))
+        .then(|| state.client_input.keyboard_focus())
+        .flatten()
+        .filter(|surface_id| state.surface_takes_tablet_input(*surface_id));
+    if state.forward_tablet_pad(&event, target) {
+        return Vec::new();
+    }
+    event.fallback
+}
+
 /// Grant, adjust or withdraw a client's pointer lock/confinement for this
 /// tick. Only the surface that both holds keyboard focus and sits under the
 /// local pointer may hold it, and never while the session is locked or

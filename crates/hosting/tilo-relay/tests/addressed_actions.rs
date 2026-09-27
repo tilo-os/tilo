@@ -131,7 +131,7 @@ impl AgentReadWire {
     }
     async fn next(&mut self) -> EnvelopeV2 {
         let bytes = tokio::time::timeout(
-            HANG_BOUND,
+            tilo_test_env::hang_bound(),
             tilo_relay::framing::read_frame(
                 &mut self.receive,
                 tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES,
@@ -306,15 +306,13 @@ use tilo_user_identity::RevocationList;
 use uuid::Uuid;
 
 async fn next_state(client: &RelayClient) -> Envelope {
-    tokio::time::timeout(HANG_BOUND, client.recv())
+    tilo_test_env::within("a message on client", client.recv())
         .await
-        .unwrap()
         .unwrap()
 }
 async fn next_action(client: &RelayClient) -> EnvelopeV2 {
-    tokio::time::timeout(HANG_BOUND, client.recv_action())
+    tilo_test_env::within("a message on client", client.recv_action())
         .await
-        .unwrap()
         .unwrap()
 }
 async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayClient {
@@ -482,10 +480,11 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
         client
             .send_action(EnvelopeV2::EnableActions { room })
             .unwrap();
-        assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, client.recv_action()).await,
-            Ok(None)
-        ));
+        assert!(
+            tilo_test_env::within("client to close", client.recv_action())
+                .await
+                .is_none()
+        );
     }
 
     let unlisted = RelayClient::connect_v2_to_enrolled_home_peer(
@@ -864,16 +863,12 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     let b_session = RelayCoeditSession::join(cb, workspace_id, b.device_pubkey()).unwrap();
     for session in [&a_session, &b_session] {
         assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, session.recv())
-                .await
-                .unwrap(),
+            tilo_test_env::within("a message on session", session.recv()).await,
             Some(Inbound::Ready { .. })
         ));
         session.enable_actions(room).unwrap();
         assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, session.recv_action())
-                .await
-                .unwrap(),
+            tilo_test_env::within("a message on session", session.recv_action()).await,
             Some(EnvelopeV2::ActionsReady { .. })
         ));
     }
@@ -883,7 +878,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     a_session
         .publish_retained_delta([7; 32], doc.save_incremental())
         .unwrap();
-    let received_delta = tokio::time::timeout(HANG_BOUND, b_session.recv()).await;
+    let received_delta = tokio::time::timeout(tilo_test_env::hang_bound(), b_session.recv()).await;
     if received_delta.is_err() {
         crate::common::print_phase_diagnostic();
     }
@@ -894,7 +889,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     tilo_automerge::ApplyIncoming::load_incoming(&mut received, &data).unwrap();
     assert_eq!(received.get_heads(), doc.get_heads());
     assert!(
-        matches!(tokio::time::timeout(HANG_BOUND,b_session.recv_action()).await.unwrap(),Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
+        matches!(tilo_test_env::within("a message on b_session", b_session.recv_action()).await,Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
     );
     assert!(a_session.enable_actions(Uuid::from_u128(11)).is_err());
 }
@@ -925,93 +920,95 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
     let received = AtomicUsize::new(0);
     let (done, mut producer_done) = tokio::sync::watch::channel(false);
     let mut consumer_done = producer_done.clone();
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let producer = async {
-            loop {
-                let permit = tokio::select! {
-                    biased;
-                    _=producer_done.changed()=>break,
-                    permit=in_flight.acquire()=>permit.unwrap(),
-                };
-                tokio::select! {
-                    biased;
-                    _=producer_done.changed()=>break,
-                    sent=ca.outbound.send(Envelope::Ping)=>{
-                        sent.expect("state transport closed under mixed traffic");
-                        permit.forget();
-                        produced.fetch_add(1,Ordering::SeqCst);
+    tilo_test_env::within(
+        "sustained state traffic starved a private lane or the sole reader",
+        async {
+            let producer = async {
+                loop {
+                    let permit = tokio::select! {
+                        biased;
+                        _=producer_done.changed()=>break,
+                        permit=in_flight.acquire()=>permit.unwrap(),
+                    };
+                    tokio::select! {
+                        biased;
+                        _=producer_done.changed()=>break,
+                        sent=ca.outbound.send(Envelope::Ping)=>{
+                            sent.expect("state transport closed under mixed traffic");
+                            permit.forget();
+                            produced.fetch_add(1,Ordering::SeqCst);
+                        }
                     }
                 }
-            }
-        };
-        let consumer = async {
-            loop {
-                tokio::select! {
-                    biased;
-                    _=consumer_done.changed()=>break,
-                    state=ca.recv()=>{
-                        assert_eq!(state,Some(Envelope::Pong));
-                        received.fetch_add(1,Ordering::SeqCst);
-                        in_flight.add_permits(1);
+            };
+            let consumer = async {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _=consumer_done.changed()=>break,
+                        state=ca.recv()=>{
+                            assert_eq!(state,Some(Envelope::Pong));
+                            received.fetch_add(1,Ordering::SeqCst);
+                            in_flight.add_permits(1);
+                        }
                     }
                 }
-            }
-        };
-        let private = async {
-            // Begin private work only after the state queue has been filled
-            // and refilled. The producer keeps running until every reply lands.
-            while produced.load(Ordering::SeqCst) < 512 {
-                tokio::task::yield_now().await;
-            }
-            for id in 1..=32 {
-                let mut request = refresh(room, &a, &b);
-                request.request_id = Uuid::from_u128(id);
-                ca.send_action(EnvelopeV2::Directed(request.clone()))
-                    .unwrap();
-                assert_eq!(
-                    tokio::time::timeout(HANG_BOUND, cb.recv_action())
-                        .await
-                        .unwrap_or_else(|_| panic!(
-                            "target stalled at request {id}; state sent {} received {}",
-                            produced.load(Ordering::SeqCst),
-                            received.load(Ordering::SeqCst)
-                        ))
-                        .expect("target closed"),
-                    EnvelopeV2::Delivered {
-                        action: request.clone(),
-                        source_user: user.user_pk
-                    }
-                );
-                let reply = DirectedAction {
-                    source: b.device_pubkey(),
-                    target: a.device_pubkey(),
-                    message: ActionMessage::Catalogue {
-                        catalogue: serde_json::json!({"version":1,"surfaces":[]}),
-                    },
-                    ..request
-                };
-                cb.send_action(EnvelopeV2::Directed(reply.clone())).unwrap();
-                assert_eq!(
-                    tokio::time::timeout(HANG_BOUND, ca.recv_action())
-                        .await
-                        .unwrap_or_else(|_| panic!(
-                            "reply stalled at request {id}; state sent {} received {}",
-                            produced.load(Ordering::SeqCst),
-                            received.load(Ordering::SeqCst)
-                        ))
-                        .expect("source closed"),
-                    EnvelopeV2::Delivered {
-                        action: reply,
-                        source_user: user.user_pk
-                    }
-                );
-            }
-            done.send(true).unwrap();
-        };
-        tokio::join!(producer, consumer, private);
-    })
-    .await
-    .expect("sustained state traffic starved a private lane or the sole reader");
+            };
+            let private = async {
+                // Begin private work only after the state queue has been filled
+                // and refilled. The producer keeps running until every reply lands.
+                while produced.load(Ordering::SeqCst) < 512 {
+                    tokio::task::yield_now().await;
+                }
+                for id in 1..=32 {
+                    let mut request = refresh(room, &a, &b);
+                    request.request_id = Uuid::from_u128(id);
+                    ca.send_action(EnvelopeV2::Directed(request.clone()))
+                        .unwrap();
+                    assert_eq!(
+                        tokio::time::timeout(tilo_test_env::hang_bound(), cb.recv_action())
+                            .await
+                            .unwrap_or_else(|_| panic!(
+                                "target stalled at request {id}; state sent {} received {}",
+                                produced.load(Ordering::SeqCst),
+                                received.load(Ordering::SeqCst)
+                            ))
+                            .expect("target closed"),
+                        EnvelopeV2::Delivered {
+                            action: request.clone(),
+                            source_user: user.user_pk
+                        }
+                    );
+                    let reply = DirectedAction {
+                        source: b.device_pubkey(),
+                        target: a.device_pubkey(),
+                        message: ActionMessage::Catalogue {
+                            catalogue: serde_json::json!({"version":1,"surfaces":[]}),
+                        },
+                        ..request
+                    };
+                    cb.send_action(EnvelopeV2::Directed(reply.clone())).unwrap();
+                    assert_eq!(
+                        tokio::time::timeout(tilo_test_env::hang_bound(), ca.recv_action())
+                            .await
+                            .unwrap_or_else(|_| panic!(
+                                "reply stalled at request {id}; state sent {} received {}",
+                                produced.load(Ordering::SeqCst),
+                                received.load(Ordering::SeqCst)
+                            ))
+                            .expect("source closed"),
+                        EnvelopeV2::Delivered {
+                            action: reply,
+                            source_user: user.user_pk
+                        }
+                    );
+                }
+                done.send(true).unwrap();
+            };
+            tokio::join!(producer, consumer, private);
+        },
+    )
+    .await;
     assert!(produced.load(Ordering::SeqCst) >= 512);
     assert!(received.load(Ordering::SeqCst) > 0);
     let store =

@@ -161,8 +161,8 @@ pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<
     );
     let wt = web_transport_quinn::ClientBuilder::new()
         .with_server_certificates(vec![h.certificate.clone()])?;
-    let transport = timeout(
-        crate::HANG_BOUND,
+    let transport = tilo_test_env::within(
+        "the live WebTransport connection",
         wt.connect(
             web_transport_quinn::proto::ConnectRequest::new(
                 format!("{}{LIVE_WEBTRANSPORT_PATH}", h.ingress.origin()).parse::<url::Url>()?,
@@ -170,12 +170,12 @@ pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<
             .with_protocol(LIVE_PROTOCOL),
         ),
     )
-    .await??;
-    let client = timeout(
-        crate::HANG_BOUND,
+    .await?;
+    let client = tilo_test_env::within(
+        "the live client to start",
         LiveClient::start(transport, &token, Some(&path)),
     )
-    .await?
+    .await
     .map_err(anyhow::Error::from)?;
     Ok(client)
 }
@@ -188,9 +188,11 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
     assert_eq!(status, StatusCode::OK);
     // A forged token is refused before any origin is attached.
     if let Ok(forged) = live_connect(&h, b"forged-token".to_vec()).await {
-        timeout(crate::HANG_BOUND, forged.session().closed())
-            .await
-            .expect("forged token closes");
+        tilo_test_env::within(
+            "the forged-token session to close",
+            forged.session().closed(),
+        )
+        .await;
     }
     let mut client = live_connect(&h, token).await.unwrap();
     let path = format!(
@@ -198,9 +200,8 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(crate::HANG_BOUND, client.member(&path))
+    let own = tilo_test_env::within("the own namespace to be relayed", client.member(&path))
         .await
-        .unwrap()
         .expect("own namespace is relayed back to the room scope");
     // Presence with the real codec, relayed through the host relay.
     let mut presence = own
@@ -221,7 +222,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         .encode()
         .unwrap()
     };
-    let received = timeout(crate::HANG_BOUND, async {
+    let received = tilo_test_env::within("presence through the installed relay", async {
         let mut seq = 0;
         loop {
             seq += 1;
@@ -235,8 +236,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
             }
         }
     })
-    .await
-    .expect("presence through the installed relay");
+    .await;
     assert!(
         PresenceFrame::decode(&received).is_ok(),
         "only codec-valid presence is relayed"
@@ -262,12 +262,12 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         matches!(admission.outcome(), AdmissionOutcome::Accepted { .. }),
         "{admission:?}"
     );
-    let forwarded = timeout(crate::HANG_BOUND, async {
-        let mut group = ops.recv_group().await.unwrap().unwrap();
-        group.read_frame().await.unwrap().unwrap().payload.to_vec()
-    })
-    .await
-    .expect("admitted signed change forwarded on the live ops track");
+    let forwarded =
+        tilo_test_env::within("the admitted signed change on the live ops track", async {
+            let mut group = ops.recv_group().await.unwrap().unwrap();
+            group.read_frame().await.unwrap().unwrap().payload.to_vec()
+        })
+        .await;
     let OpsFrame::SignedChange {
         record: named,
         digest,
@@ -364,9 +364,8 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(crate::HANG_BOUND, client.member(&path))
+    let own = tilo_test_env::within("the own namespace to be relayed", client.member(&path))
         .await
-        .unwrap()
         .unwrap();
     let record = LiveRecord {
         app: WP.into(),
@@ -414,7 +413,7 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
         expected.push(*blake3::hash(&canonical).as_bytes());
     }
     let mut seen = std::collections::HashSet::new();
-    timeout(Duration::from_secs(10), async {
+    timeout(tilo_test_env::hang_bound(), async {
         while !expected.iter().all(|digest| seen.contains(digest)) {
             seen.insert(seen_rx.recv().await.expect("ops reader"));
         }

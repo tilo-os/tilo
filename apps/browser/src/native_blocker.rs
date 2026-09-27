@@ -296,7 +296,9 @@ mod tests {
                 let _ = stream.read(&mut request);
                 if index == 0 {
                     accepted_tx.send(()).unwrap();
-                    release_rx.recv_timeout(HANG_BOUND).unwrap();
+                    release_rx
+                        .recv_timeout(tilo_test_env::hang_bound())
+                        .unwrap();
                 }
                 let body = b"||private-refresh.fixture^\n";
                 write!(
@@ -310,15 +312,17 @@ mod tests {
         });
 
         refresh(&engine, true);
-        accepted_rx.recv_timeout(HANG_BOUND).unwrap();
+        accepted_rx
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
         std::fs::write(&trigger, b"exit").unwrap();
-        let removal_deadline = std::time::Instant::now() + HANG_BOUND;
+        let removal_deadline = tilo_test_env::hang_deadline();
         while root.exists() && std::time::Instant::now() < removal_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!root.exists(), "helper exit must remove the private root");
         release_tx.send(()).unwrap();
-        let worker_deadline = std::time::Instant::now() + HANG_BOUND;
+        let worker_deadline = tilo_test_env::hang_deadline();
         while status().busy && std::time::Instant::now() < worker_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -440,7 +444,7 @@ mod tests {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(engine.clone());
-            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while status().busy && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }

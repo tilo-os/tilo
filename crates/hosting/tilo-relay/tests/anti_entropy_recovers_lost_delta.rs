@@ -79,9 +79,8 @@ async fn publish_offline_edit(
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
     // Drain A's Ready(0).
-    match tokio::time::timeout(HANG_BOUND, a_client.recv())
+    match tilo_test_env::within("A Ready timeout", a_client.recv())
         .await
-        .expect("A Ready timeout")
         .expect("A closed")
     {
         Envelope::Ready { pending_deltas, .. } => assert_eq!(pending_deltas, 0),
@@ -217,9 +216,8 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     .await
     .expect("B reconnect (2)");
     b2.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
-    match tokio::time::timeout(HANG_BOUND, b2.recv())
+    match tilo_test_env::within("B Ready timeout", b2.recv())
         .await
-        .expect("B Ready timeout")
         .expect("B closed")
     {
         // The queue is empty — no catch-up delta is delivered.

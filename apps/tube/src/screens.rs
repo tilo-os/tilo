@@ -2996,7 +2996,6 @@ mod search_screen_tests {
     use crate::model::Route;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
     use taffy::prelude::*;
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -3169,7 +3168,7 @@ mod search_screen_tests {
 
             // Pre-warm the store so the build captures the decoded image.
             store.get(&thumb);
-            store.block_until_idle(HANG_BOUND);
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(
                 store.get(&thumb).is_some(),
                 "the result thumbnail decoded + cached"

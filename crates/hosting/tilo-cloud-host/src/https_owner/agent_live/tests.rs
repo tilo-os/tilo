@@ -501,7 +501,7 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
         pending: Vec::new(),
     };
     assert_eq!(stream.frame().await.0, fallback::FRAME_HELLO);
-    let deadline = Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_bound();
     let activity = |state: &str| AgentLiveEvent::Activity {
         agent_id: "agent-9".into(),
         name: "Scribe".into(),

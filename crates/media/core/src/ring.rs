@@ -220,12 +220,7 @@ mod tests {
             let pf = Prefetcher::spawn(reader, Some(total), 4096, 1024).unwrap();
             let progress = pf.progress();
 
-            // Wait (bounded) for the background read to finish.
-            let deadline = web_time::Instant::now() + HANG_BOUND;
-            while !progress.is_done() && web_time::Instant::now() < deadline {
-                std::thread::sleep(web_time::Duration::from_millis(5));
-            }
-            assert!(progress.is_done(), "prefetch completed");
+            tilo_test_env::wait_until("the background read", || progress.is_done());
             assert_eq!(progress.bytes_read(), total);
             assert_eq!(progress.percent(), 100);
         }
@@ -234,10 +229,7 @@ mod tests {
             let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(vec![0u8; 256]));
             let pf = Prefetcher::spawn(reader, None, 128, 64).unwrap();
             let progress = pf.progress();
-            let deadline = web_time::Instant::now() + HANG_BOUND;
-            while !progress.is_done() && web_time::Instant::now() < deadline {
-                std::thread::sleep(web_time::Duration::from_millis(5));
-            }
+            tilo_test_env::wait_until("the background read", || progress.is_done());
             assert_eq!(progress.percent(), 100, "no total → 100 once done");
         }
     }

@@ -429,7 +429,7 @@ mod tests {
                     ..CatalogueQuery::default()
                 },
             )
-            .wait_timeout(HANG_BOUND)
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()?
             .ok()?;
@@ -461,7 +461,7 @@ mod tests {
                 revision: None,
             },
         )
-        .wait_timeout(Duration::from_secs(10))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .unwrap_or_else(|| {

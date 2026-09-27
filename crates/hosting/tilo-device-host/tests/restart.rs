@@ -64,7 +64,7 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
         .unwrap();
     let mut child = ChildGuard(Some(child));
 
-    let startup_deadline = Instant::now() + Duration::from_secs(25);
+    let startup_deadline = tilo_test_env::hang_deadline();
     while !ready.exists() {
         assert!(
             Instant::now() < startup_deadline,
@@ -80,7 +80,7 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
     );
     assert_eq!(unsafe { libc::kill(process.id() as i32, libc::SIGINT) }, 0);
 
-    let shutdown_deadline = Instant::now() + HANG_BOUND;
+    let shutdown_deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = process.try_wait().unwrap() {
             break status;
@@ -227,7 +227,7 @@ async fn ordinary_host_restart_restores_bound_local_views() {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !ready.exists() {
             assert!(
                 Instant::now() < deadline,
@@ -279,7 +279,7 @@ async fn ordinary_host_restart_restores_bound_local_views() {
             .unwrap()
             .write_all(b"shutdown\n")
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.0.try_wait().unwrap() {
                 assert!(
@@ -606,7 +606,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
     }
     let mut input = child.stdin.take().unwrap();
     let mut guard = ChildGuard(child);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    let deadline = tilo_test_env::hang_deadline();
     while !ready.exists() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -627,7 +627,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
         if cycle == 1 {
             input.write_all(b"reconnect\n").unwrap();
         }
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         let mut subscribed = false;
         while std::time::Instant::now() < deadline {
             let mut socket = tokio::net::TcpStream::connect(origin).await.unwrap();

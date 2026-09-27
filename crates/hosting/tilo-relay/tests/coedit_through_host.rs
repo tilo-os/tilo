@@ -65,9 +65,8 @@ fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
 /// received delta to `doc`. Returns once a document delta has landed.
 async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
     for _ in 0..8 {
-        let inbound = tokio::time::timeout(HANG_BOUND, session.recv())
+        let inbound = tilo_test_env::within("recv timeout", session.recv())
             .await
-            .expect("recv timeout")
             .expect("session closed");
         match inbound {
             Inbound::Delta { data, .. } => {
@@ -135,9 +134,8 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
-        match tokio::time::timeout(HANG_BOUND, b_session.recv())
+        match tilo_test_env::within("B Ready timeout", b_session.recv())
             .await
-            .expect("B Ready timeout")
             .expect("B closed")
         {
             Inbound::Ready { pending } => assert_eq!(pending, 0),
@@ -259,9 +257,8 @@ async fn publish_offline_coedit(
     .expect("A connect");
     let a_session = RelayCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
-    match tokio::time::timeout(HANG_BOUND, a_session.recv())
+    match tilo_test_env::within("A Ready timeout", a_session.recv())
         .await
-        .expect("A Ready timeout")
         .expect("A closed")
     {
         Inbound::Ready { pending } => assert_eq!(pending, 0),
@@ -322,9 +319,8 @@ async fn catch_up_first_connection(
         if got_delta && got_ready {
             break;
         }
-        let inbound = tokio::time::timeout(HANG_BOUND, b_session.recv())
+        let inbound = tilo_test_env::within("B catch-up timeout", b_session.recv())
             .await
-            .expect("B catch-up timeout")
             .expect("B closed");
         match inbound {
             Inbound::Delta { data, .. } => {

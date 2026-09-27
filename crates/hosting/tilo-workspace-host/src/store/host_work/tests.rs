@@ -336,9 +336,7 @@ fn host_work_special_fifo_refuses_without_blocking_shared_inventory() {
                 unsafe { libc::close(fd) };
                 (
                     false,
-                    receive
-                        .recv_timeout(crate::HANG_BOUND)
-                        .expect("FIFO worker must terminate after controlled release"),
+                    tilo_test_env::recv("the FIFO worker after its controlled release", &receive),
                 )
             }
             Err(error) => panic!("recovery worker disappeared: {error}"),

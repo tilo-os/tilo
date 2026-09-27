@@ -278,6 +278,17 @@ impl DocMut<'_> {
         }
     }
 
+    /// Remove an attribute from a staged block of `container`; `false` if it isn't one.
+    pub(super) fn unstage_attr(&mut self, container: &ObjId, block_id: &str, key: &str) -> bool {
+        match self.staged_mut(block_id) {
+            Some(block) if &block.container == container => {
+                block.attrs.remove(key);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Set the kind of a staged block of `container`; `false` if it isn't one.
     pub(super) fn stage_kind(&mut self, container: &ObjId, block_id: &str, kind: &str) -> bool {
         match self.staged_mut(block_id) {

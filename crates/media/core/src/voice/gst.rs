@@ -784,14 +784,9 @@ mod tests {
         guard
     }
     fn wait_for_null(element: &impl IsA<gst::Element>) {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while element.current_state() != gst::State::Null {
-            assert!(
-                Instant::now() < deadline,
-                "worker did not finish actual Null cleanup"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the worker's actual Null cleanup", || {
+            element.current_state() == gst::State::Null
+        });
     }
 
     mod delayed {
@@ -885,34 +880,19 @@ mod tests {
     }
 
     fn wait_for_worker_exit(stop: &CaptureStop) {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while !stop.finished() {
-            assert!(
-                Instant::now() < deadline,
-                "worker failed actual Null cleanup"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the worker to finish actual Null cleanup", || {
+            stop.finished()
+        });
     }
     fn wait_for_device_workers() {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while device::outstanding_workers() != 0 {
-            assert!(
-                Instant::now() < deadline,
-                "a previous test retained a device worker"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("device workers of earlier tests to exit", || {
+            device::outstanding_workers() == 0
+        });
     }
     fn wait_for_gate(gate: &delayed::Gate) {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while !gate.entered.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "real Gst state transition was not entered"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the real Gst state transition to be entered", || {
+            gate.entered.load(Ordering::Acquire)
+        });
     }
     fn pending_output() -> (
         VoiceAudio,
@@ -954,8 +934,8 @@ mod tests {
         if !nonblocking {
             gate.release();
         }
-        let (mut audio, result) =
-            early.unwrap_or_else(|_| completed.recv_timeout(Duration::from_secs(1)).unwrap());
+        let (mut audio, result) = early
+            .unwrap_or_else(|_| tilo_test_env::recv("the capture start to complete", &completed));
         caller.join().unwrap();
         result.unwrap();
         let stop = audio.capture_stop_handle().unwrap();
@@ -997,11 +977,9 @@ mod tests {
         pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
         source.link(&sink).unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while audio.output.pipeline.current_state() == gst::State::Null {
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the output pipeline to leave Null", || {
+            audio.output.pipeline.current_state() != gst::State::Null
+        });
         let (_, state, pending) = audio
             .output
             .pipeline
@@ -1015,11 +993,7 @@ mod tests {
         let mut frame = gst::Buffer::from_slice(vec![0u8; 1920]);
         frame.get_mut().unwrap().set_pts(gst::ClockTime::ZERO);
         audio.output_source.push_buffer(frame).unwrap();
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while !audio.output_ready() {
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the output to become ready", || audio.output_ready());
         assert_eq!(audio.output.pipeline.current_state(), gst::State::Playing);
     }
 
@@ -1132,23 +1106,14 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while !audio.output_ready() {
-            assert!(Instant::now() < deadline, "software output did not start");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the software output to start", || audio.output_ready());
         audio
     }
 
     fn wait_for_capture(audio: &mut VoiceAudio) {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
-        while audio.poll_capture(Instant::now()).unwrap().is_empty() {
-            assert!(
-                Instant::now() < deadline,
-                "real encoder produced no complete frame"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("a complete frame from the real encoder", || {
+            !audio.poll_capture(Instant::now()).unwrap().is_empty()
+        });
     }
 
     #[test]
@@ -1234,7 +1199,7 @@ mod tests {
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
         assert!(!audio.capture_active());
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if !audio.poll_capture(Instant::now()).unwrap().is_empty() {
                 break;
@@ -1324,7 +1289,7 @@ mod tests {
             audio
                 .start_capture_element(&source, Arc::new(|| true))
                 .unwrap();
-            let deadline = Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let frames = loop {
                 let frames = audio.poll_capture(Instant::now()).unwrap();
                 if !frames.is_empty() {
@@ -1538,7 +1503,7 @@ mod tests {
                 let _ = done.send(());
             }
         });
-        let result = received.recv_timeout(Duration::from_secs(1));
+        let result = received.recv_timeout(tilo_test_env::hang_bound());
         if result.is_err() {
             drop(held);
             panic!("capture stop blocked on outer backend lock");
@@ -1598,7 +1563,7 @@ mod tests {
         audio.receive(frame("alice", 1), now).unwrap();
         audio.receive(frame("bob", 1), now).unwrap();
         audio.playout(now + Duration::from_millis(60)).unwrap();
-        let deadline = Instant::now() + Duration::from_millis(100);
+        let deadline = tilo_test_env::hang_deadline();
         let sample = loop {
             audio.playout(now + Duration::from_millis(65)).unwrap();
             if let Some(sample) = sink.try_pull_sample(gst::ClockTime::ZERO) {

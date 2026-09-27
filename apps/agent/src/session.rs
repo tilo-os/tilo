@@ -2858,6 +2858,7 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::SetParagraphStyle { blocks, .. }
         | RichTextAction::ApplyNamedStyle { blocks, .. }
         | RichTextAction::SetBlockAttr { blocks, .. }
+        | RichTextAction::ClearBlockAttr { blocks, .. }
         | RichTextAction::RemoveBlocks { blocks } => tilo_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
@@ -4338,7 +4339,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let deadline = Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let offers = loop {
                 assert!(Instant::now() < deadline, "both app catalogues must arrive");
                 session.refresh_catalogue().unwrap();

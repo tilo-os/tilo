@@ -90,7 +90,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                 // Drop only the returned remote stream capability. The signed
                 // channel and actual private worker remain live.
                 drop(_invocations);
-                let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
+                let deadline = tilo_test_env::hang_deadline();
                 loop {
                     if state
                         .invocation_subscribers
@@ -102,7 +102,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                         break;
                     }
                     assert!(
-                        tokio::time::Instant::now() < deadline,
+                        std::time::Instant::now() < deadline,
                         "remote stream capability release must close its receiver"
                     );
                     tokio::time::sleep(Duration::from_millis(1)).await;

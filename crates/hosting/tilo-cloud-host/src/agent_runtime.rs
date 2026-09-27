@@ -1167,10 +1167,7 @@ mod tests {
         );
         let unmounted = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
         assert!(!unmounted.required_services_ready);
-        // A hang bound, not a speed limit: the retry starts after
-        // WORKER_RETRY_MIN, but mounting real workers on a loaded runner can
-        // take tens of seconds.
-        let deadline = Instant::now() + 2 * crate::agent_workers::tests::HARNESS_WAIT;
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let state = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
             if state.publication_revision != "unavailable" {

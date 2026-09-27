@@ -21,11 +21,10 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let mut runtime = ActionRuntime::new(committed.clone());
     let host = LocalHost::start(&owner).await.unwrap();
     let mut connected = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(crate::HANG_BOUND, async {
+    tilo_test_env::within("the host session to become ready", async {
         while !matches!(connected.recv().await.unwrap(), Inbound::Ready { .. }) {}
     })
-    .await
-    .unwrap();
+    .await;
     let mut session = Some(connected);
     let mut action_error = None;
     let mut cadence = CheckpointCadence::new();
@@ -47,10 +46,10 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let old_signer = old_signing.bind(route.clone(), owner.identity.native_cert.clone());
     let old_mutation = mutation(&owner, "must-not-commit-retired-runtime");
     let old_waiting = tokio::spawn(old_signer.commit(&route, old_mutation));
-    let queued_deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
+    let queued_deadline = tilo_test_env::hang_deadline();
     while old_signing.retirement_ready().unwrap() {
         assert!(
-            tokio::time::Instant::now() < queued_deadline,
+            std::time::Instant::now() < queued_deadline,
             "old request did not enter its bounded queue"
         );
         tokio::task::yield_now().await;
@@ -81,24 +80,33 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     assert!(!old_time.same_origin(&recovered_time));
     // The existing subscription is already Ready: no new Ready event or app
     // restart is needed for the normal owner-loop boundary to recreate workers.
+    // That boundary runs every owner turn and skips a turn whose committed view
+    // another reader holds at that moment (`CommittedAuthority::observe`).
     assert!(session.as_ref().unwrap().is_ready());
-    refresh_actions(
-        &mut owner,
-        &mut runtime,
-        &mut session,
-        None,
-        &mut action_error,
-        None,
-        &mut cadence,
-    )
+    tilo_test_env::within("the owner loop to replace the retired runtime", async {
+        while runtime.retired && action_error.is_none() {
+            refresh_actions(
+                &mut owner,
+                &mut runtime,
+                &mut session,
+                None,
+                &mut action_error,
+                None,
+                &mut cadence,
+            )
+            .await;
+            tokio::task::yield_now().await;
+        }
+    })
     .await;
+    assert!(action_error.is_none(), "{action_error:?}");
 
     let new_signer = runtime
         .signing
         .bind(route.clone(), owner.identity.native_cert.clone());
     let fresh_mutation = mutation(&owner, "fresh-runtime-committed");
     let mut fresh_waiting = tokio::spawn(new_signer.commit(&route, fresh_mutation));
-    let fresh_result = tokio::time::timeout(crate::HANG_BOUND, async {
+    let fresh_result = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             tokio::select! {
                 result = &mut fresh_waiting => break result.unwrap(),
@@ -112,7 +120,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
         }
     })
     .await;
-    let old_result = tokio::time::timeout(Duration::from_secs(1), old_waiting).await;
+    let old_result = tokio::time::timeout(tilo_test_env::hang_bound(), old_waiting).await;
     // Release real workers before reporting a failed expectation.
     if fresh_result.is_err() {
         fresh_waiting.abort();
@@ -144,10 +152,9 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
             .unwrap()
             .is_err()
     );
-    assert!(
-        fresh_result.expect("fresh owner queue progressed").is_ok(),
-        "fresh runtime retained the retired source"
-    );
+    if let Err(error) = fresh_result.expect("fresh owner queue progressed") {
+        panic!("fresh runtime retained the retired source: {error}");
+    }
     cleanup.unwrap();
     let document = AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
     use ui::automerge::ReadDoc;
@@ -243,7 +250,7 @@ async fn action_lifecycle_retirement_refuses_every_queue_despite_terminal_health
     runtime.signing.fail("original terminal signing failure");
     crate::committed_authority::enter_test_recovery(&committed);
     let refusal = runtime.retire();
-    let results = tokio::time::timeout(Duration::from_secs(1), async {
+    let results = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(first, second, ordinary)
     })
     .await;

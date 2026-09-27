@@ -153,7 +153,7 @@ impl Fixture {
         Ok(())
     }
     async fn ready_notes(&mut self) -> (u64, String) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             // Deliberately pump before looking at a catalogue: the missing
             // production authorizer must fail at the actual worker health gate.
@@ -187,7 +187,7 @@ impl Fixture {
                 return address;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "actual Notes never published its notebook new-page action"
             );
         }
@@ -214,7 +214,7 @@ impl Fixture {
         }) {
             return Err("actual certified caller refused query".into());
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in self.caller.poll() {
                 if let CollabEvent::ActionDirectoryPage { request_id, result } = event
@@ -223,7 +223,7 @@ impl Fixture {
                     return result;
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 return Err("certified directory timed out".into());
             }
             self.pump().await?;
@@ -277,7 +277,7 @@ async fn native_production_authorizer_retired_original_owner_denies_certified_re
             max_depth: 1,
         },
     }));
-    let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(result) = fixture
             .caller
@@ -299,7 +299,7 @@ async fn native_production_authorizer_retired_original_owner_denies_certified_re
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "actual broker never replied to retired caller"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -374,7 +374,7 @@ async fn native_production_authorizer_replacement_does_not_revive_original_conne
                 max_depth: 1,
             },
         }));
-        let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(result) = caller.poll().into_iter().find_map(|event| match event {
                 CollabEvent::ActionDirectoryPage {
@@ -392,7 +392,7 @@ async fn native_production_authorizer_replacement_does_not_revive_original_conne
                 break;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "old original connection did not explicitly refuse directory target {request_id}"
             );
             // Keep the replacement fully serviceable while probing the old
@@ -437,7 +437,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
         )]),
         confirmation: serde_json::json!({}),
     }));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let invocation = loop {
         fixture.host.pump(&fixture.owner).unwrap();
         if let Some(result) = fixture
@@ -456,7 +456,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
                 .expect("genuine production caller must be admitted")
                 .0;
         }
-        assert!(tokio::time::Instant::now() < deadline);
+        assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(5)).await;
     };
     loop {
@@ -468,7 +468,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "real scoped invocation never reached its unchanged final native refusal: {invocation}"
         );
     }

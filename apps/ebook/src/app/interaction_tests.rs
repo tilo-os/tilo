@@ -26,7 +26,7 @@ fn app_with_sample() -> BooksApp {
 }
 
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         app.sync(doc, &automerge::ROOT);
         if app.import_loading.is_none() {
@@ -3377,7 +3377,7 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
         // thread never waits for a parse to finish.
         let (entered, release_a) = app.begin_import_held(&pa, ImportKind::Open).unwrap();
         entered
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("the worker took A");
         assert!(
             app.import_loading.is_some(),
@@ -3423,7 +3423,7 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
             })
             .unwrap();
         let event = receiver
-            .recv_timeout(HANG_BOUND)
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("completion wakes the host without an input event or polling frames");
         assert!(scope.accepts(&event));
         assert!(matches!(worker.try_recv(), Ok(result) if result.result.is_ok()));

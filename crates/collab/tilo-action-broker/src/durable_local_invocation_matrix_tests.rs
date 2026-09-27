@@ -516,10 +516,11 @@ mod durable_local_matrix {
                     tokio::task::spawn_local(
                         async move { invoke(&handle, &binding, invocation).await },
                     );
-                let wire =
-                    tokio::time::timeout(crate::HANG_BOUND, rig.delivered_effect(&env, invocation))
-                        .await
-                        .unwrap();
+                let wire = tilo_test_env::within(
+                    "`rig.delivered_effect(&env, invocation)`",
+                    rig.delivered_effect(&env, invocation),
+                )
+                .await;
                 assert!(!pending.is_finished());
                 let terminal = tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
@@ -677,9 +678,8 @@ mod durable_local_matrix {
                     let pending = tokio::task::spawn_local(async move {
                         invoke(&handle, &binding, id(0xe001)).await
                     });
-                    tokio::time::timeout(crate::HANG_BOUND, rx.recv())
+                    tilo_test_env::within("`rx.recv()`", rx.recv())
                         .await
-                        .unwrap()
                         .unwrap();
                     match mode {
                         "directory" => {
@@ -704,23 +704,27 @@ mod durable_local_matrix {
                         }
                         "stream" => {
                             drop(rig.stream.take());
-                            tokio::time::timeout(crate::HANG_BOUND, async {
-                                loop {
-                                    if rig
-                                        .state
-                                        .invocation_subscribers
-                                        .lock()
-                                        .unwrap()
-                                        .get(&903)
-                                        .is_some_and(tokio::sync::mpsc::UnboundedSender::is_closed)
-                                    {
-                                        break;
+                            tilo_test_env::within(
+                                "actual dropped stable capability closes server receiver",
+                                async {
+                                    loop {
+                                        if rig
+                                            .state
+                                            .invocation_subscribers
+                                            .lock()
+                                            .unwrap()
+                                            .get(&903)
+                                            .is_some_and(
+                                                tokio::sync::mpsc::UnboundedSender::is_closed,
+                                            )
+                                        {
+                                            break;
+                                        }
+                                        tokio::task::yield_now().await;
                                     }
-                                    tokio::task::yield_now().await;
-                                }
-                            })
-                            .await
-                            .expect("actual dropped stable capability closes server receiver");
+                                },
+                            )
+                            .await;
                         }
                         "clock" => {
                             env.control.set_wall_ns(1);

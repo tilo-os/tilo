@@ -33,9 +33,8 @@ impl Stream {
                     return (kind, payload);
                 }
             }
-            let frame = timeout(crate::HANG_BOUND, self.body.frame())
+            let frame = tilo_test_env::within("the next stream frame", self.body.frame())
                 .await
-                .expect("stream deadline")
                 .expect("stream open")
                 .unwrap();
             if let Ok(data) = frame.into_data() {
@@ -133,9 +132,8 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(h.f.owner.identity.native_cert.device_public_key)
     );
-    let own = timeout(crate::HANG_BOUND, client.member(&path))
+    let own = tilo_test_env::within("the own namespace to be relayed", client.member(&path))
         .await
-        .unwrap()
         .unwrap();
     let mut from_relay = own
         .track(PRESENCE_TRACK)
@@ -161,7 +159,7 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
     let (status, _, _) = post(&h, FALLBACK_SEND_PATH, vec![0x11, 0, 0], Some(id)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Codec-valid presence over HTTPS reaches the WebTransport subscriber.
-    let received = timeout(crate::HANG_BOUND, async {
+    let received = tilo_test_env::within("fallback presence to reach the MoQ subscriber", async {
         let mut seq = 0;
         loop {
             seq += 1;
@@ -175,8 +173,7 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
             }
         }
     })
-    .await
-    .expect("fallback presence relayed to the MoQ subscriber");
+    .await;
     assert_eq!(
         PresenceFrame::decode(&received).unwrap().pointer.unwrap()[1],
         7.0

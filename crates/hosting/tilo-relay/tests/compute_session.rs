@@ -121,10 +121,10 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
         })
         .await
         .unwrap();
-    let request_delivery = tokio::time::timeout(HANG_BOUND, worker_client.receive())
-        .await
-        .unwrap()
-        .unwrap();
+    let request_delivery =
+        tilo_test_env::within("a message on worker_client", worker_client.receive())
+            .await
+            .unwrap();
     assert!(matches!(
         &request_delivery.envelope,
         ComputeEnvelope::Request { spec } if spec == &specification
@@ -162,9 +162,8 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
     .await
     .unwrap();
     requester_again.attach(77).await.unwrap();
-    let replayed = tokio::time::timeout(HANG_BOUND, requester_again.receive())
+    let replayed = tilo_test_env::within("a message on requester_again", requester_again.receive())
         .await
-        .unwrap()
         .unwrap();
     assert!(matches!(
         replayed.envelope,
@@ -287,10 +286,10 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
         expires_at_ms: issued_at_ms.saturating_add(30_000),
     };
     requester_client.submit(&specification).await.unwrap();
-    let request_delivery = tokio::time::timeout(HANG_BOUND, worker_client.receive())
-        .await
-        .unwrap()
-        .unwrap();
+    let request_delivery =
+        tilo_test_env::within("a message on worker_client", worker_client.receive())
+            .await
+            .unwrap();
     assert!(matches!(
         &request_delivery.envelope,
         ComputeEnvelope::Request { spec } if spec == &specification
@@ -298,9 +297,8 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     worker_client.acknowledge(&request_delivery).await.unwrap();
     worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(HANG_BOUND, worker_client.receive())
+        tilo_test_env::within("a message on worker_client", worker_client.receive())
             .await
-            .unwrap()
             .unwrap()
             .envelope,
         ComputeEnvelope::Pong
@@ -316,9 +314,8 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     requester_client.cancel(&binding).await.unwrap();
     requester_client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(HANG_BOUND, requester_client.receive())
+        tilo_test_env::within("a message on requester_client", requester_client.receive())
             .await
-            .unwrap()
             .unwrap()
             .envelope,
         ComputeEnvelope::Pong
@@ -336,10 +333,10 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .await
     .unwrap();
     first_reconnect.attach(88).await.unwrap();
-    let first_cancel = tokio::time::timeout(HANG_BOUND, first_reconnect.receive())
-        .await
-        .unwrap()
-        .unwrap();
+    let first_cancel =
+        tilo_test_env::within("a message on first_reconnect", first_reconnect.receive())
+            .await
+            .unwrap();
     assert!(matches!(
         &first_cancel.envelope,
         ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
@@ -359,10 +356,10 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .await
     .unwrap();
     second_reconnect.attach(88).await.unwrap();
-    let replayed = tokio::time::timeout(HANG_BOUND, second_reconnect.receive())
-        .await
-        .unwrap()
-        .unwrap();
+    let replayed =
+        tilo_test_env::within("a message on second_reconnect", second_reconnect.receive())
+            .await
+            .unwrap();
     assert_eq!(replayed.sequence, Some(durable_sequence));
     assert!(matches!(
         &replayed.envelope,
@@ -378,9 +375,8 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     ));
     second_reconnect.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(HANG_BOUND, second_reconnect.receive())
+        tilo_test_env::within("a message on second_reconnect", second_reconnect.receive())
             .await
-            .unwrap()
             .unwrap()
             .envelope,
         ComputeEnvelope::Pong
@@ -400,9 +396,8 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .unwrap();
     after_ack.attach(88).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(HANG_BOUND, after_ack.receive())
+        tilo_test_env::within("a message on after_ack", after_ack.receive())
             .await
-            .unwrap()
             .unwrap()
             .envelope,
         ComputeEnvelope::Ready {

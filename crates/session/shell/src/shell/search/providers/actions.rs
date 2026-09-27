@@ -210,62 +210,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        BLUETOOTH_PAIRING_DECLINE_ID => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         _ => {}
     }
     contract
-}
-
-/// Viewer-local workspace view rows (switch workspace, open the activity
-/// sheet in a given view). Mirrors
-/// `tilo_desktop::activity::view_actions::workspace_view_descriptors`, read
-/// from the shell's own desktop model; the request names workspaces by raw id
-/// and `ChromeState::request_workspace_view` resolves it back.
-fn workspace_view_descriptors(
-    tree: &crate::shell::state::DesktopTree,
-    activity_available: bool,
-) -> Vec<tilo_desktop::activity::view_actions::WorkspaceViewDescriptor> {
-    use tilo_desktop::activity::ActivityView;
-    use tilo_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
-    let mut result = tree
-        .workspaces
-        .iter()
-        .map(|workspace| WorkspaceViewDescriptor {
-            id: format!("workspace.select.{}", workspace.id.0),
-            label: format!("Switch to {}", workspace.name),
-            request: WorkspaceViewRequest::Select {
-                workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-            },
-        })
-        .collect::<Vec<_>>();
-    if activity_available && let Some(workspace) = tree.active_workspace() {
-        for (id, label, view) in [
-            (
-                "room.activity.open",
-                "Review workspace activity",
-                ActivityView::CatchUp,
-            ),
-            (
-                "room.activity.explore",
-                "Explore workspace activity",
-                ActivityView::Explore,
-            ),
-            (
-                "room.activity.replay",
-                "Replay workspace activity",
-                ActivityView::Replay,
-            ),
-        ] {
-            result.push(WorkspaceViewDescriptor {
-                id: id.into(),
-                label: label.into(),
-                request: WorkspaceViewRequest::OpenActivity {
-                    workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-                    view,
-                },
-            });
-        }
-    }
-    result
 }
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
@@ -1213,6 +1164,12 @@ impl Action {
             |_, _| settle_display_change(false),
         ),
         chrome(
+            BLUETOOTH_PAIRING_DECLINE_ID,
+            "search-action-bluetooth-pairing-decline",
+            "search-action-bluetooth-pairing-decline-subtitle",
+            |_, _| decline_bluetooth_pairing(),
+        ),
+        chrome(
             "capture.open",
             "search-action-capture-open",
             "search-action-capture-open-subtitle",
@@ -1905,6 +1862,24 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
+
+/// Decline the Bluetooth pairing question on screen, or stop the pairing
+/// whose code it displays.
+///
+/// There is deliberately no accepting counterpart. Confirming a pairing
+/// means comparing a code with the device in front of you, or typing the one
+/// it shows; only the person at this machine can do that, on the dialog
+/// itself. An agent or a script can always say no, and never yes.
+fn decline_bluetooth_pairing() -> Result<(), ActionError> {
+    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(
+            "no Bluetooth pairing is waiting".into(),
+        ))
+    }
+}
 
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
@@ -1967,7 +1942,7 @@ fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract 
     if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
-            reason: "Quick Settings service is unavailable".into(),
+            reason: t("search-action-quick-settings-unavailable"),
         };
     }
     contract
@@ -2282,12 +2257,16 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        let descriptors = workspace_view_descriptors(&ctx.chrome.tree().desktop, true);
+        let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree().desktop,
+            true,
+        );
+        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
             let Some(score) = match_score(
                 &needle_lower,
                 &descriptor.label.to_lowercase(),
-                "workspace activity history",
+                &view_keywords,
                 &descriptor.id,
             ) else {
                 continue;
@@ -2299,7 +2278,7 @@ impl SearchProvider for ActionsProvider {
                 provider_id: self.id().into(),
                 id: descriptor.id,
                 title: descriptor.label,
-                subtitle: Some("Local workspace view".into()),
+                subtitle: Some(t("search-action-workspace-view-subtitle")),
                 badge: None,
                 score,
                 params: vec![],

@@ -28,6 +28,7 @@ watch = ["dep:notify"]
 [dev-dependencies]
 atomic-file = { path = "../atomic-file", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

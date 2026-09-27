@@ -604,7 +604,7 @@ mod tests {
                 .unwrap();
             }
             for _ in 0..4 {
-                let name = rx.recv_timeout(HANG_BOUND).unwrap().unwrap();
+                let name = tilo_test_env::recv("a worker thread's name", &rx).unwrap();
                 assert!(name.starts_with("ui-background-"), "{name}");
             }
             assert!(lock(&pool.shared.state).threads <= 2);
@@ -618,7 +618,7 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             pool.spawn("after", Box::new(move || tx.send(()).unwrap()))
                 .unwrap();
-            rx.recv_timeout(HANG_BOUND).unwrap();
+            tilo_test_env::recv("the task spawned after", &rx);
         }
 
         // Case `thread_pool_timers_wake_in_deadline_order`.
@@ -640,8 +640,8 @@ mod tests {
             let start = crate::time::now();
             pool.wake_at(start + Duration::from_millis(60), late.handle());
             pool.wake_at(start + Duration::from_millis(10), early.handle());
-            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "early");
-            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "late");
+            assert_eq!(tilo_test_env::recv("the early wake", &rx), "early");
+            assert_eq!(tilo_test_env::recv("the late wake", &rx), "late");
         }
 
         // Case `thread_pool_park_returns_when_a_job_finishes`.

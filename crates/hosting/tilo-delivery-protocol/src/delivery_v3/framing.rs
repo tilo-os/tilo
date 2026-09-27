@@ -529,7 +529,7 @@ mod tests {
                     .is_err()
             );
             send.write_all(&wire[split..]).await.unwrap();
-            let result = tokio::time::timeout(HANG_BOUND, reader.read_next())
+            let result = tokio::time::timeout(tilo_test_env::hang_bound(), reader.read_next())
                 .await
                 .unwrap()
                 .unwrap()
