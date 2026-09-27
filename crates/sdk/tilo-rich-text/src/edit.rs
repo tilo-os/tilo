@@ -13,7 +13,9 @@
 //! deleted selection one [`RichTextAction::ReplaceSelection`]. Kinds and
 //! marks are then brought to what the editor shows, only where the input
 //! changed them, so the document's own rules (a mark growing over text
-//! typed at its end) are never fought keystroke by keystroke.
+//! typed at its end) are never fought keystroke by keystroke. Last, blocks
+//! the person dragged elsewhere are moved ([`RichTextAction::MoveBlocks`]),
+//! the fewest that put the rest in the editor's order.
 
 use std::collections::{HashMap, HashSet};
 
@@ -455,6 +457,89 @@ impl<H: Host> Commit<'_, H> {
     }
 }
 
+/// For each position, whether it belongs to a longest increasing run of
+/// `positions`: the blocks that stay put while the others move around them.
+fn longest_increasing(positions: &[usize]) -> Vec<bool> {
+    // Patience sorting: `tails[k]` is the index ending the best run of
+    // length `k + 1`; `back` links each index to the one before it.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut back: Vec<Option<usize>> = vec![None; positions.len()];
+    for (index, position) in positions.iter().enumerate() {
+        let at = tails.partition_point(|&tail| positions.get(tail).is_some_and(|p| p < position));
+        if let Some(slot) = back.get_mut(index) {
+            *slot = at
+                .checked_sub(1)
+                .and_then(|before| tails.get(before).copied());
+        }
+        if let Some(tail) = tails.get_mut(at) {
+            *tail = index;
+        } else {
+            tails.push(index);
+        }
+    }
+    let mut keep = vec![false; positions.len()];
+    let mut next = tails.last().copied();
+    while let Some(index) = next {
+        if let Some(slot) = keep.get_mut(index) {
+            *slot = true;
+        }
+        next = back.get(index).copied().flatten();
+    }
+    keep
+}
+
+impl<H: Host> Commit<'_, H> {
+    /// Blocks the person moved: the fewest moves that bring the document's
+    /// order to the editor's. `before` is the paragraph before the first
+    /// edited one, `None` at the start of the body.
+    fn reorders(
+        &mut self,
+        edited: &[BlockContent],
+        before: Option<String>,
+    ) -> Result<(), ActionError> {
+        let ids: Vec<String> = edited
+            .iter()
+            .map(|block| self.doc_id(&block.id).to_owned())
+            .collect();
+        let positions = self
+            .host
+            .read(self.doc, |state| {
+                ids.iter()
+                    .map(|id| state.body().position(id))
+                    .collect::<Option<Vec<usize>>>()
+            })
+            .flatten();
+        let Some(positions) = positions else {
+            return Ok(());
+        };
+        if positions.windows(2).all(|pair| pair.first() < pair.last()) {
+            return Ok(());
+        }
+        let keep = longest_increasing(&positions);
+        let mut previous = before;
+        let mut index = 0;
+        while let Some(id) = ids.get(index) {
+            if keep.get(index).copied().unwrap_or(true) {
+                previous = Some(id.clone());
+                index = index.saturating_add(1);
+                continue;
+            }
+            let start = index;
+            while keep.get(index).is_some_and(|kept| !kept) {
+                index = index.saturating_add(1);
+            }
+            let run = ids.get(start..index).unwrap_or(&[]).to_vec();
+            let last = run.last().cloned();
+            self.apply(&RichTextAction::MoveBlocks {
+                blocks: run,
+                after: previous.clone(),
+            })?;
+            previous = last;
+        }
+        Ok(())
+    }
+}
+
 /// Apply what the person did — `edited` where the editor was presented
 /// `presented` — as rich-text actions through `host`. Returns the editor
 /// blocks the document named otherwise (`(editor id, document id)`), for
@@ -484,6 +569,10 @@ pub(crate) fn commit(
         .iter()
         .map(|block| (block.id.as_str(), block))
         .collect();
+    let before = presented.first().and_then(|first| {
+        host.read(doc, |state| body_neighbour(state, &first.id, -1))
+            .flatten()
+    });
     let mut commit = Commit {
         host,
         doc,
@@ -497,6 +586,7 @@ pub(crate) fn commit(
     commit.splices(&by_id, edited)?;
     commit.inserts(&by_id, edited)?;
     commit.styles(&by_id, edited)?;
+    commit.reorders(edited, before)?;
     let mut renames: Vec<(String, String)> = commit
         .resolved
         .into_iter()
@@ -756,6 +846,58 @@ mod tests {
             by_editor_id.get(presented[0].id.as_str()),
             Some(&after[1].id)
         );
+    }
+
+    #[test]
+    fn a_dragged_paragraph_is_one_move() {
+        let (mut doc, mut replica) = document("a\n\nb\n\nc\n\nd");
+        let presented = shown(&mut replica, &mut doc);
+        let ids: Vec<String> = presented.iter().map(|block| block.id.clone()).collect();
+        // `d` dragged to the top, then `a` dragged below `c`.
+        for (order, moved) in [([3, 0, 1, 2], &ids[3]), ([0, 2, 3, 1], &ids[0])] {
+            let presented = shown(&mut replica, &mut doc);
+            let edited: Vec<BlockContent> = order
+                .iter()
+                .map(|&index| presented[index].clone())
+                .collect();
+            replica.applied.clear();
+            let renames = commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+            assert!(renames.is_empty(), "a move keeps every id");
+            assert!(
+                matches!(
+                    replica.applied.as_slice(),
+                    [RichTextAction::MoveBlocks { blocks, .. }] if blocks.as_slice() == std::slice::from_ref(moved)
+                ),
+                "{:?}",
+                replica.applied
+            );
+            let now: Vec<String> = shown(&mut replica, &mut doc)
+                .into_iter()
+                .map(|block| block.id)
+                .collect();
+            let want: Vec<String> = edited.into_iter().map(|block| block.id).collect();
+            assert_eq!(now, want);
+        }
+        assert_eq!(texts(&mut replica, &mut doc), ["d", "b", "c", "a"]);
+    }
+
+    #[test]
+    fn a_window_after_the_start_moves_within_it() {
+        let (mut doc, mut replica) = document("a\n\nb\n\nc\n\nd");
+        let all = shown(&mut replica, &mut doc);
+        // The editor presents a window from `b`: `d` moves up above `c`.
+        let presented = all[1..].to_vec();
+        let edited = vec![all[1].clone(), all[3].clone(), all[2].clone()];
+        commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+        assert_eq!(texts(&mut replica, &mut doc), ["a", "b", "d", "c"]);
+    }
+
+    #[test]
+    fn longest_increasing_keeps_the_most_in_place() {
+        assert_eq!(longest_increasing(&[0, 1, 2]), [true, true, true]);
+        assert_eq!(longest_increasing(&[3, 0, 1, 2]), [false, true, true, true]);
+        assert_eq!(longest_increasing(&[1, 2, 3, 0]), [true, true, true, false]);
+        assert_eq!(longest_increasing(&[]), Vec::<bool>::new());
     }
 
     #[test]
