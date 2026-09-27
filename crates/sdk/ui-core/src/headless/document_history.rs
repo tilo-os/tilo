@@ -339,12 +339,12 @@ impl FrameHarness {
     /// The headless counterpart of the App's restore door: the same checked
     /// write through the same undo log, attributed to this harness's author.
     fn apply_confirmed_history_restore(&mut self) {
-        let Some(review) = self.document_history.take_confirmed_restore() else {
+        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
             return;
         };
         let result = crate::standalone_history::apply_restore(
             &mut self.state,
-            &review,
+            &confirmed,
             Some(self.author.clone()),
         );
         if matches!(result, Ok(true)) {

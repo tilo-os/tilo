@@ -134,7 +134,7 @@ class Fingerprint(unittest.TestCase):
 
     def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
         build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
-        relay = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(encoding="utf-8")
+        relay = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(encoding="utf-8")
         snapshot = (ROOT / ".forgejo/workflows/snapshot-rpms.yml").read_text(encoding="utf-8")
         for consumer in (build, relay):
             self.assertIn("Resolve the exact signed RPM snapshot fingerprint", consumer)

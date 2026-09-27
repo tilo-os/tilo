@@ -3208,6 +3208,24 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert_eq!(outcome.files.len(), 13);
     }
 
+    // Phase: an_app_outside_every_repository_becomes_one.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let lone = temp.path().join("lone");
+        let outcome = create_app(request(lone.clone())).expect("create app");
+        assert!(outcome.git_initialized);
+        assert!(lone.join(".git").is_dir());
+        assert!(outcome.summary().contains("git repository"));
+
+        let nested = lone.join("nested");
+        let outcome = create_app(request(nested.clone())).expect("create nested app");
+        assert!(
+            !outcome.git_initialized,
+            "an app inside a repository joins it"
+        );
+        assert!(!nested.join(".git").exists());
+    }
+
     // Phase: creation_summary_prints_copyable_commands_for_shell_unsafe_paths.
     {
         let outcome = CreateOutcome {
@@ -3218,6 +3236,7 @@ fn creation_inputs_are_validated_and_printed_safely() {
             dry_run: false,
             workspace_member: false,
             sdk: None,
+            git_initialized: false,
         };
         let summary = outcome.summary();
         assert!(summary.contains("tilo-app check '/tmp/O'\\''Reilly app'"));
@@ -3968,6 +3987,10 @@ fn shot_and_inspection_plans_are_built_strictly() {
 /// manifest, output is not replaced before building, the payload overlay copies nested files and
 /// rejects symlinks, and profile names are safe Cargo arguments.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+)]
 fn packaging_is_scoped_safe_and_never_clobbers_output() {
     // Phase: package_spec_uses_manifest_entrypoint_and_cargo_package_name.
     {
@@ -4024,7 +4047,8 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
             &PackageRequest {
                 output: None,
                 identity: None,
-                profile: "release".into(),
+                profile: None,
+                static_link: false,
                 target: None,
                 features: Vec::new(),
                 no_default_features: false,
@@ -4033,6 +4057,75 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         )
         .unwrap_err();
         assert!(error.to_string().contains("pass --force"));
+    }
+
+    // Phase: a_thin_package_needs_the_thin_feature.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let cargo = destination.join("Cargo.toml");
+        let source = std::fs::read_to_string(&cargo).expect("Cargo.toml");
+        let without = source.replace("thin = [\"dep:runtime-dylib\"]\n", "");
+        assert_ne!(source, without, "the scaffold declares a thin feature");
+        std::fs::write(&cargo, without).expect("drop thin feature");
+        assert!(
+            !load_app_package_spec(destination.clone())
+                .expect("spec")
+                .thin_feature
+        );
+        let error = package_app(
+            &destination,
+            &PackageRequest {
+                output: None,
+                identity: None,
+                profile: None,
+                static_link: false,
+                target: None,
+                features: Vec::new(),
+                no_default_features: false,
+                force: false,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--static"), "{error:#}");
+    }
+
+    // Phase: packing_signs_and_verifies_in_process.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let spec = load_app_package_spec(destination).expect("spec");
+        assert!(spec.thin_feature);
+        let payload = temp.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).expect("payload");
+        std::fs::write(payload.join("bin/reading-list"), b"\x7fELF not really").expect("binary");
+        let identity_path = temp.path().join("publisher.json");
+        std::fs::write(
+            &identity_path,
+            serde_json::json!({"secret_key_hex": "07".repeat(32)}).to_string(),
+        )
+        .expect("identity");
+        let identity = pack::load_identity(&identity_path).expect("load identity");
+        let output = temp.path().join("reading-list.tapp");
+        let packed =
+            pack::pack_payload(&spec.manifest_path, &payload, &output, &identity).expect("pack");
+        assert_eq!(
+            packed.bytes,
+            std::fs::metadata(&output).expect("tapp").len()
+        );
+        let reader = std::io::BufReader::new(std::fs::File::open(&output).expect("open"));
+        let tapp = tilo_app_package::tapp::read(reader, &mut tilo_app_package::DiscardBlobs)
+            .expect("decode");
+        assert_eq!(tapp.meta.id.to_string(), packed.id);
+        assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
+        assert!(tapp.missing().is_empty(), "the package carries its payload");
+
+        let again = pack::pack_payload(&spec.manifest_path, &payload, &output, &identity)
+            .err()
+            .expect("an existing output is not overwritten");
+        assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 
     // Phase: payload_overlay_copies_nested_files_and_rejects_symlinks.
@@ -4516,10 +4609,20 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         "vello",
         "wayland-backend",
         "rustls-native-certs",
-        "accesskit",
-        "atspi",
-        "rustypipe",
     ];
+    // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
+    let git_forks = ["accesskit", "atspi", "rustypipe"];
+    let pinned_as_workspace = |patches: &toml::Table| {
+        for name in git_forks {
+            assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
+            assert!(
+                workspace_patches[name]["git"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("https://")),
+                "{name}"
+            );
+        }
+    };
 
     // Phase: a checkout nearby is used in place, by relative path.
     {
@@ -4547,6 +4650,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
                 "{name} -> {path}"
             );
         }
+        pinned_as_workspace(patches);
         assert!(!patches.contains_key("workspace-hack"));
         assert!(
             patches
@@ -4622,6 +4726,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         for name in forks {
             assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
         }
+        pinned_as_workspace(patches);
         assert!(patches.values().all(|patch| patch.get("path").is_none()));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
@@ -5255,4 +5360,64 @@ fn ui_path_accepts_either_sdk_crate() {
             Path::new("../tilo/crates/sdk/tilo-app")
         );
     }
+}
+
+/// The dev loop supplies a runtime host only to an outside app that has none,
+/// and finds it in the checkout the app's `tilo-app` dependency resolves to.
+#[test]
+fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    };
+    assert!(wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "GNOME")]),
+        false
+    ));
+    assert!(
+        !wants_runtime_host(env(&[]), true),
+        "a workspace member builds its own"
+    );
+    assert!(!wants_runtime_host(
+        env(&[("XDG_CURRENT_DESKTOP", "tilo")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_BINARY", "/opt/host")]),
+        false
+    ));
+    assert!(!wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "1")]),
+        false
+    ));
+    assert!(wants_runtime_host(
+        env(&[("TILO_RUNTIME_STANDALONE", "0")]),
+        false
+    ));
+
+    let checkout = tempfile::tempdir().expect("checkout");
+    let tilo_app = checkout.path().join("crates/sdk/tilo-app/Cargo.toml");
+    let runtime = checkout
+        .path()
+        .join("crates/runtime/tilo-runtime/Cargo.toml");
+    for manifest in [&tilo_app, &runtime] {
+        std::fs::create_dir_all(manifest.parent().expect("parent")).expect("crate dir");
+        std::fs::write(manifest, "[package]\n").expect("manifest");
+    }
+    let metadata = serde_json::json!({"packages": [
+        {"name": "tilo-ui", "manifest_path": "/elsewhere/crates/sdk/ui-core/Cargo.toml"},
+        {"name": "tilo-app", "manifest_path": tilo_app},
+    ]});
+    assert_eq!(
+        sdk_root_from_metadata(&metadata).as_deref(),
+        Some(checkout.path())
+    );
+    let without = serde_json::json!({"packages": [
+        {"name": "tilo-app", "manifest_path": "/registry/tilo-app-0.1.0/Cargo.toml"},
+    ]});
+    assert_eq!(sdk_root_from_metadata(&without), None);
 }

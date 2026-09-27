@@ -17,7 +17,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod host;
+mod open_file;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
 pub type InstanceId = u64;
 pub type ComponentFactory =
@@ -29,6 +31,9 @@ pub struct ApplicationDefinition {
     pub record_kind: RecordKind,
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
+    /// Media types (`type/subtype`, lowercase) the component opens when a host
+    /// hands it a file ([`HostContext::take_open_file`]).
+    pub opens: &'static [&'static str],
     pub create: ComponentFactory,
 }
 #[non_exhaustive]
@@ -69,6 +74,8 @@ pub struct HostContext {
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
+    content: Option<tilo_content::ContentStore>,
+    open_file: Option<OpenFile>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -279,7 +286,28 @@ impl HostContext {
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
             retirement: None,
+            content: None,
+            open_file: None,
         })
+    }
+    /// Lend the component the host's content store for this storage scope:
+    /// opaque bytes addressed by hash that outlive the component and that
+    /// other components of the same scope read too.
+    pub fn provide_content(&mut self, store: tilo_content::ContentStore) {
+        self.content = Some(store);
+    }
+    /// The content store the host lent, if any.
+    pub fn content(&self) -> Option<&tilo_content::ContentStore> {
+        self.content.as_ref()
+    }
+    /// Hand the component a file to open. [`ApplicationDefinition::instantiate`]
+    /// refuses the launch unless the definition opens its media type.
+    pub fn provide_open_file(&mut self, file: OpenFile) {
+        self.open_file = Some(file);
+    }
+    /// The file the host handed over to open, once.
+    pub fn take_open_file(&mut self) -> Option<OpenFile> {
+        self.open_file.take()
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -416,6 +444,11 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
+    /// Whether the component opens files of `media_type` (parameters and case ignored).
+    pub fn opens_media_type(&self, media_type: &str) -> bool {
+        open_file::media_type_essence(media_type)
+            .is_some_and(|essence| self.opens.contains(&essence.as_str()))
+    }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     /// The factory projects through `HostContext::read_record`; no mutable `Widget::sync`
     /// or second history/autosave initialization follows its View restoration.
@@ -477,6 +510,16 @@ impl ApplicationDefinition {
             if !context.permissions.borrow().check(required) {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
+        }
+        if let Some(file) = &context.open_file
+            && !self.opens_media_type(file.media_type())
+        {
+            return Err(LaunchError::Operation(format!(
+                "{} does not open {} files ({})",
+                self.title,
+                file.media_type(),
+                file.name()
+            )));
         }
         context.validate_restore(&restore)?;
         let records = context.records.clone();
@@ -1411,6 +1454,7 @@ mod bound_lifetime_tests {
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -1454,6 +1498,7 @@ mod bound_lifetime_tests {
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: factory,
         };
         let prepare = |checkout| {
@@ -1511,6 +1556,7 @@ mod bound_lifetime_tests {
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
+                opens: &[],
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -1595,6 +1641,7 @@ mod bound_lifetime_tests {
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
+                opens: &[],
                 create: factory,
             };
             let context = HostContext::prepare(

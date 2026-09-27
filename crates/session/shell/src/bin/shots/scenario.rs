@@ -1337,38 +1337,8 @@ fn app_kind_for(app: &str) -> shell::shell::state::AppKind {
 // JSON state dumping for headless mode
 // =====================================================================
 
-fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::ShellOverlayHost) {
-    // Groups-per-strip snapshot (drag-out tests):
-    // `[[[group_id, [tab_id, ...]], ...], ...]`.
-    out.push_str("\"groups_per_strip\":[");
-    for (strip_index, (_strip_id, groups)) in host.groups_per_strip().iter().enumerate() {
-        if strip_index > 0 {
-            out.push(',');
-        }
-        out.push('[');
-        for (group_index, (group_id, tabs)) in groups.iter().enumerate() {
-            if group_index > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            out.push_str(&group_id.to_string());
-            out.push_str(",[");
-            for (tab_index, tab_id) in tabs.iter().enumerate() {
-                if tab_index > 0 {
-                    out.push(',');
-                }
-                out.push_str(&tab_id.to_string());
-            }
-            out.push_str("]]");
-        }
-        out.push(']');
-    }
-    out.push(']');
-}
-
 /// Serialise the chrome's externally-observable state into a compact
-/// JSON object. Hand-rolled instead of pulling `serde_derive` because
-/// `ChromeState` lives in another crate we don't want to annotate.
+/// JSON object.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
@@ -1404,78 +1374,46 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
-    // Hand-format JSON so we don't have to plumb serde through the bin.
-    // Strings escaped via `escape_json_str` for quotes / backslashes /
-    // control chars. Arrays produced inline.
-    let mut out = String::new();
-    out.push('{');
-    push_kv_str(&mut out, "scenario_step", "");
-    out.push(',');
-    push_kv_u64(&mut out, "active_workspace_id", active);
-    out.push(',');
-    push_kv_usize(&mut out, "active_workspace_idx", active_idx.unwrap_or(0));
-    out.push(',');
-    push_kv_array(&mut out, "workspace_names", &workspace_names);
-    out.push(',');
-    push_kv_bool(&mut out, "overlay_overview", st.overlays.overview);
-    out.push(',');
-    push_kv_bool(
-        &mut out,
-        "overlay_quick_settings",
-        st.overlays.quick_settings,
-    );
-    out.push(',');
-    push_kv_bool(&mut out, "overlay_ws_settings", st.overlays.ws_settings);
-    out.push(',');
-    push_kv_bool(&mut out, "overlay_collaborators", st.overlays.collaborators);
-    out.push(',');
-    push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
-    out.push(',');
-    push_kv_bool(
-        &mut out,
-        "workspace_activity_open",
-        shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
-    );
-    out.push(',');
-    push_kv_str(
-        &mut out,
-        "room_activity_view",
-        match host.room_activity().view() {
-            shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
-            shell::shell::room_activity::ActivityView::Tasks => "tasks",
-            shell::shell::room_activity::ActivityView::Explore => "explore",
-            shell::shell::room_activity::ActivityView::Replay => "replay",
-        },
-    );
-    out.push(',');
-    push_kv_bool(
-        &mut out,
-        "room_activity_compared",
-        host.room_activity().has_comparison(),
-    );
-    out.push(',');
-    push_kv_str(
-        &mut out,
-        "room_activity_focus",
-        host.room_activity()
-            .focused_control_label()
-            .as_deref()
-            .unwrap_or(""),
-    );
-    out.push(',');
-    push_kv_str(&mut out, "qs_level", qs_level);
-    out.push(',');
-    push_kv_str(&mut out, "ws_settings_tab", ws_tab);
-    out.push(',');
-    push_kv_bool(&mut out, "palette_visible", palette_visible);
-    out.push(',');
-    push_kv_str(&mut out, "palette_query", palette_query);
-    out.push(',');
-    push_kv_u64(&mut out, "revision", st.revision);
-    out.push(',');
-    push_groups_per_strip(&mut out, host);
-    out.push('}');
-    out
+    // `[[[group_id, [tab_id, ...]], ...], ...]`, for the drag-out tests.
+    let groups_per_strip: Vec<Vec<serde_json::Value>> = host
+        .groups_per_strip()
+        .iter()
+        .map(|(_strip, groups)| {
+            groups
+                .iter()
+                .map(|(group, tabs)| serde_json::json!([group, tabs]))
+                .collect()
+        })
+        .collect();
+    let room_activity_view = match host.room_activity().view() {
+        shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
+        shell::shell::room_activity::ActivityView::Tasks => "tasks",
+        shell::shell::room_activity::ActivityView::Explore => "explore",
+        shell::shell::room_activity::ActivityView::Replay => "replay",
+    };
+    serde_json::json!({
+        "scenario_step": "",
+        "active_workspace_id": active,
+        "active_workspace_idx": active_idx.unwrap_or(0),
+        "workspace_names": workspace_names,
+        "overlay_overview": st.overlays.overview,
+        "overlay_quick_settings": st.overlays.quick_settings,
+        "overlay_ws_settings": st.overlays.ws_settings,
+        "overlay_collaborators": st.overlays.collaborators,
+        "overlay_room_activity": st.overlays.room_activity,
+        "workspace_activity_open":
+            shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
+        "room_activity_view": room_activity_view,
+        "room_activity_compared": host.room_activity().has_comparison(),
+        "room_activity_focus": host.room_activity().focused_control_label().unwrap_or_default(),
+        "qs_level": qs_level,
+        "ws_settings_tab": ws_tab,
+        "palette_visible": palette_visible,
+        "palette_query": palette_query,
+        "revision": st.revision,
+        "groups_per_strip": groups_per_strip,
+    })
+    .to_string()
 }
 
 /// `SnapshotSink` that writes one `<name>.json` per snapshot under
@@ -1509,73 +1447,6 @@ impl SnapshotSink for JsonDirSink<'_> {
         self.written.borrow_mut().push(path.display().to_string());
         println!("  wrote {}", path.display());
     }
-}
-
-fn push_kv_str(out: &mut String, k: &str, v: &str) {
-    out.push('"');
-    out.push_str(k);
-    out.push('"');
-    out.push(':');
-    out.push('"');
-    out.push_str(&escape_json_str(v));
-    out.push('"');
-}
-fn push_kv_u64(out: &mut String, k: &str, v: u64) {
-    out.push('"');
-    out.push_str(k);
-    out.push('"');
-    out.push(':');
-    out.push_str(&v.to_string());
-}
-fn push_kv_usize(out: &mut String, k: &str, v: usize) {
-    out.push('"');
-    out.push_str(k);
-    out.push('"');
-    out.push(':');
-    out.push_str(&v.to_string());
-}
-fn push_kv_bool(out: &mut String, k: &str, v: bool) {
-    out.push('"');
-    out.push_str(k);
-    out.push('"');
-    out.push(':');
-    out.push_str(if v { "true" } else { "false" });
-}
-fn push_kv_array(out: &mut String, k: &str, vs: &[String]) {
-    out.push('"');
-    out.push_str(k);
-    out.push('"');
-    out.push(':');
-    out.push('[');
-    for (i, v) in vs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push('"');
-        out.push_str(&escape_json_str(v));
-        out.push('"');
-    }
-    out.push(']');
-}
-fn escape_json_str(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            // `String`'s `Write` impl never actually errors; there's
-            // nothing a caller could do with the `Result` anyway.
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 // =====================================================================

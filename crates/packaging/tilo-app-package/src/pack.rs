@@ -58,6 +58,11 @@ impl SigningIdentity {
         Self::Ed25519(sk)
     }
 
+    /// The Ed25519 identity for a 32-byte secret-key seed.
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        Self::Ed25519(ed25519_dalek::SigningKey::from_bytes(seed))
+    }
+
     /// Public-key bytes — used for the manifest's `publisher.identity`
     /// field and the signed-root's `publisher_identity` slot.
     pub fn public_key_bytes(&self) -> [u8; 32] {

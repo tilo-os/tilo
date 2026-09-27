@@ -2,9 +2,12 @@
 //!
 //! This is deliberately not an application-root wrapper. Hosts retain the app
 //! root and all its lifecycle hooks, and admit this chrome as an unbound sibling
-//! in the same layout arena. `local_resources` must never enter a broker or
-//! remote application's catalogue. `invoke_local` requires a trusted local UI
-//! dispatch path; a matching actor identity is not proof of locality.
+//! in the same layout arena. `local_resources` — the pane's session, selection
+//! and review controls — must never enter a broker or remote application's
+//! catalogue. `invoke_local` requires a trusted local UI dispatch path; a
+//! matching actor identity is not proof of locality. The broker-visible door
+//! onto the same History model is the permission-gated `tilo.history`
+//! resource in `app/history_actions.rs`.
 
 use std::collections::HashMap;
 
@@ -22,7 +25,8 @@ use crate::history_source::AuthorDirectory;
 use crate::i18n::I18nManager;
 use crate::presence::PresenceCtx;
 use crate::standalone_history::{
-    HistoryError, HistoryReadContext, HistoryTarget, RestoreReview, StandaloneHistory,
+    ConfirmedHistoryRestore, HistoryError, HistoryReadContext, HistoryTarget, RestoreReview,
+    StandaloneHistory,
 };
 use crate::standalone_history_pane::{HistoryPaneIntent, StandaloneHistoryPane};
 use crate::text_render::TextRenderer;
@@ -126,7 +130,7 @@ pub(crate) struct StandaloneHistoryHost {
     content_rect: Rect,
     revision: u64,
     review: Option<RestoreReview>,
-    confirmed_restore: Option<RestoreReview>,
+    confirmed_restore: Option<ConfirmedHistoryRestore>,
     structure_dirty: bool,
     canvas: crate::history_mode::canvas::PreviewCanvas,
     /// Heads of the version whose preview the host still has to build.
@@ -233,7 +237,7 @@ impl StandaloneHistoryHost {
 
     /// A restore the person confirmed against the still-current frontier.
     /// The host applies it to its live state, then reports the outcome.
-    pub(crate) fn take_confirmed_restore(&mut self) -> Option<RestoreReview> {
+    pub(crate) fn take_confirmed_restore(&mut self) -> Option<ConfirmedHistoryRestore> {
         self.confirmed_restore.take()
     }
 
@@ -480,7 +484,10 @@ impl StandaloneHistoryHost {
                     self.report_restore(&Err(error.clone()));
                     return Err(error.into());
                 }
-                self.confirmed_restore = Some(review);
+                self.confirmed_restore = Some(ConfirmedHistoryRestore {
+                    review,
+                    target: model.target().clone(),
+                });
             }
             HistoryCommand::CancelRestore { session } if session == expected => {
                 self.close_review();
@@ -1016,10 +1023,10 @@ fn session_resource(session: uuid::Uuid) -> Resource {
         &HistoryCommand::Close { session },
     ))
 }
-fn encode_entry(id: HistoryEntryId) -> String {
+pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::widget::history_group::hex16(&id)
 }
-fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
+pub(crate) fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
     if value.len() != 32
         || !value
             .bytes()

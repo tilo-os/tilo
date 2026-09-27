@@ -1393,6 +1393,12 @@ impl BlockEditor {
         self.read_only
     }
 
+    /// Select every block's text, as Ctrl+A does.
+    pub fn select_all(&mut self) {
+        self.handle_document_selection_ctrl_key(&Key::Character("a".into()));
+        self.dirty = true;
+    }
+
     /// Whether a menu or popover of the editor is open and takes Escape and
     /// Enter itself (the slash menu, a link picker, find).
     #[must_use]
@@ -8174,6 +8180,96 @@ impl Widget for BlockEditor {
 
     fn set_focus(&mut self, focused: bool) {
         Self::set_focus(self, focused);
+    }
+
+    /// Assistive technology sets the whole text (one paragraph, line breaks
+    /// kept) or selects by grapheme offsets into the text, paragraphs joined
+    /// by a line break.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if self.read_only {
+            return false;
+        }
+        match action {
+            Action::SetValue(value) => {
+                let cleaned: String = value
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
+                    .chars()
+                    .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                    .collect();
+                let id = self
+                    .blocks
+                    .first()
+                    .map(|block| block.id.clone())
+                    .unwrap_or_default();
+                let mut block = Block::paragraph(&cleaned);
+                if !id.is_empty() {
+                    block.id = id;
+                }
+                self.edit_scope = EditScope::Anywhere;
+                self.blocks = vec![block];
+                self.document_selection = None;
+                self.structure_dirty = true;
+                self.focus_block(0, CursorPlacement::End);
+                self.dirty = true;
+                true
+            }
+            Action::SetSelection { anchor, focus } => {
+                let text = self
+                    .blocks
+                    .iter()
+                    .map(Block::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let byte_at = |index: usize| {
+                    crate::text_break::grapheme_indices(&text)
+                        .nth(index)
+                        .map_or(text.len(), |(byte, _)| byte)
+                };
+                let position = |byte: usize| {
+                    let mut offset = 0usize;
+                    for (index, block) in self.blocks.iter().enumerate() {
+                        let len = block.text().len();
+                        if byte <= offset.saturating_add(len) {
+                            return DocumentPosition {
+                                block: index,
+                                byte: byte.saturating_sub(offset),
+                            };
+                        }
+                        offset = offset.saturating_add(len).saturating_add(1);
+                    }
+                    DocumentPosition {
+                        block: self.blocks.len().saturating_sub(1),
+                        byte: self.blocks.last().map_or(0, |block| block.text().len()),
+                    }
+                };
+                let (anchor, focus) = (position(byte_at(*anchor)), position(byte_at(*focus)));
+                self.focus_block(focus.block, CursorPlacement::Byte(focus.byte));
+                if anchor.block == focus.block {
+                    self.document_selection = None;
+                    if let Some(block) = self.blocks.get_mut(focus.block) {
+                        block
+                            .line
+                            .inner_mut()
+                            .set_selection(anchor.byte, focus.byte);
+                    }
+                } else {
+                    self.document_selection = Some(DocumentSelection {
+                        anchor,
+                        cursor: focus,
+                    });
+                }
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn is_focused(&self) -> bool {

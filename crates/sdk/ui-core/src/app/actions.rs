@@ -134,10 +134,12 @@ impl App {
             &[],
         );
         complete.extend(semantics.action_resources());
+        complete.extend(self.history_action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        operation_handlers.insert(history_actions::OPERATION.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
             &self.actions.action_registry,
@@ -679,6 +681,7 @@ impl App {
         }
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        operation_handlers.insert(history_actions::OPERATION.to_string());
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -2584,6 +2587,45 @@ impl App {
             return Ok(crate::widget::ResourceOperationStart::Accepted);
         }
         let operation_invocation = invocation.unwrap_or_default();
+        if encoded.type_id == history_actions::OPERATION {
+            let result = self
+                .invoke_history_action(&encoded, actor)
+                .and_then(|output| {
+                    resolved
+                        .contract
+                        .result
+                        .validate(&output)
+                        .map_err(tilo_actions::DoorError::Failed)?;
+                    Ok(output)
+                });
+            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                let update = match &result {
+                    Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: operation_invocation,
+                        output: output.clone(),
+                    },
+                    Err(error) => tilo_actions::InvocationUpdate::Failed {
+                        invocation: operation_invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: crate::bound_dispatch::door_error_code(error).to_string(),
+                            message: error.to_string(),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                };
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RecordLocalEffect {
+                        address: address.clone(),
+                        update,
+                    });
+            }
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            self.invalidate_widget_resource_cache();
+            return result.map(crate::widget::ResourceOperationStart::Completed);
+        }
         if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
             let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
             let handled = match semantic_result {
@@ -3427,6 +3469,7 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
+        history_actions::without_duplicate_launcher(&mut resources);
         let cached_open_resources = {
             self.actions
                 .open_resource_search_cache
@@ -3652,6 +3695,7 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
+        history_actions::without_duplicate_launcher(&mut resources);
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
             self.root_widget.as_ref(),
             &self.permission_ctx,

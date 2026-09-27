@@ -125,7 +125,7 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
 /// the write, clear of every id elsewhere). `None` when there is nothing to
 /// write.
 fn prepare_fill(
-    doc: &mut Doc,
+    doc: &Doc,
     root: &ObjId,
     texts: &[&str],
 ) -> Result<Option<(qdoc::model::Containers, String, qdoc::model::IdGen)>, ActionError> {
@@ -148,7 +148,7 @@ fn prepare_fill(
         seed.extend_from_slice(text.as_bytes());
         seed.push(0);
     }
-    let cx = ui::tilo_resource::ActionCx::for_apply(doc, &seed, 0);
+    let cx = ui::tilo_resource::ActionCx::for_write(doc, &seed);
     Ok(Some((
         containers,
         empty.id.clone(),
@@ -367,6 +367,97 @@ mod tests {
         assert_eq!(
             RichText::plain_text_under(&doc, &root).unwrap(),
             "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted\n| a | b |\n| - | - |\n| c |\nsoft\nbreak\nold site\néλ and more"
+        );
+    }
+
+    #[test]
+    fn clipped_paragraphs_are_written_as_they_were() {
+        use qdoc_rich_text::{ClipAttr, ClipBlock};
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        let clips = [
+            ClipBlock {
+                kind: "paragraph".into(),
+                text: "hi @Ada".into(),
+                marks: vec![qdoc::document::MarkSpan {
+                    start: 3,
+                    end: 7,
+                    name: "mention".into(),
+                    value: qdoc::document::MarkValue::Str("u-ada".into()),
+                }],
+                level: None,
+                ordered: None,
+                align: None,
+                attrs: std::collections::BTreeMap::new(),
+            },
+            ClipBlock {
+                kind: "list_item".into(),
+                text: "done".into(),
+                marks: Vec::new(),
+                level: Some(0),
+                ordered: Some(false),
+                align: None,
+                attrs: [("checked".to_owned(), ClipAttr::Bool(true))].into(),
+            },
+        ];
+        fill_clips_under(&mut doc, &root, &clips).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].text, "hi @Ada");
+        assert_eq!(
+            shown[0].marks,
+            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+        );
+        assert_eq!(
+            shown[1].kind,
+            BlockKind::Checklist {
+                indent: 0,
+                done: true
+            }
+        );
+        assert!(fill_clips_under(&mut doc, &root, &clips).is_err());
+    }
+
+    #[test]
+    fn a_direct_field_writes_its_edits_straight_into_the_document() {
+        use crate::RichTextSource;
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        doc.commit();
+        let located = root.clone();
+        let mut source = crate::DirectField::new(move |_| Some(located.clone()));
+        source.sync(&mut doc);
+        let block = source
+            .with_state(|state| state.body().id_at(0).unwrap().to_owned())
+            .unwrap();
+        let heads = doc.base_heads();
+        source
+            .apply(
+                &mut doc,
+                &qdoc_rich_text::RichTextAction::SpliceText {
+                    region: qdoc_rich_text::action::RegionKind::Body,
+                    block,
+                    at: 0,
+                    del: 0,
+                    ins: "typed".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            doc.pending_ops() > 0,
+            "an open write, not a committed action"
+        );
+        assert_eq!(doc.base_heads(), heads);
+        source.sync(&mut doc);
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "typed");
+        source.set_read_only(true);
+        assert!(
+            source
+                .apply(
+                    &mut doc,
+                    &qdoc_rich_text::RichTextAction::AppendParagraph { text: "x".into() }
+                )
+                .is_err()
         );
     }
 

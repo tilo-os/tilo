@@ -51,6 +51,13 @@ use crate::cert::DeviceCert;
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only Linux can fail to disable dumps; callers share one signature"
+    )
+)]
 fn protect_secret_process() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

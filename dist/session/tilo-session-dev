@@ -164,7 +164,6 @@ case "$TARGET_SHA256" in
 esac
 [ "${#TARGET_SHA256}" -eq 64 ] || die "developer-session digest is malformed"
 {
-    printf 'pid=%s\n' "$$"
     printf 'path=%s\n' "$TARGET_REAL"
     printf 'sha256=%s\n' "$TARGET_SHA256"
 } >"$ATTEST_TMP" || die "cannot record developer-session attestation"
@@ -179,4 +178,6 @@ mv -f -- "$ATTEST_TMP" "$ATTEST_DIR/active" || die "cannot publish developer-ses
 SELF_REAL=$(realpath -e -- "$0") || die "cannot resolve developer-session wrapper"
 SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner
 [ -x "$SESSION_RUNNER" ] || die "the package-owned lifecycle runner is missing"
+TILO_DEV_SESSION_ATTESTATION="$ATTEST_DIR/active"
+export TILO_DEV_SESSION_ATTESTATION
 exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"

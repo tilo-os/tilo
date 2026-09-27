@@ -1080,6 +1080,7 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
             crate::shell::peer_windows::any_pending(&tree)
+                || crate::shell::record_hydration::any_waiting()
         };
         let decided = if owed {
             let chrome = self.chrome.borrow();

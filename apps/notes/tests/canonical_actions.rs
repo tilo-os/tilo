@@ -363,11 +363,12 @@ fn bound_edits_are_one_owned_history_entry_each() {
                         .iter()
                         .map(|(_, text)| text.as_str())
                         .collect::<Vec<_>>(),
-                    vec!["a", "bcd"]
+                    vec!["ab", "cd"],
+                    "each arrow press moves the caret one character"
                 );
                 for ((_, marks), end) in NotesDoc::page_block_marks(doc, page)
                     .into_iter()
-                    .zip([1, 3])
+                    .zip([2, 2])
                 {
                     assert_eq!(
                         marks,

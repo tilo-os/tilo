@@ -27,10 +27,8 @@ case "$mode" in
       # are unchanged. A job whose pinned toolchain is missing now fails
       # instead of fetching one.
       export RUSTUP_AUTO_INSTALL=0
-      # Workflow-level `env` provides the production namespace
-      # (tools/tests/test_compiler_cache_credentials.py). A canary needs a
-      # fresh one, so it carries its request under a Tilo-specific name that
-      # overrides the production prefix here.
+      # The runner provides SCCACHE_*. A canary can still request a fresh
+      # namespace under a Tilo-specific name that overrides that prefix here.
       # Restarting matters: sccache reads its backend configuration when its
       # long-lived server starts, and `--zero-stats` below may start it.
       if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
@@ -59,7 +57,7 @@ case "$mode" in
           export RUSTC_WRAPPER="$path"
           export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
         fi
-        echo "remote compiler cache enabled: $($path --version)"
+        echo "remote compiler cache enabled: $($path --version) backend=${SCCACHE_ENDPOINT:-local}"
       else
         # A present client is not a usable cache when its backend is down.
         # Clearing the wrapper makes cache outages a performance degradation,

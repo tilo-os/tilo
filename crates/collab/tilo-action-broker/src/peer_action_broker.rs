@@ -53,10 +53,7 @@ impl CapnpBrokerState {
         let admitted = admit_verified_join_at(
             &tree,
             &CrdtRoute::cluster(&room),
-            VerifiedJoinIdentity {
-                user_public_key: cert.user_public_key,
-                device_public_key: cert.device_public_key,
-            },
+            VerifiedJoinIdentity::of(cert),
             now / 1_000_000_000,
         )?;
         Ok(VerifiedActionCaller {

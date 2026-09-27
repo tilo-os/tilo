@@ -2362,6 +2362,13 @@ impl CollaborationManager {
         tests::native_initial_fixture(app, room, history)
     }
 
+    /// A connected route whose document reads are not Required, as a
+    /// standalone runtime admits it.
+    #[cfg(all(test, unix))]
+    pub(crate) fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
+        tests::connected_manager_for(app, room)
+    }
+
     #[cfg(all(test, unix))]
     pub(crate) fn native_initial_fixture_gated_for_test(
         app: &str,
@@ -8147,6 +8154,11 @@ mod tests {
 
     #[cfg(unix)]
     pub(super) fn connected_manager() -> CollaborationManager {
+        connected_manager_for("lifecycle-test", Uuid::new_v4())
+    }
+
+    #[cfg(unix)]
+    pub(super) fn connected_manager_for(app: &str, room: Uuid) -> CollaborationManager {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures::default())),
             op_backlog: vec![],
@@ -8155,7 +8167,7 @@ mod tests {
             scrollback_response: None,
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
-        CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
+        CollaborationManager::from_sdk_fd_for_test(fd, app, room)
     }
 
     #[cfg(unix)]

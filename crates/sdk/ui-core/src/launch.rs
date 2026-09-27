@@ -4358,6 +4358,107 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[serial_test::serial]
+    fn native_component_host_admits_a_new_record_before_its_factory_writes_it() {
+        use crate::application::{
+            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        };
+        use crate::application_test_support as probe;
+        fn prepare(
+            definition: &crate::application::ApplicationDefinition,
+            args: &LaunchArgs,
+        ) -> Result<PreparedComponentInputs, LaunchError> {
+            let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
+            let room = args.value("--fixture-room").unwrap();
+            let id =
+                crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
+            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let records = owners
+                .open(definition.app_id, room)
+                .map_err(LaunchError::Record)?;
+            let views = std::rc::Rc::new(
+                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+                    .map_err(LaunchError::Restore)?,
+            );
+            // A fresh profile: the default record is only reserved here, and
+            // the component factory writes its genesis after admission.
+            let context = HostContext::prepare_new_record(
+                definition,
+                records,
+                views,
+                probe::DEVICE.into(),
+                11,
+                probe::runner_permissions(),
+                probe::author(),
+                probe::provenance(),
+                id,
+            )?;
+            Ok(PreparedComponentInputs {
+                context,
+                target: LaunchTarget::New,
+                restore: RestoreInput::None,
+                runner_inputs: probe::runner_inputs(),
+            })
+        }
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        let id = crate::record::RecordId::minted();
+        let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
+            probe::APP,
+            room,
+        );
+        let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
+            .component_host(prepare)
+            .native_services()
+            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
+        let raw = vec![
+            "app".into(),
+            "--fixture-root".into(),
+            environment
+                ._directory
+                .path()
+                .join("component")
+                .display()
+                .to_string(),
+            "--fixture-room".into(),
+            room.to_string(),
+            "--fixture-record".into(),
+            id.as_str().into(),
+        ];
+        let args = parse_args_extended(
+            &raw,
+            &[],
+            &[],
+            &[],
+            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            0,
+        )
+        .unwrap();
+        let initializations = probe::initializations();
+        let result = dispatch_definition_with_manager(
+            &spec,
+            &args,
+            |component, inputs, native| {
+                assert!(native);
+                App::from_component_with_native_services(component, inputs)
+            },
+            || Ok(manager),
+        );
+        let app = match result {
+            Ok(DefinitionDispatch::Native(app)) => app,
+            Ok(_) => panic!("native component expected"),
+            Err(error) => panic!("a New default record must pass native admission: {error}"),
+        };
+        assert!(app.collaboration_is_connected());
+        assert_eq!(
+            probe::initializations(),
+            initializations + 1,
+            "the factory wrote the admitted record's genesis"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
     fn native_initial_launch_creation_requires_governor_before_reservation() {
         use automerge::transaction::Transactable;
         let environment = LaunchFixtureEnv::new();

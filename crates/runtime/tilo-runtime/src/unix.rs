@@ -3,7 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io,
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, RawFd},
         unix::{
             fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
             net::UnixStream,
@@ -17,7 +17,7 @@ use std::{
 /// Create `path` as a directory only this user can enter.
 /// # Errors
 /// Rejects a symlink or a directory owned by someone else.
-pub fn private_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -35,7 +35,7 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
 /// legacy profile initialization can change its permissions.
 /// # Errors
 /// Rejects a profile readable by others, or any [`private_directory`] error.
-pub fn check_private_profile(path: &Path) -> io::Result<()> {
+pub(crate) fn check_private_profile(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.permissions().mode() & 0o077 != 0 => {
             return Err(io::Error::new(
@@ -73,18 +73,18 @@ fn connect_blobs(path: &Path, app_id: &str, room: &str) -> Option<UnixStream> {
     Some(stream)
 }
 
-/// Own the connected sockets until spawn/exec finishes. Preparation is shared
-/// by the manifest launcher and independently attached native apps.
-pub struct Connections {
-    _collab: UnixStream,
-    _identity: UnixStream,
-    _blobs: Option<UnixStream>,
+/// One app's connections to the host's services, handshaken with its
+/// identity before the app holds any of them.
+pub(crate) struct ServiceConnections {
+    collab: UnixStream,
+    identity: UnixStream,
+    blobs: Option<UnixStream>,
 }
-impl Connections {
+
+impl ServiceConnections {
     /// # Errors
     /// Rejects an empty identity and returns connect or handshake errors.
-    pub fn prepare(
-        command: &mut Command,
+    pub(crate) fn connect(
         app_id: &str,
         room: &str,
         sockets: &ServiceSockets<'_>,
@@ -105,22 +105,70 @@ impl Connections {
         runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;
         let blobs = connect_blobs(sockets.blobs, app_id, room);
-        let mut fds = vec![collab.as_raw_fd(), identity.as_raw_fd()];
-        command.env_remove("TILO_SVC_BLOBS_FD");
-        if let Some(blobs) = &blobs {
-            fds.push(blobs.as_raw_fd());
-            command.env("TILO_SVC_BLOBS_FD", blobs.as_raw_fd().to_string());
+        Ok(Self {
+            collab,
+            identity,
+            blobs,
+        })
+    }
+
+    /// The descriptors the app inherits, at these same numbers.
+    #[must_use]
+    pub(crate) fn fds(&self) -> Vec<RawFd> {
+        [
+            Some(&self.collab),
+            Some(&self.identity),
+            self.blobs.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(AsRawFd::as_raw_fd)
+        .collect()
+    }
+
+    /// Where the app finds each descriptor, and who it is.
+    #[must_use]
+    pub(crate) fn env(&self, app_id: &str, room: &str) -> Vec<(&'static str, String)> {
+        let mut env = vec![
+            ("TILO_PACKAGE_ID", app_id.to_owned()),
+            ("TILO_WORKSPACE_ID", room.to_owned()),
+            ("TILO_SVC_COLLAB_FD", self.collab.as_raw_fd().to_string()),
+            (
+                "TILO_SVC_IDENTITY_FD",
+                self.identity.as_raw_fd().to_string(),
+            ),
+        ];
+        if let Some(blobs) = &self.blobs {
+            env.push(("TILO_SVC_BLOBS_FD", blobs.as_raw_fd().to_string()));
         }
+        env
+    }
+}
+
+/// Own the connected sockets until spawn/exec finishes. Preparation is shared
+/// by the manifest launcher and independently attached native apps.
+pub(crate) struct Connections {
+    _services: ServiceConnections,
+}
+impl Connections {
+    /// # Errors
+    /// Rejects an empty identity and returns connect or handshake errors.
+    pub(crate) fn prepare(
+        command: &mut Command,
+        app_id: &str,
+        room: &str,
+        sockets: &ServiceSockets<'_>,
+    ) -> io::Result<Self> {
+        let services = ServiceConnections::connect(app_id, room, sockets)?;
+        let fds = services.fds();
         command
+            .env_remove("TILO_SVC_BLOBS_FD")
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
             .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
             .env_remove("TILO_RUNTIME_RESUME_LIVE")
-            .env("TILO_PACKAGE_ID", app_id)
-            .env("TILO_WORKSPACE_ID", room)
-            .env("TILO_SVC_COLLAB_FD", collab.as_raw_fd().to_string())
-            .env("TILO_SVC_IDENTITY_FD", identity.as_raw_fd().to_string());
+            .envs(services.env(app_id, room));
         // SAFETY: only async-signal-safe fcntl calls run between fork and exec.
         // Both sockets remain owned here until spawn completes. Other descriptors
         // retain CLOEXEC, including endpoints belonging to previously launched apps.
@@ -136,9 +184,7 @@ impl Connections {
             });
         }
         Ok(Self {
-            _collab: collab,
-            _identity: identity,
-            _blobs: blobs,
+            _services: services,
         })
     }
 }
@@ -159,7 +205,7 @@ pub fn launch(
 /// Open or create a private file, refusing symlinks and shared files.
 /// # Errors
 /// Rejects a file that is linked, shared or owned by someone else.
-pub fn private_file(path: &Path) -> io::Result<File> {
+pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)

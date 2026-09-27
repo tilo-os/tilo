@@ -51,52 +51,8 @@ pub const ESP_STATE_DIR: &str = "/EFI/tilo-staging";
 pub const ESP_RECORD_FILE: &str = "record.json";
 
 /// A random RFC 4122 version-4 GUID in canonical lowercase form.
-///
-/// Uniqueness, not secrecy, is what partition GUIDs and operation IDs need.
-/// Unix hosts read the kernel RNG; elsewhere std's per-process OS-seeded
-/// `RandomState` keys are mixed with the clock and a counter.
 pub fn random_guid() -> String {
-    let mut b = random_bytes();
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h: Vec<String> = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        h[0..4].concat(),
-        h[4..6].concat(),
-        h[6..8].concat(),
-        h[8..10].concat(),
-        h[10..16].concat()
-    )
-}
-
-fn random_bytes() -> [u8; 16] {
-    let mut out = [0_u8; 16];
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        if std::fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut out))
-            .is_ok()
-        {
-            return out;
-        }
-    }
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    for (i, chunk) in out.chunks_mut(8).enumerate() {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u128(nanos);
-        hasher.write_u64(count);
-        hasher.write_usize(i);
-        chunk.copy_from_slice(&hasher.finish().to_le_bytes());
-    }
-    out
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Canonical lowercase GUID text (`8-4-4-4-12` hex digits).

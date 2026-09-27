@@ -147,6 +147,7 @@ impl RecordStore {
             want.id.clone(),
             Reserved {
                 generation,
+                kind: want.kind.clone(),
                 store: None,
                 actor: Some(automerge::ActorId::random()),
             },

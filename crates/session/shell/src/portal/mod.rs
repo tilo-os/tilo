@@ -269,9 +269,37 @@ impl CapabilityKind {
 /// in a local privacy prompt are deliberately kept in a separate local store.
 #[derive(Clone)]
 pub struct GrantStoreHandle {
-    tree: WorkspaceTreeHandle,
+    tree: SharedTree,
     portal_consents: Arc<Mutex<PortalConsentState>>,
     portal_consent_path: Option<Arc<PathBuf>>,
+}
+
+/// The workspace tree as the portal interfaces hold it.
+///
+/// zbus implements every portal interface method through `async_trait`, whose
+/// `Self: 'async_trait` bounds keep rustc from reusing auto-trait proofs
+/// between methods. Each generated method would otherwise prove the whole
+/// workspace tree `Send + Sync` again. Behind this trait object the proof
+/// stops at the object's bounds; the tree itself is checked once, where the
+/// handle is built.
+#[derive(Clone)]
+struct SharedTree(Arc<dyn TreeSource + Send + Sync>);
+
+trait TreeSource {
+    fn handle(&self) -> &WorkspaceTreeHandle;
+}
+
+impl TreeSource for WorkspaceTreeHandle {
+    fn handle(&self) -> &WorkspaceTreeHandle {
+        self
+    }
+}
+
+impl std::ops::Deref for SharedTree {
+    type Target = WorkspaceTreeHandle;
+    fn deref(&self) -> &WorkspaceTreeHandle {
+        self.0.handle()
+    }
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -300,7 +328,7 @@ impl GrantStoreHandle {
             .map(|file| file.always)
             .unwrap_or_default();
         Self {
-            tree,
+            tree: SharedTree(Arc::new(tree)),
             portal_consents: Arc::new(Mutex::new(PortalConsentState {
                 session: BTreeSet::new(),
                 always,
@@ -512,14 +540,14 @@ impl GrantStoreHandle {
     /// Direct tree-handle accessor for tests needing to assert on multiple
     /// fields at once. Production callers go through [`Self::lookup`] / [`Self::insert`].
     pub fn tree_handle(&self) -> WorkspaceTreeHandle {
-        self.tree.clone()
+        WorkspaceTreeHandle::clone(&self.tree)
     }
 
     /// Back-compat alias for [`Self::tree_handle`]. A handful of older
     /// tests/portals still reference `.tree()`; both now return the shared `WorkspaceTreeHandle`.
     // NOT cfg-gated: reachable from the shots harness, which is a release build.
     pub fn tree(&self) -> WorkspaceTreeHandle {
-        self.tree.clone()
+        WorkspaceTreeHandle::clone(&self.tree)
     }
 
     /// Resolve a launcher-verified live application to one concrete local

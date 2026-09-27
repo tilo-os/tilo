@@ -22,7 +22,12 @@ path = "src/bin/tilo-runtime.rs"
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
+collab-types = { path = "../../collab/collab-types" }
+# The launcher's manifest view, service names and developer-override gate;
+# its binary builds every Linux app sandbox.
+launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
+package-store = { path = "../../packaging/package-store" }
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true
@@ -33,7 +38,9 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The document-media capability over the content store, without the mount.
 tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
@@ -42,7 +49,13 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
+# App Sandbox or Seatbelt: how every app launches on stock macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+launcher-macos = { path = "../../packaging/launcher-macos" }
+
 [dev-dependencies]
+# Signs the installed-package fixtures the launch path verifies.
+ed25519-dalek.workspace = true
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }

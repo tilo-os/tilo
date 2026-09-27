@@ -46,6 +46,7 @@ impl CreateOutcome {
             "dry_run": self.dry_run,
             "workspace_member": self.workspace_member,
             "sdk": self.sdk.as_ref().map(sdk_json),
+            "git_initialized": self.git_initialized,
             "files": self.files.iter().map(|path| shown(&self.destination, path)).collect::<Vec<_>>(),
             "next": {
                 "dev": format!("tilo-app dev {}", absolute(&self.destination)),

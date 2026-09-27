@@ -12,14 +12,21 @@
 //! ├── "users"        (Map<userId,{name,initials,color_idx,status}>)
 //! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order}>)
 //! ├── "messages"     (Map<chId,  List<Message>>)
-//! │      Message = { id, author, ts, text(Text), edited(bool),
+//! │      Message = { id, author, ts, text(Text), rich(rich text)?, edited(bool),
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
 //! │                  history(List<{ts,text}>), attachment(Map? blob hash),
 //! │                  work(Map{state, since, reasoning, trace}) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
-//! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
+//! ├── "rich_drafts"  (Map<chId, rich text>)      # per-channel composer body
+//! └── "drafts"       (Map<chId, Text>)           # first-format drafts, moved on load
 //! ```
+//!
+//! A message's `text` is its plain text; `rich`, when present, is the body as
+//! written (qdoc rich text, mentions marked). A message written before bodies
+//! were rich has only `text`, and reads as that text with its mentions
+//! marked. Drafts are rich text; a first-format `Text` draft is moved into
+//! `rich_drafts` once, on load ([`ChatDoc::upgrade_drafts`]).
 //!
 //! A channel's **unread** count is not stored — it is derived per-peer as the
 //! number of top-level messages beyond that peer's `read` watermark (advanced
@@ -101,6 +108,8 @@ pub struct NewMessage {
     pub author: String,
     pub ts: i64,
     pub text: String,
+    /// The body as written; empty stores only `text`.
+    pub body: Vec<qdoc_rich_text::ClipBlock>,
     pub parent: Option<String>,
     pub reactions: Vec<(String, Vec<String>)>,
     pub attachment: Option<Attachment>,
@@ -242,31 +251,11 @@ fn draft_values(doc: &AutoCommit, key: &str) -> Vec<(ObjId, ObjId)> {
     out
 }
 
-/// The single `(pos, del, ins)` char splice turning `from` into `to`, from
-/// their common prefix and suffix; `None` when they are equal.
-fn char_splice(from: &str, to: &str) -> Option<(usize, usize, String)> {
-    if from == to {
-        return None;
-    }
-    let a: Vec<char> = from.chars().collect();
-    let b: Vec<char> = to.chars().collect();
-    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let a_tail = a.get(prefix..).unwrap_or(&[]);
-    let b_tail = b.get(prefix..).unwrap_or(&[]);
-    let suffix = a_tail
-        .iter()
-        .rev()
-        .zip(b_tail.iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count();
-    let del = a_tail.len().saturating_sub(suffix);
-    let ins: String = b_tail
-        .get(..b_tail.len().saturating_sub(suffix))
-        .unwrap_or(&[])
-        .iter()
-        .collect();
-    Some((prefix, del, ins))
-}
+/// Where each composer's rich-text draft is kept.
+const RICH_DRAFTS: &str = "rich_drafts";
+/// The drafts format a document has been moved to ([`ChatDoc::upgrade_drafts`]).
+const DRAFTS_VERSION_KEY: &str = "drafts_version";
+const DRAFTS_VERSION: i64 = 1;
 
 /// Positional trace keys emitted by the short-lived pre-stable-id schema.
 /// Current step ids always begin with `step_`; this deliberately recognises
@@ -874,9 +863,10 @@ impl ChatDoc {
     /// before syncing would each mint their own root map and a merge would
     /// show only one of them (see "Conflicting containers" above).
     fn put_shared_roots(doc: &mut AutoCommit) {
-        for key in ["messages", "read", "drafts"] {
+        for key in ["messages", "read", RICH_DRAFTS] {
             let _ = get_or_map(doc, &ROOT, key);
         }
+        let _ = doc.put(&ROOT, DRAFTS_VERSION_KEY, DRAFTS_VERSION);
     }
 
     fn put_user(
@@ -965,9 +955,8 @@ impl ChatDoc {
         // shared list / Text instead of two conflicting ones.
         let messages = get_or_map(doc, &ROOT, "messages");
         let _ = get_or_list(doc, &messages, id);
-        let drafts = get_or_map(doc, &ROOT, "drafts");
-        if draft_values(doc, id).is_empty() {
-            let _ = get_or_text(doc, &drafts, id);
+        if Self::rich_draft_candidates(doc, id).is_empty() {
+            let _ = Self::replace_rich_draft(doc, id, &[]);
         }
     }
 
@@ -992,6 +981,31 @@ impl ChatDoc {
         let _ = doc.put(block, "ts", ts);
         let _ = doc.put(block, "parent", parent.unwrap_or_default());
         let _ = doc.put(block, "edited", edited);
+    }
+
+    /// The body as written, as rich text under the message's `rich` map;
+    /// nothing for an empty body (the plain text is the whole message).
+    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[qdoc_rich_text::ClipBlock]) {
+        if body.is_empty() {
+            let _ = doc.delete(block, "rich");
+            return;
+        }
+        let Ok(root) = doc.put_object(block, "rich", ObjType::Map) else {
+            return;
+        };
+        let written = qdoc_rich_text::RichText::initialize_under(doc, &root).is_ok()
+            && tilo_rich_text::fill_clips_under(doc, &root, body).is_ok();
+        if !written {
+            // The plain text still stands for the message.
+            let _ = doc.delete(block, "rich");
+        }
+    }
+
+    /// The body as written, when the message has one.
+    fn read_message_body(doc: &AutoCommit, block: &ObjId) -> Vec<ui::widget::BlockContent> {
+        map_at(doc, block, "rich")
+            .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
+            .unwrap_or_default()
     }
 
     /// # Panics
@@ -1260,6 +1274,7 @@ impl ChatDoc {
             author,
             ts,
             text,
+            body,
             parent,
             reactions,
             attachment,
@@ -1287,6 +1302,7 @@ impl ChatDoc {
 
         Self::write_message_identity(doc, &block, id, &author, ts, parent, edited);
         Self::write_message_text(doc, &block, &text);
+        Self::write_message_body(doc, &block, &body);
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
         Self::write_reference(doc, &block, reference.as_ref());
@@ -1631,13 +1647,29 @@ impl ChatDoc {
         channel: &str,
         msg_id: &str,
         new_text: &str,
+        body: &[qdoc_rich_text::ClipBlock],
         ts: i64,
     ) {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
         let old = read_text(doc, &block, "text").unwrap_or_default();
+        let old_body: Vec<qdoc_rich_text::ClipBlock> = map_at(doc, &block, "rich")
+            .and_then(|root| qdoc::model::open(doc, &root).ok())
+            .map(|containers| {
+                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+                    .iter()
+                    .map(tilo_rich_text::clip_block)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if old == new_text && old_body == body {
+            return;
+        }
+        Self::write_message_body(doc, &block, body);
         if old == new_text {
+            // Reformatted, same words: no revision to archive.
+            let _ = doc.put(&block, "edited", true);
             return;
         }
         let hist = get_or_list(doc, &block, "history");
@@ -1651,109 +1683,176 @@ impl ChatDoc {
         let _ = doc.put(&block, "edited", true);
     }
 
-    /// The per-channel draft `Text` object the composer splices into, so a
-    /// draft is collaborative state too.
-    ///
-    /// Channel drafts are created with the channel (see `put_channel`); a
-    /// thread draft, or a draft in a document written before that, is created
-    /// here on first write. Several `Text`s left by concurrent lazy creation
-    /// are merged in place into one `Text` holding exactly
-    /// [`Self::draft_text`]'s projection, so offsets computed against a read
-    /// stay valid for the write.
-    ///
-    /// # Panics
-    ///
-    /// Panics only if the drafts map just resolved or created here refuses a
-    /// new `Text`, which requires a corrupted document.
-    #[allow(
-        clippy::expect_used,
-        reason = "the target is the drafts map just resolved or created in this call, so put_object cannot fail short of a corrupted document"
-    )]
-    pub fn draft_obj(doc: &mut AutoCommit, channel: &str) -> ObjId {
-        let mut values = draft_values(doc, channel);
-        if let [(_, id)] = values.as_slice() {
-            return id.clone();
-        }
-        let projected = Self::draft_text(doc, channel);
-        let drafts = map_candidates(doc, &ROOT, "drafts")
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| get_or_map(doc, &ROOT, "drafts"));
-        values.retain(|(map, _)| *map != drafts);
-        for (map, _) in values {
-            let _ = doc.delete(&map, channel);
-        }
-        let text = doc
-            .put_object(&drafts, channel, ObjType::Text)
-            .expect("put draft text");
-        if !projected.is_empty() {
-            let _ = doc.splice_text(&text, 0, 0, &projected);
-        }
-        text
+    /// Every rich-text draft stored for `key`: the winner first, then drafts
+    /// left by two peers creating the same one at once.
+    fn rich_draft_candidates(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+        map_candidates(doc, &ROOT, RICH_DRAFTS)
+            .iter()
+            .flat_map(|drafts| object_candidates(doc, drafts, key, ObjType::Map))
+            .collect()
     }
 
-    /// The draft the composer shows: its `Text`, or — for a draft left in
-    /// conflict by concurrent lazy creation — every stored value joined in
-    /// Automerge's deterministic order, so no peer's keystrokes are hidden.
-    pub fn draft_text(doc: &AutoCommit, channel: &str) -> String {
+    /// The rich text the composer for `key` edits, when it exists.
+    pub fn rich_draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
+        Self::rich_draft_candidates(doc, key).into_iter().next()
+    }
+
+    /// The rich text the composer for `key` edits, created when missing.
+    /// Drafts two peers created at once are joined into one, winner first,
+    /// so no one's keystrokes are hidden.
+    pub fn ensure_rich_draft(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
+        let candidates = Self::rich_draft_candidates(doc, key);
+        if let [only] = candidates.as_slice() {
+            return Some(only.clone());
+        }
+        let blocks: Vec<ui::widget::BlockContent> = Self::distinct_drafts(doc, key)
+            .into_iter()
+            .flat_map(|(_, blocks)| blocks)
+            .filter(|block| !block.text.is_empty())
+            .collect();
+        Self::replace_rich_draft(doc, key, &blocks)
+    }
+
+    /// Replace the draft for `key` with `blocks` (none: an empty draft).
+    fn replace_rich_draft(
+        doc: &mut AutoCommit,
+        key: &str,
+        blocks: &[ui::widget::BlockContent],
+    ) -> Option<ObjId> {
+        for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
+            let _ = doc.delete(&drafts, key);
+        }
+        let drafts = get_or_map(doc, &ROOT, RICH_DRAFTS);
+        let root = doc.put_object(&drafts, key, ObjType::Map).ok()?;
+        qdoc_rich_text::RichText::initialize_under(doc, &root).ok()?;
+        let blocks: Vec<ui::widget::BlockContent> = blocks
+            .iter()
+            .map(|block| ui::widget::BlockContent {
+                id: String::new(),
+                ..block.clone()
+            })
+            .collect();
+        tilo_rich_text::fill_under(doc, &root, &blocks).ok()?;
+        Some(root)
+    }
+
+    /// The draft for `key` as written: every draft stored for it, the same
+    /// text twice (two peers moving one first-format draft at once) once.
+    pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
+        Self::distinct_drafts(doc, key)
+            .into_iter()
+            .flat_map(|(_, blocks)| blocks)
+            .collect()
+    }
+
+    fn distinct_drafts(doc: &AutoCommit, key: &str) -> Vec<(ObjId, Vec<ui::widget::BlockContent>)> {
+        let mut seen: Vec<String> = Vec::new();
+        Self::rich_draft_candidates(doc, key)
+            .into_iter()
+            .filter_map(|root| {
+                let blocks = tilo_rich_text::blocks_under(doc, &root).unwrap_or_default();
+                let text = crate::body::plain_text(&blocks);
+                if seen.contains(&text) {
+                    return None;
+                }
+                seen.push(text);
+                Some((root, blocks))
+            })
+            .collect()
+    }
+
+    /// The draft for `key` as an action carries it.
+    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<qdoc_rich_text::ClipBlock> {
+        Self::distinct_drafts(doc, key)
+            .iter()
+            .filter_map(|(root, _)| qdoc::model::open(doc, root).ok())
+            .flat_map(|containers| {
+                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+            })
+            .map(|view| tilo_rich_text::clip_block(&view))
+            .collect()
+    }
+
+    /// The draft's plain text, a line per paragraph. A draft not yet moved
+    /// out of the first format reads as its `Text`, joined across peers.
+    pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
+        if !Self::rich_draft_candidates(doc, key).is_empty() {
+            return crate::body::plain_text(&Self::draft_blocks(doc, key));
+        }
         let mut out = String::new();
-        for (_, id) in draft_values(doc, channel) {
+        for (_, id) in draft_values(doc, key) {
             out.push_str(&doc.text(&id).unwrap_or_default());
         }
         out
     }
 
-    /// Replace the draft body with `text`, diff-spliced against the current
-    /// CRDT text so only the changed span is written (never a whole-text
-    /// rewrite per keystroke — see `crates/sdk/ui-core/HIG.md` §6).
-    ///
-    /// Prefer [`Self::set_draft_from`] when the composer's own base is known:
-    /// a diff against the live text deletes characters a collaborator added
-    /// since the composer last loaded the draft.
-    pub fn set_draft(doc: &mut AutoCommit, channel: &str, text: &str) {
-        let obj = Self::draft_obj(doc, channel);
-        ui::doc::splice_text_diffed(doc, &obj, text);
+    /// Replace the draft with `text` as one paragraph (line breaks inside
+    /// it), as if typed: a staged draft, a test.
+    pub fn set_draft(doc: &mut AutoCommit, key: &str, text: &str) {
+        let blocks = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![ui::widget::BlockContent::paragraph("", text)]
+        };
+        let _ = Self::replace_rich_draft(doc, key, &blocks);
     }
 
-    /// Apply the composer edit `base → text` to the draft as a character
-    /// splice. `base` is the draft text the composer was last loaded from; a
-    /// collaborator's characters merged into the CRDT since then are kept by
-    /// rebasing the local splice over that remote change. Only when the two
-    /// edits overlap does this fall back to diffing against the live text.
-    pub fn set_draft_from(doc: &mut AutoCommit, channel: &str, base: &str, text: &str) {
-        let Some((pos, del, ins)) = char_splice(base, text) else {
+    /// Empty the draft once it is sent.
+    pub fn clear_draft(doc: &mut AutoCommit, key: &str) {
+        let blocks = Self::draft_blocks(doc, key);
+        let empty = blocks.len() <= 1 && blocks.iter().all(|block| block.text.is_empty());
+        if empty && Self::rich_draft_candidates(doc, key).len() == 1 {
             return;
-        };
-        let obj = Self::draft_obj(doc, channel);
-        let current = doc.text(&obj).unwrap_or_default();
-        let at = match char_splice(base, &current) {
-            None => Some(pos),
-            Some((rpos, rdel, rins)) => {
-                if pos + del <= rpos {
-                    Some(pos)
-                } else if pos >= rpos + rdel {
-                    Some(pos - rdel + rins.chars().count())
-                } else {
-                    None
+        }
+        let _ = Self::replace_rich_draft(doc, key, &[]);
+    }
+
+    /// Move first-format drafts (a `Text` per key under `drafts`) into rich
+    /// text, once: a draft with text becomes one paragraph holding it, line
+    /// breaks and all, and the old `drafts` map goes. Returns whether
+    /// anything was written. A version stamp keeps a second pass from
+    /// writing again.
+    pub fn upgrade_drafts(doc: &mut AutoCommit) -> bool {
+        if !Self::needs_draft_upgrade(doc) {
+            return false;
+        }
+        let keys: Vec<String> = map_candidates(doc, &ROOT, "drafts")
+            .iter()
+            .flat_map(|drafts| doc.keys(drafts).collect::<Vec<_>>())
+            .collect();
+        for key in keys {
+            let text = {
+                let mut out = String::new();
+                for (_, id) in draft_values(doc, &key) {
+                    out.push_str(&doc.text(&id).unwrap_or_default());
                 }
-            }
-        };
-        match at {
-            Some(at) => {
-                let _ = doc.splice_text(&obj, at, isize::try_from(del).unwrap_or(isize::MAX), &ins);
-            }
-            None => {
-                ui::doc::splice_text_diffed(doc, &obj, text);
+                out
+            };
+            let exists = !Self::rich_draft_candidates(doc, &key).is_empty();
+            if !exists {
+                // Every key gets its rich draft now, so peers type into one.
+                Self::set_draft(doc, &key, &text);
+            } else if !text.is_empty() && Self::draft_text(doc, &key).is_empty() {
+                Self::set_draft(doc, &key, &text);
             }
         }
+        let _ = doc.delete(&ROOT, "drafts");
+        let _ = get_or_map(doc, &ROOT, RICH_DRAFTS);
+        let _ = doc.put(&ROOT, DRAFTS_VERSION_KEY, DRAFTS_VERSION);
+        true
     }
 
-    pub fn clear_draft(doc: &mut AutoCommit, channel: &str) {
-        if Self::draft_text(doc, channel).is_empty() && draft_values(doc, channel).len() <= 1 {
-            return;
-        }
-        let obj = Self::draft_obj(doc, channel);
-        ui::doc::splice_text_diffed(doc, &obj, "");
+    /// Whether [`Self::upgrade_drafts`] has anything to do: first-format
+    /// drafts are still there (a document from before, or restored from an
+    /// archive into a newer one), or the version was never stamped.
+    pub fn needs_draft_upgrade(doc: &AutoCommit) -> bool {
+        let version = doc
+            .get(&ROOT, DRAFTS_VERSION_KEY)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.as_i64())
+            .unwrap_or(0);
+        version < DRAFTS_VERSION || !map_candidates(doc, &ROOT, "drafts").is_empty()
     }
 
     // -----------------------------------------------------------------------
@@ -2004,6 +2103,9 @@ impl ChatDoc {
             let _ = doc.delete(&voice, id);
         }
         for drafts in map_candidates(doc, &ROOT, "drafts") {
+            let _ = doc.delete(&drafts, id);
+        }
+        for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
             let _ = doc.delete(&drafts, id);
         }
     }
@@ -2343,6 +2445,7 @@ impl ChatDoc {
                 author: read_str(doc, &m, "author").unwrap_or_default(),
                 ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),
                 text: read_text(doc, &m, "text").unwrap_or_default(),
+                body: Self::read_message_body(doc, &m),
                 edited: read_bool(doc, &m, "edited").unwrap_or(false),
                 history: Self::read_history(doc, &m),
                 parent: if parent.is_empty() {
@@ -2972,7 +3075,7 @@ mod tests {
         // Phase: edit_message_archives_history.
         {
             let mut doc = seeded();
-            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", "Edited body.", NOW);
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", "Edited body.", &[], NOW);
             let msgs = ChatDoc::list_messages(&doc, "c_crit");
             let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
             assert_eq!(m.text, "Edited body.");
@@ -2989,13 +3092,20 @@ mod tests {
             let body = "The deploy finished at 14:02 and the canary is green across \
                         all three regions; rolling the rest of the fleet now."
                 .to_string();
-            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &body, NOW);
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &body, &[], NOW);
             let baseline = doc.save().len();
 
             // 30 corrections, each touching only the last word.
             for i in 0..30 {
                 let edited = format!("{body} v{i}");
-                ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i64::from(i));
+                ChatDoc::edit_message(
+                    &mut doc,
+                    "c_crit",
+                    "m_me1",
+                    &edited,
+                    &[],
+                    NOW + i64::from(i),
+                );
             }
             let grown = doc.save().len() - baseline;
 
@@ -3020,7 +3130,7 @@ mod tests {
         // Phase: clearing_an_unset_draft_is_free.
         {
             let mut doc = seeded();
-            ChatDoc::draft_obj(&mut doc, "c_crit");
+            ChatDoc::ensure_rich_draft(&mut doc, "c_crit");
             let before = doc.save().len();
 
             for _ in 0..20 {
@@ -3039,8 +3149,7 @@ mod tests {
         {
             let mut doc = seeded();
             let before = ChatDoc::list_messages(&doc, "c_crit").len();
-            let draft = ChatDoc::draft_obj(&mut doc, "c_crit");
-            let _ = doc.splice_text(&draft, 0, 0, "hi there");
+            type_into(&mut doc, "c_crit", 0, "hi there");
             assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "hi there");
             ChatDoc::push_message(
                 &mut doc,
@@ -3063,11 +3172,27 @@ mod tests {
     /// on each replica creates them lazily.
     fn legacy_seeded() -> AutoCommit {
         let mut doc = seeded();
-        for key in ["drafts", "messages", "read"] {
+        for key in ["drafts", RICH_DRAFTS, "messages", "read"] {
             let _ = doc.delete(&ROOT, key);
         }
         doc.commit();
         doc
+    }
+
+    /// Type `text` at character `at` of the draft's first paragraph, as the
+    /// composer's edit would, creating the draft first if need be.
+    fn type_into(doc: &mut AutoCommit, key: &str, at: usize, text: &str) {
+        let root = ChatDoc::ensure_rich_draft(doc, key).unwrap();
+        let block = ChatDoc::draft_blocks(doc, key)[0].id.clone();
+        qdoc_rich_text::RichTextAction::SpliceText {
+            region: qdoc_rich_text::action::RegionKind::Body,
+            block,
+            at,
+            del: 0,
+            ins: text.into(),
+        }
+        .apply_under(doc, &root)
+        .unwrap();
     }
 
     fn msg(text: &str, ts: i64) -> NewMessage {
@@ -3085,41 +3210,141 @@ mod tests {
             for _ in 0..8 {
                 let mut a = base.fork();
                 let mut b = base.fork();
-                ChatDoc::set_draft_from(&mut a, "c_crit", "", "left");
-                ChatDoc::set_draft_from(&mut b, "c_crit", "", "right");
+                type_into(&mut a, "c_crit", 0, "left");
+                type_into(&mut b, "c_crit", 0, "right");
                 a.merge_incoming(&mut b).unwrap();
                 let draft = ChatDoc::draft_text(&a, "c_crit");
                 assert!(
                     draft.contains("left") && draft.contains("right"),
                     "both replicas' first draft keystrokes survive; got {draft:?}"
                 );
-                // The next write upgrades a conflicted draft to one Text
-                // holding exactly what was shown, then edits it in place.
-                let shown = draft.clone();
-                ChatDoc::set_draft_from(&mut a, "c_crit", &shown, &format!("{shown}!"));
-                assert_eq!(ChatDoc::draft_text(&a, "c_crit"), format!("{shown}!"));
-                assert_eq!(draft_values(&a, "c_crit").len(), 1);
+                // The next edit joins drafts made at once into one.
+                ChatDoc::ensure_rich_draft(&mut a, "c_crit");
+                assert_eq!(ChatDoc::rich_draft_candidates(&a, "c_crit").len(), 1);
+                let joined = ChatDoc::draft_text(&a, "c_crit");
+                assert!(
+                    joined.contains("left") && joined.contains("right"),
+                    "{joined:?}"
+                );
             }
         }
     }
 
     #[test]
-    fn a_stale_composer_edit_keeps_a_collaborators_characters() {
+    fn collaborators_typing_into_one_draft_merge_per_character() {
         let mut a = seeded();
-        ChatDoc::set_draft_from(&mut a, "c_crit", "", "hello");
-        let mut b = a.fork();
-        // B appends while A's composer still shows "hello".
-        ChatDoc::set_draft_from(&mut b, "c_crit", "hello", "hello world");
-        a.merge_incoming(&mut b).unwrap();
-        // A capitalises against its stale base; B's characters must survive.
-        ChatDoc::set_draft_from(&mut a, "c_crit", "hello", "Hello");
-        assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello world");
-        // Concurrent (unsynced) edits merge per character too.
+        type_into(&mut a, "c_crit", 0, "Hello world");
         let mut c = a.fork();
-        ChatDoc::set_draft_from(&mut a, "c_crit", "Hello world", "Hello, world");
-        ChatDoc::set_draft_from(&mut c, "c_crit", "Hello world", "Hello world!");
+        type_into(&mut a, "c_crit", 5, ",");
+        type_into(&mut c, "c_crit", 11, "!");
         a.merge_incoming(&mut c).unwrap();
         assert_eq!(ChatDoc::draft_text(&a, "c_crit"), "Hello, world!");
+    }
+
+    #[test]
+    fn first_format_drafts_move_into_rich_text_once() {
+        let mut doc = legacy_seeded();
+        let _ = doc.delete(&ROOT, DRAFTS_VERSION_KEY);
+        let drafts = get_or_map(&mut doc, &ROOT, "drafts");
+        let old = doc.put_object(&drafts, "c_crit", ObjType::Text).unwrap();
+        doc.splice_text(&old, 0, 0, "half a thought\nsecond line")
+            .unwrap();
+        let _ = doc.put_object(&drafts, "c_empty", ObjType::Text).unwrap();
+        doc.commit();
+        let saved = AutoCommit::load(&doc.save()).unwrap();
+        let mut doc = saved;
+        assert!(ChatDoc::needs_draft_upgrade(&doc));
+        assert_eq!(
+            ChatDoc::draft_text(&doc, "c_crit"),
+            "half a thought\nsecond line"
+        );
+        assert!(ChatDoc::upgrade_drafts(&mut doc));
+        assert!(!ChatDoc::needs_draft_upgrade(&doc));
+        assert_eq!(
+            ChatDoc::draft_text(&doc, "c_crit"),
+            "half a thought\nsecond line",
+            "the draft comes across whole"
+        );
+        assert_eq!(
+            ChatDoc::draft_blocks(&doc, "c_crit").len(),
+            1,
+            "one paragraph"
+        );
+        assert!(ChatDoc::rich_draft(&doc, "c_empty").is_some());
+        assert!(
+            map_at(&doc, &ROOT, "drafts").is_none(),
+            "the first format is gone"
+        );
+        let heads = doc.get_heads();
+        assert!(!ChatDoc::upgrade_drafts(&mut doc), "once is enough");
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    #[test]
+    fn a_rich_body_is_stored_beside_its_plain_text_and_edited_as_written() {
+        let mut doc = seeded();
+        let body = vec![qdoc_rich_text::ClipBlock {
+            kind: "paragraph".into(),
+            text: "hi @Ada".into(),
+            marks: vec![qdoc::document::MarkSpan {
+                start: 3,
+                end: 7,
+                name: "mention".into(),
+                value: qdoc::document::MarkValue::Str("u-ada".into()),
+            }],
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        }];
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_crit",
+            "m_rich",
+            NewMessage {
+                body: body.clone(),
+                ..msg("hi @Ada", NOW)
+            },
+        );
+        let read = |doc: &AutoCommit| {
+            ChatDoc::list_messages(doc, "c_crit")
+                .into_iter()
+                .find(|m| m.id == "m_rich")
+                .unwrap()
+        };
+        let sent = read(&doc);
+        assert_eq!(sent.text, "hi @Ada");
+        assert_eq!(sent.blocks().len(), 1);
+        assert_eq!(
+            sent.blocks()[0].marks,
+            [ui::widget::MarkSpan::new(
+                3..7,
+                ui::widget::Mark::Mention("u-ada".into())
+            )]
+        );
+        let mut bold = body;
+        bold[0].marks.push(qdoc::document::MarkSpan {
+            start: 0,
+            end: 2,
+            name: "strong".into(),
+            value: qdoc::document::MarkValue::Bool(true),
+        });
+        ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "hi @Ada", &bold, NOW + 5);
+        let edited = read(&doc);
+        assert!(edited.edited);
+        assert!(
+            edited.history.is_empty(),
+            "the same words: nothing to archive"
+        );
+        assert_eq!(edited.blocks()[0].marks.len(), 2);
+        ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "plain now", &[], NOW + 9);
+        let plain = read(&doc);
+        assert_eq!(plain.history.len(), 1);
+        assert!(
+            plain.body.is_empty(),
+            "a plain edit drops the old formatting"
+        );
+        assert_eq!(plain.blocks()[0].text, "plain now");
     }
 
     #[test]
@@ -3181,7 +3406,6 @@ mod tests {
         for mut origin in [seeded(), legacy_seeded()] {
             let mut a = origin.fork();
             let mut b = origin.fork();
-            let mut shown = String::new();
             for n in 0..5 {
                 assert_eq!(
                     ChatDoc::draft_text(&a, "c_crit"),
@@ -3189,7 +3413,7 @@ mod tests {
                     "send {n} starts empty"
                 );
                 let text = format!("m{n:04} hello");
-                ChatDoc::set_draft_from(&mut a, "c_crit", &shown, &text);
+                type_into(&mut a, "c_crit", 0, &text);
                 b.merge_incoming(&mut a).unwrap();
                 a.merge_incoming(&mut b).unwrap();
                 let draft = ChatDoc::draft_text(&a, "c_crit");
@@ -3198,8 +3422,11 @@ mod tests {
                 ChatDoc::clear_draft(&mut a, "c_crit");
                 b.merge_incoming(&mut a).unwrap();
                 a.merge_incoming(&mut b).unwrap();
-                shown = ChatDoc::draft_text(&a, "c_crit");
-                assert_eq!(shown, "", "send {n} consumes the draft");
+                assert_eq!(
+                    ChatDoc::draft_text(&a, "c_crit"),
+                    "",
+                    "send {n} consumes the draft"
+                );
                 assert_eq!(
                     ChatDoc::draft_text(&b, "c_crit"),
                     "",

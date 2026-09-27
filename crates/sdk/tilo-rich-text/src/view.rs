@@ -68,6 +68,11 @@ impl RichTextView {
         self.show(&blocks)
     }
 
+    /// Paint mentions in the colours `paint` gives each participant.
+    pub fn set_mention_paint(&mut self, paint: ui::widget::marks::MentionPaint) {
+        self.host.widget_mut().set_mention_paint(Some(paint));
+    }
+
     /// What is shown.
     #[must_use]
     pub fn blocks(&self) -> Vec<BlockContent> {

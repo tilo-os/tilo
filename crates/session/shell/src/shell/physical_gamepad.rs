@@ -382,18 +382,25 @@ pub fn pump_physical_gamepads(
     network: &ShellNetwork,
     current_binding: Option<&PhysicalGamepadBinding>,
 ) {
-    let now = Instant::now();
-    let policy_allowed =
-        ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad);
-    let online: Vec<DeviceId> = network
-        .device_fabric()
-        .snapshots()
-        .values()
-        .filter(|snapshot| snapshot.presence.online)
-        .map(|snapshot| snapshot.owner.clone())
-        .collect();
-    let mut stops = Vec::new();
     if let Ok(mut manager) = manager().lock() {
+        // Settings performs explicit discovery and starting a lease performs
+        // a final identity-checked scan. With no active lease the compositor
+        // has no physical input to maintain, so do not walk udev/sysfs merely
+        // to rediscover an unused optional device class every frame.
+        if manager.active.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let policy_allowed =
+            ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad);
+        let online: Vec<DeviceId> = network
+            .device_fabric()
+            .snapshots()
+            .values()
+            .filter(|snapshot| snapshot.presence.online)
+            .map(|snapshot| snapshot.owner.clone())
+            .collect();
+        let mut stops = Vec::new();
         if let Err(error) = manager.refresh(now, false) {
             tracing::warn!(%error, "physical gamepad hotplug scan failed");
         }

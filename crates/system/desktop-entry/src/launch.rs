@@ -182,6 +182,9 @@ pub struct LaunchEnv {
     pub files: Vec<String>,
     /// URLs to open. Feed `%u`/`%U`.
     pub urls: Vec<String>,
+    /// Prefer a declared desktop action that opens a new window. This keeps a
+    /// D-Bus-activatable singleton useful after its last window was closed.
+    pub prefer_new_window: bool,
 }
 
 /// Resolve an entry into a launch.
@@ -222,9 +225,19 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
 
 /// `Exec=` split and field-code expanded for `env`'s files and URLs.
 fn expanded_argv(entry: &DesktopEntry, env: &LaunchEnv) -> Result<Vec<String>, HostLaunchError> {
-    let exec = entry
-        .exec
-        .as_deref()
+    let new_window_exec = env.prefer_new_window.then(|| {
+        entry.actions.iter().find_map(|action| {
+            let id = action.id.trim().to_ascii_lowercase();
+            let name = action.name.trim().to_ascii_lowercase();
+            (id == "new-window" || id == "new_window" || name == "new window")
+                .then_some(action.exec.as_deref())
+                .flatten()
+                .filter(|exec| !exec.trim().is_empty())
+        })
+    });
+    let exec = new_window_exec
+        .flatten()
+        .or(entry.exec.as_deref())
         .ok_or_else(|| HostLaunchError::NoExec {
             id: entry.id.clone(),
         })?;
@@ -660,6 +673,43 @@ mod tests {
         )
         .expect("a runnable argv");
         assert_eq!(argv, vec!["vim", "--", "/home/u/notes.txt"]);
+    }
+
+    #[test]
+    fn reopening_a_singleton_prefers_its_declared_new_window_action() {
+        let editor = entry(
+            "[Desktop Entry]\nType=Application\nName=Text Editor\nExec=editor %U\n\
+             Actions=new-window;\n\n[Desktop Action new-window]\nName=New Window\nExec=editor --new-window\n",
+            "org.example.Editor",
+        );
+        let ordinary = plan(&editor, &LaunchEnv::default()).expect("ordinary launch plans");
+        let reopened = plan(
+            &editor,
+            &LaunchEnv {
+                prefer_new_window: true,
+                ..LaunchEnv::default()
+            },
+        )
+        .expect("reopen plans");
+
+        assert!(ordinary.args.is_empty());
+        assert_eq!(reopened.args, ["--new-window"]);
+    }
+
+    #[test]
+    fn reopening_without_a_new_window_action_keeps_the_primary_exec() {
+        let launch = plan(
+            &spotify(),
+            &LaunchEnv {
+                prefer_new_window: true,
+                ..LaunchEnv::default()
+            },
+        )
+        .expect("fallback plans");
+        assert_eq!(
+            launch.args,
+            ["run", "--file-forwarding", "com.spotify.Client"]
+        );
     }
 
     #[test]

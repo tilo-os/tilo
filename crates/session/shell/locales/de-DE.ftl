@@ -4,6 +4,10 @@
 # Auf diesem Desktop fortsetzen, was du gerade auf einem anderen Gerät getan hast.
 continuity-continue = { $app } von { $device } fortsetzen
 continuity-continue-subtitle = Den Tab fokussieren, den du gerade auf { $device } verwendet hast
+continuity-bringing-record = Sein Dokument wird von einem anderen Gerät geholt …
+record-not-kept-here = Dieses Dokument wird auf diesem Gerät nicht aufbewahrt.
+record-too-large-to-bring = Dieses Dokument ist zu groß, um es herüberzuholen.
+record-offset-past-end = Diesen Teil des Dokuments gibt es nicht.
 continuity-dismiss-title = „{ $app } von { $device } fortsetzen“ ausblenden
 continuity-dismiss-subtitle = Ausgeblendet, bis du auf { $device } wieder den Tab wechselst
 continuity-other-device = deinem anderen Gerät
@@ -1918,7 +1922,7 @@ window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eve
 window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
 window-transfer-late-edits-detail = Änderungen, die in { $from } während des Verschiebens gemacht wurden, wurden dem Dokument hinzugefügt.
 window-transfer-moved-away-title = „{ $window }“ wurde in einen anderen Arbeitsbereich verschoben
-window-transfer-moved-away-to = { $person } hat es nach { $to } verschoben. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
+window-transfer-moved-away-to = { $person } hat es nach { $to } verschoben, wo es sich jetzt für dich öffnet. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
 window-transfer-moved-away-elsewhere = { $person } hat es in einen Arbeitsbereich verschoben, in dem du nicht bist. Was du hier siehst, ist der Stand beim Verschieben; hier kann es nicht mehr bearbeitet werden.
 
 # Startfläche für leere Arbeitsbereiche und die Standardbefehle

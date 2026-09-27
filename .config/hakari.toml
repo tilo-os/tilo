@@ -61,7 +61,7 @@ third-party = [
     { name = "iroh-relay" },
     # A git-pinned YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
-    { name = "rustypipe", git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
+    { name = "rustypipe", git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
 ]
 
 [final-excludes]
