@@ -1356,6 +1356,18 @@ fi
 # are atomic, so an interrupted alongside install never leaves an empty/partial
 # marker or boot-menu files which cannot be attributed to this exact root.
 install -d -m 0755 "$DEPLOY_ETC/tilo"
+# DEPLOY_ETC is mounted below /run while installing. New inodes otherwise
+# inherit var_run_t, which the installed first-boot units cannot read. Resolve
+# each final /etc path against the live image's matching SELinux policy before
+# atomically publishing it in the deployment.
+label_installed_tilo_path() {
+  local staged="$1" installed="$2" context
+  context="$(/usr/sbin/matchpathcon -n -- "$installed")" \
+    || die "could not resolve SELinux label for $installed"
+  chcon -- "$context" "$staged" \
+    || die "could not label installed $installed"
+}
+label_installed_tilo_path "$DEPLOY_ETC/tilo" /etc/tilo
 INSTALL_MARKER="$DEPLOY_ETC/tilo/install-marker"
 write_install_marker() {
   local marker_tmp install_mode=full-disk root_partition_uuid=""
@@ -1377,6 +1389,7 @@ write_install_marker() {
         | sed 's/^/efi_artifact=/'
     fi
   } > "$marker_tmp"
+  label_installed_tilo_path "$marker_tmp" /etc/tilo/install-marker
   mv -f -- "$marker_tmp" "$INSTALL_MARKER"
   sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
 }
@@ -1427,7 +1440,7 @@ AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
 AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
 chmod 0600 "$AUTOLOGIN_PENDING_TMP"
 printf 'version=1\n' > "$AUTOLOGIN_PENDING_TMP"
-chcon --reference="$INSTALL_MARKER" "$AUTOLOGIN_PENDING_TMP"
+label_installed_tilo_path "$AUTOLOGIN_PENDING_TMP" /etc/tilo/firstboot-autologin-pending
 mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"
 # Flush both the marker and its containing directory before publishing the
 # initial_session.  If interrupted after this point, the cleanup unit has an
@@ -1485,6 +1498,7 @@ CONF="$DEPLOY_ETC/tilo/install-user.conf"
 CONF_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user.XXXXXX")"
 chmod 0600 "$CONF_TMP"
 printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
+label_installed_tilo_path "$CONF_TMP" /etc/tilo/install-user.conf
 mv -f "$CONF_TMP" "$CONF"
 log "  wrote $CONF (consumed by tilo-firstboot-user.service on first boot)"
 if [ -n "$FULL_NAME" ]; then
@@ -1492,6 +1506,7 @@ if [ -n "$FULL_NAME" ]; then
   FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user-full-name.XXXXXX")"
   chmod 0600 "$FULL_NAME_TMP"
   printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
+  label_installed_tilo_path "$FULL_NAME_TMP" /etc/tilo/install-user-full-name
   mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
 fi
 
