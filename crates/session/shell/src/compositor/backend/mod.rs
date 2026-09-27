@@ -206,6 +206,39 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
     (w, h)
 }
 
+/// The monitor behind each output, in order: the identity token a saved
+/// display layout is matched by ([`settings_store::hardware::DisplaySet`]).
+/// That is the EDID make, model and serial, with the connector appended
+/// only to tell identical monitors apart, or the connector alone for a sink
+/// without a readable EDID — so it survives the output being renumbered by
+/// a restart or moved to another port.
+fn monitor_keys(outputs: &[Output]) -> Vec<String> {
+    let connectors: Vec<String> = outputs
+        .iter()
+        .map(|o| crate::compositor::output_globals::advertised_name(o, outputs))
+        .collect();
+    let monitors: Vec<settings_store::hardware::MonitorIdentity> = outputs
+        .iter()
+        .map(|o| settings_store::hardware::MonitorIdentity {
+            make: o.identity.make.clone(),
+            model: o.identity.model.clone(),
+            serial: o.identity.serial.clone(),
+            physical_size_mm: None,
+        })
+        .collect();
+    let set = settings_store::hardware::DisplaySet::of(connectors.iter().zip(&monitors).map(
+        |(connector, monitor)| settings_store::hardware::AttachedOutput {
+            connector,
+            connector_label: connector,
+            monitor: Some(monitor),
+        },
+    ));
+    connectors
+        .iter()
+        .map(|connector| set.members.get(connector).cloned().unwrap_or_default())
+        .collect()
+}
+
 /// Translate the backend's output list into the geometry the shell lays out
 /// and paints across: each display's logical rectangle, its scale, and
 /// where its pixels go in the scene.
@@ -213,16 +246,19 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
 /// Outputs with a zero dimension are dropped: a connector mid-modeset
 /// reports 0×0, which would hand a strip a display it can't place a window on.
 pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
+    let monitors = monitor_keys(outputs);
     outputs
         .iter()
-        .filter(|o| {
+        .zip(monitors)
+        .filter(|(o, _)| {
             let (lw, lh) = o.logical_size();
             o.size.0 > 0 && o.size.1 > 0 && lw > 0 && lh > 0
         })
-        .map(|o| {
+        .map(|(o, monitor)| {
             let logical = o.logical_rect();
             crate::shell::overlay_host::OutputGeometry {
                 id: o.id.0,
+                monitor,
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),
@@ -522,6 +558,11 @@ pub trait Backend {
     /// Move the pointer to global `(x, y)` without a physical motion, as a
     /// released pointer lock asks with its cursor position hint.
     fn warp_pointer(&mut self, _x: f64, _y: f64) {}
+
+    /// Switch the physical keyboard to input source `index` without
+    /// waiting for the settings poll. Default no-op: only the DRM backend
+    /// translates raw keycodes itself.
+    fn set_keyboard_source(&mut self, _index: usize) {}
 
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.

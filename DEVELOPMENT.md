@@ -220,7 +220,20 @@ them before assuming CI built the whole workspace or app fleet. Main-branch
 check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
 modify `main` and are evidence for one source SHA and run ID only. A successful
 receipt does not qualify a package, OS release, registry deployment or hardware
-target. For queue/startup regressions, preserve the run number and compare it
+target.
+
+Main check runs that are still queued when a newer one is queued are cancelled
+(`tools/ci/queue_coalesce.py`, deployed as the infrastructure repository's
+coalescer); a run that started is never cancelled. Each main run selects
+everything since the last main commit whose own check run started
+(`tools/ci/check_base.py`), so the policy is: every main commit is covered by a
+green check run of itself or of a later commit. `receipt.sh covers <sha> origin`
+answers that from the receipts, which record each run's range. A skipped
+commit's check statuses read "Has been cancelled"; that is not a failure of the
+commit. Release guards (`receipt.sh verify`, used by the desktop release) still
+require a green run of the exact commit: a later run covers a commit's changes
+but not its tree, so tag a commit that has its own receipt. Lint still runs on
+every main commit. For queue/startup regressions, preserve the run number and compare it
 with `timing_report.py` instead of estimating from the web UI.
 
 ## Preview affected applications
@@ -399,7 +412,7 @@ multiple-file and folder dialogs, with results delivered on the existing picker
 channel. To exercise the host picker without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui --example native-file-picker --features portal -- open
+cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
 # Also accepts: multiple, directory, save
 cargo test --locked -p ui --lib --features portal portal::
 ```
@@ -785,7 +798,7 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui --example windows-host
+For device verification, build `cargo build --locked -p ui-examples --example windows-host
 --features notifications`. The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
@@ -1099,7 +1112,8 @@ before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
 through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
 which sets `LANG=C.UTF-8` and
 `TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
-and removes the desktop session (D-Bus session bus, display, keyring socket).
+and removes the desktop session (D-Bus buses, display, keyring socket; see
+[Tests never touch your desktop](#tests-never-touch-your-desktop)).
 GPU tests use Mesa's llvmpipe Vulkan driver and audio tests an isolated
 PulseAudio endpoint (`tools/with-headless-audio.sh`).
 
@@ -1118,6 +1132,41 @@ nextest's build metadata, without Cargo) from a cleared one (`env -i`), so a
 test cannot see your identity, preferences, installed apps, locale or live
 session. A test that passes under plain `cargo test` but not
 here depends on one of those.
+
+### Tests never touch your desktop
+
+Every test runs as if on a machine with no desktop, whoever runs it and
+however, because a test that reaches a live session pauses its media, opens
+file choosers on it or ends it:
+
+- **Cargo's runner.** `.cargo/config.toml` sets `tools/cargo-runner.sh` as the
+  Linux runner, so `cargo test`, `cargo nextest` and `cargo bench` start every
+  test binary (and doctest) inside `tools/with-test-environment.sh`. That
+  gives it a fresh `HOME` and XDG tree, no display, and points
+  `DBUS_SESSION_BUS_ADDRESS` and `DBUS_SYSTEM_BUS_ADDRESS` at sockets nothing
+  listens on, so the session bus, portals, media players, notifications, the
+  secret service, the systemd user manager and logind are all out of reach.
+  An enclosing test environment (CI, `tools/test-env.sh`) is kept. `cargo run`
+  targets start unchanged.
+- **A test binary started by hand** skips the runner. A test that starts a
+  compositor or other desktop-facing process calls
+  `tilo_test_env::require_isolated_desktop()` first, which refuses to go on
+  outside the test environment. Run such a binary as
+  `tools/with-test-environment.sh target/debug/deps/<test>`.
+- **Tests that need a bus bring their own**: a p2p `UnixStream` pair (see
+  `crates/session/shell/tests/portal_test.rs`) or a private `dbus-daemon`, and
+  hand that connection or address to the code under test.
+- **Shell and Python suites** run through `tools/ci/suites.py`, which wraps
+  each in `tools/with-test-environment.sh`. A shell test that runs session
+  code sources `tools/desktop-isolation.sh`: `tilo_test_isolate "$@"` re-runs the
+  script in the test environment when started directly, and
+  `tilo_stage_script SRC DEST NAME=PATH...` stages a packaged script from the
+  tree with its command variables rewritten, failing when the copy still runs
+  an installed `/usr/libexec/tilo*`, `/usr/bin/tilo-*`, `systemctl` or
+  `loginctl`.
+- **Hardware state** (backlight, keyboard light, sysfs) is not covered by the
+  environment. Tests pass a fixture root (`set_brightness_in(root, …)`) or a
+  recording `os_actions::Dispatcher`.
 
 **Capability-gated tests.** A test that needs a GPU adapter, audio output,
 media codecs, `/dev/fuse` or fanotify uses `tilo_test_env::require_capability!`

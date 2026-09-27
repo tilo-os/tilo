@@ -615,14 +615,19 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::PrimaryReady(_) | SdkCommand::PublicationBarrier(_) => {
             Some(std::mem::size_of::<SdkCommand>())
         }
-        // `ChannelGroup` intentionally hides its OpenMLS allocation graph,
-        // so it cannot offer an exact capacity probe without widening the
-        // crypto API. Installation is synchronous and requires `&mut self`,
-        // which permits at most one group transfer at a time. Reserving the
-        // entire command budget encodes that single-owner exception: no other
-        // bridge payload may queue alongside it, while the group itself was
-        // already allocated by the caller before entering this bridge.
-        SdkCommand::InstallEncryption { .. } => Some(SDK_COMMAND_QUEUE_BYTES),
+        // The group was allocated by the caller before entering the bridge,
+        // and installation is synchronous under `&mut self`, so at most one
+        // is ever queued. Only the command itself is counted: reserving the
+        // whole budget would fail closed whenever any other command was still
+        // queued, or its reservation not yet released after the reply.
+        SdkCommand::InstallEncryption { spec, .. } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&spec.app_id);
+            if let Some(record) = &spec.record {
+                meter.string_capacity(record);
+            }
+            meter.finish()
+        }
         SdkCommand::PublishActionDirectory { app_id, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
         }

@@ -16,7 +16,7 @@ checkout.
 Build once so every run measures the same binary:
 
 ```sh
-cargo build -p ui --release --example ui-perf
+cargo build -p ui-examples --release --example ui-perf
 ```
 
 Native 4K animated redraw and resource gate:

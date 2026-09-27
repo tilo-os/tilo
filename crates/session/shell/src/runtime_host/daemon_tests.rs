@@ -1,5 +1,6 @@
 use super::{
-    DaemonStart, MILESTONES, Observation, StartingProcess, StartupLimits, wait_until_ready,
+    DaemonStart, Observation, STAGES_FILE, StartingProcess, StartupLimits, current_stage,
+    wait_until_ready,
 };
 use std::{
     io,
@@ -13,10 +14,12 @@ const LIMITS: StartupLimits = StartupLimits {
     poll: Duration::from_millis(5),
 };
 
-/// A process that progresses until `progress_for`, then goes quiet.
+/// A process that progresses until `progress_for`, then goes quiet. Only
+/// the signal at `moving` changes; the others stay constant or unreadable.
 struct Fake {
     started: Instant,
     progress_for: Duration,
+    moving: usize,
     ready_after: Option<Duration>,
     exit_after: Option<Duration>,
     stopped: bool,
@@ -27,6 +30,7 @@ impl Fake {
         Self {
             started: Instant::now(),
             progress_for,
+            moving: 0,
             ready_after: None,
             exit_after: None,
             stopped: false,
@@ -49,16 +53,19 @@ impl StartingProcess for Fake {
     }
     fn observe(&mut self) -> Observation {
         let elapsed = self.started.elapsed();
-        if elapsed < self.progress_for {
-            Observation {
-                stage: "warming up",
-                progress: u64::try_from(elapsed.as_millis() / 10).unwrap(),
-            }
+        let (stage, value) = if elapsed < self.progress_for {
+            (
+                "warming up",
+                u64::try_from(elapsed.as_millis() / 10).unwrap(),
+            )
         } else {
-            Observation {
-                stage: "waiting on the lock",
-                progress: u64::MAX,
-            }
+            ("waiting on the lock", u64::MAX)
+        };
+        let mut signals = vec![("steady", Some(7)), ("absent", None), ("busy", Some(0))];
+        signals[self.moving].1 = Some(value);
+        Observation {
+            stage: stage.to_owned(),
+            signals,
         }
     }
     fn stop(&mut self) {
@@ -93,9 +100,22 @@ fn stalled_start_fails_at_the_stall_timeout_naming_its_stage() {
         "{message}"
     );
     assert!(message.contains("fake tail"), "{message}");
+    // Each signal says when it last moved, so a log shows which went quiet.
+    assert!(message.contains("steady last changed"), "{message}");
+    assert!(message.contains("absent unreadable"), "{message}");
+    assert!(message.contains("busy unchanged since launch"), "{message}");
     assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
     assert!(elapsed < LIMITS.cap, "{elapsed:?}");
     assert!(fake.stopped);
+}
+
+#[test]
+fn progress_in_any_single_signal_keeps_the_start_alive() {
+    let mut fake = Fake::new(Duration::from_secs(60));
+    fake.moving = 2;
+    fake.ready_after = Some(Duration::from_millis(1500));
+    assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
+    assert!(!fake.stopped);
 }
 
 #[test]
@@ -124,28 +144,22 @@ fn start_that_never_finishes_fails_at_the_cap() {
     assert!(
         error
             .to_string()
-            .contains("within 0.8 s (still warming up)"),
+            .contains("within 0.8 s (still warming up; steady last changed"),
         "{error}"
     );
     assert!(fake.stopped);
 }
 
-fn daemon_start<'a>(profile: &'a std::path::Path, script: &str) -> DaemonStart<'a> {
-    let log = profile.join("daemon.log");
+fn daemon_start(profile: &std::path::Path, script: &str) -> DaemonStart {
     let child = Command::new("/bin/sh")
         .args(["-c", script])
         .current_dir(profile)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&log).unwrap())
+        .stderr(std::fs::File::create(profile.join("daemon.log")).unwrap())
         .spawn()
         .unwrap();
-    DaemonStart {
-        profile,
-        log,
-        child,
-        before: MILESTONES.map(|_| None),
-    }
+    DaemonStart::new(profile, child)
 }
 
 #[test]
@@ -160,28 +174,94 @@ fn real_child_exit_reports_its_stderr() {
 }
 
 #[test]
-fn real_child_progress_and_stall_are_observed() {
+fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
     let profile = tempfile::tempdir().unwrap();
-    // Reaches two milestones, then blocks without using CPU or writing.
+    // Names a step every 0.2 s for several stall windows, without output,
+    // then blocks without using CPU, reading, writing or naming a step.
     let mut start = daemon_start(
         profile.path(),
-        "sleep 0.2; : > runtime.lock; sleep 0.2; : > workspace.json; exec sleep 60",
+        &format!(
+            "for step in 1 2 3 4 5 6 7 8; do sleep 0.2; echo \"step $step\" >> {STAGES_FILE}; \
+             done; exec sleep 60"
+        ),
     );
     let pid = start.child.id();
-    let error = wait_until_ready(&mut start, LIMITS).unwrap_err();
+    let limits = StartupLimits {
+        stall: Duration::from_secs(1),
+        ..LIMITS
+    };
+    let started = Instant::now();
+    let error = wait_until_ready(&mut start, limits).unwrap_err();
     let message = error.to_string();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(message.contains("stalled while step 8"), "{message}");
     assert!(
-        message.contains("stalled while starting the identity service"),
+        started.elapsed() >= Duration::from_millis(2600),
         "{message}"
     );
+    assert!(message.contains("startup step last changed"), "{message}");
     assert!(message.contains("wrote nothing"), "{message}");
+    // What the stalled process was blocked on.
+    assert!(message.contains("threads: sleep S"), "{message}");
     // The stalled child was killed and reaped.
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+}
+
+#[test]
+fn the_current_stage_is_the_last_named_step() {
+    assert_eq!(current_stage(b""), "loading the runtime");
+    assert_eq!(current_stage(b"one\ntwo\n\n"), "two");
+    assert_eq!(current_stage("x".repeat(500).as_bytes()).len(), 200);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn cpu_time_of_a_live_process_is_readable() {
     assert!(super::cpu_ticks(std::process::id()).is_some());
+    assert!(super::io_bytes(std::process::id()).is_some());
+}
+
+/// A launcher that waits on a wrapper still sees the worker it started.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
+    use std::os::unix::process::CommandExt;
+    let mut wrapper = Command::new("/bin/sh")
+        .args(["-c", "sh -c 'while :; do :; done' & wait"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = wrapper.id();
+    let started = Instant::now();
+    let (mut sample, mut own) = (super::sample_tree(pid, false).unwrap(), 0);
+    while sample.cpu_ticks <= own && started.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(20));
+        own = super::cpu_ticks(pid).unwrap();
+        sample = super::sample_tree(pid, false).unwrap();
+    }
+    let described = super::sample_tree(pid, true).unwrap();
+    // SAFETY: the wrapper leads its own process group, which holds only
+    // itself and the worker it started.
+    unsafe {
+        libc::killpg(i32::try_from(pid).unwrap(), libc::SIGKILL);
+    }
+    let _ = wrapper.wait();
+    assert!(sample.cpu_ticks > own, "{sample:?}, wrapper {own}");
+    assert!(described.threads.len() >= 2, "{described:?}");
+    assert!(
+        described.held_by_machine || described.cpu_ticks > sample.cpu_ticks,
+        "{described:?}"
+    );
+}
+
+/// Without per-task child lists, children are found by their parent pid.
+#[cfg(target_os = "linux")]
+#[test]
+fn parent_pids_find_a_spawned_child() {
+    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let found = super::parent_pids().contains(&(child.id(), std::process::id()));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(found);
 }

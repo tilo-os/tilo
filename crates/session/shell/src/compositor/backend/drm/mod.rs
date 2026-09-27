@@ -1667,6 +1667,10 @@ impl Backend for DrmBackend {
         self.inner.resume_from_sleep();
     }
 
+    fn set_keyboard_source(&mut self, index: usize) {
+        self.inner.set_keyboard_source(index);
+    }
+
     fn reload_input_settings(&mut self) {
         self.inner.reload_input_settings();
     }
