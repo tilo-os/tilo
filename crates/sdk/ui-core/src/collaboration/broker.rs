@@ -66,10 +66,11 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 /// Every step before the report is a local syscall, so reaching this means
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a primary `Hello` may take, from the instant the owner submits it.
-/// The worker abandons the join at that deadline; the owner waits for it plus
-/// [`PRIMARY_ROUTE_REPLY_SLACK`], so the worker always decides first and
-/// dropping a failed manager always closes its owned transports.
+/// How long a primary `Hello` may take once the worker starts the join. The
+/// worker publishes that deadline and abandons the join at it; a blocking
+/// owner waits for the published deadline plus [`PRIMARY_ROUTE_REPLY_SLACK`],
+/// so the worker always decides first and dropping a failed manager always
+/// closes its owned transports.
 const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
 /// How long past the shared primary-route deadline the owner waits for the
 /// worker's answer to arrive.
@@ -213,8 +214,9 @@ pub(super) struct BrokerTransport {
     /// Reply slot of the latest [`TransportCommand::ConfirmPrimaryRoute`],
     /// answered by the shovel once it has processed every earlier command.
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
-    /// Deadline of the latest primary `Hello`, shared with the shovel.
-    primary_deadline: Option<Instant>,
+    /// Deadline of the latest primary `Hello`, published by the shovel when
+    /// it starts the join.
+    primary_deadline: Option<PrimaryDeadline>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
     /// Whether [`wifi_continuity_command`] has been pointed at this
@@ -263,10 +265,8 @@ impl CollabTransport for BrokerTransport {
                 record,
                 handle,
             }) => {
-                let deadline = crate::time::now()
-                    .checked_add(SDK_PRIMARY_ROUTE_TIMEOUT)
-                    .unwrap_or_else(crate::time::now);
-                self.primary_deadline = Some(deadline);
+                let deadline = PrimaryDeadline::default();
+                self.primary_deadline = Some(deadline.clone());
                 SdkCommand::Hello(PrimaryHello {
                     route: RouteSpec {
                         app_id,
@@ -335,20 +335,39 @@ impl CollabTransport for BrokerTransport {
         &mut self,
         timeout: Duration,
     ) -> Option<Result<RouteSpec, String>> {
-        // The worker answers by the shared deadline; waiting past it by the
-        // slack means this side never gives up while the worker still may.
-        let timeout = self.primary_deadline.map_or(timeout, |deadline| {
-            deadline
-                .checked_add(PRIMARY_ROUTE_REPLY_SLACK)
-                .unwrap_or(deadline)
-                .saturating_duration_since(crate::time::now())
-        });
-        let result = match self.pending_primary.as_ref()?.recv_timeout(timeout) {
-            Ok(result) => Some(result),
-            Err(mpsc::RecvTimeoutError::Timeout) => return None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.worker_stopped = true;
-                None
+        // `timeout` bounds how long the worker may take to start the join;
+        // once it has, it answers by the deadline it published, and waiting
+        // past that by the slack means this side never gives up while the
+        // worker still may.
+        let start_by = crate::time::now()
+            .checked_add(timeout)
+            .unwrap_or_else(crate::time::now);
+        let result = loop {
+            let end = self
+                .primary_deadline
+                .as_ref()
+                .and_then(PrimaryDeadline::get)
+                .map_or(start_by, |deadline| {
+                    deadline
+                        .checked_add(PRIMARY_ROUTE_REPLY_SLACK)
+                        .unwrap_or(deadline)
+                });
+            let remaining = end.saturating_duration_since(crate::time::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            // Wake to notice a deadline published after this wait began.
+            match self
+                .pending_primary
+                .as_ref()?
+                .recv_timeout(remaining.min(PRIMARY_DEADLINE_POLL))
+            {
+                Ok(result) => break Some(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.worker_stopped = true;
+                    break None;
+                }
             }
         };
         self.pending_primary = None;
@@ -454,9 +473,37 @@ enum SdkCommand {
 struct PrimaryHello {
     route: RouteSpec,
     handle: Option<String>,
-    /// Set by the owner when it submits the `Hello`, so both sides time the
-    /// join from one instant.
-    deadline: Instant,
+    /// Filled by the shovel when it starts the join, so the owner waits for
+    /// the very deadline the shovel enforces.
+    deadline: PrimaryDeadline,
+}
+
+/// How often a blocked owner looks for the deadline the shovel published.
+const PRIMARY_DEADLINE_POLL: Duration = Duration::from_millis(50);
+
+/// The primary-route deadline one `Hello`'s join runs under, shared between
+/// the shovel that sets it and the owner that waits for it.
+#[derive(Clone, Default)]
+struct PrimaryDeadline(Arc<std::sync::Mutex<Option<Instant>>>);
+
+impl PrimaryDeadline {
+    fn start(&self) -> Instant {
+        let deadline = crate::time::now()
+            .checked_add(SDK_PRIMARY_ROUTE_TIMEOUT)
+            .unwrap_or_else(crate::time::now);
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(deadline);
+        deadline
+    }
+
+    fn get(&self) -> Option<Instant> {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl SdkCommand {
@@ -2932,7 +2979,7 @@ async fn drive_shovel(
                 participant_handle = handle;
                 let key = spec.channel_id();
                 primary_result = match tokio::time::timeout_at(
-                    tokio::time::Instant::from_std(deadline),
+                    tokio::time::Instant::from_std(deadline.start()),
                     ensure_sdk_route(
                         &client,
                         &presentation,
