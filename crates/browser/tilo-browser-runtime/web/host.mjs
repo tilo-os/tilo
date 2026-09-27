@@ -13,6 +13,8 @@ import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {createLiveOverlay} from './live-overlay.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
+import {SideModuleLinker,runtimeAbi} from './dylink.mjs';
+import {createAppInstaller,canonicalAppId} from './app-installer.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -26,7 +28,30 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 // first frames either.
 const APP_FONTS=['Noto-COLRv1.ttf','NotoSansSymbols[wght].ttf','NotoSansSymbols2-Regular.ttf','NotoSansMath-Regular.ttf'];
 const prewarmFonts=createIdlePrewarm(()=>fontLoader.prewarm({prefer:APP_FONTS}));
-const ready=retryableMemo(()=>init());
+let core,appLinker;
+const ready=retryableMemo(async()=>{core=await init();return core;});
+// Apps the core does not contain arrive as side modules (WEB_RUNTIME.md).
+// A core built without `dylink` has no linker, so only its compiled apps exist.
+const apps=createAppInstaller({
+  ready,
+  installed:app=>{try{runtime.application(app);return true;}catch{return false;}},
+  canonical:canonicalAppId,
+  linker:()=>appLinker??=new SideModuleLinker(core,runtimeAbi(init.__wbindgen_wasm_module)),
+});
+/**
+ * The resolver mounts use when they pass none: `(appId, {signal}) =>
+ * {module, abi, assets}`, such as the registry client's `resolveApp`.
+ */
+export function setAppResolver(resolver){apps.setResolver(resolver);}
+/**
+ * Resolve and link apps before they are mounted, concurrently with each other
+ * and with the core's own download (a session restore passes every app it
+ * will open). Resolves to their ids; rejects with an AggregateError naming
+ * each app that could not be installed in `failed`.
+ */
+export function preloadApps(appIds,options={}){return apps.preload(appIds,options);}
+/** The static assets of a linked app: asset name to URL. */
+export function appAssets(appId){return apps.assets(appId);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
   const canvas=document.createElement('canvas');canvas.className='tilo-canvas';canvas.tabIndex=0;
@@ -51,7 +76,7 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.resolveApp;
   let unsubscribeDesktopCommits;
   let liveOverlay;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
@@ -137,8 +162,10 @@ export async function mountDesktop(target,options={}) {
     complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
     load:async request=>{
       if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
-      const url=new URL(request.url,location.href);
-      if(url.origin!==location.origin||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+      // An app's own static asset is fetched where its resolver placed it.
+      const appAsset=application&&apps.assets(application.id)?.get(request.url);
+      const url=new URL(appAsset??request.url,location.href);
+      if((!appAsset&&url.origin!==location.origin)||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
       const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
       if(!response.ok)throw Error(`asset HTTP ${response.status}`);
       return new Uint8Array(await response.arrayBuffer());
@@ -218,10 +245,13 @@ export async function mountDesktop(target,options={}) {
   }
   try{
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    // An app the core lacks is resolved while the core itself loads.
+    const installing=config.app==='desktop'?undefined:apps.ensure(config.app,{resolveApp:options.resolveApp,signal:options.signal,onStatus:report});
+    void installing?.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
-    // An app id the build does not contain rejects here with the catalog's error.
-    try{application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));}
-    catch(error){report({phase:'failed',error:String(error)});throw Error(String(error));}
+    // An app that is neither in the core nor resolvable rejects here.
+    try{await installing;application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));}
+    catch(error){report({phase:'failed',error:error instanceof Error?error.message:String(error)});throw error instanceof Error?error:Error(String(error));}
     const acquired=await acquireStorage(config.profile,config.device);
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
