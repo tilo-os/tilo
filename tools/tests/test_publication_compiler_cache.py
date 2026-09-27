@@ -137,9 +137,14 @@ class ImagePublicationTests(unittest.TestCase):
                     self.assertNotIn("aws_access_key_id=AWS_ACCESS_KEY_ID", step)
                     if name == "Independently rebuild the release candidate":
                         continue
+                    if "file: os/Containerfile.wpe" in step:
+                        # The engine recipe compiles no Rust and takes no cache settings.
+                        for forbidden in ("SCCACHE_", "AWS_", "aws_", "compiler-cache"):
+                            self.assertNotIn(forbidden, step)
+                        continue
                     self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
                     self.assertIn("${{ steps.compiler-cache.outputs.secret-envs }}", step)
-                    if name not in ("Build and cache the compile stages", "Build and cache the browser engine stage"):
+                    if name != "Build and cache the compile stages":
                         self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", step)
                         self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", step)
         with self.subTest(phase='the independent rebuild never sees the cache'):
