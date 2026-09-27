@@ -248,6 +248,7 @@ impl InteractionPhase {
                     | ActionHostError::UnknownInvocation
                     | ActionHostError::InvocationConflict => InteractionRejection::Invalid,
                     ActionHostError::Unavailable { .. }
+                    | ActionHostError::StaleRevision
                     | ActionHostError::NotCancellable { .. }
                     | ActionHostError::Refused { .. } => InteractionRejection::Unavailable,
                 };

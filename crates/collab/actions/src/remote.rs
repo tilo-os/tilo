@@ -482,6 +482,10 @@ pub enum ActionHostError {
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
+    /// The action was chosen at a revision of its provider's catalogue that
+    /// has moved on since. List it again and invoke it at the new revision.
+    #[error("the action changed since that revision; list it again")]
+    StaleRevision,
     /// The invocation id is unknown to this caller.
     #[error("no such invocation")]
     UnknownInvocation,
@@ -506,6 +510,7 @@ impl ActionHostError {
             Self::NotPermitted => "not_permitted",
             Self::ConfirmationRequired => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
+            Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
             Self::InvocationConflict => "invocation_conflict",
             Self::NotCancellable { .. } => "not_cancellable",

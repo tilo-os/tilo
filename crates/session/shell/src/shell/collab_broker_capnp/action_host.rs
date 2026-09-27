@@ -1182,11 +1182,7 @@ impl CapnpBrokerState {
             ))) => row,
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => {
-                return Err(ActionHostError::InvalidRequest {
-                    reason: "the action changed since that revision; list it again".into(),
-                });
-            }
+            ))) => return Err(ActionHostError::StaleRevision),
             Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
