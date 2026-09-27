@@ -17,6 +17,8 @@ path = "src/lib.rs"
 # *separate processes* — speech-dispatcher over its SSIP socket, espeak-ng
 # as a subprocess. The socket / process boundary means their GPL imposes
 # no licensing constraint on this crate or anything that links it.
+#
+# `ssip-client` (the only TTS dependency we link) is MIT OR Apache-2.0.
 
 [dependencies]
 thiserror.workspace = true
@@ -25,6 +27,9 @@ bounded-command = { path = "../bounded-command" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
+# Pure-Rust speech-dispatcher SSIP client. MIT OR Apache-2.0 — no C
+# linkage, no GPL propagation (speech-dispatcher sits behind the socket).
+ssip-client = "0.10"
 
 [lints]
 workspace = true
@@ -33,3 +38,6 @@ workspace = true
 bounded-command = { path = "../bounded-command" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
