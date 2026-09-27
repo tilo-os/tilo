@@ -1,0 +1,44 @@
+# The Tilo community relay on one machine with Podman (a VM with a static
+# public IP), the same image and room-host mode the Kubernetes base runs.
+#
+#   identity/  device-keypair.bin, device-cert.bin, user-pubkey.bin from
+#              `tilo-community bundle` (chmod 700; the host's identity, never
+#              the team's root)
+#   records/   the hosted-room records from the same bundle
+#
+# Then `podman compose up -d`. UDP 4433 must reach this machine at the address
+# the standing invitation names. See README.md.
+services:
+  tilo-community-relay:
+    image: ${TILO_RELAY_IMAGE:-registry.tilo.so/tilo/tilo-relay:latest}
+    restart: unless-stopped
+    environment:
+      TILO_HOST_KIND: room-host
+      TILO_IDENTITY_SOURCE: /run/secrets/tilo-room-host
+      TILO_COMMUNITY_RECORDS: /etc/tilo-community
+      TILO_RELAY_PORT: "4433"
+      TILO_METRICS_LISTEN: 0.0.0.0:9464
+    ports:
+      - "4433:4433/udp"
+      # Metrics stay on the machine; scrape them from here or a tunnel.
+      - "127.0.0.1:9464:9464/tcp"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/tilo
+      - /var/lib/tilo:mode=0700
+    volumes:
+      - ./identity:/run/secrets/tilo-room-host:ro,Z
+      - ./records:/etc/tilo-community:ro,Z
+      # Retained room checkpoints, admitted members, offline queues. Back it
+      # up and restore it rather than recreate it after a failure.
+      - tilo-community-state:/var/lib/tilo-relay:Z
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/tilo-relay/metrics.json"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  tilo-community-state:

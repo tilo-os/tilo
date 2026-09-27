@@ -1,0 +1,20 @@
+# The public endpoint: a stable address on UDP 4433 that the standing
+# invitation names (`tilo-community prepare --public-addr IP:4433`). The
+# address must not change for as long as images carrying the invitation are
+# in use; the overlay pins it (a reserved/static IP and the provider's
+# load-balancer annotations). Clients also find the relay by its endpoint id
+# through Iroh discovery, which survives an address change but is slower.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tilo-community-relay
+spec:
+  type: LoadBalancer
+  # Keep client source addresses: Iroh's path selection and hole punching
+  # depend on seeing the real peer address.
+  externalTrafficPolicy: Local
+  ports:
+    - name: iroh
+      port: 4433
+      targetPort: iroh
+      protocol: UDP

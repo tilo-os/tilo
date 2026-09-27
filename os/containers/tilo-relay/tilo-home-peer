@@ -1,6 +1,77 @@
 #!/usr/bin/busybox sh
 set -eu
 
+bb=/usr/bin/busybox
+
+# A room host (TILO_HOST_KIND=room-host) serves an identity's collaboration
+# rooms — such as the Tilo community room it was delegated — and nothing
+# else: no Files replica, no home-peer bundle, any certified device may
+# connect and every room stays gated by its own membership. Its whole
+# configuration is derived here on every start, so the deployment, not the
+# volume, says what it serves:
+#
+#   TILO_IDENTITY_SOURCE  directory holding device-keypair.bin, device-cert.bin
+#                         and user-pubkey.bin (a mounted secret): the host's
+#                         paired identity, installed into /var/lib/tilo. Unset:
+#                         pair over the LAN on first start (pair-room-host).
+#   TILO_COMMUNITY_RECORDS directory of hosted-room records
+#                         (`tilo-relay-admin community export`), each
+#                         installed before serving. Default /etc/tilo-community.
+#   TILO_RELAY_PORT       UDP port for Iroh (default 4433).
+#   TILO_METRICS_LISTEN   ADDR:PORT for Prometheus `GET /metrics` (unset: none).
+room_host() {
+    config=/etc/tilo/relay.toml
+    identity=/var/lib/tilo
+    source="${TILO_IDENTITY_SOURCE:-}"
+    umask 077
+    if [ -n "$source" ]; then
+        for file in device-keypair.bin device-cert.bin user-pubkey.bin; do
+            [ -s "$source/$file" ] || {
+                echo "room host: $source/$file is missing; mount the host identity (see README.md)" >&2
+                exit 64
+            }
+        done
+        $bb mkdir -p "$identity/device-private" "$identity/device" "$identity/user-identity"
+        $bb cp "$source/device-keypair.bin" "$identity/device-private/keypair.bin.new"
+        $bb chmod 0600 "$identity/device-private/keypair.bin.new"
+        $bb mv -f "$identity/device-private/keypair.bin.new" "$identity/device-private/keypair.bin"
+        for pair in device-cert.bin:device/cert.bin user-pubkey.bin:user-identity/pubkey.bin; do
+            $bb cp "$source/${pair%%:*}" "$identity/${pair#*:}.new"
+            $bb chmod 0644 "$identity/${pair#*:}.new"
+            $bb mv -f "$identity/${pair#*:}.new" "$identity/${pair#*:}"
+        done
+    elif [ ! -s "$identity/device/cert.bin" ]; then
+        /usr/bin/tilo-enroll pair-room-host --identity-root "$identity" \
+            --label "${TILO_DEVICE_NAME:-Room host}" --timeout 270
+    fi
+
+    umask 022
+    $bb mkdir -p /etc/tilo /var/lib/tilo-relay
+    {
+        echo "identity_root = \"$identity\""
+        echo 'state_root = "/var/lib/tilo-relay"'
+        echo 'full_replica_status = "/var/lib/tilo-relay/full-replica-status.json"'
+        echo 'home_peer_bundle = "/var/lib/tilo-relay/no-home-peer.toml"'
+        echo "iroh_listen = \"0.0.0.0:${TILO_RELAY_PORT:-4433}\""
+        [ -z "${TILO_METRICS_LISTEN:-}" ] || echo "metrics_listen = \"$TILO_METRICS_LISTEN\""
+        echo 'device_role = "always_on_server"'
+        echo 'trust_policy = { kind = "allow_any" }'
+    } > "$config.new"
+    $bb mv -f "$config.new" "$config"
+
+    records="${TILO_COMMUNITY_RECORDS:-/etc/tilo-community}"
+    for record in "$records"/*.json; do
+        [ -e "$record" ] || continue
+        /usr/bin/tilo-relay-admin --config "$config" community install --record "$record"
+    done
+    /usr/bin/tilo-relay-admin --config "$config" endpoint
+    exec /usr/bin/tilo-relay --config "$config" run
+}
+
+if [ "${TILO_HOST_KIND:-home-peer}" = room-host ]; then
+    room_host
+fi
+
 if [ -e /var/lib/tilo-relay/decommissioned ]; then
     echo "Tilo home peer is decommissioned; services remain stopped"
     exec /usr/bin/busybox sleep infinity

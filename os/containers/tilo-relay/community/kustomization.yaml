@@ -1,0 +1,33 @@
+# The Tilo community relay: the tilo-relay image as a room host serving the
+# Tilo Community room (and each reporter's private room with the team).
+#
+# A base in the infra repository's convention (apps/<app>): environment
+# agnostic, no secrets. A cluster overlay supplies
+#   * the Secret `tilo-community-relay-identity` (SOPS: device-keypair.bin,
+#     device-cert.bin, user-pubkey.bin from `tilo-community bundle`),
+#   * the records ConfigMap (`configMapGenerator` behavior: replace, with the
+#     `records/*.json` files `tilo-community bundle` writes),
+#   * the image digest, the public address/load balancer annotations and the
+#     storage class.
+# See README.md. Nothing here is deployed until an overlay references it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tilo-community
+resources:
+  - namespace.yaml
+  - statefulset.yaml
+  - service.yaml
+  - network-policy.yaml
+configMapGenerator:
+  # Empty in the base: a relay with no records serves no public room.
+  - name: tilo-community-records
+    options:
+      disableNameSuffixHash: true
+images:
+  - name: registry.tilo.so/tilo/tilo-relay
+    newTag: latest
+labels:
+  - pairs:
+      app.kubernetes.io/name: tilo-community-relay
+      app.kubernetes.io/part-of: tilo
+    includeSelectors: true
