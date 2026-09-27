@@ -17,7 +17,7 @@ use std::{
 /// Create `path` as a directory only this user can enter.
 /// # Errors
 /// Rejects a symlink or a directory owned by someone else.
-pub fn private_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -35,7 +35,7 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
 /// legacy profile initialization can change its permissions.
 /// # Errors
 /// Rejects a profile readable by others, or any [`private_directory`] error.
-pub fn check_private_profile(path: &Path) -> io::Result<()> {
+pub(crate) fn check_private_profile(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.permissions().mode() & 0o077 != 0 => {
             return Err(io::Error::new(
@@ -75,7 +75,7 @@ fn connect_blobs(path: &Path, app_id: &str, room: &str) -> Option<UnixStream> {
 
 /// One app's connections to the host's services, handshaken with its
 /// identity before the app holds any of them.
-pub struct ServiceConnections {
+pub(crate) struct ServiceConnections {
     collab: UnixStream,
     identity: UnixStream,
     blobs: Option<UnixStream>,
@@ -84,7 +84,11 @@ pub struct ServiceConnections {
 impl ServiceConnections {
     /// # Errors
     /// Rejects an empty identity and returns connect or handshake errors.
-    pub fn connect(app_id: &str, room: &str, sockets: &ServiceSockets<'_>) -> io::Result<Self> {
+    pub(crate) fn connect(
+        app_id: &str,
+        room: &str,
+        sockets: &ServiceSockets<'_>,
+    ) -> io::Result<Self> {
         if app_id.trim().is_empty() || app_id.len() > 4096 || room.len() > 4096 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -110,7 +114,7 @@ impl ServiceConnections {
 
     /// The descriptors the app inherits, at these same numbers.
     #[must_use]
-    pub fn fds(&self) -> Vec<RawFd> {
+    pub(crate) fn fds(&self) -> Vec<RawFd> {
         [
             Some(&self.collab),
             Some(&self.identity),
@@ -124,7 +128,7 @@ impl ServiceConnections {
 
     /// Where the app finds each descriptor, and who it is.
     #[must_use]
-    pub fn env(&self, app_id: &str, room: &str) -> Vec<(&'static str, String)> {
+    pub(crate) fn env(&self, app_id: &str, room: &str) -> Vec<(&'static str, String)> {
         let mut env = vec![
             ("TILO_PACKAGE_ID", app_id.to_owned()),
             ("TILO_WORKSPACE_ID", room.to_owned()),
@@ -143,13 +147,13 @@ impl ServiceConnections {
 
 /// Own the connected sockets until spawn/exec finishes. Preparation is shared
 /// by the manifest launcher and independently attached native apps.
-pub struct Connections {
+pub(crate) struct Connections {
     _services: ServiceConnections,
 }
 impl Connections {
     /// # Errors
     /// Rejects an empty identity and returns connect or handshake errors.
-    pub fn prepare(
+    pub(crate) fn prepare(
         command: &mut Command,
         app_id: &str,
         room: &str,
@@ -201,7 +205,7 @@ pub fn launch(
 /// Open or create a private file, refusing symlinks and shared files.
 /// # Errors
 /// Rejects a file that is linked, shared or owned by someone else.
-pub fn private_file(path: &Path) -> io::Result<File> {
+pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
