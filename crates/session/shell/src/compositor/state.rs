@@ -50,7 +50,10 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
+use smithay::wayland::tablet_manager::TabletManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
@@ -78,10 +81,11 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
-    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit,
-    delegate_output, delegate_input_method_manager, delegate_pointer_constraints,
-    delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
+    delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
+    delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
+    delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
+    delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
@@ -631,6 +635,16 @@ pub struct State {
     /// only as [`crate::compositor::pointer_lock`] allows.
     pub pointer_constraints_state: PointerConstraintsState,
     pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
+    /// `zwp_tablet_manager_v2`: pens with pressure and tilt.
+    pub tablet_manager_state: TabletManagerState,
+    pub tablet_clients: crate::compositor::tablet::TabletClients,
+    /// `zwp_keyboard_shortcuts_inhibit_manager_v1`, granted as
+    /// [`crate::compositor::shortcut_inhibit`] allows.
+    pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
+    pub shortcut_inhibit: crate::compositor::shortcut_inhibit::ShortcutInhibit,
+    /// `wp_content_type_manager_v1`: a surface's hint that it shows video or
+    /// a game.
+    pub content_type_state: ContentTypeState,
     /// Local-input → client-surface routing state: the live foreign-surface
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
@@ -966,6 +980,10 @@ impl State {
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
+        let tablet_manager_state = TabletManagerState::new::<Self>(&display_handle);
+        let keyboard_shortcuts_inhibit_state =
+            KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
+        let content_type_state = ContentTypeState::new::<Self>(&display_handle);
         // Clipboard + primary selection + drag-and-drop, advertised before
         // the struct literal (which moves `display_handle`). Selection
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
@@ -1037,6 +1055,11 @@ impl State {
             relative_pointer_state,
             pointer_constraints_state,
             pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
+            tablet_manager_state,
+            tablet_clients: crate::compositor::tablet::TabletClients::default(),
+            keyboard_shortcuts_inhibit_state,
+            shortcut_inhibit: crate::compositor::shortcut_inhibit::ShortcutInhibit::default(),
+            content_type_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
@@ -2008,7 +2031,7 @@ impl State {
     }
 
     /// Mint a fresh `Serial` for input events — monotonic, and never wraps in practice (32-bit at 1kHz is 49 days of traffic).
-    fn next_serial(&mut self) -> Serial {
+    pub(crate) fn next_serial(&mut self) -> Serial {
         self.serial_counter = self.serial_counter.wrapping_add(1);
         Serial::from(self.serial_counter)
     }
@@ -4660,6 +4683,26 @@ delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
 delegate_relative_pointer!(State);
 delegate_pointer_constraints!(State);
+delegate_keyboard_shortcuts_inhibit!(State);
+delegate_content_type!(State);
+// `zwp_tablet_manager_v2`, as Smithay's `delegate_tablet_manager!` wires it
+// except that manager requests pass through `TabletSeatTracker` first, which
+// is how the compositor knows which clients take tablet input themselves.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::ZwpTabletManagerV2: ()
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::ZwpTabletManagerV2: ()
+] => crate::compositor::tablet::TabletSeatTracker);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_seat_v2::ZwpTabletSeatV2: smithay::wayland::tablet_manager::TabletSeatUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_tool_v2::ZwpTabletToolV2: smithay::wayland::tablet_manager::TabletToolUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_v2::ZwpTabletV2: smithay::wayland::tablet_manager::TabletUserData
+] => TabletManagerState);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);

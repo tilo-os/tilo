@@ -6489,6 +6489,27 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
+        // A pen goes to a tablet-aware client directly and stands in for the
+        // pointer everywhere else, so it expands into ordinary input here,
+        // in order, before the batch is dispatched.
+        if pending_events
+            .iter()
+            .any(|event| matches!(event, BackendEvent::Tablet(_)))
+        {
+            for event in std::mem::take(&mut pending_events) {
+                match event {
+                    BackendEvent::Tablet(input) => {
+                        pending_events.extend(client_input::route_tablet_event(
+                            &mut state,
+                            &frame_builder,
+                            &input,
+                            session.is_locked(),
+                        ));
+                    }
+                    other => pending_events.push_back(other),
+                }
+            }
+        }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -6733,19 +6754,27 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if state.pointer_lock.is_engaged()
+                    } else if (state.pointer_lock.is_engaged()
+                        || state.shortcut_inhibit.is_active())
                         && crate::compositor::pointer_lock::is_release_chord(
                             wev,
                             test_control_ctx.modifiers,
                         )
                     {
                         // Ctrl+Alt+Esc: always gets the pointer back from a
-                        // game that locked or confined it — ahead of the
-                        // client router, so the game cannot swallow it.
+                        // game that locked or confined it, and the shell
+                        // shortcuts back from an app that captured them —
+                        // ahead of the client router, so the app cannot
+                        // swallow it.
                         if let Some(change) = state.release_pointer_constraint() {
                             apply_pointer_constraint_change(backend.as_mut(), change);
                             frame_builder.with_chrome(|chrome| {
                                 chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        if state.suspend_shortcut_inhibit() {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::keys_captured(false));
                             });
                         }
                         session_changed = true;
@@ -7027,8 +7056,10 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw => {
+                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
                     // Redraw is implicit: the native loop paints every tick.
+                    // Pen events were expanded into client or pointer input
+                    // before the batch.
                 }
             }
         }
@@ -7695,6 +7726,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
             apply_pointer_constraint_change(backend.as_mut(), change);
+        }
+        let inhibit_allowed = !session.is_locked()
+            && !crate::shell::input_policy::chrome_captures_input(&frame_builder);
+        if state.sync_shortcut_inhibit(inhibit_allowed) == Some(true) {
+            frame_builder.with_chrome(|chrome| {
+                chrome.show_osd(crate::shell::osd::Osd::keys_captured(true));
+            });
+            injected_redraw_pending = true;
         }
 
         // Per-output HiDPI: tell each client the scale of its current display.
@@ -9253,7 +9292,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
-        | crate::shell::osd::OsdKind::InputSource(_) => {}
+        | crate::shell::osd::OsdKind::InputSource(_)
+        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
     }
 }
 

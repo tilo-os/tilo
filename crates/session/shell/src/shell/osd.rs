@@ -68,6 +68,9 @@ pub enum OsdKind {
     Magnifier { zoom: u8 },
     /// The keyboard input source just switched to.
     InputSource(OsdLabel),
+    /// The focused app takes every key, shell shortcuts included
+    /// (`captured`), or the shortcuts were just handed back.
+    KeysCaptured { captured: bool },
 }
 
 /// A short caption carried inline so a readout stays `Copy`: the slab is
@@ -188,6 +191,14 @@ impl Osd {
         }
     }
 
+    pub fn keys_captured(captured: bool) -> Self {
+        Self {
+            kind: OsdKind::KeysCaptured { captured },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     pub fn transport(t: Transport) -> Self {
         Self {
             kind: OsdKind::Transport(t),
@@ -301,6 +312,11 @@ impl Osd {
             OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
             OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
             OsdKind::InputSource(name) => name.as_str().to_string(),
+            OsdKind::KeysCaptured { captured: true } => format!(
+                "App receives all keys · {} restores shortcuts",
+                crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
+            ),
+            OsdKind::KeysCaptured { captured: false } => "Shortcuts restored".to_string(),
         }
     }
 
@@ -534,7 +550,7 @@ fn draw_glyph(
             },
             colors.text_primary,
         ),
-        OsdKind::KeyboardBacklight | OsdKind::InputSource(_) => {
+        OsdKind::KeyboardBacklight | OsdKind::InputSource(_) | OsdKind::KeysCaptured { .. } => {
             (ui::icons::Icon::Keyboard, colors.text_primary)
         }
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
