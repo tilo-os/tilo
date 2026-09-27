@@ -145,6 +145,7 @@ suites = [
   "os/tests/test_stage_kernel_checkpoint.py",
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
+  "os/tests/test_thin_app_selection.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
