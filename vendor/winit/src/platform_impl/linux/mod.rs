@@ -231,6 +231,16 @@ impl MonitorHandle {
     }
 
     #[inline]
+    pub fn physical_size_mm(&self) -> Option<(u32, u32)> {
+        match self {
+            #[cfg(x11_platform)]
+            MonitorHandle::X(_) => None,
+            #[cfg(wayland_platform)]
+            MonitorHandle::Wayland(m) => m.physical_size_mm(),
+        }
+    }
+
+    #[inline]
     pub fn size(&self) -> PhysicalSize<u32> {
         x11_or_wayland!(match self; MonitorHandle(m) => m.size())
     }

@@ -20,6 +20,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{MouseScrollDelta, WindowEvent};
 
+use crate::shell::i18n::t_args;
+
 pub(crate) struct CaptureMirrorHandoffLayer {
     pub rgba: Arc<[u8]>,
     pub width: u32,
@@ -82,7 +84,7 @@ impl<'a> CaptureSurfaceRequest<'a> {
             } => (
                 Image::from_rgba(rgba, width, height)
                     .with_fit(ImageFit::Contain)
-                    .with_alt(format!("Live capture: {title}")),
+                    .with_alt(t_args("capture-live-alt", &[("title", title.into())])),
                 preferred_size,
                 handoff_layers,
                 None,
@@ -97,7 +99,7 @@ impl<'a> CaptureSurfaceRequest<'a> {
                 };
                 let image = Image::from_rgba(rgba, width, height)
                     .with_fit(fit)
-                    .with_alt(format!("Pinned screenshot: {title}"));
+                    .with_alt(t_args("capture-pinned-alt", &[("title", title.into())]));
                 let preview_rgba: Vec<u8> = preview
                     .pixels
                     .into_iter()
@@ -109,7 +111,10 @@ impl<'a> CaptureSurfaceRequest<'a> {
                     u32::from(preview.rows.max(1)),
                 )
                 .with_fit(ImageFit::Fill)
-                .with_alt(format!("Pinned screenshot preview: {title}"));
+                .with_alt(t_args(
+                    "capture-pinned-preview-alt",
+                    &[("title", title.into())],
+                ));
                 (
                     image,
                     document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),

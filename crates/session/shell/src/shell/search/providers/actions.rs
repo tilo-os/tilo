@@ -1413,7 +1413,7 @@ impl Action {
             |st, _| {
                 crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
                     |err| {
-                        let message = err.user_message().to_string();
+                        let message = err.user_message();
                         st.push_warning_notification("Can't duplicate this tab", &message);
                         Err(ActionError::Refused(message))
                     },
@@ -1430,7 +1430,7 @@ impl Action {
             "Close the focused tab; its window closes with it if it was the last",
             |st, _| {
                 crate::shell::window_actions::close_active_tab(st).map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't close this tab", &message);
                     ActionError::Refused(message)
                 })
@@ -1457,7 +1457,7 @@ impl Action {
                 )
                 .map(|_| ())
                 .map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't split this tab", &message);
                     ActionError::Refused(message)
                 })
@@ -1474,7 +1474,7 @@ impl Action {
                 )
                 .map(|_| ())
                 .map_err(|err| {
-                    let message = err.user_message().to_string();
+                    let message = err.user_message();
                     st.push_warning_notification("Can't move this tab", &message);
                     ActionError::Refused(message)
                 })
@@ -1980,6 +1980,12 @@ impl SearchProvider for ActionsProvider {
     }
     fn available_in_active_app_scope(&self) -> bool {
         true
+    }
+    /// An address is looked up in the whole table. The shell offers more
+    /// actions than one palette page shows, so the first page of an empty
+    /// query would leave the later ones unreachable by id.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        self.query(ctx).into_iter().find(|result| result.id == id)
     }
     #[expect(
         clippy::too_many_lines,
@@ -2970,6 +2976,36 @@ mod tests {
                 doc_root: &automerge::ROOT,
             });
             assert!(out.iter().any(|r| r.id == "settings.open"));
+        }
+    }
+
+    /// Every offered action resolves by its address, however many are
+    /// offered: the table is longer than a palette page.
+    #[test]
+    fn every_offered_action_resolves_by_its_address() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let c = chrome_with_room();
+        c.borrow_mut().peer_sync_enabled = true;
+        let chrome = c.borrow();
+        let ctx = || SearchContext {
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let offered: Vec<String> = p.query(ctx()).into_iter().map(|result| result.id).collect();
+        assert!(
+            offered.len() > crate::shell::search::SearchBudget::PALETTE.max_results,
+            "the table is longer than a page, or this checks nothing: {}",
+            offered.len()
+        );
+        for id in &offered {
+            assert!(
+                p.resolve(id, ctx()).is_some_and(|result| &result.id == id),
+                "{id} is offered but does not resolve"
+            );
         }
     }
 

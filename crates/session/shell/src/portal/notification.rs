@@ -313,7 +313,7 @@ impl NotificationBackend {
         {
             let target = clone_field(notification, "default-action-target");
             specs.insert(action.clone(), ActionSpec { target });
-            rendered.push((action, "Open".to_string()));
+            rendered.push((action, crate::shell::i18n::t("portal-notification-open")));
         }
 
         let buttons = notification
