@@ -45,6 +45,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Power menu | Ctrl+Alt+Delete | Quick Settings power button |
 | Magnifier on/off | Super+Alt+8 | Settings → Accessibility |
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
+| Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same

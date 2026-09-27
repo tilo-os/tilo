@@ -1443,6 +1443,15 @@ impl SettingsApp {
                 };
                 "compose key updated"
             }
+            crate::actions::InputOperation::SetCapsLock { behavior } => {
+                prefs.input.caps_lock = crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
+                    .iter()
+                    .find(|(label, _)| *label == behavior)
+                    .ok_or("unsupported Caps Lock behavior")?
+                    .1
+                    .map(str::to_string);
+                "Caps Lock behavior updated"
+            }
             crate::actions::InputOperation::SetActiveSource { label } => {
                 let id = crate::input_sources::installed_catalog()
                     .into_iter()

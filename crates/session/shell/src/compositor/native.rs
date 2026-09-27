@@ -7599,6 +7599,14 @@ pub fn run() {
             if fullscreen_toggle {
                 toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
             }
+            let mut input_source = None;
+            frame_builder.with_chrome(|chrome| {
+                input_source = chrome.take_input_source_request();
+            });
+            if let Some(index) = input_source {
+                state.activate_keyboard_source(index);
+                backend.set_keyboard_source(index);
+            }
 
             // Protocol callbacks and the frame builder share one tree handle, so
             // adoption/destruction is immediately visible to chrome and persistence.
@@ -9240,7 +9248,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
-        | crate::shell::osd::OsdKind::Magnifier { .. } => {}
+        | crate::shell::osd::OsdKind::Magnifier { .. }
+        | crate::shell::osd::OsdKind::InputSource(_) => {}
     }
 }
 
