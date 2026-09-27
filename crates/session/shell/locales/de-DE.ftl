@@ -1852,9 +1852,6 @@ state-notice-newer-detail = { $path } wurde von einer neueren Tilo-Version gesch
 state-notice-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert, und diese Sitzung läuft ohne Speichern, das ist also ausgeschlossen.
 
 # Arbeitsbereichsübersicht: wer in einem Raum ist und was er teilt
-overview-empty-window = Leeres Fenster
-overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für dich
 overview-access-shared-one = Geteilt mit { $name }
 overview-access-shared-two = Geteilt mit { $first } und { $second }
 overview-access-shared-many = { $count ->
@@ -1865,12 +1862,6 @@ overview-items-shared = { $count ->
     [one] 1 Element geteilt
    *[other] { $count } Elemente geteilt
 }
-overview-presence-you = Du bist hier
-overview-presence-you-and-one = Du und { $name } seid hier
-overview-presence-you-and-many = Du und { $count } weitere Personen seid hier
-overview-presence-one = { $name } ist hier
-overview-presence-many = { $count } Personen sind hier
-overview-collaborators-here = { $count } Mitwirkende sind hier
 
 # Fenster und Dokumente, die die Shell anzeigt
 shell-window-restoring = Dieses Fenster wird wiederhergestellt …
