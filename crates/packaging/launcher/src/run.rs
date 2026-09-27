@@ -59,7 +59,7 @@ mod seccomp_fd_tests {
     fn both_seccomp_filters_precede_the_sandbox_arguments() {
         let compat = stage_seccomp_blob(&[1, 2, 3]).expect("compat filter fd");
         let baseline = stage_seccomp_blob(&[4, 5, 6]).expect("baseline filter fd");
-        let fds = SeccompFds {
+        let _fds = SeccompFds {
             clone3_compat: compat,
             baseline,
         };
@@ -3294,7 +3294,10 @@ mod managed_spawn_policy_tests {
                 vec![],
                 &options,
                 false,
-                tempfile::tempfile().unwrap().into(),
+                SeccompFds {
+                    clone3_compat: tempfile::tempfile().unwrap().into(),
+                    baseline: tempfile::tempfile().unwrap().into(),
+                },
                 vec![],
                 &crate::netgate::EgressDecision::Blocked,
                 None,
