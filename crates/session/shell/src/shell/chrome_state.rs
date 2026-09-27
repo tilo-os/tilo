@@ -2730,6 +2730,10 @@ impl ChromeState {
     }
 
     /// Called once per frame; no-op when no bridge is installed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one drain of the notification bridge, each event kind handled in place"
+    )]
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
