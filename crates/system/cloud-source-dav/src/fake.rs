@@ -297,6 +297,11 @@ fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(p, _)| p)
 }
 
+fn whole_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
 fn encode_path(path: &str) -> String {
     let mut out = String::new();
     for (i, segment) in path.split('/').enumerate() {
@@ -398,9 +403,14 @@ impl State {
                     modified: node.modified,
                 });
             }
+            let now = SystemTime::now();
             node.bytes = bytes;
-            node.etag = etag;
-            node.modified = SystemTime::now();
+            // Nextcloud's scanner keeps a file's ETag while its whole-second
+            // storage mtime is unchanged, even across an overwrite.
+            if !(nextcloud && whole_seconds(node.modified) == whole_seconds(now)) {
+                node.etag = etag;
+            }
+            node.modified = now;
             self.log(path);
         } else {
             self.seq = self.seq.saturating_sub(1);
@@ -764,6 +774,38 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
             Reply::status(204)
         }
         "REPORT" => sync_collection(state, request),
+        // Nextcloud sets a file's mtime from `{DAV:}lastmodified`, and a
+        // changed mtime gives the file a new ETag.
+        "PROPPATCH" if state.nextcloud => {
+            let Some(node) = state.nodes.get(path) else {
+                return Reply::status(404);
+            };
+            if !etag_matches(request, Some(node)) {
+                return Reply::status(412);
+            }
+            let body = request.body_text();
+            let Some(secs) = body
+                .split_once("<d:lastmodified>")
+                .and_then(|(_, rest)| rest.split_once("</d:lastmodified>"))
+                .and_then(|(secs, _)| secs.trim().parse::<u64>().ok())
+            else {
+                return Reply::status(400);
+            };
+            let etag = state.bump();
+            if let Some(node) = state.nodes.get_mut(path) {
+                node.modified = SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(secs))
+                    .unwrap_or(node.modified);
+                node.etag = etag;
+            }
+            state.log(path);
+            let body = state
+                .nodes
+                .get(path)
+                .map(|node| state.propstat(path, node, prefix))
+                .unwrap_or_default();
+            multistatus(&body, None)
+        }
         _ => Reply::status(405),
     }
 }
