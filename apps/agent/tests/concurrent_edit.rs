@@ -37,8 +37,6 @@ use typed_peer::{TypedPeer, document_mutation};
 
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 /// What the person types while the agent's app action is still in flight.
 const TYPED: &str = "!";

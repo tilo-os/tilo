@@ -29,9 +29,6 @@ use db_client::engine::MAX_QUERY_ROWS;
 use db_client::model::{Cell, ConnectionProfile, Engine};
 use db_client::session::Session;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
