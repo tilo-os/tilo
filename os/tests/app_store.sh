@@ -138,18 +138,22 @@ else
   bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
 fi
 
-if grep -q '^POLICY_MAX_TAPP_BYTES=5242880$' "$PACK" \
-   && grep -q 'MAX_TAPP_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
-   && ! grep -q 'RECOVERY_MAX_TAPP_BYTES' "$PACK"; then
-  ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
+SIZE_POLICY="$REPO/crates/packaging/tilo-app-package/max-app-bytes"
+policy_bytes=$(cat "$SIZE_POLICY")
+if grep -q 'crates/packaging/tilo-app-package/max-app-bytes' "$PACK" \
+   && ! grep -Eq 'POLICY_MAX_TAPP_BYTES=[0-9]' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_TAPP_BYTES' "$PACK" \
+   && grep -q 'include_str!("../max-app-bytes")' \
+        "$REPO/crates/packaging/tilo-app-package/src/lib.rs"; then
+  ok "pack-apps enforces the canonical tapp ceiling shared with the Rust checks, without app exceptions"
 else
-  bad "pack-apps does not enforce the canonical 5 MiB tapp ceiling uniformly"
+  bad "pack-apps does not enforce the canonical tapp ceiling from the shared policy file"
 fi
 
-weakening_output=$(MAX_TAPP_BYTES=5242881 "$PACK" 2>&1)
+weakening_output=$(MAX_TAPP_BYTES=$((policy_bytes + 1)) "$PACK" 2>&1)
 weakening_status=$?
 if [ "$weakening_status" -ne 0 ] \
-   && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
+   && grep -q "cannot exceed the $policy_bytes-byte application policy" <<<"$weakening_output"; then
   ok "pack-apps refuses an environment override that weakens the size policy"
 else
   bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
