@@ -393,14 +393,8 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
         let _broker = typed_peer::spawn(&sock);
-        let started = Instant::now();
-        while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // The broker binds on the spawning thread.
+        assert!(sock.exists(), "relay never bound");
 
         let room = typed_peer::room();
 
@@ -418,10 +412,10 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         // after a prospective invoker announces itself. Publishing here also
         // removes the race where the agent can inspect the snapshot before the
         // peer has processed its arrival event.
+        // The Hello returned once the broker acknowledged the peer's route,
+        // and publishing returned once the catalogue offered its actions, so
+        // the agent cannot race either.
         publish_word_processor_actions(&mut peer, &replica);
-        // Let the relay register the peer's Hello before the agent's frames
-        // can race it (the relay handles each connection on its own thread).
-        std::thread::sleep(Duration::from_millis(100));
 
         // The agent, on its own thread, once.
         let cfg = Config {
@@ -532,18 +526,13 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
         let _broker = typed_peer::spawn(&sock);
-        let started = Instant::now();
-        while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // The broker binds on the spawning thread.
+        assert!(sock.exists(), "relay never bound");
         let room = typed_peer::room();
 
-        let (files_thread, wp_peer, replica) = connect_files_and_word_processor(&sock, room);
-        std::thread::sleep(Duration::from_millis(100));
+        // Both Hellos return only once the broker acknowledged each route.
+        let (files_thread, files_stop, wp_peer, replica) =
+            connect_files_and_word_processor(&sock, room);
 
         // A room, and no record to tell the room's documents apart.
         let cfg = Config {
@@ -598,7 +587,10 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
             "the unrelated bullets survive: {b:?}"
         );
 
-        let _ = files_thread.join();
+        drop(files_stop);
+        files_thread
+            .join()
+            .expect("the file manager thread must not panic");
     }
 }
 
@@ -640,16 +632,23 @@ fn assert_seeds_collide() {
 
 /// Connect the file manager and the word processor to the same room —
 /// neither with a record, so nothing but the app id tells their documents
-/// apart.
+/// apart. The file manager keeps answering on its own thread until the
+/// returned sender is dropped.
 fn connect_files_and_word_processor(
     sock: &std::path::Path,
     room: Uuid,
-) -> (std::thread::JoinHandle<()>, UnixStream, AutoCommit) {
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Sender<()>,
+    UnixStream,
+    AutoCommit,
+) {
     // The file manager: a real document, in this room, that is not the
     // agent's business and never mentions it.
     // A typed collaboration manager stays on its owning thread.
     let files_socket = sock.to_path_buf();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let files_thread = std::thread::spawn(move || {
         let mut files_peer = UnixStream::connect(&files_socket);
         send(
@@ -663,7 +662,7 @@ fn connect_files_and_word_processor(
         )
         .unwrap();
         ready_tx.send(()).unwrap();
-        drive_files_peer(files_peer, seed_foreign());
+        drive_files_peer(files_peer, seed_foreign(), &stop_rx);
     });
     ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
 
@@ -680,15 +679,22 @@ fn connect_files_and_word_processor(
     )
     .unwrap();
     let replica = seed_colliding_document();
-    (files_thread, wp_peer, replica)
+    (files_thread, stop_tx, wp_peer, replica)
 }
 
 /// A file-manager connection on another route must never receive the directed
-/// request for the word-processor document.
-fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
-    files_peer.set_read_timeout(Some(Duration::from_millis(200)));
+/// request for the word-processor document. It answers any request for its
+/// own until `stop` disconnects, or a hang bound passes.
+fn drive_files_peer(
+    mut files_peer: UnixStream,
+    mut files_doc: AutoCommit,
+    stop: &std::sync::mpsc::Receiver<()>,
+) {
+    files_peer.set_read_timeout(Some(Duration::from_millis(50)));
     let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
+    while Instant::now() < deadline
+        && matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
+    {
         let Some(event) = recv(&mut files_peer) else {
             continue;
         };
@@ -716,7 +722,6 @@ fn drive_word_processor_to_table(
         match event {
             CollabEvent::DocumentSnapshotRequested { .. } if !answered => {
                 answered = true;
-                std::thread::sleep(Duration::from_millis(400));
                 publish_word_processor_actions(&mut wp_peer, &replica);
                 let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut wp_peer, &snap).unwrap();
@@ -784,14 +789,8 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The broker binds on the spawning thread.
+    assert!(sock.exists(), "relay never bound");
 
     let cfg = Config {
         endpoint: Some(sock),
@@ -851,14 +850,8 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
         let _broker = typed_peer::spawn(&sock);
-        let started = Instant::now();
-        while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // The broker binds on the spawning thread.
+        assert!(sock.exists(), "relay never bound");
         let room = typed_peer::room();
         let mut peer = UnixStream::connect(&sock);
         let hello = CollabRequest::Hello {
@@ -867,9 +860,9 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             record: Some(RECORD.into()),
             handle: Some("quinten".into()),
         };
+        // Returns once the broker acknowledged the peer's route.
         send(&mut peer, &hello).unwrap();
         let mut replica = seed_sequence_document();
-        std::thread::sleep(Duration::from_millis(100));
 
         let cfg = Config {
             endpoint: Some(sock),
@@ -991,14 +984,8 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
         let _broker = typed_peer::spawn(&sock);
-        let started = Instant::now();
-        while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // The broker binds on the spawning thread.
+        assert!(sock.exists(), "relay never bound");
 
         let room = typed_peer::room();
 
@@ -1009,9 +996,9 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
             record: Some(RECORD.into()),
             handle: Some("quinten".into()),
         };
+        // Returns once the broker acknowledged the peer's route.
         send(&mut peer, &hello).unwrap();
         let mut replica = seed_unanswerable_sequence_document();
-        std::thread::sleep(Duration::from_millis(100));
 
         let cfg = Config {
             endpoint: Some(sock),

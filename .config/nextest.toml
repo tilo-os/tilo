@@ -56,17 +56,16 @@ filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or t
 test-group = "compositor"
 priority = 90
 
-# Collaboration suites (modules of the agent `it` binary) share bounded socket resources.
+# Collaboration suites (modules of the agent `it` binary) share bounded socket
+# resources, so they run one at a time beside the rest of the pool.
 [[profile.default.overrides]]
 filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
-threads-required = "num-cpus"
 priority = 100
 
 [[profile.ci.overrides]]
 filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
-threads-required = "num-cpus"
 priority = 100
 
 # This real-time codec test needs an uncontended CPU budget.
