@@ -49,9 +49,23 @@ The Cloud frontend's monolithic module is unchanged in behaviour:
 Host tests (`cargo test -p tilo-browser-runtime`) always cover the peer modules
 and the catalogue's apps.
 
+## The web app collection
+
+`runtime-dylib` must be the superset of what every thin app in the default
+collection needs; a crate built with other features is another crate with other
+symbol names. The web core follows the same rule: it is built in one Cargo
+invocation with the apps of the web collection (`TILO_WEB_COLLECTION`, default
+`ebook word-processor`; recorded in `runtime.json`), so each crate they share
+with the core carries every feature any of them needs. An app outside the
+collection builds as long as it needs nothing more; otherwise
+`build-web-app.sh` names the crates and it joins the collection, which changes
+the runtime ABI id. `cargo tree` for each root separates the core's crates from
+the app's own.
+
 ## The core
 
-`build-web-core.sh` builds `-p tilo-browser-runtime --features dylink`:
+`build-web-core.sh` builds `-p tilo-browser-runtime --features dylink` (with
+the collection, as above):
 
 - `build.rs` passes `--export-all --export-table --growable-table` to the
   cdylib link, so the core exports every symbol, its function table (growable)
@@ -64,9 +78,14 @@ and the catalogue's apps.
   native thin apps.
 - `src/side_module.rs` exports `tilo_dl_alloc` (memory for a side module's
   data) and `tilo_runtime_register_app(&'static ApplicationDefinition)`.
-- The mangled wasm-bindgen internals `--export-all` exposed are removed
-  (`wasm-tools.mjs strip-exports`), then `wasm-bindgen --keep-lld-exports`,
-  `wasm-opt -Oz`, and the ABI id section is added.
+- The mangled wasm-bindgen internals `--export-all` exposed (items of the
+  bindgen crates, `WasmDescribe` impls) are removed
+  (`wasm-tools.mjs strip-bindgen-internals`); a generic of another crate that
+  was merely instantiated in `wasm_bindgen` stays, since apps link against it.
+  PIC code takes a function's address through a constant GOT global, which
+  wasm-bindgen's descriptor interpreter cannot follow, so
+  `wasm-opt --simplify-globals --precompute` folds those first. Then
+  `wasm-bindgen --keep-lld-exports`, `wasm-opt -Oz`, and the ABI id section.
 - `build/core-profile.txt` lists code size by crate and the largest functions
   (from the name section, before `wasm-opt` drops it).
 
@@ -114,12 +133,11 @@ The id is stored as the custom section `tilo.runtime_abi` in the core
 `build-web-app.sh OUT PACKAGE`:
 
 1. Reads the app id and runtime from the package's `tilo-app.toml`.
-2. Builds `-p tilo-browser-runtime -p PACKAGE` in one Cargo invocation with the
-   core's features, so shared crates get the core's features. A shared crate
-   whose Cargo metadata hash differs from the core's means the app enables a
-   feature the core lacks: the build stops and names it (add the feature to the
-   core's dependencies). The core's ABI id is recomputed from this build and
-   must equal the core's (its sources must not have changed since).
+2. Builds the app in the same Cargo invocation as the core: the core, the web
+   app collection and the app. A shared crate whose Cargo metadata hash differs
+   from the core's means the app enables a feature the core lacks: the build
+   stops and names it. The core's ABI id is recomputed from this build and must
+   equal the core's (its sources must not have changed since).
 3. Compiles a generated shim, the only generated code:
    `tilo_app_register()` calls `tilo_runtime_register_app(<crate>::definition())`.
 4. Links the shim with every object of the crates in the app's graph that the
@@ -183,6 +201,32 @@ path, with size and SHA-256 (`font-loader.mjs` verifies both). The five
 `browser_startup` fonts are the mount barrier; everything else (Noto Sans CJK,
 32.7 MB; emoji; math; symbols; Arabic, Hebrew, Devanagari, Bengali, Thai) is
 fetched only when text demands it, or during idle prewarm within its budget.
+
+## Sizes
+
+`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 (collection
+Books + Writer, no `cloud`):
+
+| module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
+|---|---:|---:|---:|---:|
+| core | 56.93 MiB | 13.35 MiB | 41.32 MiB | 12.00 MiB |
+| Books (`so.tilo.ebook`) | 1.68 MiB | 407 KiB | 1.31 MiB | 380 KiB |
+| Writer (`so.tilo.word-processor`) | 3.43 MiB | 774 KiB | 2.73 MiB | 743 KiB |
+
+| fonts | count | raw | brotli |
+|---|---:|---:|---:|
+| eager (mount barrier) | 5 | 3.51 MiB | 1.43 MiB |
+| lazy (on text demand) | 10 | 38.28 MiB | 16.18 MiB |
+
+The same core graph linked as an ordinary cdylib (no `dylink`, no whole
+crates) is 15.5 MB after `-Oz`, 5.2 MB brotli. Dynamic linking therefore costs
+the core about 28 MB (7 MB brotli): `--export-all` keeps every function of every
+linked object alive, and the toolkit crates are linked whole. `build/core-profile.txt`
+lists what that keeps; beyond the toolkit itself it is mostly crates `tilo_ui`
+reaches (`tilo_peer_state`, `openmls`, `tilo_delivery_protocol`,
+`tilo_agent_control_protocol`, the `image` decoders, `regex`). The next step is to
+export the toolkit crates plus only what the collection's apps import, instead
+of everything, under the same superset rule that already governs features.
 
 ## Tests
 
