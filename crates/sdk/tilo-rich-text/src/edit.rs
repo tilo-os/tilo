@@ -163,6 +163,9 @@ impl<H: Host> Commit<'_, H> {
             RichTextAction::InsertParagraph { after, text } => {
                 self.after(after).map(|block| (block, 0, chars(text)))
             }
+            RichTextAction::AppendParagraph { text } => {
+                self.last().map(|block| (block, 0, chars(text)))
+            }
             _ => None,
         };
         if let Some((block, start, len)) = written.filter(|(_, _, len)| *len > 0)
@@ -179,6 +182,16 @@ impl<H: Host> Commit<'_, H> {
     fn after(&mut self, id: &str) -> Option<String> {
         self.host
             .read(self.doc, |state| body_neighbour(state, id, 1))
+            .flatten()
+    }
+
+    /// The body's last paragraph now.
+    fn last(&mut self) -> Option<String> {
+        self.host
+            .read(self.doc, |state| {
+                let body = state.body();
+                body.id_at(body.len().checked_sub(1)?).map(str::to_owned)
+            })
             .flatten()
     }
 
@@ -369,6 +382,16 @@ impl<H: Host> Commit<'_, H> {
                     .iter()
                     .find(|next| presented.contains_key(next.id.as_str()))
                 else {
+                    // Nothing to split: the text is the whole body.
+                    if !block.text.is_empty() {
+                        self.apply(&RichTextAction::AppendParagraph {
+                            text: block.text.clone(),
+                        })?;
+                        if let Some(minted) = self.last() {
+                            self.resolved.insert(block.id.clone(), minted);
+                        }
+                        self.remark.insert(block.id.clone());
+                    }
                     continue;
                 };
                 let first = self.doc_id(&first.id).to_owned();

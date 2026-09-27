@@ -67,6 +67,8 @@ include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
+#[cfg(all(feature = "native", any(target_os = "android", test)))]
+mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
 #[cfg(all(windows, feature = "native"))]
@@ -180,6 +182,9 @@ pub enum UserEvent {
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
+    /// The soft keyboard queued edits for the focused field.
+    #[cfg(all(feature = "native", target_os = "android"))]
+    PlatformTextInput,
 }
 
 #[cfg(feature = "native")]

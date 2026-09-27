@@ -550,3 +550,29 @@ fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
         Some("Between")
     );
 }
+
+#[test]
+fn a_field_paragraph_forgotten_leaves_no_objects_behind() {
+    use automerge::transaction::Transactable;
+    let mut doc = Doc::new();
+    let field = doc
+        .put_object(automerge::ROOT, "field", automerge::ObjType::Map)
+        .unwrap();
+    RichText::initialize_under(&mut doc, &field).unwrap();
+    // The first fills the empty paragraph; the second adds one.
+    for text in ["first", "second"] {
+        RichTextAction::AppendParagraph { text: text.into() }
+            .apply_under(&mut doc, &field)
+            .unwrap();
+    }
+    let mut state = RichText::read_under(&doc, &field).unwrap();
+    RichText::load(&mut state, &doc, &Demand::range(0..usize::MAX)).unwrap();
+    let ids = body_ids(&state);
+    assert_eq!(ids.len(), 2);
+    let before = state.objects.len();
+    assert!(before >= 2 * ids.len(), "each paragraph's map and text");
+    state.forget_paragraph(&ids[0]);
+    assert!(state.objects.len() < before);
+    state.forget_paragraph(&ids[1]);
+    assert!(state.objects.is_empty(), "{:?}", state.objects);
+}

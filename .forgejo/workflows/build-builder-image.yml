@@ -28,6 +28,7 @@ on:
       - "vendor/git/rustypipe-0.11.4/**"
       - "vendor/wayland-backend/**"
       - "tools/ci/check-build-env.sh"
+      - "tools/ci/install-android-ndk.sh"
       - "tools/ci/builder_workflow_plan.py"
       - "tools/ci/install-pdfium.sh"
       - "tools/ci/measure.sh"

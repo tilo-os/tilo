@@ -27,6 +27,13 @@ impl FilePolicy {
     fn is_private(self) -> bool {
         !matches!(self, Self::Ordinary(Privacy::Inherit))
     }
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        expect(
+            clippy::unused_self,
+            reason = "only macOS and Linux have a bounded-owner policy"
+        )
+    )]
     pub(crate) fn error(self, kind: io::ErrorKind, message: &'static str) -> io::Error {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if matches!(self, Self::BoundedOwner) {
@@ -148,10 +155,17 @@ impl Directory {
     // Permission-profile admission is shared with held directory validation;
     // it does not impose the private child's owner/mode policy on ancestors.
     #[cfg_attr(
-        not(target_os = "linux"),
+        target_os = "macos",
         expect(
             clippy::unused_self,
             clippy::unnecessary_wraps,
+            reason = "only Linux inspects the held directory's filesystem profile"
+        )
+    )]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            clippy::unused_self,
             reason = "only Linux inspects the held directory's filesystem profile"
         )
     )]

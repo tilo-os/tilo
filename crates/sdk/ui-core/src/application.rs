@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod host;
-pub use host::{ApplicationHost, NativeProcessHost};
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 
 pub type InstanceId = u64;
 pub type ComponentFactory =

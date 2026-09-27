@@ -46,6 +46,8 @@ extern crate runtime_dylib;
 use notes::shots::DEFAULT_SHOTS_VIEWPORT;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
+ui::android_main!();
+
 const SHOT_SCENARIOS: &[&str] = &[
     "first_note",
     "drawer",

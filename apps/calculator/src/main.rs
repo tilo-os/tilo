@@ -50,6 +50,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+ui::android_main!();
+
 /// Calculator binary entry point — see the module doc for the mode matrix.
 ///
 /// # Errors

@@ -75,7 +75,11 @@ TILO_PODMAN_BUILD_FLAGS=()
         ):
             self.write(path, "#!/bin/bash\nexit 0\n", executable=True)
         self.write("os/base-snapshot.env", "BASE_REF=registry.invalid/tilo/base:fixture\n")
-        self.write("os/rpms-snapshot.env", f"RPMS_REF={RPMS_PIN}\n")
+        self.write(
+            "os/dev/resolve-rpm-snapshot.sh",
+            f"#!/bin/bash\nprintf '%s\\n' '{RPMS_PIN}'\n",
+            executable=True,
+        )
         self.write(
             "os/kernel-snapshot.env",
             f"KERNEL_RPMS_X86_64_REF={KERNEL_PIN}\n"

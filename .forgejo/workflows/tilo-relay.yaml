@@ -35,6 +35,7 @@ on:
       - "crates/sdk/tilo-host/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/sdk/tilo-resource-macros/**"
+      - "crates/sdk/tilo-rich-text/**"
       - "crates/sdk/ui-core/**"
       - "crates/session/desktop-model/**"
       - "crates/session/desktop/**"
@@ -64,7 +65,8 @@ on:
       - "vendor/git/rustypipe-0.11.4/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
-      - "os/rpms-snapshot.env"
+      - "os/dev/rpm-snapshot-fingerprint.py"
+      - "os/dev/resolve-rpm-snapshot.sh"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/dev/verify-rpm-snapshot-buildkit.py"
       - "os/tests/test_rpm_snapshot_buildkit.py"
@@ -165,6 +167,7 @@ on:
       - "crates/sdk/tilo-host/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/sdk/tilo-resource-macros/**"
+      - "crates/sdk/tilo-rich-text/**"
       - "crates/sdk/ui-core/**"
       - "crates/session/desktop-model/**"
       - "crates/session/desktop/**"
@@ -193,7 +196,8 @@ on:
       - "vendor/git/rustypipe-0.11.4/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
-      - "os/rpms-snapshot.env"
+      - "os/dev/rpm-snapshot-fingerprint.py"
+      - "os/dev/resolve-rpm-snapshot.sh"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/dev/verify-rpm-snapshot-buildkit.py"
       - "os/tests/test_rpm_snapshot_buildkit.py"
@@ -338,14 +342,28 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: os/dev/require-cosign-authority.sh
 
-  build-and-push:
-    needs: [signing-preflight, applicability]
+  ensure-rpms:
+    needs: applicability
     if: >-
       ${{
         always() &&
         (github.event_name != 'pull_request' ||
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')
+        true
+      }}
+    uses: ./.forgejo/workflows/snapshot-rpms.yml
+    secrets: inherit
+
+  build-and-push:
+    needs: [signing-preflight, applicability, ensure-rpms]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') &&
+        needs.ensure-rpms.result == 'success' &&
+        needs.ensure-rpms.outputs.rpms_ref != ''
       }}
     runs-on: runner
     timeout-minutes: 120
@@ -445,17 +463,10 @@ jobs:
           echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
           echo "base=$BASE_REF"
 
-      - name: Load the pinned RPMS_REF
+      - name: Resolve RPMS_REF by package-set fingerprint
         run: |
-          if [ ! -f os/rpms-snapshot.env ]; then
-            echo "::error::os/rpms-snapshot.env missing — run the snapshot-rpms workflow first"
-            exit 1
-          fi
-          . os/rpms-snapshot.env
-          if [ -z "${RPMS_REF:-}" ]; then
-            echo "::error::RPMS_REF not set in os/rpms-snapshot.env"
-            exit 1
-          fi
+          set -euo pipefail
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"             || { echo "::error::no fingerprint-resolved RPMS_REF; wait for snapshot-rpms on main"; exit 1; }
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
