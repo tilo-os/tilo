@@ -3,11 +3,13 @@
 //!
 //! This is what the runtime serves on stock macOS or a foreign Linux
 //! desktop. The desktop session hosts the same brokers with its native
-//! adapters (launcher, governance, durable owner, peer network); here each
-//! of those host services is absent, and the broker answers as it does for
-//! any host that does not provide one.
+//! adapters (launcher, governance, durable owner, peer network). Here the
+//! profile launches its installed apps through the platform launcher
+//! ([`crate::apps`]) and records the grants people give apps for other
+//! apps' actions in its own workspace; every other host service is absent,
+//! and the broker answers as it does for any host that does not provide one.
 
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, profile, unix};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -18,7 +20,7 @@ use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::BrokerChannels,
     collab_outbound::PeerPublisher,
-    services::{HostServices, WorkspaceAuthority},
+    services::{AppActionGrants, HostServices, LauncherServices, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -84,6 +86,7 @@ impl RuntimeServices for Standalone {
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
+        let apps = Arc::new(apps::Apps::from_env(root, &room_id));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity = tilo_identity_host::broker::spawn(
@@ -100,6 +103,12 @@ impl RuntimeServices for Standalone {
             HostServices {
                 native_certificates: Some(Arc::new(Certificates)),
                 launchable_catalogue: Some(root.join("state/launchable-actions.json")),
+                launcher: Some(Arc::clone(&apps) as Arc<dyn LauncherServices>),
+                app_action_access: Some(apps.access_resolver()),
+                app_action_grants: Some(Arc::new(ProfileGrants {
+                    workspace: Arc::clone(&workspace),
+                    apps,
+                })),
                 ..HostServices::default()
             },
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -278,6 +287,108 @@ impl ProfileWorkspace {
         drop(tree);
         atomic_file::write_with_mode(path, &bytes, 0o600)
     }
+
+    /// Whether this host governs the tree: it keeps its own file, rather
+    /// than reading the desktop session's.
+    fn governs(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Apply `change` to this host's own tree and persist it. `None`, with
+    /// the tree unchanged, when this host does not govern it, `change`
+    /// declines, or the result cannot be saved.
+    fn update<R>(&self, change: impl FnOnce(&mut DesktopTree) -> Option<R>) -> Option<R> {
+        let path = self.path.as_ref()?;
+        let mut tree = self.tree.write().ok()?;
+        let before = tree.clone();
+        let result = change(&mut tree)?;
+        let saved = serde_json::to_vec_pretty(&*tree)
+            .map_err(io::Error::other)
+            .and_then(|bytes| atomic_file::write_with_mode(path, &bytes, 0o600));
+        if let Err(error) = saved {
+            *tree = before;
+            drop(tree);
+            tracing::warn!(%error, "runtime workspace change not saved; undone");
+            return None;
+        }
+        drop(tree);
+        Some(result)
+    }
+}
+
+/// Grants people give applications for other apps' actions, recorded in
+/// this host's own workspace by the person who gave them and noted in its
+/// history. A profile adopted from the desktop session is that host's to
+/// govern: nothing is granted or written here.
+struct ProfileGrants {
+    workspace: Arc<ProfileWorkspace>,
+    apps: Arc<apps::Apps>,
+}
+
+impl AppActionGrants for ProfileGrants {
+    fn may_grant(&self, room: &str, person: &str) -> bool {
+        self.workspace.governs()
+            && self.workspace.tree.read().is_ok_and(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|workspace| workspace.room.to_string() == room)
+                    .is_some_and(|workspace| {
+                        workspace.may_administer_at(&person.to_owned(), unix_now())
+                    })
+            })
+    }
+
+    fn record(
+        &self,
+        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        capability: collab_types::caps::CapOverride,
+        answer: tilo_action_broker::app_actions::AppActionConsent,
+    ) -> Option<String> {
+        if !self.workspace.governs() {
+            return None;
+        }
+        let context = tilo_desktop_model::grants::app_action_grant_context(
+            &request.room,
+            &self.apps.display_name(&request.app_id),
+            &self.apps.display_name(&request.target_app),
+            &request.action_label,
+            answer.lifetime(),
+        );
+        let now = unix_now();
+        self.workspace.update(|tree| {
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == request.room)?
+                .id;
+            let stored = tree.grant_in_workspace_at(workspace, &request.person, capability, now)?;
+            tree.append_workspace_effect_receipt_at(
+                workspace,
+                tilo_actions::InvocationId::new(),
+                &request.person,
+                context,
+                tilo_actions::EffectReceiptStatus::Succeeded,
+                i64::try_from(now).unwrap_or(i64::MAX),
+            );
+            Some(stored.id)
+        })
+    }
+
+    fn revoke(&self, room: &str, capability: &str) {
+        self.workspace.update(|tree| {
+            tree.workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room.to_string() == room)?
+                .revoke_capability(capability)
+                .then_some(())
+        });
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 impl WorkspaceAuthority for ProfileWorkspace {

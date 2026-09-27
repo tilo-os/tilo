@@ -25,6 +25,7 @@ use std::{
     process::{Child, Command},
 };
 
+mod apps;
 pub mod cli;
 pub mod daemon;
 pub mod mcp;

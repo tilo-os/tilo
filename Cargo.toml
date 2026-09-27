@@ -183,6 +183,7 @@ members = [
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
+    "crates/packaging/installed-apps",
     "crates/packaging/launcher",
     "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
