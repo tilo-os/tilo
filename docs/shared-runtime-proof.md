@@ -77,7 +77,8 @@ the durable document owner, durable collaboration history, channel encryption
 and the peer network. The broker answers for each as for any host without it.
 A profile the desktop session already served is adopted read only, keeping its
 room and owner; a new profile gets its own `desktop.json`. App auto-attach
-finds `tilo-runtime-mcp`; set `TILO_RUNTIME_BINARY` to use `tilo-runtime`.
+prefers `tilo-runtime` outside the Tilo desktop and uses only `tilo-runtime-mcp`
+inside it (see runtime-mcp.md); `TILO_RUNTIME_BINARY` overrides both.
 
 The same service composition is now available through the native
 `tilo-runtime-mcp` stdio entry point. Its user-supplied manifest launches apps
