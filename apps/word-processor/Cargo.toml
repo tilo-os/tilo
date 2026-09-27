@@ -36,6 +36,8 @@ tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+# Comment replies are written in the SDK rich-text editor, embedded.
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
