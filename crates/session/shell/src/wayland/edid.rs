@@ -272,9 +272,14 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
             .push(TransferCharacteristics::AribStdB67);
     }
 
-    // Luminance descriptors. Absent bytes = 0 = unknown; we leave
-    // the defaults from `default_sdr` in place if the encoding says
-    // "not populated".
+    // Luminance descriptors. Absent bytes = 0 = unknown. An HDR sink's
+    // luminance is its own: the 100-nit SDR defaults would claim a peak it
+    // never reported, so they are cleared to "unknown" (0) first.
+    if info.supported_transfers.iter().any(|t| t.is_hdr()) {
+        info.max_luminance_cd_m2 = 0;
+        info.max_frame_average_luminance_cd_m2 = 0;
+        info.min_luminance_micro_cd_m2 = 0;
+    }
     if let Some(&raw) = body.get(2).filter(|&&b| b != 0) {
         let code = f32::from(raw);
         let max_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
@@ -632,6 +637,22 @@ mod tests {
                 info.supported_transfers
                     .contains(&TransferCharacteristics::AribStdB67)
             );
+        }
+
+        // Phase `an_hdr_block_without_luminance_bytes_reports_them_unknown`.
+        {
+            let mut edid = hdr_edid_blob();
+            edid[140] = 0;
+            edid[141] = 0;
+            edid[142] = 0;
+            let info = parse_hdr_display_info(&edid);
+            assert!(
+                info.supported_transfers
+                    .contains(&TransferCharacteristics::SmpteSt2084)
+            );
+            assert_eq!(info.max_luminance_cd_m2, 0, "not the 100-nit SDR default");
+            assert_eq!(info.max_frame_average_luminance_cd_m2, 0);
+            assert_eq!(info.min_luminance_micro_cd_m2, 0);
         }
 
         // Phase `short_blob_returns_sdr_default`.

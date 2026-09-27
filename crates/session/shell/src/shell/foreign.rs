@@ -184,6 +184,159 @@ impl PixelOrder {
     }
 }
 
+/// How the CPU import reads one advertised buffer format.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg(any(test, target_os = "linux"))]
+enum CpuLayout {
+    /// 8-bit RGBA family, swizzled byte for byte.
+    Rgba8(PixelOrder),
+    /// 10-bit RGB in one little-endian word: `XB30`/`AB30` keep red in the
+    /// low bits, `XR30`/`AR30` blue.
+    Rgb10 { red_low: bool, opaque: bool },
+    /// Half-float RGBA, red first (`AB4H`/`XB4H`).
+    Half { opaque: bool },
+    /// 10-bit 4:2:0 YUV in two planes (`P010`).
+    P010,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl CpuLayout {
+    #[cfg(target_os = "linux")]
+    fn for_fourcc(code: Fourcc) -> Option<Self> {
+        if let Some(order) = PixelOrder::for_fourcc(code) {
+            return Some(Self::Rgba8(order));
+        }
+        match code {
+            Fourcc::Xbgr2101010 => Some(Self::Rgb10 {
+                red_low: true,
+                opaque: true,
+            }),
+            Fourcc::Abgr2101010 => Some(Self::Rgb10 {
+                red_low: true,
+                opaque: false,
+            }),
+            Fourcc::Xrgb2101010 => Some(Self::Rgb10 {
+                red_low: false,
+                opaque: true,
+            }),
+            Fourcc::Argb2101010 => Some(Self::Rgb10 {
+                red_low: false,
+                opaque: false,
+            }),
+            Fourcc::Xbgr16161616f => Some(Self::Half { opaque: true }),
+            Fourcc::Abgr16161616f => Some(Self::Half { opaque: false }),
+            Fourcc::P010 => Some(Self::P010),
+            _ => None,
+        }
+    }
+
+    fn planes(self) -> usize {
+        if matches!(self, Self::P010) { 2 } else { 1 }
+    }
+
+    /// Bytes per pixel of the first plane.
+    fn bytes_per_pixel(self) -> u32 {
+        match self {
+            Self::Rgba8(_) | Self::Rgb10 { .. } => 4,
+            Self::Half { .. } => 8,
+            Self::P010 => 2,
+        }
+    }
+}
+
+/// IEEE 754 half → `f32`, for half-float client buffers.
+#[cfg(any(test, target_os = "linux"))]
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1F);
+    let mantissa = f32::from(bits & 0x3FF);
+    match exponent {
+        0 => sign * mantissa * 2.0_f32.powi(-24),
+        31 => {
+            if mantissa == 0.0 {
+                sign * f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => sign * (1.0 + mantissa / 1024.0) * 2.0_f32.powi(exponent.saturating_sub(15)),
+    }
+}
+
+/// Convert one row of a 10-bit or half-float buffer to RGBA8: SDR signals
+/// quantise to 8 bits, HDR ones (PQ/HLG per the surface's description) are
+/// tone-mapped for the SDR desktop.
+#[cfg(any(test, target_os = "linux"))]
+fn convert_row(
+    layout: CpuLayout,
+    src: &[u8],
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+    out: &mut Vec<u8>,
+) {
+    let tonemap = crate::shell::hdr_tonemap::HdrTonemapConfig::default();
+    let mut push = |rgb: [f32; 3], alpha: u8| {
+        let [r, g, b] =
+            crate::shell::hdr_tonemap::tonemap_rgb_signal_to_srgb8(rgb, colorimetry, tonemap);
+        out.extend_from_slice(&[r, g, b, alpha]);
+    };
+    match layout {
+        CpuLayout::Rgba8(order) => swizzle_row(order, src, src.len() / 4, out),
+        CpuLayout::Rgb10 { red_low, opaque } => {
+            for px in src.chunks_exact(4) {
+                let word = u32::from_le_bytes([
+                    px.first().copied().unwrap_or(0),
+                    px.get(1).copied().unwrap_or(0),
+                    px.get(2).copied().unwrap_or(0),
+                    px.get(3).copied().unwrap_or(0),
+                ]);
+                let channel = |shift: u32| {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a 10-bit code is exactly representable in f32"
+                    )]
+                    let code = (word.wrapping_shr(shift) & 0x3FF) as f32;
+                    code / 1023.0
+                };
+                let (low, mid, high) = (channel(0), channel(10), channel(20));
+                let rgb = if red_low {
+                    [low, mid, high]
+                } else {
+                    [high, mid, low]
+                };
+                let alpha_bits = u8::try_from(word.wrapping_shr(30) & 0b11).unwrap_or(3);
+                push(
+                    rgb,
+                    if opaque {
+                        0xFF
+                    } else {
+                        alpha_bits.saturating_mul(85)
+                    },
+                );
+            }
+        }
+        CpuLayout::Half { opaque } => {
+            for px in src.chunks_exact(8) {
+                let half = |index: usize| {
+                    half_to_f32(u16::from_le_bytes([
+                        px.get(index).copied().unwrap_or(0),
+                        px.get(index.saturating_add(1)).copied().unwrap_or(0),
+                    ]))
+                };
+                let rgb = [half(0), half(2), half(4)].map(|c| if c.is_finite() { c } else { 0.0 });
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "alpha is clamped to 0..=255 before the cast"
+                )]
+                let alpha = (half(6).clamp(0.0, 1.0) * 255.0).round() as u8;
+                push(rgb, if opaque { 0xFF } else { alpha });
+            }
+        }
+        // Two planes; converted by `convert_p010` instead.
+        CpuLayout::P010 => {}
+    }
+}
+
 /// Convert one row of `width` pixels laid out per `order` into RGBA,
 /// appending to `out` — a free function so unit tests can pin the channel mapping without a GPU or wayland connection.
 #[cfg(any(test, target_os = "linux"))]
@@ -238,11 +391,12 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
             format.modifier,
         )));
     }
+    let layout = CpuLayout::for_fourcc(format.code)
+        .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     let planes = dmabuf.num_planes();
-    if planes != 1 {
+    if planes != layout.planes() {
         return Err(DmabufImportError::MultiPlanar(planes));
     }
-    PixelOrder::for_fourcc(format.code).ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     Ok(())
 }
 
@@ -257,17 +411,24 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
     let format = dmabuf.format();
-    let order = PixelOrder::for_fourcc(format.code)
+    let layout = CpuLayout::for_fourcc(format.code)
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
+    let colorimetry =
+        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+    if layout == CpuLayout::P010 {
+        return import_p010(dmabuf, out, colorimetry);
+    }
 
     let width = dmabuf.width();
     let height = dmabuf.height();
     let stride = dmabuf.strides().next().unwrap_or(0);
     let offset = dmabuf.offsets().next().unwrap_or(0);
-    if width == 0 || height == 0 || stride < width.saturating_mul(4) {
+    let row_bytes = (width as usize).saturating_mul(layout.bytes_per_pixel() as usize);
+    if width == 0 || height == 0 || (stride as usize) < row_bytes {
         return Err(DmabufImportError::InvalidDimensions {
             width,
             height,
@@ -316,7 +477,6 @@ pub fn import_dmabuf_rgba(
             .saturating_mul(height as usize)
             .saturating_mul(4),
     );
-    let row_bytes = (width as usize).saturating_mul(4);
     // SAFETY: the mapping covers `[0, map_len)`; every row slice below is
     // inside `[offset, offset + stride*height) ⊆ [0, map_len)`, checked
     // above. The slice is dropped before `munmap`.
@@ -330,7 +490,7 @@ pub fn import_dmabuf_rgba(
         let Some(row_slice) = mapped.get(start..end) else {
             continue;
         };
-        swizzle_row(order, row_slice, width as usize, out);
+        convert_row(layout, row_slice, colorimetry, out);
     }
 
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
@@ -339,6 +499,95 @@ pub fn import_dmabuf_rgba(
     unsafe {
         libc::munmap(ptr, map_len);
     }
+    Ok((width, height))
+}
+
+/// CPU-import a linear two-plane `P010` buffer (luma, then interleaved
+/// chroma, 10 bits in the top of each `u16`) into RGBA8: BT.2020 YCbCr,
+/// tone-mapped when the surface describes a PQ or HLG signal.
+#[cfg(target_os = "linux")]
+fn import_p010(
+    dmabuf: &Dmabuf,
+    out: &mut Vec<u8>,
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+) -> Result<(u32, u32), DmabufImportError> {
+    let width = dmabuf.width();
+    let height = dmabuf.height();
+    let invalid = |stride: u32| DmabufImportError::InvalidDimensions {
+        width,
+        height,
+        stride,
+    };
+    let strides: Vec<u32> = dmabuf.strides().collect();
+    let offsets: Vec<u32> = dmabuf.offsets().collect();
+    let fds: Vec<i32> = dmabuf.handles().map(|fd| fd.as_raw_fd()).collect();
+    let (Some(&y_stride), Some(&uv_stride)) = (strides.first(), strides.get(1)) else {
+        return Err(DmabufImportError::MultiPlanar(strides.len()));
+    };
+    if width == 0 || height == 0 || y_stride < width.saturating_mul(2) || uv_stride < width {
+        return Err(invalid(y_stride));
+    }
+    let chroma_rows = height.div_ceil(2);
+    let plane = |index: usize, stride: u32, rows: u32| -> Result<Vec<u16>, DmabufImportError> {
+        let fd = *fds
+            .get(index)
+            .or_else(|| fds.first())
+            .ok_or(DmabufImportError::MultiPlanar(0))?;
+        let offset = offsets.get(index).copied().unwrap_or(0) as usize;
+        let len = (stride as usize).saturating_mul(rows as usize);
+        let map_len = offset.checked_add(len).ok_or_else(|| invalid(stride))?;
+        // SAFETY: as in `import_dmabuf_rgba`: a read-only shared mapping of
+        // a live dma-buf fd owned by `dmabuf`, unmapped before returning.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                map_len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return Err(DmabufImportError::MapFailed(errno));
+        }
+        sync_dmabuf(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+        // SAFETY: the mapping covers `[0, map_len)` and the slice is dropped
+        // before `munmap`.
+        let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
+        let samples = mapped
+            .get(offset..map_len)
+            .unwrap_or_default()
+            .chunks_exact(2)
+            .map(|pair| {
+                u16::from_le_bytes([
+                    pair.first().copied().unwrap_or(0),
+                    pair.get(1).copied().unwrap_or(0),
+                ])
+            })
+            .collect();
+        sync_dmabuf(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+        // SAFETY: exactly the pointer and length `mmap` returned.
+        unsafe {
+            libc::munmap(ptr, map_len);
+        }
+        Ok(samples)
+    };
+    let luma = plane(0, y_stride, height)?;
+    let chroma = plane(1, uv_stride, chroma_rows)?;
+    let rgba = crate::shell::hdr_tonemap::tonemap_p010_to_rgba8(
+        &luma,
+        &chroma,
+        y_stride / 2,
+        uv_stride / 2,
+        width,
+        height,
+        colorimetry,
+        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+    );
+    out.clear();
+    out.extend_from_slice(&rgba);
     Ok((width, height))
 }
 
@@ -405,6 +654,9 @@ struct ForeignEntry {
     /// is applied. Publishing earlier would expose pending state as current.
     #[cfg(any(test, target_os = "linux"))]
     ready_captures: HashMap<u64, ReadyCapture>,
+    /// The image description the client attached (`wp_color_management`),
+    /// read when a 10-bit or YUV buffer is converted for display.
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
 }
 
 impl ForeignEntry {
@@ -425,6 +677,7 @@ impl ForeignEntry {
             first_seen: Instant::now(),
             mapped: false,
             presented: false,
+            colorimetry: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
@@ -826,10 +1079,10 @@ impl AsyncDmabufCapture {
                         {
                             *rgba = previous;
                         }
-                        let result =
-                            decode_dmabuf(&job.payload, rgba).map(|(width, height, route)| {
-                                (width, height, CaptureRoute::Dmabuf(route))
-                            });
+                        let colorimetry = store().colorimetry(job.surface);
+                        let result = decode_dmabuf(&job.payload, rgba, colorimetry).map(
+                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
+                        );
                         let accepted =
                             store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
                         if !accepted {
@@ -1034,7 +1287,11 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
 /// GPU import is required for device-local Vulkan buffers; CPU mmap remains
 /// the fallback for linear system-memory buffers and machines without EGL.
 #[cfg(target_os = "linux")]
-fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, DmabufRoute), String> {
+fn decode_dmabuf(
+    dmabuf: &Dmabuf,
+    rgba: &mut Vec<u8>,
+    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+) -> Result<(u32, u32, DmabufRoute), String> {
     let gpu_error = match crate::compositor::render_node::advertised() {
         Some(node) => match crate::compositor::gpu_import::with_importer(node, |importer| {
             importer.import(dmabuf, rgba)
@@ -1045,7 +1302,7 @@ fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, Dmabu
         None => Some("no dmabuf main device was advertised".to_string()),
     };
 
-    match import_dmabuf_rgba(dmabuf, rgba) {
+    match import_dmabuf_rgba(dmabuf, rgba, colorimetry) {
         Ok((width, height)) => Ok((width, height, DmabufRoute::CpuMmap)),
         Err(cpu_error) => Err(match gpu_error {
             Some(gpu_error) => format!("{cpu_error}; GPU import also failed: {gpu_error}"),
@@ -1055,6 +1312,16 @@ fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, Dmabu
 }
 
 impl ForeignFrameStore {
+    /// The image description the surface's client last attached.
+    #[cfg(target_os = "linux")]
+    fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|entry| entry.colorimetry)
+    }
+
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
         let mut guard = self
             .entries
@@ -1152,6 +1419,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         client: Client,
         dmabuf: Dmabuf,
+        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     ) -> Option<(u64, Barrier)> {
         let token = self
             .next_capture
@@ -1159,6 +1427,7 @@ impl ForeignFrameStore {
             .wrapping_add(1);
         self.with_entry(id, |entry| {
             entry.capture_tokens.push_back(token);
+            entry.colorimetry = colorimetry;
         });
         let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
         match worker {
@@ -3005,6 +3274,67 @@ mod tests {
         swizzle_row_rgba_passes_channels_through();
         #[cfg(target_os = "linux")]
         pixel_order_rejects_non_rgba_fourcc();
+    }
+
+    #[test]
+    fn ten_bit_and_half_float_rows_convert_for_the_sdr_desktop() {
+        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        // XB30: red in the low bits. Full red, half green, zero blue.
+        let word: u32 = 0xC008_03FF; // red 1023, green 512, padding set
+        let mut out = Vec::new();
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque: true,
+            },
+            &word.to_le_bytes(),
+            sdr,
+            &mut out,
+        );
+        assert_eq!(out, vec![255, 128, 0, 255]);
+        // XR30 swaps red and blue.
+        let mut out = Vec::new();
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: false,
+                opaque: false,
+            },
+            &word.to_le_bytes(),
+            sdr,
+            &mut out,
+        );
+        assert_eq!(out, vec![0, 128, 255, 255]);
+        // Half float: 1.0 = 0x3C00, 0.5 = 0x3800, alpha 0.5.
+        let px: Vec<u8> = [0x3C00_u16, 0x3800, 0x0000, 0x3800]
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect();
+        let mut out = Vec::new();
+        convert_row(CpuLayout::Half { opaque: false }, &px, sdr, &mut out);
+        assert_eq!(out, vec![255, 128, 0, 128]);
+        assert!((half_to_f32(0x3C00) - 1.0).abs() < f32::EPSILON);
+        assert!((half_to_f32(0xC000) + 2.0).abs() < f32::EPSILON);
+        assert!(half_to_f32(0x0001) > 0.0, "subnormals decode");
+        // A PQ signal is tone-mapped rather than shown raw: PQ 0.58
+        // (~200 cd/m² of a 1000 cd/m² master) lands darker than the
+        // 148/255 an SDR reading of the same code would give.
+        let pq = crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry();
+        let mid: u32 = 0x2529_4A52; // 594 in every channel
+        let mut out = Vec::new();
+        convert_row(
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque: true,
+            },
+            &mid.to_le_bytes(),
+            pq,
+            &mut out,
+        );
+        let red = out.first().copied().unwrap_or(0);
+        assert!(
+            (1..148).contains(&red),
+            "tone-mapped below the raw 148, got {out:?}"
+        );
     }
 
     /// A tab is 1200x800. These are the sizes a client hands us.

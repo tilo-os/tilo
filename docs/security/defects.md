@@ -530,7 +530,7 @@ Observed twice:
   not been buildable from `main` all morning, and nothing about it was specific to any of those
   commits.
 
-`docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
+`docs/supply-chain.md` claims builds are reproducible across time. `set-<fingerprint>` resolution +
 `os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
 evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
 integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
