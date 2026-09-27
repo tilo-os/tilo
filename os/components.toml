@@ -318,7 +318,7 @@ packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
   "music/audio", "music/live", "video-player/decode",
-  "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
+  "camera/live-capture", "tube/live", "tube/media",
   "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
   "video-editor/gst",
 ]

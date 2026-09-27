@@ -525,18 +525,17 @@ fn hunk_preview(h: &MergeHunk) -> String {
 /// different conflict. The occurrence number only distinguishes byte-equal
 /// hunks, which are semantically interchangeable until one changes.
 fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut hasher = fnv::FnvHasher::default();
     for (section, lines) in [&h.base, &h.ours, &h.theirs].into_iter().enumerate() {
         // Separate base/ours/theirs as well as individual lines: otherwise
         // `base=[a], ours=[b]` would hash like `base=[a,b], ours=[]`.
-        for byte in [u8::try_from(section).unwrap_or(0)]
-            .into_iter()
-            .chain(lines.iter().flat_map(|line| line.bytes().chain([0xff])))
-        {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        std::hash::Hasher::write_u8(&mut hasher, u8::try_from(section).unwrap_or(0));
+        for line in lines {
+            std::hash::Hasher::write(&mut hasher, line.as_bytes());
+            std::hash::Hasher::write_u8(&mut hasher, 0xff);
         }
     }
+    let hash = std::hash::Hasher::finish(&hasher);
     format!("diffmerge.conflict:{hash:016x}:{occurrence}")
 }
 

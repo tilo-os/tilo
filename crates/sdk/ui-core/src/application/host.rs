@@ -250,6 +250,21 @@ impl NativeProfile {
         })
     }
 
+    /// This process's own profile and continuity instance, when the trusted
+    /// launcher started it as an instance of a room's app.
+    pub(crate) fn of_launch() -> Option<(Self, InstanceId)> {
+        let environment = NativeProcessEnvironment::capture();
+        let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
+        let root = environment.persistent_profile_root().ok()?;
+        let room = environment
+            .workspace_id
+            .as_deref()
+            .or(environment.quick_workspace_id.as_deref());
+        Self::open(&root, room)
+            .ok()
+            .map(|profile| (profile, instance))
+    }
+
     pub fn store(&self) -> &Rc<dyn durable_store::DurableStore> {
         &self.store
     }
@@ -323,12 +338,9 @@ fn stable_instance_id(app_id: &str) -> InstanceId {
     // FNV-1a is deliberately fixed rather than DefaultHasher, whose output is
     // not a persistence contract. The app id makes standalone view keys unique
     // even though InstanceViewStore itself is shared below the profile root.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in app_id.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, app_id.as_bytes());
+    std::hash::Hasher::finish(&hasher)
 }
 
 fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
@@ -864,7 +876,7 @@ mod native_process_tests {
             profile.store(),
             probe::APP,
             room,
-            &carried,
+            &crate::record::transfer::Origin::Record(carried.clone()),
             crate::record::transfer::Retirement::Moved,
         )
         .unwrap();

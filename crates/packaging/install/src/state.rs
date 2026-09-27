@@ -143,12 +143,9 @@ fn sanitise(raw: &str) -> String {
 
 /// The same FNV-1a the launcher uses for the same purpose.
 fn fnv1a(raw: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in raw.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 fn measure(dir: &Path) -> (u64, usize) {

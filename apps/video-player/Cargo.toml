@@ -22,6 +22,7 @@ default = ["decode"]
 decode = ["media/decode"]
 
 [dependencies]
+fnv.workspace = true
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

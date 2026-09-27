@@ -209,12 +209,9 @@ pub fn is_trustable(path: &Path) -> bool {
 fn stable_id(raw: &str) -> String {
     // FNV-1a. Not a security property — this only has to be deterministic and
     // short enough to read in `perm list`.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in raw.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 #[cfg(test)]
