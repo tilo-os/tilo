@@ -245,7 +245,8 @@ jobs:
     if: >-
       ${{
         always() &&
-        github.event_name != 'pull_request' &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
@@ -262,6 +263,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install snapshot verification tools
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           ./os/dev/install-cached-cosign.sh
@@ -279,6 +281,7 @@ jobs:
           fi
       - name: Resolve the exact signed RPM snapshot fingerprint
         id: resolve
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           ./os/dev/resolve-rpm-snapshot.sh || {
