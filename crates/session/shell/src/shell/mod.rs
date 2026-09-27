@@ -1289,27 +1289,24 @@ fn open_legacy_document_from_files(
 ) -> Result<(), String> {
     let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
     if let Some(app) = native_app {
-        let path = path
-            .canonicalize()
-            .map_err(|error| {
-                crate::shell::i18n::t_args(
-                    "shell-path-open-failed",
-                    &[
-                        ("path", path.display().to_string().into()),
-                        ("error", error.to_string().into()),
-                    ],
-                )
-            })?;
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| {
-                crate::shell::i18n::t_args(
-                    "shell-path-read-failed",
-                    &[
-                        ("path", path.display().to_string().into()),
-                        ("error", error.to_string().into()),
-                    ],
-                )
-            })?;
+        let path = path.canonicalize().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-open-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-read-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
         let title = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
