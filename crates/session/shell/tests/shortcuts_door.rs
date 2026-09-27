@@ -25,6 +25,10 @@
 //! denying refuses, and with nobody present nothing is asked and the call is
 //! refused. An application opening starts a shortcut with the application's
 //! id bound as its input.
+//!
+//! A run started by a person at the screen asks them instead: its
+//! confirmations and questions appear in the shell's sheet, where an answer
+//! continues the run and Cancel stops it before anything else is applied.
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -1896,4 +1900,195 @@ fn with_nobody_present_the_call_is_refused_without_asking() {
     door.serve_briefly();
     assert!(door.app.served.is_empty(), "nothing ran");
     assert!(invoker_draft_grants(&door).is_empty());
+}
+
+/// A compositor session sharing the door's workspaces and broker, and the
+/// person it acts for.
+fn session_host(door: &Door) -> shell::shell::overlay_host::ShellOverlayHost {
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+        std::sync::Arc::clone(&door.membership),
+        false,
+    );
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("the built-in shortcut table is valid");
+    host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
+    host
+}
+
+fn archive_grant() -> PermissionProfileRule {
+    PermissionProfileRule::grant(
+        Scope::Action {
+            app: FIXTURE.into(),
+            action: "archive".into(),
+        },
+        Verb::Write,
+    )
+}
+
+/// Start `shortcut` from the palette's path, as the session's person.
+fn run_interactively(door: &Door, shortcut: &str) -> u64 {
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .start_interactive_shortcut_run(
+            &Caller::local_person(session_person()).in_room(ROOM.to_string()),
+            &ROOM.to_string(),
+            shortcut,
+            Map::new(),
+        )
+        .expect("the run starts")
+}
+
+/// Serve the fixture until the shell shows a sheet; what it shows.
+fn await_sheet(
+    door: &mut Door,
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+) -> shell::shell::portal_dialog::DialogView {
+    loop {
+        assert!(Instant::now() < door.deadline, "no sheet was shown");
+        door.app.pump();
+        host.pump_shortcut_step_prompts();
+        if let Some(view) = host.sheet_view() {
+            return view;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn type_text(host: &mut shell::shell::overlay_host::ShellOverlayHost, text: &str) {
+    for character in text.chars() {
+        press(
+            host,
+            winit::keyboard::Key::Character(character.to_string().into()),
+            winit::keyboard::ModifiersState::empty(),
+        );
+    }
+}
+
+fn press_named(
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    key: winit::keyboard::NamedKey,
+) {
+    press(
+        host,
+        winit::keyboard::Key::Named(key),
+        winit::keyboard::ModifiersState::empty(),
+    );
+}
+
+#[test]
+fn a_confirmation_step_is_approved_in_the_sheet_and_the_run_continues() {
+    let mut door = Door::open();
+    let mut tidy = triggered_draft("tidy", Vec::new());
+    tidy.steps = vec![invoke_step("archive", "archive", &[])];
+    tidy.output = None;
+    tidy.grant.push(archive_grant());
+    door.save_as(&Caller::local_person(session_person()), &tidy)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "tidy");
+    let sheet = await_sheet(&mut door, &mut host);
+    assert_eq!(sheet.title(), "Archive inbox?");
+    assert!(
+        sheet.detail().contains("Inbox"),
+        "the sheet names what is acted on: {}",
+        sheet.detail()
+    );
+    assert!(door.app.served.is_empty(), "nothing runs before the answer");
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["archive"]);
+    assert!(host.sheet_view().is_none(), "the sheet is gone");
+}
+
+#[test]
+fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
+    let mut door = Door::open();
+    let mut ask = triggered_draft("ask", Vec::new());
+    ask.steps = vec![
+        Step::new(
+            "title",
+            StepKind::Ask {
+                param: ActionParam::required("title", ParamType::Text, "Title of the draft"),
+            },
+        ),
+        Step::new(
+            "token",
+            StepKind::Ask {
+                param: ActionParam::required("token", ParamType::Secret, "Publishing token"),
+            },
+        ),
+        invoke_step("draft", "draft", &[("title", Binding::step("title", ""))]),
+    ];
+    ask.output = None;
+    door.save_as(&Caller::local_person(session_person()), &ask)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "ask");
+    assert_eq!(
+        await_sheet(&mut door, &mut host).title(),
+        "Title of the draft"
+    );
+    type_text(&mut host, "notes");
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+
+    assert_eq!(
+        await_sheet(&mut door, &mut host).title(),
+        "Publishing token"
+    );
+    type_text(&mut host, "s3");
+    assert_eq!(
+        host.sheet_field_display().as_deref(),
+        Some("••"),
+        "a secret answer is masked on screen"
+    );
+    press_named(&mut host, winit::keyboard::NamedKey::Enter);
+
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(
+        door.app.served,
+        [(
+            "draft".to_string(),
+            json!({"title": "notes"}).as_object().unwrap().clone()
+        )],
+        "the answer is bound into the next step"
+    );
+    let report = serde_json::to_value(&door.finished_runs()[0].report).unwrap();
+    let recorded = report.to_string();
+    assert!(
+        !recorded.contains("s3") && recorded.contains("[redacted]"),
+        "the secret is redacted from the report: {recorded}"
+    );
+}
+
+#[test]
+fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
+    let mut door = Door::open();
+    let mut tidy = triggered_draft("tidy-then-draft", Vec::new());
+    tidy.steps.insert(0, invoke_step("archive", "archive", &[]));
+    tidy.grant.push(archive_grant());
+    door.save_as(&Caller::local_person(session_person()), &tidy)
+        .expect("saved");
+    let mut host = session_host(&door);
+
+    let job = run_interactively(&door, "tidy-then-draft");
+    await_sheet(&mut door, &mut host);
+    press_named(&mut host, winit::keyboard::NamedKey::Escape);
+    match door.job_to_end(job) {
+        InvocationUpdate::Failed { error, .. } => {
+            assert!(error.message.contains("declined"), "{}", error.message);
+        }
+        other => panic!("a cancelled run stops: {other:?}"),
+    }
+    door.serve_briefly();
+    assert!(door.app.served.is_empty(), "nothing was applied");
+    assert!(host.sheet_view().is_none());
 }

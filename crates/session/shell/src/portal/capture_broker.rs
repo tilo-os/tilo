@@ -250,15 +250,28 @@ impl CaptureBroker {
     #[must_use]
     pub fn with_system_defaults() -> Self {
         let mut broker = Self::new();
+        use crate::shell::i18n::t;
         for (id, label, kind) in [
             (
                 "default-microphone",
-                "Default microphone",
+                t("portal-capture-default-microphone"),
                 CaptureKind::Microphone,
             ),
-            ("default-camera", "Default camera", CaptureKind::Camera),
-            ("primary-display", "Primary display", CaptureKind::Screen),
-            ("system-audio", "System audio", CaptureKind::SystemAudio),
+            (
+                "default-camera",
+                t("portal-capture-default-camera"),
+                CaptureKind::Camera,
+            ),
+            (
+                "primary-display",
+                t("portal-capture-primary-display"),
+                CaptureKind::Screen,
+            ),
+            (
+                "system-audio",
+                t("portal-capture-system-audio"),
+                CaptureKind::SystemAudio,
+            ),
         ] {
             let _ =
                 broker.register_source(id, label, kind, LocalCaptureHandle::SystemDefault(kind));

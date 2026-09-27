@@ -29,8 +29,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-automation = { path = "../../crates/collab/automation" }
 accounts = { path = "../../crates/system/accounts" }
-# Remote WebDAV/Nextcloud files: the shared bounded DAV client.
-tilo-dav = { path = "../../crates/system/tilo-dav" }
+# Remote account folders are named exactly as the storage daemon's cloud
+# service names its mounts (`cloud_source::tree::mount_names`).
+cloud-source = { path = "../../crates/system/cloud-source" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }

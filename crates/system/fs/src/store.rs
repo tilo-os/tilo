@@ -607,7 +607,7 @@ impl ContentStore {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
         let deadline = tokio::time::Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(EVICTION_HANG_BOUND)
             .unwrap_or_else(tokio::time::Instant::now);
         loop {
             let mut remaining = false;
@@ -1149,6 +1149,12 @@ async fn migrate_legacy_auto_tags(store: &FsStore, cache_dir: &Path) -> Result<(
     atomic_file::write(&marker, OWNED_TAG_MIGRATION_MARKER_CONTENTS)?;
     Ok(())
 }
+
+/// How long an eviction waits for the blob store's GC to delete the selected
+/// blobs. The wait ends as soon as the next pass removes them; a pass over a
+/// large store on a loaded disk can take seconds, so this bound only catches
+/// a GC that has stopped.
+const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
 
 fn eviction_gc(live: Arc<RwLock<Option<HashSet<Hash>>>>) -> GcConfig {
     GcConfig {

@@ -35,8 +35,10 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
-const GC_TIMEOUT: Duration = Duration::from_secs(90);
+/// The daemons fsync their stores dozens of times before they mount, on a
+/// runner disk shared with everything else. Every wait ends as soon as its
+/// condition holds, so this bound only catches a hang.
+const HANG_BOUND: Duration = Duration::from_secs(300);
 const PAYLOAD: &[u8] = b"separate-process exact-share payload";
 
 struct MountedProcess {
@@ -49,14 +51,12 @@ struct MountedProcess {
 
 impl MountedProcess {
     fn wait_for_line(&self, expected: &str) {
-        let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let line = self.output.recv_timeout(remaining).unwrap_or_else(|error| {
-                panic!(
-                    "process did not emit {expected:?}: {error}; output was:\n{}",
-                    self.logs.lock().unwrap().join("\n")
-                )
+                let output = self.logs.lock().unwrap().join("\n");
+                panic!("process did not emit {expected:?}: {error}; output was:\n{output}")
             });
             if line.contains(expected) {
                 return;
@@ -74,7 +74,7 @@ impl MountedProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
         while self.child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
@@ -284,10 +284,8 @@ fn wait_for_process<T>(
 ) -> T {
     wait_for(timeout, || {
         if let Some(status) = process.child.try_wait().unwrap() {
-            panic!(
-                "mounted process exited with {status}; output was:\n{}",
-                process.logs.lock().unwrap().join("\n")
-            );
+            let output = process.logs.lock().unwrap().join("\n");
+            panic!("mounted process exited with {status}; output was:\n{output}");
         }
         inspect()
     })
@@ -308,7 +306,7 @@ async fn create_view_link_at(
     record_id: FileRecordId,
     expires_at_ms: u64,
 ) -> ShareControlResultV1 {
-    let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+    let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
     let mut stream = loop {
         match tokio::net::UnixStream::connect(socket).await {
             Ok(stream) => break stream,
@@ -443,7 +441,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     host.wait_for_line("Mounting QuickFS");
     let host_file = host_mount.join("shared.bin");
-    let record_bytes = wait_for_process(&mut host, PROCESS_TIMEOUT, || {
+    let record_bytes = wait_for_process(&mut host, HANG_BOUND, || {
         get_xattr(&host_file, fs::syncstate::RECORD_ID_XATTR).ok()
     });
     let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
@@ -479,9 +477,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &viewer_clock,
     );
     viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let viewer_file = wait_for_process(&mut viewer, PROCESS_TIMEOUT, || {
-        one_visible_file(&viewer_mount)
-    });
+    let viewer_file = wait_for_process(&mut viewer, HANG_BOUND, || one_visible_file(&viewer_mount));
     let write_error = std::fs::write(&viewer_file, b"forbidden").unwrap_err();
     assert_eq!(write_error.raw_os_error(), Some(libc::EROFS));
 
@@ -497,7 +493,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     assert_eq!(std::fs::read(&viewer_file).unwrap(), PAYLOAD);
 
     let availability_path = viewer_cache.join("availability.json");
-    let observation = wait_for_process(&mut viewer, PROCESS_TIMEOUT, || {
+    let observation = wait_for_process(&mut viewer, HANG_BOUND, || {
         let registry = AvailabilityRegistry::open(&availability_path).ok()?;
         let record = registry.get(record_id)?;
         (record.replica_observations.len() == 1
@@ -532,11 +528,11 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         b"evict",
     )
     .unwrap();
-    wait_for_process(&mut viewer, GC_TIMEOUT, || {
+    wait_for_process(&mut viewer, HANG_BOUND, || {
         let registry = AvailabilityRegistry::open(&availability_path).ok()?;
         (registry.get(record_id)?.residency == Residency::NotResident).then_some(())
     });
-    wait_for_process(&mut viewer, PROCESS_TIMEOUT, || {
+    wait_for_process(&mut viewer, HANG_BOUND, || {
         (get_xattr(&viewer_file, fs::syncstate::SYNC_XATTR)
             .ok()?
             .as_slice()
@@ -572,11 +568,11 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &viewer_clock,
     );
     restarted_viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let restarted_file = wait_for_process(&mut restarted_viewer, PROCESS_TIMEOUT, || {
+    let restarted_file = wait_for_process(&mut restarted_viewer, HANG_BOUND, || {
         one_visible_file(&viewer_mount)
     });
     assert_eq!(std::fs::read(&restarted_file).unwrap(), PAYLOAD);
-    wait_for_process(&mut restarted_viewer, PROCESS_TIMEOUT, || {
+    wait_for_process(&mut restarted_viewer, HANG_BOUND, || {
         (get_xattr(&restarted_file, fs::syncstate::SYNC_XATTR)
             .ok()?
             .as_slice()
@@ -618,7 +614,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &loss_clock,
     );
     loss_viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let loss_file = wait_for_process(&mut loss_viewer, PROCESS_TIMEOUT, || {
+    let loss_file = wait_for_process(&mut loss_viewer, HANG_BOUND, || {
         one_visible_file(&loss_mount)
     });
     set_xattr(
@@ -628,7 +624,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     )
     .unwrap();
     assert_eq!(std::fs::read(&loss_file).unwrap(), PAYLOAD);
-    wait_for_process(&mut loss_viewer, PROCESS_TIMEOUT, || {
+    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
         let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
         let record = registry.get(record_id)?;
         (record.residency
@@ -644,11 +640,11 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         b"evict",
     )
     .unwrap();
-    wait_for_process(&mut loss_viewer, GC_TIMEOUT, || {
+    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
         let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
         (registry.get(record_id)?.residency == Residency::NotResident).then_some(())
     });
-    wait_for_process(&mut loss_viewer, PROCESS_TIMEOUT, || {
+    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
         (get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
             .ok()?
             .as_slice()

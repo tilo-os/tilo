@@ -73,6 +73,16 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
                 with self.subTest(arguments=arguments):
                     self.assertNotEqual(self.run_verify((BUILDROOT,), (BUILDROOT,),
                                                         arguments=arguments).returncode, 0)
+        with self.subTest(phase="verifies_a_pinned_other_architecture"):
+            other = "aarch64" if ARCH == "x86_64" else "x86_64"
+            registry = "arm64" if other == "aarch64" else "amd64"
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other,
+                                     registry_arch=registry,
+                                     arguments=(KERNEL, "--architecture", other))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other,
+                                     registry_arch=registry)
+            self.assertNotEqual(result.returncode, 0)
         with self.subTest(phase="requires_the_kernel_identity_and_one_environment"):
             for bound in ((), (BUILDROOT, "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)):
                 with self.subTest(bound=bound):

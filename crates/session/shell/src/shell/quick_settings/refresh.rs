@@ -291,7 +291,7 @@ fn display_brightness(
                 .iter()
                 .find(|output| output.descriptor.label() == level.connector);
             let name = match output {
-                Some(output) if output.builtin => "Built-in display".to_owned(),
+                Some(output) if output.builtin => crate::shell::i18n::t("display-identify-builtin"),
                 Some(output) => output
                     .descriptor
                     .monitor
@@ -300,7 +300,7 @@ fn display_brightness(
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| level.connector.clone()),
                 None if qs::brightness::is_builtin_connector(&level.connector) => {
-                    "Built-in display".to_owned()
+                    crate::shell::i18n::t("display-identify-builtin")
                 }
                 None => level.connector.clone(),
             };

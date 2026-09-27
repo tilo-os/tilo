@@ -368,11 +368,9 @@ class CanaryIdentity(unittest.TestCase):
                             BUILD.index('name: Retain only successful cold acceptance'))
             self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                             BUILD.index('name: Retain only successful warm acceptance'))
-            replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
-            self.assertIn("if: github.ref == 'refs/heads/main'", replication)
-            self.assertIn('replicate-builder-index.py', replication)
-            self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder', replication)
-            self.assertIn('podesta-burst-usw2-tilo-builder-replication', replication)
+            # The CI hosts pull the builder from registry.tilo.so through their
+            # node cache; nothing mirrors it into a cloud registry.
+            self.assertNotIn('dkr.ecr.', BUILD)
         restart_fixture(self)
         with self.subTest(phase="reuse_never_reaches_signing_or_promotion"):
             signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]

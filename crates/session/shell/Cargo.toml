@@ -49,6 +49,8 @@ tempfile.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
+# The emoji picker's catalogue, search, skin tones and recents.
+emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
 secret-vault = { path = "../../system/secret-vault" }
@@ -249,6 +251,12 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+# Pairing-broker tests talk to a local broker on a loaded runner; the
+# toolkit's test support bounds that exchange only against a hang.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+# Parses the locale catalogues the way the runtime does, so a German entry
+# that would silently fall back to English fails a test.
+fluent.workspace = true
 # Network actor tests run an in-process relay to talk to.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
@@ -298,6 +306,9 @@ pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"
+# The compositor's own input method connection, which commits text the
+# shell inserts (a picked emoji) while no trusted input method owns the seat.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",
