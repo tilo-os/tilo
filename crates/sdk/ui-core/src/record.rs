@@ -1207,6 +1207,7 @@ pub struct RecordSet {
 
 struct Reserved {
     generation: u64,
+    kind: RecordKind,
     /// The durable owner reserved for a store-backed record; `None` for a
     /// portable reservation, whose cache has no single-writer owner.
     store: Option<Rc<app_state::DocOwner>>,
@@ -1363,6 +1364,20 @@ impl RecordSet {
     /// the record currently checked out — its document is the live one.
     pub fn peek(&self, id: &RecordId) -> Option<&AutoCommit> {
         self.open.get(id).and_then(|p| p.doc.as_ref())
+    }
+
+    /// Primary stays `record=None` on every host.
+    fn wire_route(
+        &self,
+        id: &RecordId,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        let room =
+            uuid::Uuid::parse_str(&self.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        Ok(if id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(&self.package_id, room)
+        } else {
+            crate::collaboration::RouteSpec::record(&self.package_id, room, id.as_str())
+        })
     }
 
     /// Native caller has already read this exact route through its admitted SDK
@@ -2511,13 +2526,26 @@ impl RecordStore {
             .peek(&checkout.id)
             .ok_or(RecordOpenError::MissingRecord)?;
         validate_identity(doc, checkout, &set.home)?;
-        let room =
-            uuid::Uuid::parse_str(&set.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
-        Ok(if checkout.id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(&set.package_id, room)
-        } else {
-            crate::collaboration::RouteSpec::record(&set.package_id, room, checkout.id.as_str())
-        })
+        set.wire_route(&checkout.id)
+    }
+
+    /// The route native component admission joins before the factory runs:
+    /// the open record's, or a live New reservation's, whose genesis the
+    /// factory has yet to write. The reservation is the custody proof there.
+    pub(crate) fn admission_route(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        {
+            let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+            if let Some(reserved) = set.pending.get(&checkout.id) {
+                if reserved.kind != checkout.kind {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                return set.wire_route(&checkout.id);
+            }
+        }
+        self.route(checkout)
     }
 
     /// Schedule this already committed History result through its existing writer.
@@ -2660,6 +2688,7 @@ impl RecordStore {
             want.id.clone(),
             Reserved {
                 generation,
+                kind: want.kind.clone(),
                 store: Some(Rc::new(owner)),
                 actor: None,
             },

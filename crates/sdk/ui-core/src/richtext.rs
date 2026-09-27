@@ -940,12 +940,9 @@ impl RichTextLayout {
             let Some(index) = stops.iter().position(|(_, stop)| *stop == position) else {
                 continue;
             };
-            let target = if right {
-                index.saturating_add(1).min(stops.len().saturating_sub(1))
-            } else {
-                index.saturating_sub(1)
-            };
-            return stops.get(target).map_or(position, |(_, stop)| *stop);
+            return stops
+                .get(Self::visual_step(&stops, index, right))
+                .map_or(position, |(_, stop)| *stop);
         }
 
         // Byte-only callers conventionally enter with Before affinity. At a
@@ -959,14 +956,39 @@ impl RichTextLayout {
             else {
                 continue;
             };
-            let target = if right {
-                index.saturating_add(1).min(stops.len().saturating_sub(1))
-            } else {
-                index.saturating_sub(1)
-            };
-            return stops.get(target).map_or(position, |(_, stop)| *stop);
+            return stops
+                .get(Self::visual_step(&stops, index, right))
+                .map_or(position, |(_, stop)| *stop);
         }
         position
+    }
+
+    /// The stop one visual step from `index`: the next one at another place
+    /// on the line. The end of one glyph and the start of the next are two
+    /// stops at the same place (after "H", before "i"); stepping onto the
+    /// other would leave the caret where it was.
+    fn visual_step(stops: &[(f32, TextPosition)], index: usize, right: bool) -> usize {
+        let Some((x, _)) = stops.get(index) else {
+            return index;
+        };
+        let mut target = index;
+        loop {
+            let next = if right {
+                target.checked_add(1).filter(|next| *next < stops.len())
+            } else {
+                target.checked_sub(1)
+            };
+            let Some(next) = next else {
+                return target;
+            };
+            target = next;
+            if stops
+                .get(target)
+                .is_some_and(|(at, _)| (at - x).abs() > 0.5)
+            {
+                return target;
+            }
+        }
     }
 
     /// Byte-only compatibility wrapper for visual caret motion.

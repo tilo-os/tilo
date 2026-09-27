@@ -312,7 +312,13 @@ pub struct Annotation {
     pub start: usize,
     pub end: usize,
     pub excerpt: String,
+    /// The note or comment's plain text: what search, labels and the
+    /// palette read.
     pub note: String,
+    /// The note or comment as written, as the editor shows it. Read from
+    /// the document, never serialized with the annotation.
+    #[serde(skip)]
+    pub blocks: Vec<ui::widget::BlockContent>,
     pub color: HiColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
@@ -338,6 +344,7 @@ impl Annotation {
             end: 0,
             excerpt: String::new(),
             note: String::new(),
+            blocks: Vec::new(),
             color: HiColor::Yellow,
             created: unix_now_ms(),
             group: id,
@@ -899,6 +906,9 @@ pub struct LibraryEntry {
     /// When the book was first added (ms since epoch), for a "recently added"
     /// reading of the shelf.
     pub added: u64,
+    /// Full BLAKE3 hash of the EPUB when its bytes are in a host content store
+    /// (`tilo_content`), where a device without the file finds them.
+    pub content: Option<String>,
 }
 
 /// Persisted shelf preferences: the sort order and whether finished books are

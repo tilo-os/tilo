@@ -29,7 +29,7 @@ else
 fi
 
 cache_driver_ok=1
-for workflow in build-builder-image.yml build-image.yml build-kernel.yml tilo-relay.yaml snapshot-rpms.yml; do
+for workflow in build-builder-image.yml build-image.yml build-kernel.yml release-relay.yml snapshot-rpms.yml; do
   file="$workflows/$workflow"
   if grep -Fq 'cache-to: type=registry' "$file" \
      && ! grep -Fq 'uses: ./.forgejo/actions/setup-buildx' "$file"; then
@@ -54,14 +54,14 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    tilo-relay.yaml|registry-server-image.yml) continue ;;
+    release-relay.yml|registry-server-image.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
     persistent_ok=0
   fi
 done
-grep -Fq "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}" "$workflows/tilo-relay.yaml" \
+grep -Fq "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}" "$workflows/release-relay.yml" \
   && grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'name="tilo-$TRUST-$digest"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'default: "false"' "$repo/.forgejo/actions/setup-buildx/action.yml" \

@@ -545,44 +545,6 @@ pub struct NativeDocumentReference {
     pub path: std::path::PathBuf,
 }
 
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
 /// The id of the person sitting at this machine. Derived from the device
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
@@ -666,7 +628,9 @@ pub struct WorkspaceTree {
     pub desktop: DesktopTree,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
     /// the source of truth for reads; this doc for peer change export.
-    /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
+    /// Not in `state.json`: saved beside it with its whole history (see
+    /// [`crate::shell::persist::state_doc_path`]), which Activity and
+    /// Replay read. Public so tests
     /// can synthesize change-blobs, but real consumers must go through
     /// [`Self::current_heads`] / [`Self::export_changes_since`] /
     /// [`Self::apply_changes`]: direct access bypasses the cache rebuild.
@@ -1262,6 +1226,20 @@ impl WorkspaceTree {
     /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
     /// id — the document stores real identity, this bridges the gap. A
     /// peer with no entry is labelled with its handle.
+    /// Every device the room names, by transport endpoint: the devices a
+    /// record of the room may be asked for.
+    pub fn room_peer_endpoints(&self, room: RoomId) -> Vec<iroh::EndpointId> {
+        let named = if self.governs_room(room) {
+            self.room_peer_names.get(&room).cloned().unwrap_or_default()
+        } else {
+            self.room_peer_names_in_doc(room)
+        };
+        named
+            .keys()
+            .filter_map(|peer| peer.parse::<iroh::EndpointId>().ok())
+            .collect()
+    }
+
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
         // Room documents aren't persisted, so a just-restarted machine
@@ -2331,8 +2309,9 @@ impl WorkspaceTree {
         Ok(landed)
     }
 
-    /// Seed the automerge doc from the cache. Idempotent (truncates
-    /// `workspaces` and re-fills it). Tests building literal trees
+    /// Seed the automerge doc from the cache. Idempotent and diff-aware:
+    /// it writes only what differs, so an unchanged tree adds no history
+    /// and a rename is one write. Tests building literal trees
     /// should call this to flow doc-side changes out via
     /// [`Self::export_changes_since`]. `active_strip`/`active_group`
     /// stay cache-only.
@@ -2688,16 +2667,15 @@ impl WorkspaceTree {
             );
             return None;
         }
-        let ws = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)?;
-        let id = ws.grant_as(grantor, cap)?;
-        let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
+        let stored = self.desktop.grant_in_workspace_at(
+            workspace_id,
+            grantor,
+            cap,
+            tilo_clock::unix_now(),
+        )?;
         self.doc_insert_capability(workspace_id, &stored);
         self.flush_to_disk();
-        Some(id)
+        Some(stored.id)
     }
 
     /// Revoke a capability in `workspace_id`, mirroring the removal to
@@ -3062,21 +3040,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.set_task_status_at(task_id, status, actor, now))
+            .cloned()
         else {
             return false;
         };
-        if task.status == status {
-            return false;
-        }
-        task.status = status;
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
@@ -3102,17 +3070,11 @@ impl WorkspaceTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+            .and_then(|workspace| workspace.append_task_audit_at(task_id, actor, summary, now))
+            .cloned()
         else {
             return false;
         };
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: summary.into(),
-        });
-        let task = task.clone();
         self.doc_upsert_workspace_task(workspace_id, &task);
         self.flush_to_disk();
         true
@@ -3143,47 +3105,20 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         invocation: tilo_actions::InvocationId,
         actor: &str,
-        mut context: tilo_actions::ActionContext,
+        context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
     ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        if workspace
-            .effect_receipts
-            .iter()
-            .any(|receipt| receipt.invocation == invocation)
-        {
-            return false;
-        }
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
-        context
-            .facets
-            .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
-        context.facets.push(tilo_actions::ActionFacet::new(
-            "tilo.invocation",
-            invocation.0.to_string(),
-        ));
-        redact_receipt_context(&mut context);
-        let receipt = WorkspaceEffectReceipt {
+        let Some(receipt) = self.desktop.append_workspace_effect_receipt_at(
+            workspace_id,
             invocation,
-            actor: bounded_receipt_text(actor, 160),
+            actor,
             context,
             status,
             completed_at,
+        ) else {
+            return false;
         };
-        workspace.effect_receipts.push(receipt.clone());
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();
         true

@@ -5,6 +5,7 @@
 //! this CLI at the commit the dependency is pinned to.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -191,14 +192,14 @@ impl Standalone {
             if UNPATCHED.contains(&name.as_str()) || !closure.contains(name) {
                 continue;
             }
-            let member = match patch.get("path").and_then(toml::Value::as_str) {
-                Some(path) => path.to_owned(),
-                None => match vendored_fork(&packages, name) {
-                    Some(member) => member,
+            let location = match patch.get("path").and_then(toml::Value::as_str) {
+                Some(path) => self.source.locate(path),
+                None => match git_patch(patch) {
+                    Some(location) => location,
                     None => continue,
                 },
             };
-            patches.push(format!("{name} = {{ {} }}\n", self.source.locate(&member)));
+            patches.push(format!("{name} = {{ {location} }}\n"));
         }
         let mut tail = String::new();
         if !patches.is_empty() {
@@ -314,18 +315,16 @@ impl Standalone {
     }
 }
 
-/// The copy of a `[patch]` git fork that Tilo keeps under `vendor/git`, where
-/// `tools/vendor-git-forks.sh` puts the locked revision of each fork. The forks
-/// themselves are private; the copies are part of the public repository.
-fn vendored_fork(packages: &[toml::Value], name: &str) -> Option<String> {
-    packages.iter().find_map(|package| {
-        let source = package.get("source").and_then(toml::Value::as_str)?;
-        (package.get("name").and_then(toml::Value::as_str) == Some(name)
-            && source.starts_with("git+"))
-        .then(|| package.get("version").and_then(toml::Value::as_str))
-        .flatten()
-        .map(|version| format!("vendor/git/{name}-{version}"))
-    })
+/// A `[patch]` fork pinned in git, repeated as the workspace pins it.
+fn git_patch(patch: &toml::Value) -> Option<String> {
+    let url = patch.get("git").and_then(toml::Value::as_str)?;
+    let mut location = format!("git = {url:?}");
+    for key in ["rev", "tag", "branch"] {
+        if let Some(value) = patch.get(key).and_then(toml::Value::as_str) {
+            let _ = write!(location, ", {key} = {value:?}");
+        }
+    }
+    Some(location)
 }
 
 /// Whether `path` lies in Cargo's own git or registry cache, which Cargo may

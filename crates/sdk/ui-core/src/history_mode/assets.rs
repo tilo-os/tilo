@@ -54,15 +54,19 @@ impl HistoricalAssetResponse {
     pub fn complete(self, assets: Result<BTreeMap<String, Arc<[u8]>>, String>) {
         let admitted = assets.and_then(|assets| {
             if assets.len() > 4096 {
-                return Err("Historical media exceeds the 4096 asset preview limit".into());
+                return Err(crate::i18n::I18nManager::lookup_plain(
+                    "history-media-too-many",
+                ));
             }
             let mut total = 0usize;
             for (hash, bytes) in &assets {
-                total = total
-                    .checked_add(bytes.len())
-                    .ok_or("Historical media is too large")?;
+                total = total.checked_add(bytes.len()).ok_or_else(|| {
+                    crate::i18n::I18nManager::lookup_plain("history-media-too-large")
+                })?;
                 if total > 128 * 1024 * 1024 {
-                    return Err("Historical media exceeds the 128 MiB preview limit".into());
+                    return Err(crate::i18n::I18nManager::lookup_plain(
+                        "history-media-over-limit",
+                    ));
                 }
                 let (recorded, digest) = if let Some(hex) = hash.strip_prefix("asset:blake3:") {
                     (hex, blake3::hash(bytes).to_hex().to_string())
@@ -76,7 +80,9 @@ impl HistoricalAssetResponse {
                     || !recorded.bytes().all(|b| b.is_ascii_hexdigit())
                     || recorded != digest
                 {
-                    return Err("Historical media does not match its recorded content hash".into());
+                    return Err(crate::i18n::I18nManager::lookup_plain(
+                        "history-media-hash-mismatch",
+                    ));
                 }
             }
             Ok(FrozenPreviewAssets::new(assets))

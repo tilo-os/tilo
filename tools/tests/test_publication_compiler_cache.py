@@ -43,6 +43,11 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body)
             path.chmod(0o755)
+        selector = ROOT / "tools/ci/compiler_cache_env.sh"
+        destination = Path(temporary) / "tools/ci/compiler_cache_env.sh"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(selector.read_text())
+        destination.chmod(0o755)
         clean = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output),
                  "GITHUB_ENV": str(output), **env}
         result = subprocess.run(["bash", "-c", script], env=clean, text=True, cwd=temporary,
@@ -203,7 +208,8 @@ class AppCollectionPublicationTests(unittest.TestCase):
         with self.subTest(phase='only unpublished runs prepare the shared cache'):
             prepare = self.steps["Prepare compiler cache"]
             self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
-            self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
+            self.assertIn("bash tools/ci/sccache.sh prepare", prepare)
+            self.assertIn("source tools/ci/compiler_cache_env.sh", prepare)
         with self.subTest(phase='a publication compiles without cache credentials or wrapper'):
             build = self.steps["Build and verify selected tapps once for this architecture"]
             script = textwrap.dedent(build.split("        run: |\n", 1)[1])

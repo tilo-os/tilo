@@ -49,6 +49,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         record_kind: RecordKind::new("manual"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |_, _, _| unreachable!(),
     };
     let prepare = |instance| {

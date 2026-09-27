@@ -4,7 +4,8 @@
 //! ```text
 //! root
 //! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
-//! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added }
+//! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added,
+//! │                                               content? }
 //! ├── "library_tombstones" (Map keyed by book-id) true
 //! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
 //! ├── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
@@ -32,6 +33,11 @@ use std::collections::BTreeMap;
 use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_number, read_scalar, read_str};
 use uuid::Uuid;
+
+/// Where an annotation keeps its note: rich text.
+const TEXT: &str = "text";
+/// Where the first format kept it: a plain string.
+const LEGACY_NOTE: &str = "note";
 
 use crate::model::{
     AnnoKind, Annotation, AnnotationAnchor, ColorScheme, FontEntry, FontKind, HiColor,
@@ -440,6 +446,9 @@ impl BooksDoc {
             let _ = doc.put(&entry, "subject", e.subject.as_str());
             let _ = doc.put(&entry, "shared", was_shared || e.shared);
             let _ = doc.put(&entry, "added", added as i64);
+            if let Some(content) = &e.content {
+                let _ = doc.put(&entry, "content", content.as_str());
+            }
         }
     }
 
@@ -489,6 +498,7 @@ impl BooksDoc {
                     .filter(|&value| value > 0)
                     .min()
                     .unwrap_or(0) as u64,
+                content: Self::merged_str(doc, &entries, "content"),
             });
         }
         out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.id.cmp(&b.id)));
@@ -764,23 +774,85 @@ impl BooksDoc {
             let _ = doc.put(&entry, "start", a.start as i64);
             let _ = doc.put(&entry, "end", a.end as i64);
             let _ = doc.put(&entry, "excerpt", a.excerpt.as_str());
-            let _ = doc.put(&entry, "note", a.note.as_str());
+            Self::write_text(doc, &entry, &tilo_rich_text::plain_clips(&a.note));
             let _ = doc.put(&entry, "color", a.color.as_str());
             let _ = doc.put(&entry, "created", a.created as i64);
             let _ = doc.put(&entry, "group", a.group.to_string().as_str());
         }
     }
 
-    /// Change only the free-text field, preserving concurrent anchor/colour
+    /// Replace only the note's text, preserving concurrent anchor/colour
     /// edits made by another reader.
     pub fn write_annotation_note(doc: &mut AutoCommit, id: Uuid, note: &str) -> bool {
         let entries = Self::keyed_map_entries(doc, "annotations")
             .remove(&id.to_string())
             .unwrap_or_default();
         for entry in &entries {
-            let _ = doc.put(entry, "note", note);
+            Self::write_text(doc, entry, &tilo_rich_text::plain_clips(note));
         }
         !entries.is_empty()
+    }
+
+    /// Write an annotation's text as rich text under [`TEXT`], replacing
+    /// what it held, and drop a plain `note` left by the first format.
+    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[qdoc_rich_text::ClipBlock]) {
+        if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
+            tracing::warn!(%error, "annotation text not written");
+            return;
+        }
+        if doc.get(entry, LEGACY_NOTE).ok().flatten().is_some() {
+            let _ = doc.delete(entry, LEGACY_NOTE);
+        }
+    }
+
+    /// The rich text an annotation's note is edited in: the first of its
+    /// rows that holds some.
+    pub fn annotation_text(doc: &AutoCommit, id: Uuid) -> Option<ObjId> {
+        Self::keyed_map_entries(doc, "annotations")
+            .remove(&id.to_string())?
+            .iter()
+            .find_map(|entry| tilo_rich_text::rich_text_at(doc, entry, TEXT))
+    }
+
+    /// An annotation's text, plain and as written, from its rows. Rows of
+    /// the first format (a plain `note`) read as a paragraph per line until
+    /// [`Self::migrate_annotation_text`] rewrites them.
+    fn read_text(doc: &AutoCommit, entries: &[ObjId]) -> (String, Vec<ui::widget::BlockContent>) {
+        if let Some(root) = entries
+            .iter()
+            .find_map(|entry| tilo_rich_text::rich_text_at(doc, entry, TEXT))
+        {
+            return (
+                qdoc_rich_text::RichText::plain_text_under(doc, &root).unwrap_or_default(),
+                tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
+            );
+        }
+        let note = Self::merged_str(doc, entries, LEGACY_NOTE).unwrap_or_default();
+        let blocks = tilo_rich_text::plain_blocks(&note);
+        (note, blocks)
+    }
+
+    /// Rewrite every annotation row still holding the first format's plain
+    /// `note` as rich text, a paragraph per line, in place and once: a row
+    /// that has rich text is left as it is. Returns whether anything was
+    /// rewritten.
+    pub fn migrate_annotation_text(doc: &mut AutoCommit) -> bool {
+        let rows: Vec<ObjId> = Self::keyed_map_entries(doc, "annotations")
+            .into_values()
+            .flatten()
+            .collect();
+        let mut changed = false;
+        for row in rows {
+            if tilo_rich_text::rich_text_at(doc, &row, TEXT).is_some() {
+                continue;
+            }
+            let Some(note) = read_str(doc, &row, LEGACY_NOTE) else {
+                continue;
+            };
+            Self::write_text(doc, &row, &tilo_rich_text::plain_clips(&note));
+            changed = true;
+        }
+        changed
     }
 
     pub fn write_annotation_created(doc: &mut AutoCommit, id: Uuid, created: u64) -> bool {
@@ -849,6 +921,7 @@ impl BooksDoc {
             if Self::annotation_is_deleted(doc, id) {
                 continue;
             }
+            let (note, blocks) = Self::read_text(doc, &entries);
             let a = Annotation {
                 id,
                 doc_id: Self::merged_str(doc, &entries, "doc_id").unwrap_or_default(),
@@ -880,7 +953,8 @@ impl BooksDoc {
                     .unwrap_or(0)
                     .max(0) as usize,
                 excerpt: Self::merged_str(doc, &entries, "excerpt").unwrap_or_default(),
-                note: Self::merged_str(doc, &entries, "note").unwrap_or_default(),
+                note,
+                blocks,
                 color: HiColor::from_str(
                     &Self::merged_str(doc, &entries, "color").unwrap_or_default(),
                 ),
@@ -921,6 +995,81 @@ mod tests {
     use super::*;
     use crate::model::{AnnoKind, HiColor};
     use tilo_automerge::ApplyIncoming;
+
+    /// A reader store written before notes were rich text: each annotation
+    /// row holding its note as a plain `note` string, as the first format
+    /// stored it.
+    fn first_format_notes() -> (AutoCommit, Uuid, Uuid) {
+        let mut doc = AutoCommit::new();
+        let note = Annotation::new("book:x", AnnoKind::Note, 0, 1)
+            .with_note("First line\n\nThird, after a blank line");
+        let bookmark = Annotation::new("book:x", AnnoKind::Bookmark, 0, 2);
+        for annotation in [&note, &bookmark] {
+            BooksDoc::upsert_annotation(&mut doc, annotation);
+        }
+        let texts = [
+            (note.id, "First line\n\nThird, after a blank line"),
+            (bookmark.id, ""),
+        ];
+        for (id, text) in texts {
+            for row in BooksDoc::keyed_map_entries(&doc, "annotations")
+                .remove(&id.to_string())
+                .unwrap()
+            {
+                doc.delete(&row, TEXT).unwrap();
+                doc.put(&row, LEGACY_NOTE, text).unwrap();
+            }
+        }
+        doc.commit();
+        (doc, note.id, bookmark.id)
+    }
+
+    #[test]
+    fn first_format_notes_come_across_whole_and_once() {
+        let (mut doc, note, bookmark) = first_format_notes();
+        let find = |doc: &AutoCommit, id: Uuid| {
+            BooksDoc::list_annotations(doc)
+                .into_iter()
+                .find(|annotation| annotation.id == id)
+                .unwrap()
+        };
+        assert_eq!(
+            find(&doc, note).note,
+            "First line\n\nThird, after a blank line"
+        );
+        assert_eq!(
+            find(&doc, note).blocks.len(),
+            3,
+            "read as a paragraph per line"
+        );
+
+        assert!(BooksDoc::migrate_annotation_text(&mut doc));
+        let migrated = find(&doc, note);
+        assert_eq!(
+            migrated.note, "First line\n\nThird, after a blank line",
+            "nothing is lost"
+        );
+        let texts: Vec<&str> = migrated.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, ["First line", "", "Third, after a blank line"]);
+        assert_eq!(find(&doc, bookmark).note, "");
+        assert!(BooksDoc::annotation_text(&doc, note).is_some());
+        for row in BooksDoc::keyed_map_entries(&doc, "annotations")
+            .remove(&note.to_string())
+            .unwrap()
+        {
+            assert!(
+                doc.get(&row, LEGACY_NOTE).unwrap().is_none(),
+                "the plain note is gone"
+            );
+        }
+
+        // Once is enough: a second pass writes nothing.
+        let heads = doc.get_heads();
+        assert!(!BooksDoc::migrate_annotation_text(&mut doc));
+        assert_eq!(doc.get_heads(), heads);
+        let reloaded = AutoCommit::load(&doc.save()).unwrap();
+        assert_eq!(find(&reloaded, note).note, migrated.note);
+    }
 
     /// Settings, fonts, progress, library prefs, schemes and library entries round-trip through the document.
     #[allow(
@@ -1066,6 +1215,7 @@ mod tests {
                 author: "A. Writer".into(),
                 subject: "Fiction".into(),
                 added: 1_000,
+                content: None,
             };
             BooksDoc::upsert_library_entry(&mut doc, &e);
             let back = BooksDoc::read_library_entries(&doc);
@@ -1077,6 +1227,7 @@ mod tests {
             let moved = LibraryEntry {
                 shared: true,
                 added: 9_999,
+                content: None,
                 ..e.clone()
             };
             BooksDoc::upsert_library_entry(&mut doc, &moved);
@@ -1244,6 +1395,7 @@ mod tests {
                 author: "A".into(),
                 subject: String::new(),
                 added: 1,
+                content: None,
             };
             let right_book = LibraryEntry {
                 id: "book:right".into(),
@@ -1252,6 +1404,7 @@ mod tests {
                 author: "B".into(),
                 subject: String::new(),
                 added: 2,
+                content: None,
             };
             let left_annotation = Annotation::new(&left_book.id, AnnoKind::Note, 0, 1);
             let right_annotation = Annotation::new(&right_book.id, AnnoKind::Bookmark, 0, 2);

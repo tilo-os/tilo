@@ -53,6 +53,7 @@ pub fn host_capabilities() -> DeviceCapabilities {
         can_admit_devices: false,
         can_act_as_host: true,
         can_read_all_workspaces: true,
+        foreign: false,
     }
 }
 

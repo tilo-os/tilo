@@ -53,6 +53,8 @@ pub mod reader_theme;
 mod reading_settings;
 pub mod search_provider;
 mod shelf_controls;
+#[cfg(test)]
+mod test_epub;
 pub mod xhtml;
 
 pub use app::BooksApp;

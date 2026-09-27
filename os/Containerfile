@@ -1511,8 +1511,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     at-spi2-atk \
     libmanette \
     libxslt \
-    && dnf clean all && ${FINALIZE_RPMDB} \
     && ldconfig \
+    && dnf clean all && ${FINALIZE_RPMDB} \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 hlssink2 >/dev/null \
     && gst-inspect-1.0 pulsesrc >/dev/null \

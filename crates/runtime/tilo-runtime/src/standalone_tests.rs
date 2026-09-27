@@ -1,3 +1,7 @@
+use super::workspace::{
+    DESKTOP_WORKSPACE, INVOCATION_JOURNAL, ProfileWorkspace, STANDALONE_WORKSPACE, bootstrap,
+    read_tree,
+};
 use super::*;
 use crate::mcp::McpServer;
 use serde_json::json;
@@ -5,6 +9,11 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
+use tilo_action_broker::services::{
+    AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
+};
+use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
+use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -84,6 +93,10 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    // Durable collaboration history and the invocation journal live in the
+    // profile.
+    assert!(root.join(COLLABORATION_HISTORY).is_dir());
+    assert!(root.join(INVOCATION_JOURNAL).exists());
     assert!(
         Standalone::start_reporting(&root, &mut |_| {}).is_err(),
         "a second host must not serve a held profile"
@@ -104,6 +117,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let deadline = tilo_test_env::hang_deadline();
     let roots = loop {
         let roots = session
+            .broker
             .app_action_broker()
             .unwrap()
             .state()
@@ -198,6 +212,131 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
 }
 
+fn task(id: &str) -> tilo_desktop_model::WorkspaceTask {
+    tilo_desktop_model::WorkspaceTask {
+        id: id.into(),
+        title: "Draft".into(),
+        created_by: "person-1".into(),
+        assigned_agent: None,
+        route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
+        status: WorkspaceTaskStatus::Queued,
+        resource: None,
+        created_at: 1,
+        updated_at: 1,
+        audit: Vec::new(),
+    }
+}
+
+#[test]
+fn effect_and_task_records_persist_in_the_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].tasks.push(task("task-1"));
+    let room = tree.workspaces[0].room.to_string();
+    std::fs::write(
+        temp.path().join(STANDALONE_WORKSPACE),
+        serde_json::to_vec_pretty(&tree).unwrap(),
+    )
+    .unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+    let context = tilo_actions::ActionContext {
+        action_label: "Send".into(),
+        ..tilo_actions::ActionContext::default()
+    };
+    let status = tilo_actions::EffectReceiptStatus::Succeeded;
+    for _ in 0..2 {
+        workspace
+            .record_effect(
+                &room,
+                invocation,
+                "agent-1",
+                context.clone(),
+                status.clone(),
+            )
+            .unwrap();
+    }
+    workspace
+        .record_task_update(
+            &room,
+            "task-1",
+            "agent-1",
+            Some(WorkspaceTaskStatus::Done),
+            "Wrote the outline".into(),
+        )
+        .unwrap();
+    assert!(
+        workspace
+            .record_task_update(&room, "absent", "agent-1", None, "x".into())
+            .is_err()
+    );
+    assert!(
+        workspace
+            .record_effect(&RoomId::new().to_string(), invocation, "a", context, status)
+            .is_err()
+    );
+
+    let reopened = ProfileWorkspace::open(temp.path())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    let workspace = &reopened.workspaces[0];
+    assert_eq!(
+        workspace.effect_receipts.len(),
+        1,
+        "a retry keeps one receipt"
+    );
+    assert_eq!(workspace.effect_receipts[0].invocation, invocation);
+    let task = &workspace.tasks[0];
+    assert_eq!(task.status, WorkspaceTaskStatus::Done);
+    let summaries: Vec<_> = task.audit.iter().map(|event| &*event.summary).collect();
+    assert_eq!(
+        summaries,
+        [
+            format!("Status · {}", WorkspaceTaskStatus::Done.label()).as_str(),
+            "Wrote the outline"
+        ]
+    );
+}
+
+#[test]
+fn the_desktop_sessions_workspace_refuses_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].set_owner("desktop-owner".to_owned());
+    tree.workspaces[0].tasks.push(task("task-1"));
+    let room = tree.workspaces[0].room.to_string();
+    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+    let desktop = temp.path().join(DESKTOP_WORKSPACE);
+    std::fs::write(&desktop, &bytes).unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+    let status = tilo_actions::EffectReceiptStatus::Succeeded;
+    assert!(
+        workspace
+            .record_effect(
+                &room,
+                invocation,
+                "agent-1",
+                tilo_actions::ActionContext::default(),
+                status
+            )
+            .is_err()
+    );
+    assert!(
+        workspace
+            .record_task_update(&room, "task-1", "agent-1", None, "x".into())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+    let tree = workspace.snapshot().unwrap();
+    assert!(tree.workspaces[0].effect_receipts.is_empty());
+    assert!(tree.workspaces[0].tasks[0].audit.is_empty());
+    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+}
+
 #[test]
 fn the_desktop_sessions_workspace_is_served_read_only() {
     let temp = tempfile::tempdir().unwrap();
@@ -234,5 +373,125 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     assert_eq!(
         ProfileWorkspace::open(temp.path()).err().unwrap().kind(),
         io::ErrorKind::InvalidData
+    );
+}
+
+fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActionConsentRequest {
+    tilo_action_broker::app_actions::AppActionConsentRequest {
+        handle: "question-1".into(),
+        room: room.into(),
+        person: person.into(),
+        app_id: "so.tilo.caller".into(),
+        target_app: "so.tilo.target-app".into(),
+        action: "open".into(),
+        action_label: "Open".into(),
+        risk: tilo_actions::RiskLevel::default(),
+        needs_confirmation: false,
+    }
+}
+
+fn app_grant() -> collab_types::caps::CapOverride {
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    CapOverride::grant(
+        Subject::app("so.tilo.caller"),
+        Scope::Action {
+            app: "so.tilo.target-app".into(),
+            action: "open".into(),
+        },
+        Verb::Write,
+    )
+}
+
+fn grants(workspace: ProfileWorkspace, root: &Path) -> ProfileGrants {
+    ProfileGrants {
+        workspace: Arc::new(workspace),
+        apps: Arc::new(apps::Apps::new(None, root, "", PathBuf::new(), Vec::new())),
+    }
+}
+
+#[test]
+fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_saved() {
+    use tilo_action_broker::app_actions::AppActionConsent;
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+    workspace.adopt("owner").unwrap();
+    let room = workspace.room();
+    let grants = grants(workspace, temp.path());
+
+    assert!(grants.may_grant(&room, "owner"));
+    assert!(!grants.may_grant(&room, "stranger"));
+    assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
+    assert!(
+        grants
+            .record(
+                &consent(&room, "stranger"),
+                app_grant(),
+                AppActionConsent::Always
+            )
+            .is_none()
+    );
+
+    let id = grants
+        .record(
+            &consent(&room, "owner"),
+            app_grant(),
+            AppActionConsent::Always,
+        )
+        .unwrap();
+    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
+    let workspace = &saved.workspaces[0];
+    assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
+    let receipt = workspace.effect_receipts.last().unwrap();
+    assert_eq!(receipt.actor, "owner");
+    assert!(
+        receipt
+            .context
+            .action_label
+            .contains("Allowed Caller to use Target App: Open in this workspace"),
+        "{}",
+        receipt.context.action_label
+    );
+
+    grants.revoke(&room, &id);
+    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
+    assert!(
+        saved.workspaces[0]
+            .capabilities
+            .iter()
+            .all(|cap| cap.id != id)
+    );
+}
+
+#[test]
+fn the_desktop_sessions_workspace_takes_no_grants_here() {
+    use tilo_action_broker::app_actions::AppActionConsent;
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].set_owner("owner".to_owned());
+    let room = tree.workspaces[0].room.to_string();
+    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+    let desktop = temp.path().join(DESKTOP_WORKSPACE);
+    std::fs::write(&desktop, &bytes).unwrap();
+    let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
+
+    assert!(!grants.may_grant(&room, "owner"));
+    assert!(
+        grants
+            .record(
+                &consent(&room, "owner"),
+                app_grant(),
+                AppActionConsent::Always
+            )
+            .is_none()
+    );
+    grants.revoke(&room, "owner-1");
+    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+    assert_eq!(
+        grants.workspace.snapshot().unwrap().workspaces[0]
+            .capabilities
+            .len(),
+        1,
+        "only the owner's membership"
     );
 }

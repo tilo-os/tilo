@@ -80,6 +80,7 @@ portal = ["native", "tilo-host/portal"]
 notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
+mime_guess.workspace = true
 fnv.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
 # Host services: the clock, background work, clipboard, file choosers,
@@ -89,6 +90,9 @@ tilo-host = { path = "../tilo-host" }
 # Test builds bound the pairing broker exchange with the shared hang bound.
 tilo-test-env = { path = "../../dev/test-env", optional = true }
 advisory-lock = { path = "../../system/advisory-lock" }
+# The content store a host lends a component (`HostContext::content`), in every
+# build; the unix `native` build adds the launcher's device store below.
+tilo-content = { path = "../../system/content", default-features = false }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 tilo-font-catalog = { path = "../font-catalog" }
 atomic-file = { path = "../../system/atomic-file" }

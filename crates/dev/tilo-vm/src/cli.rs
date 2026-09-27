@@ -40,6 +40,9 @@ impl Cli {
             | Command::Shot {
                 slot, slot_flag, ..
             }
+            | Command::Flight(FlightCommand::App {
+                slot, slot_flag, ..
+            })
             | Command::Seat(
                 SeatCommand::Claim {
                     slot, slot_flag, ..
@@ -219,6 +222,9 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
+    /// Run measured semantic acceptance flights against a live slot.
+    #[command(subcommand)]
+    Flight(FlightCommand),
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
@@ -239,6 +245,37 @@ pub enum Command {
         /// In-VM build dirs to keep, most recently used first (default from vms.toml, else 2).
         #[arg(long)]
         keep_targets: Option<u32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FlightCommand {
+    /// Launch an app through the desktop action model, focus it, type into it, and prove new frames present.
+    #[command(
+        after_help = "Examples:\n  tilo-vm flight app org.gnome.TextEditor org.gnome.TextEditor\n  tilo-vm flight app chatgpt chatgpt --type-text 'flight input' --timeout-seconds 20\n\nDESKTOP_ID is the host-applications action id. APP_ID is the Wayland/X11 app id the compositor reports."
+    )]
+    App {
+        /// Desktop action id exported by the host-applications provider.
+        desktop_id: String,
+        /// App id expected on the presented foreign surface.
+        app_id: String,
+        /// The slot to test (default: your slot).
+        slot: Option<String>,
+        /// The slot, as a flag (same as the positional slot used by other slot commands).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
+        /// Text injected after the app presents and receives focus.
+        #[arg(long, default_value = "tilo-vm-flight")]
+        type_text: String,
+        /// Maximum time from action invocation until a real app frame presents.
+        #[arg(long, default_value_t = 15_000)]
+        maximum_launch_ms: u64,
+        /// Maximum acceptable latency for any compositor control round trip during the flight.
+        #[arg(long, default_value_t = 250)]
+        maximum_control_ms: u64,
+        /// Absolute deadline for the entire flight.
+        #[arg(long, default_value_t = 20)]
+        timeout_seconds: u64,
     },
 }
 

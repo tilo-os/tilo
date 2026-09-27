@@ -26,7 +26,7 @@ use crate::paint::{
 
 /// Body text size for a message. Shared by the measure and the draw so a
 /// mention-carrying row reserves exactly the height it paints.
-const BODY_SIZE: f32 = 15.0;
+pub(crate) const BODY_SIZE: f32 = 15.0;
 
 /// Author name in a message-group header; the header row's height is this
 /// line box (measured) plus one small gap, so it grows with the text scale.
@@ -112,12 +112,6 @@ const SEND_BTN_W: f64 = 44.0;
 /// the wrap width the composer's draft is measured at; the resulting band is
 /// clamped to the box, so a small mismatch cannot leak outside it.
 const COMPOSER_TEXT_INSET: f64 = 22.0;
-
-/// `RichTextLayout` lays out at `size * 1.4 * mult`; `TextRenderer::measure`
-/// uses `size * 1.25`. Feeding this multiplier keeps a body drawn through the
-/// rich path on the same line grid as one drawn through the plain path, so a
-/// message does not jump when somebody is mentioned in it.
-const BODY_LINE_MULT: f32 = 1.25 / 1.4;
 
 /// How much of the participant's colour a mention *of you* keeps when it is
 /// tinted toward the surface. A filled band, so it can be found by scanning.
@@ -230,78 +224,103 @@ pub(crate) fn mention_colors(
     (Some(band), ink)
 }
 
-/// Split a message body into styled runs: prose in body ink, each resolved
-/// mention in its participant's colour on its own band.
-///
-/// Built from the stored [`crate::mention::Mention`] list, never by scanning the
-/// text — the renderer and the resolver agree about where a mention is because
-/// only one of them ever decides.
-pub(crate) fn body_spans(
-    app: &ChatApp,
-    m: &Message,
-    theme: &Theme,
-    ground: Color,
-) -> Vec<ui::richtext::RichSpan> {
-    use ui::richtext::RichSpan;
-    let text = m.text.as_str();
-    let mut spans: Vec<RichSpan> = Vec::new();
-    let mut cursor = 0usize;
-    let mut mentions: Vec<&crate::mention::Mention> = m.mentions.iter().collect();
-    mentions.sort_by_key(|x| x.start);
-    for mention in mentions {
-        let (s, e) = (mention.start, mention.end());
-        // An offset that no longer lands on the body (an edit that did not
-        // re-resolve) is skipped rather than trusted — better plain prose than
-        // a highlight over the wrong words.
-        if s < cursor || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-            continue;
-        }
-        let Some(mention_text) = text.get(s..e) else {
-            continue;
+impl ChatApp {
+    /// The colours mentions are painted in on `theme`, for every participant
+    /// (a mention of you filled, anyone else's in their colour), and a
+    /// fingerprint of what they were built from.
+    pub(crate) fn mention_paint(&self, theme: &Theme) -> (u64, ui::widget::marks::MentionPaint) {
+        use std::hash::{Hash, Hasher};
+        let ground = theme.tokens.colors.surfaces.base;
+        let colors = |user: &str| {
+            let (band, ink) = mention_colors(self, user, self.is_me(user), theme, ground);
+            ui::widget::marks::MentionColors { ink, band }
         };
-        if s > cursor {
-            let Some(prefix) = text.get(cursor..s) else {
-                continue;
-            };
-            spans.push(RichSpan::new(prefix));
+        let entries: Vec<(String, ui::widget::marks::MentionColors)> = self
+            .participants()
+            .into_iter()
+            .map(|participant| {
+                let painted = colors(&participant.id);
+                (participant.id, painted)
+            })
+            .collect();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (user, painted) in &entries {
+            user.hash(&mut hasher);
+            format!("{:?}{:?}", painted.ink, painted.band).hash(&mut hasher);
         }
-        // `is_me` rather than a bare comparison: a peer that has adopted the
-        // room's address for itself still authored earlier mentions under the
-        // id it resolved at startup, and those still refer to this session.
-        let is_self = app.is_me(&mention.user);
-        let (band, ink) = mention_colors(app, &mention.user, is_self, theme, ground);
-        spans.push(
-            RichSpan::new(mention_text)
-                .bold(true)
-                .color(Some([ink.r(), ink.g(), ink.b()]))
-                .background(band.map(|c| [c.r(), c.g(), c.b()])),
-        );
-        cursor = e;
+        format!("{:?}", theme.tokens.colors.text_primary).hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        if let Some((cached, paint)) = self.mention_paint_cache.borrow().as_ref()
+            && *cached == fingerprint
+        {
+            return (fingerprint, std::rc::Rc::clone(paint));
+        }
+        let fallback = ui::widget::marks::MentionColors {
+            ink: theme.tokens.colors.accent[5],
+            band: None,
+        };
+        let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> =
+            entries.into_iter().collect();
+        let paint: ui::widget::marks::MentionPaint =
+            std::rc::Rc::new(move |user: &str| map.get(user).copied().unwrap_or(fallback));
+        *self.mention_paint_cache.borrow_mut() = Some((fingerprint, std::rc::Rc::clone(&paint)));
+        (fingerprint, paint)
     }
-    if let Some(rest) = text.get(cursor..) {
-        spans.push(RichSpan::new(rest));
-    }
-    spans
-}
 
-/// Lay out a mention-carrying body at `width`.
-pub(crate) fn shape_body(
-    tr: &mut TextRenderer,
-    spans: &[ui::richtext::RichSpan],
-    width: f32,
-) -> ui::richtext::RichTextLayout {
-    ui::richtext::RichTextLayout::shape(
-        &mut tr.font_system,
-        spans,
-        false,
-        BODY_SIZE,
-        width,
-        ui::richtext::TextAlign::Left,
-        ui::richtext::FontFamily::Sans,
-        Vec::new(),
-        Vec::new(),
-        BODY_LINE_MULT,
-    )
+    /// Lay a message's body out at `(x, y)` and `width` in its read-only
+    /// view, at `size`; returns the view's height. The view is kept by
+    /// message id, so an unchanged body is not shaped again.
+    fn layout_body(
+        &self,
+        m: &Message,
+        size: f32,
+        origin: Point,
+        width: f32,
+        theme: &Theme,
+        tr: &mut TextRenderer,
+    ) -> f64 {
+        let (fingerprint, paint) = self.mention_paint(theme);
+        let mut views = self.body_views.borrow_mut();
+        let (painted, view) = views
+            .entry((size.to_bits(), m.id.clone()))
+            .or_insert_with(|| {
+                (
+                    0,
+                    tilo_rich_text::RichTextView::with_editor(
+                        tilo_rich_text::compact_editor().with_body_size(size),
+                    ),
+                )
+            });
+        if *painted != fingerprint {
+            view.set_mention_paint(paint);
+            *painted = fingerprint;
+        }
+        view.show(&m.blocks());
+        view.layout(
+            Rect::new(origin.x, origin.y, origin.x + f64::from(width), origin.y),
+            theme,
+            tr,
+        )
+    }
+
+    /// Paint a message's body where [`Self::layout_body`] last put it.
+    fn draw_body(
+        &self,
+        m: &Message,
+        size: f32,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if let Some((_, view)) = self
+            .body_views
+            .borrow_mut()
+            .get_mut(&(size.to_bits(), m.id.clone()))
+        {
+            view.draw(scene, tf, tr, theme);
+        }
+    }
 }
 
 /// Draw a circular initials avatar with an optional presence dot.
@@ -2065,17 +2084,13 @@ impl ChatApp {
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
         let body_h = if editing {
-            f64::from(tr.measure(self.edit_input.value(), 15.0, Some(text_w)).1).max(19.0)
+            f64::from(tr.measure(&self.edit_input.value(), 15.0, Some(text_w)).1).max(19.0)
         } else if m.text.is_empty() {
             0.0
-        } else if m.mentions.is_empty() {
-            f64::from(tr.measure(&m.text, BODY_SIZE, Some(text_w)).1)
         } else {
-            // A mention-carrying body is laid out by the rich path, so it must
-            // be measured by the rich path too — measuring one and painting the
-            // other is how a row ends up clipping its own last line.
-            let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
-            f64::from(shape_body(tr, &spans, text_w).height())
+            // Measured by the same view that paints it, so a row never clips
+            // its own last line.
+            self.layout_body(m, BODY_SIZE, Point::ZERO, text_w, theme, tr)
         };
         let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
             attachment_flow_height(attachment, f64::from(text_w), scale)
@@ -2273,7 +2288,6 @@ impl ChatApp {
                 },
             content_top,
         } = layout;
-        let c = &theme.tokens.colors;
         if rm.editing {
             self.draw_message_editor(
                 PaintContext::new(scene, tf, tr, theme),
@@ -2286,32 +2300,10 @@ impl ChatApp {
             return;
         }
         if !m.text.is_empty() {
-            if m.mentions.is_empty() {
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &m.text,
-                    BODY_SIZE,
-                    c.text_primary,
-                    text_x,
-                    *y,
-                    TextWeight::Regular,
-                    Some(text_w),
-                );
-            } else {
-                // Mentions are runs inside the paragraph, so the whole body
-                // goes through the attributed layout — one wrap, one line
-                // grid, bands painted behind the glyphs they belong to.
-                let spans = body_spans(self, m, theme, c.surfaces.base);
-                let layout = shape_body(tr, &spans, text_w);
-                tr.draw_rich(
-                    scene,
-                    &layout,
-                    tf * Affine::translate((text_x, *y)),
-                    c.text_primary,
-                );
-            }
+            // The body as written: paragraphs, formatting, and mentions in
+            // their participants' colours, drawn by the editor that wrote it.
+            self.layout_body(m, BODY_SIZE, Point::new(text_x, *y), text_w, theme, tr);
+            self.draw_body(m, BODY_SIZE, scene, tf, tr, theme);
             *y += rm.body_h + 2.0;
         }
         // Right-click your own message (header + body) opens the edit menu.
@@ -2457,12 +2449,17 @@ impl ChatApp {
             if focused { 1.6 } else { 1.0 },
         );
         self.edit_input.set_placeholder("Edit message…");
-        self.edit_input.apply_layout_external(Rect::new(
-            text_x - 10.0,
-            *y,
-            text_x + f64::from(text_w) + 10.0,
-            *y + box_h,
-        ));
+        self.edit_input.set_mention_paint(self.mention_paint(theme));
+        self.edit_input.layout(
+            Rect::new(
+                text_x - 4.0,
+                *y + EDIT_BOX_PAD / 2.0,
+                text_x + f64::from(text_w) + 4.0,
+                *y + box_h - EDIT_BOX_PAD / 2.0,
+            ),
+            theme,
+            tr,
+        );
         self.edit_input.set_focus(focused);
         self.edit_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, er, Hit::FocusEdit);
@@ -3081,14 +3078,16 @@ impl ChatApp {
         let inner = Self::draw_input_box(
             PaintContext::new(scene, tf, tr, theme),
             rect,
-            draft,
+            &draft,
             send_enabled,
             focused,
             Hit::FocusMain,
             true,
             hits,
         );
-        self.composer_main.apply_layout_external(inner);
+        self.composer_main
+            .set_mention_paint(self.mention_paint(theme));
+        self.composer_main.layout(inner, theme, tr);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
         let key = ChatApp::draft_presence_key(&self.active_channel);
@@ -3098,7 +3097,7 @@ impl ChatApp {
     /// Collaborators' carets and selections in a shared draft, drawn with the
     /// composer's own caret/selection geometry (pixel-identical, recoloured).
     fn draw_draft_presence(
-        composer: &ui::widget::TextInput,
+        composer: &crate::composer::DraftComposer,
         key: &ui::presence::PresenceKey,
         scene: &mut Scene,
         tf: Affine,
@@ -3117,16 +3116,11 @@ impl ChatApp {
         }
         if let Some(list) = presence.carets.get(key) {
             for (user, caret) in list {
+                let Some(rect) = composer.caret_rect(theme, (*caret).min(len)) else {
+                    continue;
+                };
                 let name = presence.display_name(user);
-                presence.draw_peer_caret_labeled(
-                    scene,
-                    theme,
-                    tr,
-                    tf,
-                    user,
-                    &name,
-                    composer.caret_rect(theme, (*caret).min(len)),
-                );
+                presence.draw_peer_caret_labeled(scene, theme, tr, tf, user, &name, rect);
             }
         }
     }
@@ -3332,14 +3326,16 @@ impl ChatApp {
         let inner = Self::draw_input_box(
             PaintContext::new(scene, tf, tr, theme),
             comp,
-            draft,
+            &draft,
             send_enabled,
             focused,
             Hit::FocusThread,
             false,
             hits,
         );
-        self.composer_thread.apply_layout_external(inner);
+        self.composer_thread
+            .set_mention_paint(self.mention_paint(theme));
+        self.composer_thread.layout(inner, theme, tr);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
         if let Some(draft) = self.thread_draft_key() {
@@ -3585,19 +3581,8 @@ impl ChatApp {
         );
         yy += 19.0 * scale;
         if !m.text.is_empty() {
-            let h = f64::from(tr.measure(&m.text, 14.0, Some(tw)).1);
-            text(
-                scene,
-                tr,
-                tf,
-                &m.text,
-                14.0,
-                c.text_primary,
-                tx,
-                yy,
-                TextWeight::Regular,
-                Some(tw),
-            );
+            let h = self.layout_body(m, 14.0, Point::new(tx, yy), tw, theme, tr);
+            self.draw_body(m, 14.0, scene, tf, tr, theme);
             yy += h + 4.0 * scale;
         }
         if let Some(att) = &m.attachment {

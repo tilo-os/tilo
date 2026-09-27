@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 mod json;
+mod pack;
 pub mod portability;
 pub mod standalone;
 
@@ -222,6 +223,9 @@ pub struct CreateOutcome {
     pub workspace_member: bool,
     /// Where a standalone app gets the SDK; `None` for a workspace member.
     pub sdk: Option<standalone::SdkSource>,
+    /// Whether the app became its own git repository. Only an app created
+    /// outside every git work tree gets one.
+    pub git_initialized: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -484,7 +488,11 @@ pub struct DevRequest {
 pub struct PackageRequest {
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
-    pub profile: String,
+    /// `None` picks `thin-app` for a thin build and `release` for a static one.
+    pub profile: Option<String>,
+    /// Link everything into the binary instead of against the toolkit and
+    /// `libstd` the OS ships. Static binaries are several times the size limit.
+    pub static_link: bool,
     pub target: Option<String>,
     pub features: Vec<String>,
     pub no_default_features: bool,
@@ -4555,6 +4563,7 @@ struct AppPackageSpec {
     cargo_package: String,
     manifest_path: PathBuf,
     entrypoints: Vec<(String, PathBuf)>,
+    thin_feature: bool,
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
@@ -4574,8 +4583,23 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
     }
-    validate_profile_name(&request.profile)?;
     let spec = load_app_package_spec(app_dir)?;
+    if !request.static_link && !spec.thin_feature {
+        bail!(
+            "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
+             add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
+            spec.app_dir.join("Cargo.toml").display()
+        );
+    }
+    let profile = request.profile.clone().unwrap_or_else(|| {
+        if request.static_link {
+            "release"
+        } else {
+            "thin-app"
+        }
+        .to_owned()
+    });
+    validate_profile_name(&profile)?;
     let output = request.output.as_ref().map_or_else(
         || {
             spec.app_dir
@@ -4600,7 +4624,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         )
     })?;
 
-    let built = build_entrypoints(&spec, request)?;
+    let built = build_entrypoints(&spec, request, &profile)?;
     let staging = tempfile::Builder::new()
         .prefix(".tilo-app-package-")
         .tempdir_in(output_parent)
@@ -4633,15 +4657,21 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     }
 
     let staged_package = staging.path().join("package.tapp");
-    let identity = request
-        .identity
-        .as_ref()
-        .map(|path| absolute_from(&spec.app_dir, path));
-    run_tilo_pkg_pack(&spec, &payload, &staged_package, identity.as_deref())?;
-    run_tilo_pkg_verify(&spec.app_dir, &staged_package)?;
+    let identity = if let Some(path) = &request.identity {
+        pack::load_identity(&absolute_from(&spec.app_dir, path))?
+    } else {
+        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        tilo_app_package::SigningIdentity::generate()
+    };
+    let packed = pack::pack_payload(&spec.manifest_path, &payload, &staged_package, &identity)?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
-    eprintln!("[tilo-app] packaged {}", output.display());
+    eprintln!(
+        "[tilo-app] packaged {} ({}, {} bytes)",
+        output.display(),
+        packed.id,
+        packed.bytes
+    );
     Ok(PackageOutcome {
         output,
         entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
@@ -4661,6 +4691,10 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .and_then(toml::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("Cargo.toml is missing [package].name"))?
         .to_owned();
+    let thin_feature = cargo
+        .get("features")
+        .and_then(|features| features.get("thin"))
+        .is_some();
 
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
@@ -4705,12 +4739,14 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         cargo_package,
         manifest_path,
         entrypoints,
+        thin_feature,
     })
 }
 
 fn build_entrypoints(
     spec: &AppPackageSpec,
     request: &PackageRequest,
+    profile: &str,
 ) -> Result<HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
@@ -4719,21 +4755,34 @@ fn build_entrypoints(
         .arg("--manifest-path")
         .arg(spec.app_dir.join("Cargo.toml"))
         .arg("--profile")
-        .arg(&request.profile)
+        .arg(profile)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&spec.app_dir)
         .stdout(Stdio::piped());
     for (cargo_bin, _) in &spec.entrypoints {
         command.arg("--bin").arg(cargo_bin);
     }
-    if let Some(target) = &request.target {
-        command.arg("--target").arg(target);
+    let mut features = request.features.clone();
+    if request.static_link {
+        if let Some(target) = &request.target {
+            command.arg("--target").arg(target);
+        }
+    } else {
+        let triple = match &request.target {
+            Some(target) => target.clone(),
+            None => host_triple(&spec.app_dir)?,
+        };
+        let (key, flags) = prefer_dynamic_rustflags(&triple);
+        command.arg("--target").arg(&triple).env(key, flags);
+        if !features.iter().any(|feature| feature == "thin") {
+            features.push("thin".to_owned());
+        }
     }
     if request.no_default_features {
         command.arg("--no-default-features");
     }
-    if !request.features.is_empty() {
-        command.arg("--features").arg(request.features.join(","));
+    if !features.is_empty() {
+        command.arg("--features").arg(features.join(","));
     }
     let mut child = command
         .spawn()
@@ -4826,62 +4875,6 @@ fn collect_cargo_message(
     }
 }
 
-fn run_tilo_pkg_pack(
-    spec: &AppPackageSpec,
-    payload: &Path,
-    output: &Path,
-    identity: Option<&Path>,
-) -> Result<()> {
-    let program =
-        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
-    let mut command = ProcessCommand::new(&program);
-    command
-        .arg("pack")
-        .arg("--manifest")
-        .arg(&spec.manifest_path)
-        .arg("--payload")
-        .arg(payload)
-        .arg("--output")
-        .arg(output)
-        .current_dir(&spec.app_dir);
-    if let Some(identity) = identity {
-        command.arg("--identity").arg(identity);
-    } else {
-        eprintln!(
-            "[tilo-app] no --identity supplied; tilo-app-package will use an ephemeral self-signing key"
-        );
-    }
-    run_package_command(&mut command, &program, "pack")
-}
-
-fn run_tilo_pkg_verify(app_dir: &Path, package: &Path) -> Result<()> {
-    let program =
-        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
-    let mut command = ProcessCommand::new(&program);
-    command.arg("verify").arg(package).current_dir(app_dir);
-    run_package_command(&mut command, &program, "verify")
-}
-
-fn run_package_command(
-    command: &mut ProcessCommand,
-    program: &OsString,
-    operation: &str,
-) -> Result<()> {
-    let status = command.status().with_context(|| {
-        format!(
-            "starting {} {operation}; install/build tilo-app-package or set TILO_PKG",
-            program.to_string_lossy()
-        )
-    })?;
-    if !status.success() {
-        bail!(
-            "{} {operation} failed with {status}",
-            program.to_string_lossy()
-        );
-    }
-    Ok(())
-}
-
 fn copy_payload_tree(source: &Path, destination: &Path) -> Result<()> {
     for entry in std::fs::read_dir(source)
         .with_context(|| format!("reading payload overlay {}", source.display()))?
@@ -4965,6 +4958,8 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         watcher.watch_tree(root)?;
     }
     let _signals = DevSignalGuard::install()?;
+    provide_runtime_host(&app_dir);
+    let _runtime = DevRuntimeGuard;
     eprintln!(
         "[tilo-app] watching {}",
         roots
@@ -5780,6 +5775,182 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
         return;
     }
     command.env("TILO_DEV_SESSION", dir);
+    if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+        command
+            .env("TILO_RUNTIME_BINARY", &runtime.host)
+            .env("TILO_RUNTIME_PROFILE", &runtime.profile);
+    }
+}
+
+/// The runtime [`provide_runtime_host`] built for this dev session.
+static DEV_RUNTIME: std::sync::OnceLock<Option<DevRuntime>> = std::sync::OnceLock::new();
+
+/// A runtime host and the private profile its daemon serves. The profile is
+/// the session's own: the user's runtime daemon may be any other version, and
+/// an app cannot attach to a daemon that speaks another protocol.
+struct DevRuntime {
+    host: PathBuf,
+    profile: PathBuf,
+}
+
+/// Stops the session's runtime daemon when the dev loop ends, so the next
+/// session's daemon is started from the host that session builds.
+struct DevRuntimeGuard;
+
+impl Drop for DevRuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+            stop_runtime_daemon(&runtime.profile);
+        }
+    }
+}
+
+/// The pid the runtime daemon serving `profile` reports, if one answers.
+fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
+    use std::io::Read as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(profile.join("native.sock")).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
+    stream.write_all(b"{\"native\":\"status\"}\n").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .take(16_385)
+        .read_line(&mut line)
+        .ok()?;
+    let status: serde_json::Value = serde_json::from_str(&line).ok()?;
+    i32::try_from(status.get("pid")?.as_u64()?)
+        .ok()
+        .filter(|pid| *pid > 0)
+}
+
+fn stop_runtime_daemon(profile: &Path) {
+    let Some(pid) = runtime_daemon_pid(profile) else {
+        return;
+    };
+    // SAFETY: `pid` is the daemon serving this dev session's private profile,
+    // which only runtime hosts this loop started can have created.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        eprintln!("[tilo-app] stopped the dev runtime (pid {pid})");
+    }
+}
+
+/// Whether the dev loop has to supply a runtime host. A workspace member finds
+/// the one the workspace builds beside it, a Tilo session serves its own, and
+/// `TILO_RUNTIME_BINARY` or `TILO_RUNTIME_STANDALONE=1` is the user's choice.
+fn wants_runtime_host(var: impl Fn(&str) -> Option<OsString>, workspace_member: bool) -> bool {
+    !workspace_member
+        && var("TILO_RUNTIME_BINARY").is_none()
+        && var("TILO_RUNTIME_STANDALONE").as_deref() != Some("1".as_ref())
+        && var("XDG_CURRENT_DESKTOP").as_deref() != Some("tilo".as_ref())
+}
+
+/// The checkout holding the `tilo-app` crate an app resolves to, from
+/// `cargo metadata`. Its workspace also builds the standalone runtime.
+fn sdk_root_from_metadata(metadata: &serde_json::Value) -> Option<PathBuf> {
+    let manifest = metadata
+        .get("packages")?
+        .as_array()?
+        .iter()
+        .find(|package| {
+            package.get("name").and_then(serde_json::Value::as_str) == Some("tilo-app")
+        })?
+        .get("manifest_path")?
+        .as_str()?;
+    Path::new(manifest)
+        .ancestors()
+        .find(|root| {
+            root.join("crates/runtime/tilo-runtime/Cargo.toml")
+                .is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+/// Builds `tilo-runtime` from the SDK an outside app uses, so the app can
+/// attach to a runtime that speaks its own protocol version.
+fn provide_runtime_host(app_dir: &Path) {
+    let wanted = wants_runtime_host(
+        |name| std::env::var_os(name),
+        app_is_workspace_member(app_dir),
+    );
+    let host = wanted.then(|| build_runtime_host(app_dir)).and_then(|built| {
+        built
+            .inspect_err(|error| {
+                eprintln!(
+                    "[tilo-app] no runtime host for the app: {error:#}\n\
+                     [tilo-app] set TILO_RUNTIME_BINARY to one, or TILO_RUNTIME_STANDALONE=1 to run without"
+                );
+            })
+            .ok()
+    });
+    let runtime = host.map(|host| {
+        let profile = dev_session_dir(app_dir).join("runtime");
+        // A daemon left by a session that did not stop cleanly runs an older host.
+        stop_runtime_daemon(&profile);
+        DevRuntime { host, profile }
+    });
+    let _ = DEV_RUNTIME.set(runtime);
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = ProcessCommand::new(&cargo)
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(app_dir.join("Cargo.toml"))
+        .current_dir(app_dir)
+        .stderr(Stdio::inherit())
+        .output()
+        .context("running cargo metadata")?;
+    if !output.status.success() {
+        bail!("cargo metadata failed with {}", output.status);
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
+        anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
+    })?;
+    let manifest = root.join("crates/runtime/tilo-runtime/Cargo.toml");
+    eprintln!(
+        "[tilo-app] building the runtime host from {}",
+        root.display()
+    );
+    let mut child = ProcessCommand::new(&cargo)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "tilo-runtime",
+            "--bin",
+            "tilo-runtime",
+        ])
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("starting the runtime host build")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let expected = manifest.canonicalize().unwrap_or(manifest);
+    let mut artifacts = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        collect_cargo_message(
+            &line.context("reading Cargo artifact stream")?,
+            &expected,
+            &mut artifacts,
+        );
+    }
+    let status = child.wait().context("waiting for the runtime host build")?;
+    if !status.success() {
+        bail!("the runtime host build failed with {status}");
+    }
+    let host = artifacts
+        .remove("tilo-runtime")
+        .ok_or_else(|| anyhow::anyhow!("Cargo did not report the tilo-runtime binary"))?;
+    eprintln!("[tilo-app] runtime host {}", host.display());
+    Ok(host)
 }
 
 fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
@@ -5930,21 +6101,10 @@ fn thin_dev_steps(
 ) -> Vec<ThinDevStep> {
     let (target_args, env) = match linkage {
         ThinDevLinkage::WorkspaceToolkit => (Vec::new(), Vec::new()),
-        ThinDevLinkage::Target(triple) => {
-            let key = format!(
-                "CARGO_TARGET_{}_RUSTFLAGS",
-                triple.to_ascii_uppercase().replace(['-', '.'], "_")
-            );
-            let mut flags = std::env::var_os(&key).unwrap_or_default();
-            if !flags.is_empty() {
-                flags.push(" ");
-            }
-            flags.push("-C prefer-dynamic");
-            (
-                vec![OsString::from("--target"), OsString::from(triple)],
-                vec![(OsString::from(key), flags)],
-            )
-        }
+        ThinDevLinkage::Target(triple) => (
+            vec![OsString::from("--target"), OsString::from(triple)],
+            vec![prefer_dynamic_rustflags(triple)],
+        ),
     };
     let app_step = |label, target: &[&str], pick| {
         let mut args = vec![
@@ -6025,6 +6185,22 @@ fn app_is_workspace_member(app_dir: &Path) -> bool {
 }
 
 /// The triple the app's own compiler builds for by default.
+/// `CARGO_TARGET_<triple>_RUSTFLAGS` with `-C prefer-dynamic` appended, so
+/// every artifact for `triple` links `libstd` and the toolkit dynamically while
+/// build scripts and proc macros, which are host artifacts, keep their flags.
+fn prefer_dynamic_rustflags(triple: &str) -> (OsString, OsString) {
+    let key = format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        triple.to_ascii_uppercase().replace(['-', '.'], "_")
+    );
+    let mut flags = std::env::var_os(&key).unwrap_or_default();
+    if !flags.is_empty() {
+        flags.push(" ");
+    }
+    flags.push("-C prefer-dynamic");
+    (OsString::from(key), flags)
+}
+
 fn host_triple(app_dir: &Path) -> Result<String> {
     let output = ProcessCommand::new("rustc")
         .arg("-vV")
@@ -7181,6 +7357,9 @@ impl CreateOutcome {
         if let Some(sdk) = &self.sdk {
             let _ = write!(notes, "\n\nSDK: {}", sdk.describe());
         }
+        if self.git_initialized {
+            notes.push_str("\n\nInitialised a git repository for the app.");
+        }
         if self.app_id.starts_with("local.") {
             let _ = write!(
                 notes,
@@ -7449,6 +7628,8 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
             .flatten();
         publish_new_app(&destination, &rendered, workspace_update.as_ref())?;
     }
+    let git_initialized =
+        !request.dry_run && !workspace_member && init_git_repository(&destination);
 
     Ok(CreateOutcome {
         destination,
@@ -7458,7 +7639,41 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         dry_run: request.dry_run,
         workspace_member,
         sdk: sdk_source,
+        git_initialized,
     })
+}
+
+/// Runs `git init` in a new app that no git work tree contains. Git is a
+/// convenience here: without it, or when it fails, the app is still complete.
+fn init_git_repository(destination: &Path) -> bool {
+    let inside = ProcessCommand::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(destination)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match inside {
+        Ok(status) if status.success() => return false,
+        Ok(_) => {}
+        Err(_) => {
+            eprintln!("[tilo-app] git is not installed; the app has no repository");
+            return false;
+        }
+    }
+    match ProcessCommand::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(destination)
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        outcome => {
+            eprintln!(
+                "[tilo-app] git init in {} failed: {outcome:?}",
+                destination.display()
+            );
+            false
+        }
+    }
 }
 
 /// Apps in the Tilo workspace belong to Tilo. Anyone else's app starts in a

@@ -3,38 +3,44 @@
 //!
 //! This is what the runtime serves on stock macOS or a foreign Linux
 //! desktop. The desktop session hosts the same brokers with its native
-//! adapters (launcher, governance, durable owner, peer network); here each
-//! of those host services is absent, and the broker answers as it does for
-//! any host that does not provide one.
+//! adapters (launcher, governance, durable owner, peer network). Here the
+//! profile launches its installed apps through the platform launcher
+//! ([`crate::apps`]) and records the grants people give apps for other
+//! apps' actions in its own workspace; every other host service is absent,
+//! and the broker answers as it does for any host that does not provide one.
+//! What this host keeps durably is in the profile: grants, effect and task
+//! records in its own workspace file, the invocation journal and
+//! collaboration history.
 
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, profile, unix};
+mod workspace;
+
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
 use std::{
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
 };
 use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::BrokerChannels,
+    collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{HostServices, WorkspaceAuthority},
+    services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId};
 use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+use workspace::{ProfileGrants, ProfileWorkspace};
 
-/// The desktop session's workspace file. Read, never written, here: its
-/// native authority fields belong to that host.
-const DESKTOP_WORKSPACE: &str = "workspace.json";
-/// This host's own workspace file, for a profile the desktop never served.
-const STANDALONE_WORKSPACE: &str = "desktop.json";
+/// Durable collaboration history, where the desktop session keeps it under
+/// the profile's `XDG_STATE_HOME`.
+const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -48,20 +54,6 @@ pub struct Standalone {
     _lock: advisory_lock::FileLock,
 }
 
-impl Standalone {
-    /// Read document media an app in this session's room stored.
-    /// # Errors
-    /// Returns connection errors; `Ok(None)` when the content is not readable.
-    pub fn read_media(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
-        profile::read_media(&self.blob_socket, &self.room, app_id, hash)
-    }
-
-    /// The live action broker, for in-process inspection.
-    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
-        self.broker.app_action_broker()
-    }
-}
-
 impl RuntimeServices for Standalone {
     type ActionHost = RuntimeActionHost;
 
@@ -70,7 +62,7 @@ impl RuntimeServices for Standalone {
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
             &identity_dir,
             &tilo_identity_host::provisioning::collaboration_identity_paths(),
             IdentityStorage::Platform,
@@ -84,6 +76,7 @@ impl RuntimeServices for Standalone {
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
+        let apps = Arc::new(apps::Apps::from_env(root, &room_id));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity = tilo_identity_host::broker::spawn(
@@ -100,9 +93,16 @@ impl RuntimeServices for Standalone {
             HostServices {
                 native_certificates: Some(Arc::new(Certificates)),
                 launchable_catalogue: Some(root.join("state/launchable-actions.json")),
+                launcher: Some(Arc::clone(&apps) as Arc<dyn LauncherServices>),
+                app_action_access: Some(apps.access_resolver()),
+                app_action_grants: Some(Arc::new(ProfileGrants {
+                    workspace: Arc::clone(&workspace),
+                    apps,
+                })),
+                legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 ..HostServices::default()
             },
-            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(Mutex::new(channels(root))),
             Arc::new(FanoutState::new()),
         )?;
         let blob_socket = root.join(BLOB_SOCKET);
@@ -204,142 +204,19 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     }
 }
 
-/// The profile's committed workspace tree.
-struct ProfileWorkspace {
-    tree: RwLock<DesktopTree>,
-    /// Where this host keeps the tree; `None` when the desktop session's
-    /// file is authoritative and read only.
-    path: Option<PathBuf>,
-}
-
-impl ProfileWorkspace {
-    /// The desktop session's tree when that host served this profile,
-    /// otherwise this host's own, created on first start.
-    fn open(root: &Path) -> io::Result<Self> {
-        let desktop = root.join(DESKTOP_WORKSPACE);
-        if desktop.exists() {
-            // The desktop session versions this file by its native layout,
-            // which only adds fields this host ignores; it is read only here.
-            return Ok(Self {
-                tree: RwLock::new(parse_tree(&std::fs::read(&desktop)?)?),
-                path: None,
-            });
-        }
-        let path = root.join(STANDALONE_WORKSPACE);
-        let tree = match read_tree(&path) {
-            Ok(tree) => tree,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => bootstrap(),
-            Err(error) => return Err(error),
-        };
-        if tree.workspaces.is_empty() {
-            return Err(io::Error::other("runtime profile has no workspace"));
-        }
-        Ok(Self {
-            tree: RwLock::new(tree),
-            path: Some(path),
-        })
+/// The broker's channel state, with the profile's durable collaboration
+/// history. Without it scrollback is limited to memory, as in the desktop
+/// session, and the host still serves.
+fn channels(root: &Path) -> BrokerChannels {
+    let mut channels = BrokerChannels::default();
+    match CollabHistoryStore::open(root.join(COLLABORATION_HISTORY)) {
+        Ok(history) => channels.history = Some(history),
+        Err(error) => tracing::warn!(
+            %error,
+            "durable collaboration history unavailable; scrollback is limited to memory"
+        ),
     }
-
-    fn room(&self) -> String {
-        self.tree
-            .read()
-            .map(|tree| {
-                tree.workspaces
-                    .first()
-                    .map(|workspace| workspace.room.to_string())
-            })
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-    }
-
-    /// Give an unowned workspace to `actor` and persist this host's tree.
-    fn adopt(&self, actor: &str) -> io::Result<()> {
-        let mut tree = self
-            .tree
-            .write()
-            .map_err(|_| io::Error::other("runtime workspace lock poisoned"))?;
-        let workspace = tree
-            .workspaces
-            .first_mut()
-            .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        if workspace.owner.is_none() {
-            if self.path.is_none() {
-                return Err(io::Error::other(
-                    "the desktop session's runtime workspace has no owner",
-                ));
-            }
-            workspace.set_owner(actor.to_owned());
-        }
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let bytes = serde_json::to_vec_pretty(&*tree).map_err(io::Error::other)?;
-        drop(tree);
-        atomic_file::write_with_mode(path, &bytes, 0o600)
-    }
-}
-
-impl WorkspaceAuthority for ProfileWorkspace {
-    fn snapshot(&self) -> Result<DesktopTree, String> {
-        self.tree
-            .read()
-            .map(|tree| tree.clone())
-            .map_err(|_| "runtime workspace lock poisoned".to_owned())
-    }
-}
-
-impl WorkspaceMembership for ProfileWorkspace {
-    fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-        if let Ok(tree) = self.tree.read()
-            && let Some(workspace) = tree
-                .workspaces
-                .iter()
-                .find(|workspace| &workspace.room == room)
-        {
-            read(workspace);
-        }
-    }
-}
-
-fn parse_tree(bytes: &[u8]) -> io::Result<DesktopTree> {
-    serde_json::from_slice(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-fn read_tree(path: &Path) -> io::Result<DesktopTree> {
-    let tree = parse_tree(&std::fs::read(path)?)?;
-    if tree.schema_version > tilo_desktop_model::STATE_SCHEMA_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "workspace layout {} is newer than the {} this build understands",
-                tree.schema_version,
-                tilo_desktop_model::STATE_SCHEMA_VERSION
-            ),
-        ));
-    }
-    Ok(tree)
-}
-
-/// One empty home workspace with one strip, as a new desktop starts.
-fn bootstrap() -> DesktopTree {
-    let mut ids = IdMinter::default();
-    let workspace = WorkspaceId(ids.mint());
-    let strip = StripId(ids.mint());
-    let home = Workspace {
-        strips: vec![Strip {
-            id: strip,
-            name: "Main".into(),
-            window_groups: Vec::new(),
-        }],
-        ..Workspace::new(workspace, "Home")
-    };
-    DesktopTree {
-        workspaces: vec![home],
-        active: workspace,
-        active_strip: std::iter::once((workspace, strip)).collect(),
-        ..DesktopTree::default()
-    }
+    channels
 }
 
 #[cfg(test)]

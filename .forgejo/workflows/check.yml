@@ -34,7 +34,6 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   # Cache availability changes speed, never correctness or mergeability.
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   # Deny warnings through per-target flags. Cargo joins these with the
   # target rustflags in .cargo/config.toml (x86-64-v3, frame pointers,
   # hardening); RUSTFLAGS would replace them, giving these builds different
@@ -61,16 +60,9 @@ env:
   PUSH_ONLY_FILTER: >-
     (package(fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
     runs-on: runner-quality
@@ -288,10 +280,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      # The runner slot's persistent target/ and Cargo downloads for this trust
-      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
-      volumes:
-        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -301,8 +289,6 @@ jobs:
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
-        with:
-          slot-cache: true
 
       - name: Check native architecture
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -421,24 +407,6 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Report remote compiler-cache effectiveness
-        if: always()
-        run: |
-          echo "### sccache test shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      # Vouch for the sources this job's artifacts were built from, so the
-      # slot's next job keeps them fresh; an unsealed target is rebuilt.
-      - name: Seal the runner slot's target
-        if: always()
-        run: python3 tools/ci/slot_cache.py seal
-
-  # Type-checks every target of the shard's complete reverse-dependency
-  # closure on architectures that Clippy does not lint (x86_64 gets the same
-  # check from Clippy). It links nothing, so it uses the architecture's
-  # ordinary runner even when the shard's test links need the large one.
   check:
     if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
     needs: [builder, select]
@@ -452,10 +420,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      # The runner slot's persistent target/ and Cargo downloads for this trust
-      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
-      volumes:
-        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -465,8 +429,6 @@ jobs:
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
-        with:
-          slot-cache: true
 
       - name: Prepare build runtime
         run: |
@@ -512,23 +474,6 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Report remote compiler-cache effectiveness
-        if: always()
-        run: |
-          echo "### sccache check shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Seal the runner slot's target
-        if: always()
-        run: python3 tools/ci/slot_cache.py seal
-
-  # Clippy's Rust-level analysis is authoritative once per selected package
-  # set on x86_64, and it is also that shard's all-target check; ARM still runs
-  # the complete native test and all-target check jobs above, without
-  # compiling two more isolated lint graphs. The selector's clippy_matrix
-  # therefore holds only the x86_64 rows.
   clippy:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -542,10 +487,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      # The runner slot's persistent target/ and Cargo downloads for this trust
-      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
-      volumes:
-        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -556,8 +497,6 @@ jobs:
       - name: Prepare Rust build caches
         id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
-        with:
-          slot-cache: true
 
       - name: Prepare build runtime
         run: |
@@ -603,19 +542,6 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Report remote compiler-cache effectiveness
-        if: always()
-        run: |
-          echo "### sccache clippy shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Seal the runner slot's target
-        if: always()
-        run: python3 tools/ci/slot_cache.py seal
-
-      # One writer avoids shards and jobs racing to create the same immutable key.
       - name: Save Cargo downloads
         if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
         continue-on-error: true
@@ -649,8 +575,6 @@ jobs:
       AR_x86_64_linux_android: /opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
     container:
       image: ${{ needs.builder.outputs.image }}
-      volumes:
-        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -660,8 +584,6 @@ jobs:
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
-        with:
-          slot-cache: true
 
       # A no-op on builders built from the current recipe.
       - name: Ensure the Android NDK and Rust targets
@@ -682,23 +604,6 @@ jobs:
               -- -D warnings -A clippy::missing_const_for_thread_local
           done
 
-      - name: Report remote compiler-cache effectiveness
-        if: always()
-        run: |
-          echo "### sccache Android" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Seal the runner slot's target
-        if: always()
-        run: python3 tools/ci/slot_cache.py seal
-
-  # A pull request that changes only snapshot pins (os/kernel-snapshot.env)
-  # changes no code. Instead of the Rust and security suites, which main runs
-  # after the merge, prove each changed pin is the signed snapshot CI
-  # published for this source. RPM snapshots resolve by fingerprint and have
-  # no pin file.
   pins:
     if: needs.select.outputs.pins_required == 'true'
     needs: [select]

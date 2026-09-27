@@ -183,6 +183,7 @@ members = [
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
+    "crates/packaging/installed-apps",
     "crates/packaging/launcher",
     "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
@@ -401,6 +402,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# MIME types from file extensions.
+mime_guess = "2.0.5"
 # Percent-encoding and form-urlencoding outside a whole `url::Url`.
 percent-encoding = "2"
 form_urlencoded = "1"
@@ -799,9 +802,9 @@ vello = { path = "vendor/vello" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
-# Git forks on code.tilo.so. Cargo reads these revisions from `vendor/git`
-# (see `.cargo/config.toml` and `vendor/PATCHES.md`); upstream contributions
-# are prepared in tilo/upstream-contribs. Drop the entries once upstream
+# Git forks on code.tilo.so, public so apps outside this repository fetch
+# them too (see `vendor/PATCHES.md`); upstream contributions are prepared in
+# tilo/upstream-contribs. Drop the entries once upstream
 # releases the changes.
 #
 # accesskit_unix and atspi enable zbus's async-io backend unconditionally, so
@@ -812,14 +815,14 @@ workspace-hack = { path = "crates/workspace-hack" }
 # The accesskit crates the fork's accesskit_unix depends on by path come from
 # the same revision (identical to their crates.io releases), so each resolves
 # to one copy.
-accesskit = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_atspi_common = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_consumer = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_unix = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-atspi = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-common = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-proxies = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+accesskit = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_atspi_common = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_consumer = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_unix = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+atspi = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-common = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-proxies = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
 # rustypipe 0.11.4 uses reqwest 0.12, which kept reqwest 0.12, its QUIC stack
 # (quinn) and fancy-regex 0.14 in the lock. The fork ports 0.11.4 to reqwest
 # 0.13 and fancy-regex 0.16.
-rustypipe = { git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }
+rustypipe = { git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }

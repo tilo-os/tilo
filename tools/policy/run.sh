@@ -24,7 +24,7 @@ run 'Path-filtered package dependency triggers' \
   --check atomic-file .forgejo/workflows/build-builder-image.yml \
   --check tilo-crypto .forgejo/workflows/development-source.yml \
   --check fs .forgejo/workflows/fs-fuse.yml \
-  --check tilo-relay .forgejo/workflows/tilo-relay.yaml \
+  --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-runtime .forgejo/workflows/runtime-macos.yml
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
@@ -48,6 +48,7 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Compatibility adapters ratchet toward removal' python3 tools/policy/check_compat_ratchet.py
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py

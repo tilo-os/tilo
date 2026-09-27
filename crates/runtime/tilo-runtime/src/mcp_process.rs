@@ -15,7 +15,7 @@ use std::{
 
 use crate::{RuntimeServices, mcp::McpServer};
 
-pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,14 +38,14 @@ pub struct ValidatedManifest {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Frame {
+pub(crate) enum Frame {
     Line(Vec<u8>),
     TooLong,
     Eof,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Args {
+pub(crate) struct Args {
     pub profile: PathBuf,
     pub apps: PathBuf,
 }
@@ -56,7 +56,7 @@ pub struct Args {
 ///
 /// Returns [`io::ErrorKind::InvalidInput`] for an unknown or repeated
 /// argument, a flag without its path, or a missing required flag.
-pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
+pub(crate) fn parse_args(args: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
     let mut profile = None;
     let mut apps = None;
     let mut args = args.into_iter();
@@ -134,7 +134,7 @@ pub fn validate_manifest(manifest: AppManifest) -> io::Result<ValidatedManifest>
 ///
 /// Returns the read error, [`io::ErrorKind::InvalidInput`] for malformed
 /// JSON, or any [`validate_manifest`] error.
-pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
+pub(crate) fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
     let bytes = std::fs::read(path)?;
     let manifest = serde_json::from_slice(bytes.as_slice()).map_err(|error| {
         io::Error::new(
@@ -154,7 +154,9 @@ pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
 ///
 /// Rejects a relative profile path and returns any error creating or
 /// securing the private directories.
-pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
+pub(crate) fn prepare_profile_environment(
+    profile: &Path,
+) -> io::Result<[(&'static str, PathBuf); 5]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -183,7 +185,7 @@ pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str,
 /// # Errors
 ///
 /// Returns any error from the underlying reader.
-pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
+pub(crate) fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
     let mut line = Vec::new();
     let mut too_long = false;
     loop {
@@ -231,7 +233,7 @@ pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
 /// # Errors
 ///
 /// Returns any serialization or write error.
-pub fn write_reply(writer: &mut impl Write, reply: &Value) -> io::Result<()> {
+pub(crate) fn write_reply(writer: &mut impl Write, reply: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, reply).map_err(io::Error::other)?;
     writer.write_all(b"\n")?;
     writer.flush()
@@ -425,7 +427,7 @@ where
 /// # Errors
 ///
 /// Returns any [`load_manifest`] or [`serve`] error.
-pub fn run<S: RuntimeServices>(profile: &Path, manifest_path: &Path) -> io::Result<()> {
+pub(crate) fn run<S: RuntimeServices>(profile: &Path, manifest_path: &Path) -> io::Result<()> {
     // The complete startup configuration is parsed and validated before
     // profile services or any application process is started.
     let manifest = load_manifest(manifest_path)?;

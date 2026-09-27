@@ -274,6 +274,10 @@ pub struct ElementData {
     pub italic: bool,
     pub radius: f64,
     pub z: i64,
+    /// A text element's words as written (paragraphs with their marks);
+    /// empty for one described by `text` alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<qdoc_rich_text::ClipBlock>,
 }
 
 impl ElementData {
@@ -296,11 +300,16 @@ impl ElementData {
             italic: e.italic,
             radius: e.radius,
             z: e.z,
+            blocks: e
+                .blocks
+                .iter()
+                .map(tilo_rich_text::clip_of_content)
+                .collect(),
         }
     }
 
     pub fn to_element(&self) -> Element {
-        Element {
+        let mut element = Element {
             id: self.id.clone(),
             kind: ElementKind::from_str(&self.kind),
             x: self.x,
@@ -318,7 +327,17 @@ impl ElementData {
             italic: self.italic,
             radius: self.radius,
             z: self.z,
+            blocks: Vec::new(),
+        };
+        if !self.blocks.is_empty() {
+            element.set_blocks(
+                self.blocks
+                    .iter()
+                    .map(tilo_rich_text::content_of_clip)
+                    .collect(),
+            );
         }
+        element
     }
 }
 
@@ -511,6 +530,16 @@ pub enum SlidesAction {
         slide_id: String,
         element: NewElement,
     },
+    /// Edit the words of text element `element_id` on slide `slide_id`: one
+    /// rich-text edit (typing, a split, a mark) applied to its body.
+    EditElementText {
+        slide_id: String,
+        element_id: String,
+        edit: qdoc_rich_text::RichTextAction,
+    },
+    /// Rewrite the deck's first-format text elements as rich text, in place
+    /// and once (see [`SlidesDoc::upgrade`]).
+    UpgradeText,
 }
 
 const MAX_DECK_SLIDES: usize = 10_000;
@@ -618,6 +647,14 @@ fn validate_element(data: &ElementData) -> Result<(), ActionError> {
         return Err(refused("element id, kind, or geometry is invalid"));
     }
     if data.text.chars().count() > MAX_TEXT_CHARS
+        || data.blocks.len() > MAX_TEXT_CHARS
+        || data
+            .blocks
+            .iter()
+            .map(|block| block.text.chars().count())
+            .sum::<usize>()
+            > MAX_TEXT_CHARS
+        || (data.kind != "text" && !data.blocks.is_empty())
         || data.src.len() > 4_096
         || (data.kind == "image" && !crate::assets::is_asset_id(&data.src))
         || (data.kind != "image" && !data.src.is_empty())
@@ -824,8 +861,28 @@ impl Action for SlidesAction {
         reason = "one exhaustive action match is the atomic validation boundary: every branch validates its complete payload before it can write the shared deck"
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        // Typing reaches only the element it edits: no deck read per keystroke.
+        match self {
+            SlidesAction::EditElementText {
+                slide_id,
+                element_id,
+                edit,
+            } => {
+                let body = SlidesDoc::element_body(doc, slide_id, element_id)
+                    .ok_or_else(|| refused("the text element no longer exists"))?;
+                return edit.apply_under(doc, &body);
+            }
+            SlidesAction::UpgradeText => {
+                if !SlidesDoc::upgrade(doc) {
+                    return Err(refused("the deck's text is already rich text"));
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         let deck = deck_for_action(doc)?;
         match self {
+            SlidesAction::EditElementText { .. } | SlidesAction::UpgradeText => {}
             SlidesAction::InsertSlide { at, slide } => {
                 if *at > deck.slides.len() || deck.slides.len() >= MAX_DECK_SLIDES {
                     return Err(refused("slide insertion position or deck size is invalid"));
@@ -1000,10 +1057,15 @@ impl Action for SlidesAction {
                 if let Some(v) = patch.radius {
                     SlidesDoc::set_element_f64(doc, index, id, "radius", v);
                 }
-                if let Some(v) = patch.bold {
+                // A text box's bold and italic are marks over all its words.
+                if let Some(v) = patch.bold
+                    && !SlidesDoc::mark_whole_body(doc, index, id, "strong", v)
+                {
                     SlidesDoc::set_element_bool(doc, index, id, "bold", v);
                 }
-                if let Some(v) = patch.italic {
+                if let Some(v) = patch.italic
+                    && !SlidesDoc::mark_whole_body(doc, index, id, "em", v)
+                {
                     SlidesDoc::set_element_bool(doc, index, id, "italic", v);
                 }
             }

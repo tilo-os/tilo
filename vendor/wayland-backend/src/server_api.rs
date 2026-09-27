@@ -615,6 +615,50 @@ impl<D> Backend<D> {
         self.backend.dispatch_client(data, client_id.id)
     }
 
+    /// Dispatches at most `request_limit` pending messages from one client.
+    ///
+    /// The Rust backend uses this to let compositors enforce fairness between
+    /// clients. A limit of zero dispatches nothing. On the system backend this
+    /// currently falls back to the backend's ordinary all-client dispatch.
+    #[inline]
+    pub fn dispatch_single_client_bounded(
+        &mut self,
+        data: &mut D,
+        client_id: ClientId,
+        request_limit: usize,
+    ) -> std::io::Result<usize> {
+        self.backend
+            .dispatch_client_bounded(data, client_id.id, request_limit)
+    }
+
+    /// Consumes one ready batch from [`Backend::poll_fd`] and dispatches at
+    /// most `request_limit` requests for each ready client.
+    ///
+    /// Use this when the aggregate poll fd is registered with an external
+    /// event loop.  It consumes the aggregate readiness notification before
+    /// dispatching client sockets, so that the poll fd is not left permanently
+    /// readable. Check [`Backend::has_pending_client_dispatch`] before a long
+    /// event-loop park: decoding a socket can leave requests buffered in
+    /// userspace after the aggregate fd is drained. On the system backend this
+    /// currently falls back to the ordinary all-client dispatch.
+    #[inline]
+    pub fn dispatch_ready_clients_bounded(
+        &mut self,
+        data: &mut D,
+        request_limit: usize,
+    ) -> std::io::Result<usize> {
+        self.backend
+            .dispatch_ready_clients_bounded(data, request_limit)
+    }
+
+    /// Returns whether the prior bounded ready dispatch left decoded requests
+    /// for another fair turn. An external event loop should not take a long
+    /// idle park while this is true.
+    #[inline]
+    pub fn has_pending_client_dispatch(&self) -> bool {
+        self.backend.has_pending_client_dispatch()
+    }
+
     /// Dispatches all pending messages from all clients.
     ///
     /// This method will not block if there are no pending messages.

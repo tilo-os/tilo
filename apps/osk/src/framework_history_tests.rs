@@ -896,6 +896,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
                 record_kind: ui::record::RecordKind::new("osk.preferences"),
                 required: vec![],
                 optional: vec![],
+                opens: &[],
                 create: |_, _, _| {
                     Err(ui::launch::LaunchError::Operation(
                         "controlled explicit root".into(),

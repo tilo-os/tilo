@@ -12,6 +12,7 @@ python3 "$root/tools/policy/check_shell_copy_contract.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
+python3 "$root/tools/policy/check_compat_ratchet.py" || fail=1
 
 # Same exclusions as CI (tools/ci/check-changed-rustfmt.sh): vendored crates and
 # checked-in Cap'n Proto bindings keep generator formatting.

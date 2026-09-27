@@ -47,18 +47,6 @@ concurrency:
   group: registry-server-image-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: false
 
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -117,17 +105,29 @@ jobs:
           key: registry-server-sccache-v1
           assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 
-      # Every CI pool provides the same S3 compiler cache and a bucket-scoped
-      # credential; the image build requires it.
+      # Prefer the runner's compiler cache. When that set is incomplete, use
+      # this repository's cache secret. A build with neither compiles without it.
       - name: Bind the runner compiler cache
         id: compiler-cache
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then
-              echo "::error::runner compiler cache setting $name is missing"
-              exit 1
+              {
+                echo 'bucket='
+                echo 'endpoint='
+                echo 'region='
+                echo 'use_ssl='
+                echo 'secret-envs='
+              } >> "$GITHUB_OUTPUT"
+              echo "::notice::runner compiler cache is not configured; compiling without it"
+              exit 0
             fi
           done
           {
@@ -135,6 +135,10 @@ jobs:
             printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
             printf 'region=%s\n' "$SCCACHE_REGION"
             printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+            echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
+            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
+            echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up the pinned BuildKit frontend
@@ -161,9 +165,7 @@ jobs:
             SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           tags: ${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SOURCE_REVISION }}
 
       - name: Exercise the non-root read-only runtime and health endpoint

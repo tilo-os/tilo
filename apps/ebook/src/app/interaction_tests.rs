@@ -2492,6 +2492,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             color: HiColor::Green,
             created: 5,
             group,
+            blocks: Vec::new(),
         };
         BooksDoc::upsert_annotation(&mut doc, &comment);
         app.refresh_from_doc(&doc);
@@ -3596,6 +3597,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
                 author: String::new(),
                 subject: String::new(),
                 added: 1,
+                content: None,
             },
         );
         let payload =
