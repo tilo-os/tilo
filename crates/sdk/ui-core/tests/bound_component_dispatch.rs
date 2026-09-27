@@ -2260,6 +2260,67 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
 }
 
 #[test]
+fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
+    use crate::support::application::action_probe_factory;
+    use tilo_ui::permissions::{Actor, PermissionContext, Role};
+    let host = ProbeHost::new();
+    let definition = definition(action_probe_factory);
+    let driver = |instance, role| {
+        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+            PermissionContext::from_capabilities(Actor::person(Some(role), "probe-author"), vec![])
+                .at_unix_time(100),
+        ));
+        let context = host
+            .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
+            .unwrap();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let Ok(driver) = tilo_ui::headless::FrameHarness::from_component(
+            component,
+            (200, 100),
+            tilo_ui::application::ComponentRunnerInputs {
+                theme: tilo_ui::Theme::dark(),
+                text_renderer: tilo_ui::TextRenderer::new(),
+            },
+        ) else {
+            panic!("component runner");
+        };
+        driver
+    };
+    let actions = |resources: &[tilo_actions::Resource]| {
+        resources
+            .iter()
+            .flat_map(|resource| resource.actions.iter().map(|action| action.id.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let owner = driver(21, Role::Owner);
+    let listed = owner.bound_resources(None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id.as_str(), "probe:shared");
+    assert!(actions(&listed).contains(&"edit".to_owned()));
+    let exact = owner.bound_resources(Some("probe:shared")).unwrap();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(actions(&exact), actions(&listed));
+    assert!(
+        owner
+            .bound_resources(Some("probe:missing"))
+            .unwrap()
+            .is_empty()
+    );
+
+    // What the door would refuse is not offered: Write actions leave a viewer's listing.
+    let viewer = driver(22, Role::Viewer);
+    let exact = viewer.bound_resources(Some("probe:shared")).unwrap();
+    let offered = actions(&exact);
+    assert!(offered.contains(&"view".to_owned()), "{offered:?}");
+    for write in ["edit", "prompt", "typed"] {
+        assert!(!offered.contains(&write.to_owned()), "{offered:?}");
+    }
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one, two and zero authorized targets share the same control and outer-history oracle"

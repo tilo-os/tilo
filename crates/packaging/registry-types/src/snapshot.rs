@@ -502,12 +502,12 @@ fn entry_within_bounds(entry: &RegistryEntry) -> bool {
                     .tapp_blake3_hex
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit())
-                && version.target.isa.len() <= 64
+                && version.target.isa.len() <= crate::target::MAX_TARGET_ISA_BYTES
                 && version
                     .target
                     .runtime
                     .as_ref()
-                    .is_none_or(|runtime| runtime.len() <= 256)
+                    .is_none_or(|runtime| runtime.len() <= crate::target::MAX_TARGET_RUNTIME_BYTES)
         })
 }
 

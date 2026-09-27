@@ -78,4 +78,9 @@ workspace-members = [
     "xdg-paths",
     # builder sccache canary
     "atomic-file",
+    # browser wasm32 registry verifier and its member dependency: the hack's
+    # native features pull mio there
+    "registry-types",
+    "registry-web",
+    "registry-web-bindgen",
 ]
