@@ -469,7 +469,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert_eq!(
             notice.severity,
-            crate::shell::notification::NotificationSeverity::Error
+            tilo_desktop::notifications::NotificationSeverity::Error
         );
         assert_eq!(
             notice.dismiss_after,
