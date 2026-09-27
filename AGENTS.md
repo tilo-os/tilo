@@ -101,6 +101,14 @@ Before pushing:
    the Codex CI hook report completion; inspect a failure once with
    `fgj actions run view <run> --log-failed` and rerun only the failed job when it is transient.
 
+**Migrations finish.** Every old API kept alive behind a compatibility adapter or `#[deprecated]`
+has an entry in `tools/policy/compat_ratchet.toml`: a detector, its site count, an owner and the
+target API. `check_compat_ratchet.py` (pre-commit and the policy suite) fails when a count rises,
+when it falls without the ledger being lowered in the same change, when it reaches zero and the
+entry is still there, and when an item in `crates/sdk` is marked as a compatibility/legacy/temporary
+adapter, or anything is `#[deprecated]`, without an entry. Starting a migration means adding its entry;
+migrating sites means lowering its count (`--list NAME` shows what is left).
+
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
 `tilo`.
 

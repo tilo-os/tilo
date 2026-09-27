@@ -1,0 +1,174 @@
+# Deprecated APIs that still have users (see check_compat_ratchet.py).
+#
+# Each [[api]] counts the sites of one old API with `pattern`, a Python regex
+# run over Rust source (optionally limited to the path prefixes in `paths`);
+# a match that starts on a `//` line does not count. The regex runs only on
+# files containing one of `needles`, fixed strings every match must contain.
+# Start a pattern with a literal (`fn\s+name`, not `\bfn`): a leading `\b`
+# costs the regex engine its fast skip. `count` may only go down, and must be lowered
+# in the change that removes sites; at zero, delete the whole block together
+# with its adapter. Every item marked as a compatibility adapter in crates/sdk,
+# and every #[deprecated] item, must be listed in some entry's `adapters` as
+# "path::item". Do not add an entry to admit new users of an old API; add one
+# only for a new migration, with the adapter it introduces.
+#
+# List an entry's sites with:
+#   python3 tools/policy/check_compat_ratchet.py --list NAME
+
+[[api]]
+name = "widget-handle-event-positional"
+owner = "crates/sdk/ui-core (refactor/widget-context)"
+target = "Widget::handle_event_ctx(event, &mut EventCtx)"
+reason = "Nine-parameter Widget::handle_event overrides; the trait default adapts them to EventCtx"
+pattern = 'fn\s+handle_event\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*&[\w:]*WindowEvent\s*,\s*\w+\s*:\s*f64\b'
+needles = ["handle_event"]
+count = 402
+adapters = [
+    "crates/sdk/ui-core/src/widget/mod.rs::handle_event",
+    "crates/sdk/ui-core/src/widget/decorator.rs::handle_event",
+]
+
+[[api]]
+name = "widget-invoke-resource-operation"
+owner = "crates/sdk/ui-core (refactor/widget-action-surface)"
+target = "Widget::invoke_resource_operation_v2 returning ActionOutput"
+reason = "Untyped bool-returning operation handlers; the v2 default adapts them"
+pattern = 'fn\s+invoke_resource_operation\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*[\w:]*OperationKind\b'
+needles = ["invoke_resource_operation"]
+count = 58
+adapters = ["crates/sdk/ui-core/src/widget/mod.rs::invoke_resource_operation_v2"]
+
+[[api]]
+name = "widget-start-resource-operation"
+owner = "crates/sdk/ui-core (refactor/widget-action-surface)"
+target = "Widget::start_resource_operation_scoped(&ResourceInvocationScope, ..)"
+reason = "Unscoped operation admission without original-caller custody"
+pattern = 'fn\s+start_resource_operation\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*[\w:]*InvocationId\b'
+needles = ["start_resource_operation"]
+count = 45
+
+[[api]]
+name = "widget-start-resource-operation-with-document"
+owner = "crates/sdk/ui-core (refactor/widget-action-surface)"
+target = "Widget::start_resource_operation_scoped(&ResourceInvocationScope, ..)"
+reason = "Unscoped mutable-document admission; a third entry point beside the scoped one"
+pattern = 'fn\s+start_resource_operation_with_document\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*[\w:]*InvocationId\b'
+needles = ["start_resource_operation_with_document"]
+count = 32
+
+[[api]]
+name = "widget-perform-action"
+owner = "crates/sdk/ui-core (refactor/widget-action-surface)"
+target = "Widget::perform_semantic_action(target, action, ..)"
+reason = "Whole-widget accessibility action hook, reached through the perform_action_at default"
+pattern = 'fn\s+perform_action\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*&[\w:]*\bAction\b'
+needles = ["perform_action"]
+count = 52
+
+[[api]]
+name = "widget-perform-action-at"
+owner = "crates/sdk/ui-core (refactor/widget-action-surface)"
+target = "Widget::perform_semantic_action(target, action, ..)"
+reason = "Key-path accessibility action hook, reached through the perform_semantic_action default"
+pattern = 'fn\s+perform_action_at\s*\(\s*&mut\s+self\s*,\s*\w+\s*:\s*&[\w:]*\bAction\b'
+needles = ["perform_action_at"]
+count = 36
+
+[[api]]
+name = "widget-draw-with-presence"
+owner = "crates/sdk/ui-core (refactor/draw-ctx)"
+target = "a single Widget::draw entry point"
+reason = "Second draw entry point whose default forwards to Widget::draw"
+pattern = 'fn\s+draw_with_presence\s*\('
+needles = ["draw_with_presence"]
+count = 69
+
+[[api]]
+name = "widget-children-vec"
+owner = "crates/sdk/ui-core"
+target = "Widget::for_each_child (allocation-free traversal)"
+reason = "Allocating child lists; the for_each_child default adapts them"
+pattern = 'fn\s+children\s*\(\s*&self\s*\)\s*->\s*Vec<\s*&\s*(?:\(\s*)?dyn\s+[\w:]*\bWidget\b'
+needles = ["children"]
+count = 144
+adapters = ["crates/sdk/ui-core/src/widget/mod.rs::for_each_child"]
+
+[[api]]
+name = "action-emitter-unqualified-take"
+owner = "crates/sdk/ui-core"
+target = "ActionEmitter::new_in with owner-domain custody"
+reason = "Unqualified ActionEmitter::take drain that bypasses host custody"
+pattern = '\bpub\s+fn\s+take\s*\(\s*&mut\s+self\s*\)\s*->\s*Option<\s*tilo_actions::ControlInvocation\s*>|\bActionEmitter::take\b|\bemitter\s*\.\s*take\s*\(\s*\)'
+needles = ["ControlInvocation", "ActionEmitter::take", "emitter"]
+count = 23
+adapters = ["crates/sdk/ui-core/src/widget/mod.rs::ActionEmitter"]
+
+[[api]]
+name = "richtext-byte-visual-motion"
+owner = "crates/sdk/ui-core"
+target = "visual_motion_position(TextPosition, right)"
+reason = "Byte-offset caret motion wrapper"
+pattern = 'fn\s+visual_motion\s*\(\s*&self\s*,\s*\w+\s*:\s*usize\b|\blayout\s*\.\s*visual_motion\s*\('
+needles = ["visual_motion"]
+count = 2
+adapters = ["crates/sdk/ui-core/src/richtext.rs::visual_motion"]
+
+[[api]]
+name = "line-edit-state"
+owner = "crates/sdk/ui-core"
+target = "tilo_ui::widget::TextInput"
+reason = "Hand-rolled single-line editing state kept for the stable SDK surface"
+pattern = '\bLineEditState\b'
+needles = ["LineEditState"]
+count = 3
+adapters = ["crates/sdk/ui-core/src/widget/identity_flow/line_edit_compat.rs::LineEditState"]
+
+[[api]]
+name = "file-mutation-v1-aliases"
+owner = "crates/collab/collab-types"
+target = "the unversioned FileMutation* types with the manifest schema gate"
+reason = "V1 type aliases for file-mutation transactions"
+pattern = '\bFileMutation(?:ParticipantRole|Participant|Operation|TransactionManifest|Transaction)V1\b'
+needles = ["FileMutation"]
+count = 10
+adapters = [
+    "crates/collab/collab-types/src/files.rs::FileMutationParticipantRoleV1",
+    "crates/collab/collab-types/src/files.rs::FileMutationParticipantV1",
+    "crates/collab/collab-types/src/files.rs::FileMutationOperationV1",
+    "crates/collab/collab-types/src/files.rs::FileMutationTransactionManifestV1",
+    "crates/collab/collab-types/src/files.rs::FileMutationTransactionV1",
+]
+
+[[api]]
+name = "file-explorer-restore-version"
+owner = "apps/file-explorer"
+target = "the checked file-history transport"
+reason = "Unreviewed restore through the history-control extended attribute"
+pattern = '\brestore_version\b'
+needles = ["restore_version"]
+paths = ["apps/file-explorer/"]
+count = 1
+adapters = ["apps/file-explorer/src/history_control.rs::restore_version"]
+
+[[api]]
+name = "runtime-bundle-host-minimal-paths"
+owner = "crates/packaging/runtime-bundle"
+target = "host_minimal_paths_for(arch)"
+reason = "x86_64-only alias of HOST_MINIMAL_PATHS_X86_64"
+pattern = '\bHOST_MINIMAL_PATHS\b'
+needles = ["HOST_MINIMAL_PATHS"]
+count = 2
+adapters = ["crates/packaging/runtime-bundle/src/lib.rs::HOST_MINIMAL_PATHS"]
+
+[[api]]
+name = "shell-untracked-record-requests"
+owner = "crates/session/shell"
+target = "push_tracked_record_request / take_tracked_record_requests"
+reason = "Record requests that drop their authorization context"
+pattern = '\b(?:push_record_request|take_record_requests)\b'
+needles = ["record_request"]
+count = 3
+adapters = [
+    "crates/session/shell/src/shell/chrome_state.rs::push_record_request",
+    "crates/session/shell/src/shell/chrome_state.rs::take_record_requests",
+]
