@@ -4476,51 +4476,148 @@ impl WorkspaceTree {
         }
     }
 
-    /// Reorder the window group `group_id` within `strip_id`; the whole
-    /// group moves as a unit, unlike [`Self::move_tab_across_strips`].
-    /// `new_index` is clamped to the post-removal index space, so a
-    /// caller may pass a raw gap index. `true` only when the order
-    /// actually changed. Mirrors into the doc afterwards, the same
-    /// cache-then-doc shape as `move_tab_across_strips`.
-    pub fn reorder_group_within_strip(
+    /// Commit `command` as this device's topology owner: the shared
+    /// [`tilo_desktop_model::commands::apply_command`] reduction on the
+    /// cache, mirrored into the room document so peer sync ships it, and
+    /// into the restart snapshot. `Ok(false)` when the order did not change.
+    ///
+    /// Only reorders inside one strip commit here; a close runs its own
+    /// lifecycle ([`crate::shell::window_actions::close_tab`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the command no longer matches the tree or
+    /// is not a reorder.
+    pub fn commit_command(
         &mut self,
-        strip_id: StripId,
-        group_id: u64,
-        new_index: usize,
-    ) -> bool {
-        let Some((moved, dest)) = self
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> Result<bool, String> {
+        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        let strip_id = match command {
+            DesktopCommand::ReorderTab { location, .. } => location.strip,
+            DesktopCommand::ReorderGroup { strip, .. } => *strip,
+            _ => return Err("this desktop commits only reorders as commands".into()),
+        };
+        let strip_id = StripId(strip_id);
+        let (ws_idx, strip_idx) = self
             .desktop
-            .reorder_group_within_strip(strip_id, group_id, new_index)
+            .strip_position(strip_id)
+            .ok_or("strip was removed")?;
+        let workspace = self
+            .desktop
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or("workspace was removed")?;
+        let order = |workspace: &Workspace| {
+            workspace.strips.get(strip_idx).map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect::<Vec<(GroupId, Vec<TabId>)>>()
+            })
+        };
+        let before = order(workspace);
+        apply_command(
+            workspace,
+            command,
+            &mut || Err("a reorder mints no identity".into()),
+            &mut |_, _| Err("a reorder creates no record".into()),
+        )?;
+        if order(workspace) == before {
+            return Ok(false);
+        }
+        let groups = &workspace
+            .strips
+            .get(strip_idx)
+            .ok_or("strip was removed")?
+            .window_groups;
+        match command {
+            DesktopCommand::ReorderTab { location, .. } => {
+                let tabs = groups
+                    .iter()
+                    .find(|group| group.id == location.group)
+                    .map(|group| group.tabs.clone())
+                    .unwrap_or_default();
+                tilo_desktop_model::desktop_doc::rewrite_group_tabs(
+                    &mut self.doc,
+                    location.group,
+                    &tabs,
+                );
+            }
+            DesktopCommand::ReorderGroup { group, .. } => {
+                if let Some(dest) = groups.iter().position(|candidate| candidate.id == *group)
+                    && let Some(moved) = groups.get(dest).cloned()
+                {
+                    tilo_desktop_model::desktop_doc::reorder_group(
+                        &mut self.doc,
+                        strip_id,
+                        &moved,
+                        dest,
+                    );
+                }
+            }
+            _ => {}
+        }
+        self.flush_to_disk();
+        Ok(true)
+    }
+
+    /// Bind a group reorder the way the desktop surface reports it (the
+    /// post-removal slot) and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_group_for_tests(
+        &mut self,
+        strip: StripId,
+        group: GroupId,
+        to: usize,
+    ) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderGroup {
+            strip,
+            group,
+            to,
+        })
+    }
+
+    /// Bind an in-group tab reorder the way the desktop surface reports it
+    /// and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_tab_for_tests(&mut self, group: GroupId, from: usize, to: usize) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderTab {
+            group,
+            from,
+            to,
+        })
+    }
+
+    #[cfg(test)]
+    fn commit_intent_for_tests(&mut self, intent: tilo_desktop::intents::SessionIntent) -> bool {
+        let group = match &intent {
+            tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. }
+            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. } => *group,
+            _ => return false,
+        };
+        let Some(room) = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            })
+            .map(|workspace| workspace.room.to_string())
         else {
             return false;
         };
-        // Mirror from the tree's copy, so the document entry carries the
-        // group's full content at the new slot. Tolerant of an unseeded doc.
-        tilo_desktop_model::desktop_doc::reorder_group(&mut self.doc, strip_id, &moved, dest);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Move the tab at `from` to index `to` inside `group_id`'s tab
-    /// list — the persisted half of an intra-group tab drag, mirroring
-    /// what the widget tree already reordered. `to` is clamped to the
-    /// last slot; `true` only when the order actually changed.
-    pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
-        let Some(tabs) = self.desktop.reorder_tab_within_group(group_id, from, to) else {
-            return false;
+        let source = tilo_desktop_model::commands::CommandSource {
+            room,
+            heads: Vec::new(),
         };
-        // Mirror the reordered list into the doc so peer-sync ships the new order.
-        self.doc_rewrite_group_tabs(group_id, &tabs);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order
-    /// — rewrites the whole list to stay in step with
-    /// [`Self::doc_reorder_group_within_strip`]. No-op on an unseeded
-    /// doc.
-    fn doc_rewrite_group_tabs(&mut self, group_id: u64, tabs: &[Tab]) {
-        tilo_desktop_model::desktop_doc::rewrite_group_tabs(&mut self.doc, group_id, tabs);
+        tilo_desktop::session_commands::bind_intent(&self.desktop, source, intent)
+            .and_then(|bound| self.commit_command(&bound.command))
+            .unwrap_or(false)
     }
 }
 
@@ -7241,7 +7338,7 @@ mod active_group_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn reordering_tabs_and_groups_persists_and_mirrors_into_the_doc() {
-        // Phase `reorder_tab_within_group_persists_and_mirrors_into_the_doc`.
+        // Phase `reorder_tab_persists_and_mirrors_into_the_doc`.
         // Dragging a tab to a new slot must persist into the tree and
         // mirror into the doc, or the reorder resets on the next restart.
         {
@@ -7277,13 +7374,13 @@ mod active_group_tests {
             assert_eq!(tab_order(&tree), vec![10, 11, 12]);
 
             // Drag the first tab to the last slot → [11, 12, 10].
-            let changed = tree.reorder_tab_within_group(group_id, 0, 2);
+            let changed = tree.reorder_tab_for_tests(group_id, 0, 2);
             assert!(changed, "moving a tab to a new slot reports a change");
             assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
 
             // Same slot is a no-op; unknown group is a no-op.
-            assert!(!tree.reorder_tab_within_group(group_id, 1, 1));
-            assert!(!tree.reorder_tab_within_group(999, 0, 1));
+            assert!(!tree.reorder_tab_for_tests(group_id, 1, 1));
+            assert!(!tree.reorder_tab_for_tests(999, 0, 1));
             assert_eq!(tab_order(&tree), vec![11, 12, 10]);
 
             // The doc must carry the new order too, so peers/persistence agree.
@@ -7321,7 +7418,7 @@ mod active_group_tests {
             // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[0], 2);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[0], 2);
             assert!(changed, "moving group 1 to a new slot must report a change");
             assert_eq!(
                 group_order(&tree, strip_id),
@@ -7334,17 +7431,17 @@ mod active_group_tests {
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
             // Move last group (4) to the front.
-            assert!(tree.reorder_group_within_strip(strip_id, ids[3], 0));
+            assert!(tree.reorder_group_for_tests(strip_id, ids[3], 0));
             assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
-            // Move it back to the end (index >= len clamps to last slot).
-            assert!(tree.reorder_group_within_strip(strip_id, 4, 99));
+            // Move it back to the last slot.
+            assert!(tree.reorder_group_for_tests(strip_id, 4, 3));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
         }
 
         // Phase `reorder_group_to_same_index_is_a_noop`.
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[1], 1);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[1], 1);
             assert!(!changed, "moving a group to its own slot reports no change");
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
         }
@@ -7352,7 +7449,7 @@ mod active_group_tests {
         // Phase `reorder_group_unknown_group_is_a_noop`.
         {
             let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
-            assert!(!tree.reorder_group_within_strip(strip_id, 999, 0));
+            assert!(!tree.reorder_group_for_tests(strip_id, 999, 0));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
         }
 
@@ -7378,7 +7475,7 @@ mod active_group_tests {
             tree.seed_doc_from_cache();
             let state_dir = tempfile::tempdir().expect("state dir");
             tree.persist_path = Some(state_dir.path().join("state.json"));
-            tree.reorder_group_within_strip(strip_id, ids[0], 2); // [2,3,1]
+            tree.reorder_group_for_tests(strip_id, ids[0], 2); // [2,3,1]
 
             let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
             let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
@@ -7468,7 +7565,7 @@ mod active_group_tests {
             .active_group_for(second_strip)
             .expect("second group");
 
-        assert!(tree.reorder_group_within_strip(second_strip, second_group, 0));
+        assert!(tree.reorder_group_for_tests(second_strip, second_group, 0));
         let reloaded = load_tree_from(&state_path).expect("group reorder persisted");
         assert_eq!(
             group_order(&reloaded, second_strip),

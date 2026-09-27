@@ -4720,11 +4720,35 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Drains every group's [`UiWindowGroup::take_pending_maximize_change`]
-    /// one-shot and mirrors it into the persisted
-    /// [`crate::shell::state::WorkspaceTree`] — without this the toggle
-    /// lives only on the widget and resets on the next restart. Idempotent;
-    /// the chrome borrow is only taken when a flip needs writing.
+    /// Run desktop requests through the shared desktop controller with
+    /// this device as the owner. Returns how many were accepted; chrome is
+    /// only borrowed when there is a request.
+    fn dispatch_desktop_intents(
+        chrome: &Chrome,
+        intents: impl IntoIterator<Item = tilo_desktop::intents::DesktopIntent>,
+    ) -> usize {
+        let mut intents = intents.into_iter().peekable();
+        if intents.peek().is_none() {
+            return 0;
+        }
+        let mut st = chrome.borrow_mut();
+        let mut sink = crate::shell::desktop_commands::ShellCommands { chrome: &mut st };
+        intents
+            .filter(|intent| {
+                match tilo_desktop::session_commands::dispatch(&mut sink, intent.clone()) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(?intent, %error, "desktop request refused");
+                        false
+                    }
+                }
+            })
+            .count()
+    }
+
+    /// Every group's pending maximize toggle, persisted through the desktop
+    /// controller — without this the toggle lives only on the widget and
+    /// resets on the next restart.
     fn harvest_pending_maximize_changes(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -4732,55 +4756,24 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Snapshot first so the mutable widget borrow drops before the
-        // chrome borrow.
-        let mut changes: Vec<(StripId, GroupId, bool)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
+        let mut intents = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
             // captured from a `Box<GroupRow>` owned through the content
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing this row.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_maximize_change() {
-                    changes.push((strip_id, g.id, new_value));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_maximize)
+                    .map(tilo_desktop::intents::DesktopIntent::Local),
+            );
         }
-        if changes.is_empty() {
+        if intents.is_empty() {
             return;
         }
-        let mut st = chrome.borrow_mut();
-        for (_strip_id, group_id, new_value) in &changes {
-            // Parks the group id in chrome's user-maximize slot so
-            // `is_fullscreen()` suppresses the top bar + wheel. Cleared
-            // only by the group that owns the slot.
-            if *new_value {
-                st.set_maximized_group(Some(*group_id));
-            } else if st.maximized_group() == Some(*group_id) {
-                st.set_maximized_group(None);
-            }
-        }
-        let mut tree = st.tree_mut();
-        let mut tree_dirty = false;
-        for (_strip_id, group_id, new_value) in changes {
-            // Flat scan is correct since group ids are tree-unique.
-            for ws in &mut tree.desktop.workspaces {
-                for strip in &mut ws.strips {
-                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id)
-                        && g.maximized != new_value
-                    {
-                        g.maximized = new_value;
-                        tree_dirty = true;
-                    }
-                }
-            }
-        }
-        if tree_dirty {
-            tree.flush_to_disk();
-        }
-        drop(tree);
-        drop(st);
+        Self::dispatch_desktop_intents(&chrome, intents);
 
         // The Expand interaction takes effect at this harvest boundary,
         // before the next layout. Mirror retained-row ownership into chrome
@@ -4960,7 +4953,15 @@ impl ShellOverlayHost {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;
                 };
-                if !Self::commit_tab_close(&chrome, gid, tab_id) {
+                let close = tilo_desktop::intents::SessionIntent::CloseTab {
+                    group: gid,
+                    tab: tab_id,
+                };
+                if Self::dispatch_desktop_intents(
+                    &chrome,
+                    [tilo_desktop::intents::DesktopIntent::Session(close)],
+                ) == 0
+                {
                     return false;
                 }
                 // The durable tree/document mutation must succeed before the
@@ -4977,31 +4978,6 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Commit one close to the replicated tree, atomic local state and the
-    /// exact foreign surface, in that order. Both keyboard/context-menu
-    /// closes and pointer closes converge here; the latter have already
-    /// started their widget animation when this runs.
-    fn commit_tab_close(chrome: &Chrome, gid: GroupId, tab_id: u64) -> bool {
-        let mut st = chrome.borrow_mut();
-        // The tab must be where the caller believes it is — a stale group
-        // id must not close a tab that has since moved elsewhere.
-        let in_group = st
-            .tree()
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .any(|group| group.id == gid && group.tabs.iter().any(|tab| tab.id == tab_id));
-        if !in_group {
-            return false;
-        }
-        // One lifecycle for every door — `✕`, chord, tab menu, `tab.close`
-        // action: `window_actions::close_tab` (document, tree, prune, flush,
-        // surface close, bump, in that order).
-        crate::shell::window_actions::close_tab(&mut st, tab_id).is_ok()
-    }
-
     /// Drain close buttons from the rendered rows into the same lifecycle
     /// transaction used by keyboard closes. This is intentionally run in
     /// the input dispatch that produced the request, not on a later frame.
@@ -5013,22 +4989,19 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let mut requests = Vec::new();
+        let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             for group in &mut row.groups {
-                requests.extend(
-                    group
-                        .take_pending_close_commits()
+                intents.extend(
+                    tilo_desktop::intents::take_closes(group)
                         .into_iter()
-                        .map(|tab| (group.id, tab)),
+                        .map(tilo_desktop::intents::DesktopIntent::Session),
                 );
             }
         }
-        requests.into_iter().fold(false, |changed, (group, tab)| {
-            Self::commit_tab_close(&chrome, group, tab) || changed
-        })
+        Self::dispatch_desktop_intents(&chrome, intents) > 0
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -5038,78 +5011,85 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(StripId, GroupId, u16)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
+        let mut intents = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_width_change() {
-                    changes.push((strip_id, g.id, new_value));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_width)
+                    .map(tilo_desktop::intents::DesktopIntent::Local),
+            );
         }
-        if changes.is_empty() {
-            return;
-        }
-        let st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        for (_strip_id, group_id, new_value) in changes {
-            for ws in &mut tree.desktop.workspaces {
-                for strip in &mut ws.strips {
-                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.width = crate::shell::state::WindowWidth::Fraction(new_value);
-                    }
-                }
-            }
-        }
-        tree.flush_to_disk();
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
-    /// Mirrors a completed whole-group reorder drag into the persisted
-    /// tree via [`WorkspaceTree::reorder_group_within_strip`] (which also
-    /// mirrors into the automerge doc for peer-sync) — without this a
-    /// group-drag resets to the persisted order on restart. Mirrors
-    /// [`Self::harvest_pending_width_changes`] in shape.
+    /// Commits a completed whole-group reorder drag through the desktop
+    /// controller — without this a group drag resets to the persisted order
+    /// on restart.
     fn harvest_pending_group_reorder(&self) {
+        // A partitioned row orders groups display by display, so its index
+        // is not the strip's: record the display the group was dropped on
+        // and its neighbours there instead.
+        struct PartitionedDrop {
+            strip: StripId,
+            group: u64,
+            display: Option<u32>,
+            before: Option<u64>,
+            after: Option<u64>,
+        }
         if self.group_row_ptrs.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // (strip, group, row index, the group's display and its neighbours
-        // there when the row is partitioned)
-        let mut changes: Vec<(StripId, u64, usize, displays::ReorderNeighbours)> = Vec::new();
+        let mut intents = Vec::new();
+        let mut partitioned = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
-                // A partitioned row orders groups display by display, so its
-                // index is not the strip's: record the neighbours instead.
-                let neighbours = row.is_partitioned().then(|| {
-                    let ids = row.group_ids();
-                    let at = ids.iter().position(|id| *id == group_id);
-                    let before = at
-                        .and_then(|i| i.checked_sub(1))
-                        .and_then(|i| ids.get(i).copied())
-                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
-                    let after = at
-                        .and_then(|i| ids.get(i.saturating_add(1)).copied())
-                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
-                    (row.output_of_group(group_id), before, after)
+            let Some(intent) = tilo_desktop::intents::take_group_reorder(strip_id, row) else {
+                continue;
+            };
+            let tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. } = intent else {
+                continue;
+            };
+            if row.is_partitioned() {
+                let ids = row.group_ids();
+                let at = ids.iter().position(|id| *id == group);
+                let before = at
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| ids.get(i).copied())
+                    .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group));
+                let after = at
+                    .and_then(|i| ids.get(i.saturating_add(1)).copied())
+                    .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group));
+                partitioned.push(PartitionedDrop {
+                    strip: strip_id,
+                    group,
+                    display: row.output_of_group(group),
+                    before,
+                    after,
                 });
-                changes.push((strip_id, group_id, new_index, neighbours));
+            } else {
+                intents.push(tilo_desktop::intents::DesktopIntent::Session(intent));
             }
         }
-        if changes.is_empty() {
-            return;
-        }
-        let mut st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        let mut rehomed = false;
-        for (strip_id, group_id, new_index, neighbours) in changes {
-            let new_index = match neighbours {
-                Some((display, before, after)) => {
+        if !partitioned.is_empty() {
+            let mut st = chrome.borrow_mut();
+            let mut rehomed = false;
+            {
+                let mut tree = st.tree_mut();
+                for PartitionedDrop {
+                    strip: strip_id,
+                    group: group_id,
+                    display,
+                    before,
+                    after,
+                } in partitioned
+                {
                     // Dropped onto another display: it belongs there now.
                     if let Some(display) = display
                         && tree.rehome_group(strip_id, group_id, display)
@@ -5137,20 +5117,25 @@ impl ShellOverlayHost {
                     let Some(slot) = slot else {
                         continue;
                     };
-                    slot
+                    let command = tilo_desktop_model::commands::DesktopCommand::ReorderGroup {
+                        strip: strip_id.raw(),
+                        group: group_id,
+                        before: order.get(slot).copied(),
+                    };
+                    if let Err(error) = tree.commit_command(&command) {
+                        tracing::warn!(%error, "group reorder refused");
+                    }
                 }
-                None => new_index,
-            };
-            tree.reorder_group_within_strip(strip_id, group_id, new_index);
+            }
+            if rehomed {
+                st.bump();
+            }
         }
-        drop(tree);
-        if rehomed {
-            st.bump();
-        }
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
     /// Same as [`Self::harvest_pending_group_reorder`], for an
-    /// *intra-group* tab reorder via [`WorkspaceTree::reorder_tab_within_group`].
+    /// *intra-group* tab reorder.
     fn harvest_pending_tab_reorder(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5158,24 +5143,18 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(GroupId, usize, usize)> = Vec::new();
+        let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some((from, to)) = g.take_pending_tab_reorder() {
-                    changes.push((g.id, from, to));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_tab_reorder)
+                    .map(tilo_desktop::intents::DesktopIntent::Session),
+            );
         }
-        if changes.is_empty() {
-            return;
-        }
-        let st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        for (group_id, from, to) in changes {
-            tree.reorder_tab_within_group(group_id, from, to);
-        }
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
     /// Mirrors same-strip tab transfers and splits from the live rows into
@@ -6539,10 +6518,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (changed, strip_id) =
+        let (strip_id, group_id, current, destination) =
             {
-                let st = chrome.borrow_mut();
-                let mut tree = st.tree_mut();
+                let st = chrome.borrow();
+                let tree = st.tree();
                 let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
                 else {
                     return false;
@@ -6584,11 +6563,19 @@ impl ShellOverlayHost {
                         .map_or(current, |i| current.saturating_add(1).saturating_add(i))
                         .min(last)
                 };
-                (
-                    tree.reorder_group_within_strip(strip_id, group_id, destination),
-                    strip_id,
-                )
+                drop(tree);
+                (strip_id, group_id, current, destination)
             };
+        let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup {
+            strip: strip_id,
+            group: group_id,
+            to: destination,
+        };
+        let changed = destination != current
+            && Self::dispatch_desktop_intents(
+                &chrome,
+                [tilo_desktop::intents::DesktopIntent::Session(reorder)],
+            ) > 0;
         if changed {
             if let Some(surface) = self.desktop_surface_mut() {
                 surface.reveal_on_next_layout(strip_id);
