@@ -17,8 +17,8 @@ tab-closed-undo-hint-unbound = Zum Rückgängigmachen auswählen
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint. { $chord } wechselt zur nächsten Option.
-display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, { $chord } wechselt zur nächsten Anordnung, Escape schließt.
+display-sheet-subtitle = Wähle, wo dein Desktop erscheint. Super+P wechselt zur nächsten Option.
+display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
 display-mode-extend = Erweitern
 display-mode-extend-detail = Ein Desktop über alle Bildschirme
 display-mode-mirror = Spiegeln
@@ -287,8 +287,8 @@ qs-power-kept-awake-by-apps = { $power } · { $count } Apps verhindern den Ruhez
 
 # Schnelleinstellungen: Steuerungen bearbeiten
 qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Zum Anordnen ziehen · { $chord }
-qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder { $modifier } plus Pfeiltasten verwenden
+qs-edit-help = Zum Anordnen ziehen · Strg + Auf/Ab
+qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
 qs-edit-active-heading = AKTIVE STEUERUNGEN
 qs-edit-available-heading = VERFÜGBAR
 qs-edit-reset = Standard wiederherstellen
@@ -298,8 +298,8 @@ qs-edit-done-a11y = Bearbeiten der Schnelleinstellungen beenden
 qs-edit-required-a11y = Erforderliche Steuerung der Schnelleinstellungen
 qs-edit-remove-a11y = Steuerung aus den Schnelleinstellungen entfernen
 qs-edit-add-a11y = Steuerung zu den Schnelleinstellungen hinzufügen
-qs-edit-required-control-a11y = Erforderlich; mit { $modifier } plus Pfeiltasten anordnen
-qs-edit-optional-control-a11y = Zum Hinzufügen oder Entfernen auswählen; mit { $modifier } plus Pfeiltasten anordnen
+qs-edit-required-control-a11y = Erforderlich; mit Strg plus Pfeiltasten anordnen
+qs-edit-optional-control-a11y = Zum Hinzufügen oder Entfernen auswählen; mit Strg plus Pfeiltasten anordnen
 
 # Schnelleinstellungen: WLAN
 qs-wifi = WLAN
@@ -770,7 +770,7 @@ capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
 # Die Hilfe-Pille in der Bildschirmecke
-help-pill = Hilfe  F1 · { $chord }
+help-pill = Hilfe  F1 · Super+?
 
 # Arbeitsbereichsübersicht
 overview-go-to = Wechseln zu
@@ -1688,12 +1688,12 @@ onboarding-tour-skip = Tour überspringen
 onboarding-tour-enter = Tilo betreten
 onboarding-tour-navigate-title = Alles in Reichweite
 onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
-onboarding-tour-search-title = Suche  ·  { $search } oder { $alternate }
+onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
 onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht  ·  { $chord } oder Wischen mit vier Fingern
+onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Wischen mit vier Fingern
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
-onboarding-tour-move-title = Bewegen  ·  { $modifier }+Pfeiltasten oder Wischen mit drei Fingern
+onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
 onboarding-tour-move-body = Auf und Ab wechseln zwischen Arbeitsbereichen. Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens.
 onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
 onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
@@ -1702,7 +1702,7 @@ onboarding-tour-workspace-body = Ein dauerhafter Ort für ein Projekt, seine Per
 onboarding-tour-strip-title = Streifen
 onboarding-tour-strip-body = Eine waagerechte Reihe von Fenstergruppen in einem Arbeitsbereich. Füge einen weiteren Streifen hinzu, wenn die Arbeit eine zweite Spur braucht.
 onboarding-tour-window-group-title = Fenstergruppe
-onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit { $previous } oder { $next } zwischen Gruppen.
+onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit Super+Links oder Super+Rechts zwischen Gruppen.
 onboarding-tour-tab-title = Tab
 onboarding-tour-tab-body = Eine App oder ein Dokument in einer Fenstergruppe. Ziehe Tabs, um sie ohne überlappende Fenster anzuordnen.
 onboarding-tour-collaborate-title = Teilen bleibt bewusst
@@ -1871,7 +1871,7 @@ shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
 shell-path-read-failed = { $path } kann nicht gelesen werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
-editor-hint-focused = Live geteilter Code  ·  { $chord } zum Rückgängigmachen
+editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
 editor-hint-click = Zum Bearbeiten klicken
 notes-empty-title = Diese Notiz ist leer
 notes-empty-body = Schreib hier, was du willst. Änderungen werden beim Tippen gespeichert.

@@ -19634,17 +19634,7 @@ impl ShellOverlayHost {
             return;
         }
         let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
-        let label = t_args(
-            "help-pill",
-            &[(
-                "chord",
-                crate::shell::keyboard_shortcuts::action_chord_text(
-                    &self.shortcut_config,
-                    settings_store::hardware::ShortcutAction::ShortcutHelp,
-                )
-                .into(),
-            )],
-        );
+        let label = t("help-pill");
         let label = label.as_str();
         let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
         // Label padding `s6` across / `s3` down, `s4` off the display
