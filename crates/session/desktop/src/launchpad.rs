@@ -450,7 +450,10 @@ impl Widget for CollaborationLaunchpad {
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
-        let keyboard_hint = t("launchpad-keyboard-hint");
+        let keyboard_hint = crate::i18n::t_args(
+            "launchpad-keyboard-hint",
+            &[("chord", ui::keycaps::active().chord(["Super"], "n").into())],
+        );
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
         self.card_rects = Self::card_geometry(self.rect, self.rail_clearance).0;
