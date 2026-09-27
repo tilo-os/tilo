@@ -67,7 +67,7 @@ impl Basis {
     }
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex::encode(bytes)
 }
 fn now() -> u64 {
     tilo_delivery_protocol::clock::now_ns()
