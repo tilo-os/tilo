@@ -113,6 +113,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
             self.assertIn("sparse-checkout-cone-mode: false", checkout)
             for file in (
                 "disk-image.sh",
+                "export-direct-boot-bundle.sh",
                 "hold-loop-partition-nodes.py",
                 "private_disk_image.py",
                 "check-dev-vm.sh",
@@ -150,6 +151,20 @@ class DevDiskWorkflowTests(unittest.TestCase):
                 self.assertIn(label, resume)
             self.assertLess(build.index(image), build.index(push))
             self.assertLess(build.index(resume), build.index("Install the dev image to a bootable disk"))
+
+    def test_integration_candidate_succeeds_without_slow_tcg_boot(self) -> None:
+        plan = job(self.source, "plan")
+        build = job(self.source, "build")
+        smoke = step(build, "Boot the disk and reach tilo-vmd over SSH")
+        candidate = step(build, "Publish unvalidated installed disk candidate")
+        validated = step(build, "Publish this architecture's dev image and disk")
+        self.assertIn("validate_boot:", self.source)
+        self.assertIn("auto) [[ $trust == release ]] && validate_boot=true || validate_boot=false", plan)
+        self.assertIn('echo "validate_boot=$validate_boot"', plan)
+        self.assertNotIn("if:", candidate)
+        self.assertIn("if: needs.plan.outputs.validate_boot == 'true'", smoke)
+        self.assertIn('python3 os/dev/probe-kvm.py "$ARCH"', smoke)
+        self.assertIn("if: needs.plan.outputs.validate_boot == 'true'", validated)
 
     def test_dev_disks_are_installed_booted_and_published_without_release_signing(self) -> None:
         with self.subTest(phase='disk is installed booted then published'):
