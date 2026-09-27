@@ -1834,7 +1834,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 serde_json::json!({
                     "provider": a.resource.provider,
                     "id": a.resource.id,
-                    "kind": a.kind.label(),
+                    "kind": a.kind.id(),
                     "operation_kind": a.operation_kind,
                     "title": a.title,
                     "subtitle": a.subtitle,
@@ -1893,7 +1893,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         Ok(serde_json::json!({
             "provider": provider,
             "id": id,
-            "kind": selected.kind().label(),
+            "kind": selected.kind().id(),
             "title": selected.title(),
             "params": params_json(selected.params()),
             "contract": selected.contract(),
