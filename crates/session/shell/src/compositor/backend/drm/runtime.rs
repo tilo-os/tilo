@@ -52,6 +52,7 @@ use super::input_config;
 use super::input_config::{
     AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
 };
+use super::output_signal::OutputSignalStatus;
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
@@ -312,6 +313,14 @@ pub struct DrmDispatchState {
     /// already be inside a page flip when the libseat callback returns; the
     /// callback must not drop DRM master until that presentation has retired.
     pub present_gate: Option<Arc<Mutex<()>>>,
+    /// The output showing a fullscreen client, which is where adaptive sync
+    /// may engage.
+    pub fullscreen_output: Option<OutputId>,
+    /// Runtime signalling facts from the presenter, keyed by the output's
+    /// configuration key so they survive a replug of the same connector.
+    pub signal_status: BTreeMap<String, OutputSignalStatus>,
+    /// Receiving end of the presenter's signalling reports.
+    pub signal_reports: Option<Receiver<SignalReport>>,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -677,6 +686,26 @@ pub struct LiveEntry {
     pub transform: settings_store::hardware::OutputTransform,
     /// This output's presentation interval, captured when brought up — kept here rather than read from the scanout, since scanouts move to the render thread and would start returning `None`.
     pub refresh: Option<std::time::Duration>,
+    /// Sink and driver both support adaptive sync, captured at bring-up.
+    pub adaptive_sync_supported: bool,
+    /// The user allows adaptive sync on this output (on unless turned off).
+    pub adaptive_sync_allowed: bool,
+    /// Adaptive sync was last asked for on this output's CRTC.
+    pub adaptive_sync_engaged: bool,
+}
+
+/// Adaptive sync engages only for fullscreen content on an output that allows
+/// and supports it. The desktop stays at the fixed rate: uneven UI frame times
+/// make many panels flicker in brightness when the refresh rate follows them.
+pub(crate) fn adaptive_sync_wanted(supported: bool, allowed: bool, fullscreen_here: bool) -> bool {
+    supported && allowed && fullscreen_here
+}
+
+/// What the presenter reports about one output's signalling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignalReport {
+    pub output: OutputId,
+    pub status: OutputSignalStatus,
 }
 
 /// What the loop thread asks the owner of the scanouts to do.
@@ -706,6 +735,11 @@ pub enum ScanoutCommand {
     SetPointerImage(crate::compositor::cursor::PointerImage),
     /// Switch one panel off or back on for an output-power client.
     SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
+    /// Turn adaptive sync on or off on one output's CRTC.
+    SetAdaptiveSync {
         output: OutputId,
         on: bool,
     },
@@ -922,6 +956,7 @@ fn configured_connectors(
 fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     profiles: &BTreeMap<String, String>,
+    signal_status: &BTreeMap<String, OutputSignalStatus>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
     let (snapshots, _) = configured_connectors(cards);
     let mut outputs: Vec<_> = cards
@@ -930,6 +965,7 @@ fn display_capabilities(
             card.display_capabilities(
                 snapshots.get(&device_id).map_or(&[], Vec::as_slice),
                 profiles,
+                signal_status,
             )
         })
         .collect();
@@ -1058,6 +1094,9 @@ impl DrmDispatchState {
             tablets: TabletRuntime::load(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
+            fullscreen_output: None,
+            signal_status: BTreeMap::new(),
+            signal_reports: None,
         }
     }
 
@@ -1129,7 +1168,7 @@ impl DrmDispatchState {
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
     fn publish_display_snapshot(&mut self) {
-        let outputs = display_capabilities(&self.cards, &self.color_profiles);
+        let outputs = display_capabilities(&self.cards, &self.color_profiles, &self.signal_status);
         let layout = self
             .live
             .iter()
@@ -1391,6 +1430,9 @@ impl DrmDispatchState {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 refresh: build.scanout.refresh_interval(),
+                adaptive_sync_supported: build.scanout.adaptive_sync_supported(),
+                adaptive_sync_allowed: true,
+                adaptive_sync_engaged: false,
             });
             entries.push(ScanoutEntry {
                 id,
@@ -1403,6 +1445,7 @@ impl DrmDispatchState {
                 direct_targets: None,
                 direct_unavailable: None,
                 powered_off: false,
+                signal_reported: OutputSignalStatus::default(),
                 scanout: build.scanout,
             });
         }
@@ -1480,8 +1523,83 @@ impl DrmDispatchState {
         let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
         self.set_pointer_logical(logical_pointer);
 
+        for entry in &mut self.live {
+            entry.adaptive_sync_allowed = config
+                .outputs
+                .get(&entry.config_key)
+                .is_none_or(|output| output.vrr);
+        }
         self.output_meta = self.output_meta_for(config);
         self.rebuild_cursor_routing();
+        self.reconcile_adaptive_sync();
+    }
+
+    /// Record which output shows a fullscreen client and engage or release
+    /// adaptive sync to match.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        if self.fullscreen_output != output {
+            self.fullscreen_output = output;
+            self.reconcile_adaptive_sync();
+        }
+    }
+
+    /// Tell the scanout owner about every output whose adaptive-sync wish
+    /// changed. An output the driver refused is not asked again.
+    fn reconcile_adaptive_sync(&mut self) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let refused = self
+                .signal_status
+                .get(&entry.config_key)
+                .is_some_and(|status| status.adaptive_sync_rejected);
+            let wanted = adaptive_sync_wanted(
+                entry.adaptive_sync_supported && !refused,
+                entry.adaptive_sync_allowed,
+                self.fullscreen_output == Some(entry.id),
+            );
+            if wanted != entry.adaptive_sync_engaged {
+                entry.adaptive_sync_engaged = wanted;
+                changes.push((entry.id, wanted));
+            }
+        }
+        for (output, on) in changes {
+            self.command(ScanoutCommand::SetAdaptiveSync { output, on });
+        }
+    }
+
+    /// Adaptive sync is engaged on at least one output, so frames should be
+    /// paced by content rather than by a fixed refresh deadline.
+    pub fn adaptive_sync_engaged(&self) -> bool {
+        self.live.iter().any(|entry| entry.adaptive_sync_engaged)
+    }
+
+    /// Fold the presenter's signalling reports into the runtime status.
+    /// Returns whether anything changed, so the caller republishes the
+    /// Settings snapshot.
+    fn drain_signal_reports(&mut self) -> bool {
+        let Some(reports) = self.signal_reports.as_ref() else {
+            return false;
+        };
+        let reports: Vec<SignalReport> = reports.try_iter().collect();
+        let mut changed = false;
+        for report in reports {
+            let Some(key) = self
+                .live
+                .iter()
+                .find(|entry| entry.id == report.output)
+                .map(|entry| entry.config_key.clone())
+            else {
+                continue;
+            };
+            if self.signal_status.get(&key) != Some(&report.status) {
+                self.signal_status.insert(key, report.status);
+                changed = true;
+            }
+        }
+        if changed {
+            self.reconcile_adaptive_sync();
+        }
+        changed
     }
 
     /// Where each live output sits in the logical layout: its configured
@@ -3086,6 +3204,8 @@ pub struct DrmRuntime {
     pub scanouts: Vec<ScanoutEntry>,
     /// Receiving end of the reconfiguration channel — held here while the backend owns the scanouts inline; moved into the presenter along with them by [`super::Backend::take_presenter`].
     pub commands: Option<Receiver<ScanoutCommand>>,
+    /// Sending end of the signalling reports, travelling with the scanouts.
+    pub signal_reports: Option<Sender<SignalReport>>,
     /// Bounded watchdog for unconfirmed display changes. It lives in the
     /// compositor rather than Settings so closing/crashing the app cannot
     /// strand the session on a blank mode.
@@ -3115,10 +3235,19 @@ pub struct ScanoutEntry {
     /// An output-power client switched this panel off. It is neither
     /// painted nor lit by a session wake until switched back on.
     pub powered_off: bool,
+    /// Signalling status last reported to the loop thread.
+    pub signal_reported: OutputSignalStatus,
     pub scanout: DrmScanout,
 }
 
 impl ScanoutEntry {
+    /// The signalling facts this output would report now.
+    pub fn signal_status(&self) -> OutputSignalStatus {
+        OutputSignalStatus {
+            adaptive_sync_rejected: self.scanout.adaptive_sync_rejected(),
+        }
+    }
+
     pub fn set_color_profile(&mut self, profile: Option<String>) {
         if self.color_profile == profile {
             return;
@@ -3422,6 +3551,7 @@ impl DrmRuntime {
 
         // The scanout side and the loop side talk over one channel, so a reconfiguration is ordered against the frames around it.
         let (tx, rx) = channel::<ScanoutCommand>();
+        let (signal_tx, signal_rx) = channel::<SignalReport>();
         let icc_profiles = IccProfileWorker::new()?;
         icc_profiles.request_refresh();
 
@@ -3436,6 +3566,7 @@ impl DrmRuntime {
             keyboard,
         );
         dispatch.display_set = display_set;
+        dispatch.signal_reports = Some(signal_rx);
         // Tablet pads are read from a context of their own; see `PadInput`.
         let pads = PadInput::new(session.clone());
         handle
@@ -3464,6 +3595,7 @@ impl DrmRuntime {
             primary_gpu,
             scanouts,
             commands: Some(rx),
+            signal_reports: Some(signal_tx),
             last_display_transaction_check: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
@@ -3637,6 +3769,9 @@ impl DrmRuntime {
     /// connector, and doing that periodically on this input-thread path can
     /// stall pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
+        if self.dispatch.drain_signal_reports() {
+            self.dispatch.publish_display_snapshot();
+        }
         let now = std::time::Instant::now();
         if now.duration_since(self.last_display_transaction_check)
             < std::time::Duration::from_millis(250)
@@ -3688,11 +3823,14 @@ impl DrmRuntime {
         }
         match transaction.state {
             DisplayTransactionState::Requested => {
-                let descriptors: Vec<_> =
-                    display_capabilities(&self.dispatch.cards, &self.dispatch.color_profiles)
-                        .into_iter()
-                        .map(|output| output.descriptor)
-                        .collect();
+                let descriptors: Vec<_> = display_capabilities(
+                    &self.dispatch.cards,
+                    &self.dispatch.color_profiles,
+                    &self.dispatch.signal_status,
+                )
+                .into_iter()
+                .map(|output| output.descriptor)
+                .collect();
                 if descriptors.is_empty() {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -3797,6 +3935,10 @@ impl DrmRuntime {
     }
 
     /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        self.dispatch.set_fullscreen_output(output);
+    }
+
     pub fn set_output_power(&self, output: OutputId, on: bool) {
         self.dispatch
             .command(ScanoutCommand::SetOutputPower { output, on });
@@ -5553,6 +5695,9 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
+            adaptive_sync_supported: false,
+            adaptive_sync_allowed: true,
+            adaptive_sync_engaged: false,
         }
     }
 
@@ -5716,6 +5861,77 @@ mod tests {
             ..Default::default()
         };
         (state, rx)
+    }
+
+    fn adaptive_sync_commands(rx: &Receiver<ScanoutCommand>) -> Vec<(u32, bool)> {
+        rx.try_iter()
+            .filter_map(|command| match command {
+                ScanoutCommand::SetAdaptiveSync { output, on } => Some((output.0, on)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adaptive_sync_follows_the_fullscreen_output_and_respects_refusals() {
+        let (mut state, rx) = dispatch_with_channel();
+        let mut capable = entry(0, 10, (2560, 1440), None);
+        capable.adaptive_sync_supported = true;
+        let plain = entry(1, 11, (1920, 1080), None);
+        state.live = vec![capable, plain];
+
+        // Phase `desktop_content_keeps_the_fixed_rate`.
+        state.reconcile_adaptive_sync();
+        assert!(adaptive_sync_commands(&rx).is_empty());
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `fullscreen_on_a_capable_output_engages_it_once`.
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        assert!(state.adaptive_sync_engaged());
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty(), "no repeat");
+
+        // Phase `moving_fullscreen_to_an_output_without_vrr_releases_it`.
+        state.set_fullscreen_output(Some(OutputId(1)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `turning_it_off_in_settings_wins`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = false;
+        }
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
+
+        // Phase `a_driver_refusal_releases_and_is_not_retried`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = true;
+        }
+        state.reconcile_adaptive_sync();
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        report_tx
+            .send(SignalReport {
+                output: OutputId(0),
+                status: OutputSignalStatus {
+                    adaptive_sync_rejected: true,
+                },
+            })
+            .expect("report channel open");
+        assert!(state.drain_signal_reports());
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert_eq!(
+            state
+                .signal_status
+                .get("TEST-10")
+                .map(|status| status.adaptive_sync_rejected),
+            Some(true)
+        );
+        state.set_fullscreen_output(None);
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
     }
 
     #[derive(Clone)]
