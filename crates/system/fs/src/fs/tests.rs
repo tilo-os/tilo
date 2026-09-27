@@ -2,6 +2,7 @@ use super::*;
 
 mod availability_control_tests {
     use super::*;
+
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use iroh::endpoint::{Endpoint, presets};

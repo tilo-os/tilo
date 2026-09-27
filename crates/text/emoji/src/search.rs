@@ -90,19 +90,13 @@ fn ranked(cat: &Catalogue, mut scored: Vec<(u32, usize)>, limit: usize) -> Vec<&
         .collect()
 }
 
-pub(crate) fn search<'a>(cat: &'a Catalogue, query: &str, limit: usize) -> Vec<&'a Emoji> {
-    let query = fold(query.trim());
-    let terms: Vec<&str> = query.split_whitespace().collect();
-    if terms.is_empty() {
-        return Vec::new();
-    }
-    let scored = cat
-        .keys
-        .iter()
+/// Every emoji whose `keys` match all of `terms`, with its score.
+fn matches(keys: &[Key], query: &str, terms: &[&str]) -> Vec<(u32, usize)> {
+    keys.iter()
         .enumerate()
         .filter_map(|(i, key)| {
             let mut total: u32 = if key.name == query { 100 } else { 0 };
-            for t in &terms {
+            for t in terms {
                 match key.term(t) {
                     0 => return None,
                     s => total = total.saturating_add(s),
@@ -110,8 +104,29 @@ pub(crate) fn search<'a>(cat: &'a Catalogue, query: &str, limit: usize) -> Vec<&
             }
             Some((total, i))
         })
-        .collect();
-    ranked(cat, scored, limit)
+        .collect()
+}
+
+pub(crate) fn search<'a>(cat: &'a Catalogue, query: &str, limit: usize) -> Vec<&'a Emoji> {
+    let query = fold(query.trim());
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let native = matches(&cat.keys, &query, &terms);
+    let mut seen: std::collections::HashSet<usize> = native.iter().map(|(_, i)| *i).collect();
+    let mut found = ranked(cat, native, limit);
+    let english = Catalogue::english();
+    if found.len() < limit && !std::ptr::eq(cat, english) {
+        // Every catalogue shares one structure, so an index names the same
+        // emoji in both; English only adds what the native names missed.
+        let extra = matches(&english.keys, &query, &terms)
+            .into_iter()
+            .filter(|(_, i)| seen.insert(*i))
+            .collect();
+        found.extend(ranked(cat, extra, limit.saturating_sub(found.len())));
+    }
+    found
 }
 
 pub(crate) fn suggest<'a>(cat: &'a Catalogue, word: &str, limit: usize) -> Vec<&'a Emoji> {

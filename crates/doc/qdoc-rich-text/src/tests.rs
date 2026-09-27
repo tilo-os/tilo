@@ -510,3 +510,43 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
         .unwrap();
     assert_eq!(table_cells(&replica).len(), side * side);
 }
+
+#[test]
+fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
+    let mut local = document(2);
+    let ids = body_ids(&local.state().unwrap());
+    let mut peer = local.fork();
+    for (replica, text) in [(&mut local, "Local"), (&mut peer, "Peer")] {
+        replica
+            .apply_action(
+                &RichTextAction::InsertParagraph {
+                    after: ids[0].clone(),
+                    text: text.into(),
+                },
+                "Add paragraph",
+            )
+            .unwrap();
+    }
+    local.sync_with(&mut peer).unwrap();
+    let merged = body_ids(&local.state().unwrap());
+    assert_eq!(merged, body_ids(&peer.state().unwrap()));
+    assert_eq!(merged.len(), 5);
+    local
+        .apply_action(
+            &RichTextAction::InsertParagraph {
+                after: merged[1].clone(),
+                text: "Between".into(),
+            },
+            "Add paragraph",
+        )
+        .unwrap();
+    let after = body_ids(&local.state().unwrap());
+    assert_eq!(after.len(), 6);
+    assert_eq!(after[1], merged[1]);
+    assert_eq!(after[3], merged[2], "the new paragraph is between the two");
+    let containers = local.state().unwrap().containers().clone();
+    assert_eq!(
+        model::block_text(local.doc(), &containers, &after[2]).as_deref(),
+        Some("Between")
+    );
+}

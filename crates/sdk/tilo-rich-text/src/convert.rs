@@ -166,6 +166,11 @@ pub(crate) fn content_of(view: &BlockView) -> BlockContent {
     let code_group = matches!(kind, BlockKind::CodeBlock { .. })
         .then(|| str_attr(view, "code_group").map(str::to_owned))
         .flatten();
+    let authors = qdoc::document::author_runs(&view.marks)
+        .into_iter()
+        .map(|(start, end, author)| (byte_of_char(&text, start)..byte_of_char(&text, end), author))
+        .filter(|(range, _)| range.start < range.end)
+        .collect();
     BlockContent {
         id: view.id.clone(),
         kind,
@@ -173,6 +178,7 @@ pub(crate) fn content_of(view: &BlockView) -> BlockContent {
         marks,
         nesting,
         code_group,
+        authors,
     }
 }
 

@@ -672,6 +672,7 @@ impl Hydrator {
 )]
 mod tests {
     use super::*;
+
     use crate::content::{ChunkRef, ChunkTier};
 
     fn manifest(lens: &[u32]) -> Manifest {

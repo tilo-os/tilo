@@ -419,6 +419,10 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
+    /// For tests of anything but the timeout: long enough that a loaded
+    /// machine never turns the expected error into `Error::Timeout`.
+    const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
+
     #[test]
     fn input_and_output_limits_are_enforced_independently() {
         // Phase `rejects_input_and_both_output_stream_overflows`.
@@ -429,7 +433,7 @@ mod tests {
                     &[],
                     Some(&vec![0; MAX_INPUT_BYTES + 1]),
                     16,
-                    Duration::from_secs(1)
+                    UNTESTED_TIMEOUT
                 ),
                 Err(Error::InputTooLarge)
             ));
@@ -441,14 +445,8 @@ mod tests {
                 let helper = directory.path().join("helper");
                 fs::write(&helper, script).unwrap();
                 fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-                let error = run(
-                    helper.to_str().unwrap(),
-                    &[],
-                    None,
-                    4096,
-                    Duration::from_secs(1),
-                )
-                .unwrap_err();
+                let error =
+                    run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
                 assert!(
                     matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
                 );
@@ -458,8 +456,8 @@ mod tests {
         {
             let mut command = Command::new("sh");
             command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
-            let error = run_prepared_with_limits(command, None, 64, 32, Duration::from_secs(1))
-                .unwrap_err();
+            let error =
+                run_prepared_with_limits(command, None, 64, 32, UNTESTED_TIMEOUT).unwrap_err();
             assert!(matches!(
                 error,
                 Error::OutputTooLarge {
@@ -477,7 +475,7 @@ mod tests {
                 bytes.len(),
                 bytes.len(),
                 64,
-                Duration::from_secs(1),
+                UNTESTED_TIMEOUT,
             )
             .unwrap();
             assert!(output.status.success());
@@ -490,7 +488,7 @@ mod tests {
                     bytes.len() - 1,
                     bytes.len(),
                     64,
-                    Duration::from_secs(1),
+                    UNTESTED_TIMEOUT,
                 ),
                 Err(Error::InputTooLarge)
             ));
@@ -557,7 +555,7 @@ mod tests {
             &[("TILO_BOUNDED_COMMAND_TEST", "isolated")],
             None,
             64,
-            Duration::from_secs(1),
+            UNTESTED_TIMEOUT,
         )
         .unwrap();
         assert!(output.status.success());

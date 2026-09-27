@@ -5817,9 +5817,9 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
-            // Pull the shared global defaults once at startup.
-            self.global = GlobalSettings::load();
             if !self.persistence_started {
+                // Pull the shared global defaults once at startup.
+                self.global = GlobalSettings::load();
                 self.persistence_started = true;
                 if self.run.persists() {
                     if let Err(error) = self.start_persistence_load(state.get_heads()) {

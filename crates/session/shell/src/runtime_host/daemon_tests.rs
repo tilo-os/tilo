@@ -233,9 +233,9 @@ fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
         .spawn()
         .unwrap();
     let pid = wrapper.id();
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     let (mut sample, mut own) = (super::sample_tree(pid, false).unwrap(), 0);
-    while sample.cpu_ticks <= own && started.elapsed() < Duration::from_secs(20) {
+    while sample.cpu_ticks <= own && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
         own = super::cpu_ticks(pid).unwrap();
         sample = super::sample_tree(pid, false).unwrap();
@@ -247,7 +247,10 @@ fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
         libc::killpg(i32::try_from(pid).unwrap(), libc::SIGKILL);
     }
     let _ = wrapper.wait();
-    assert!(sample.cpu_ticks > own, "{sample:?}, wrapper {own}");
+    assert!(
+        sample.cpu_ticks > own,
+        "the tree never counted its busy descendant's CPU time within the hang bound: {sample:?}, wrapper {own}"
+    );
     assert!(described.threads.len() >= 2, "{described:?}");
     assert!(
         described.held_by_machine || described.cpu_ticks > sample.cpu_ticks,

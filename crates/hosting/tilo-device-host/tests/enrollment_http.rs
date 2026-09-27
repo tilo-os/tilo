@@ -35,7 +35,7 @@ async fn request(
     };
     socket.write_all(wire.as_bytes()).await.unwrap();
     let mut bytes = vec![];
-    tokio::time::timeout(Duration::from_secs(15), socket.read_to_end(&mut bytes))
+    tokio::time::timeout(tilo_test_env::hang_bound(), socket.read_to_end(&mut bytes))
         .await
         .unwrap()
         .unwrap();
@@ -58,7 +58,7 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         .unwrap();
     let pid = child.id();
     let host = Host(child);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let metadata = loop {
         assert!(
             Instant::now() < deadline,
@@ -101,7 +101,7 @@ fn reconnecting(code: u16, body: &serde_json::Value) -> bool {
             .is_some_and(|error| error.starts_with("native peer is reconnecting"))
 }
 async fn enroll(origin: &str, route: &str, body: String, cap: &str) -> (u16, serde_json::Value) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let (code, response) = request(origin, route, Some(body.clone()), Some(cap)).await;
         if !reconnecting(code, &response) {
@@ -174,7 +174,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     // Break membership only while the peer is subscribed, so the completion
     // reaches reconciliation. A reconnect that is still settling from the
     // burst above answers before any commit; repair, resubscribe and retry.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let (code, body) = loop {
         let complete = proof(&origin, &cap, &key, 91).await;
         fs::rename(&membership, &saved).unwrap();
@@ -206,7 +206,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     fs::rename(saved, &membership).unwrap();
     // Invalid membership can correctly disconnect the native subscription. File
     // repair is not Ready: wait for the same observed readiness as initial start.
-    wait_subscribed(&origin, Instant::now() + Duration::from_secs(30)).await;
+    wait_subscribed(&origin, tilo_test_env::hang_deadline()).await;
     let fresh = proof(&origin, &cap, &key, 91).await;
     let (code, recovered) = enroll(
         &origin,

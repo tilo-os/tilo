@@ -830,7 +830,7 @@ impl PresenceCtx {
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
         let shown = if self.is_agent(&user) {
-            format!("{name} · Agent")
+            crate::history_source::agent_display_label(&name)
         } else {
             name.clone()
         };
@@ -881,7 +881,7 @@ impl PresenceCtx {
             .cloned()
             .unwrap_or_else(|| user.0.clone());
         if self.is_agent(user) {
-            format!("{name} · Agent")
+            crate::history_source::agent_display_label(&name)
         } else {
             name
         }

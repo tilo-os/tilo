@@ -101,6 +101,7 @@ suites = [
   "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
   "os/tests/test_hydrate_assembly_history.py",
+  "os/tests/test_identity_public_key.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_installed_development_disk.py",
@@ -181,6 +182,13 @@ inputs = [
   "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
+
+[[group]]
+name = "dev-feature-targets"
+# The dev features os/components.toml names, against the packages' manifests:
+# `pkg/feature` must reach the package, not a dependency of it named pkg.
+inputs = ["os/components.toml", "*Cargo.toml"]
+suites = ["os/tests/dev_feature_targets.py"]
 
 [[group]]
 name = "containerfile-sources"

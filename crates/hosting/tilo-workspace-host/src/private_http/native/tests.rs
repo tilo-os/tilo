@@ -1,4 +1,5 @@
 use super::*;
+use crate::HANG_BOUND;
 use crate::{SessionOwner, committed_authority::CommittedAuthority};
 use tilo_delivery_protocol::delivery_v3::{
     auth, http_proof,
@@ -212,13 +213,7 @@ fn native_private_submission_retains_owner_policy_time_through_queue_and_termina
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -259,13 +254,7 @@ fn native_private_rejects_another_owner_clock_before_queue_submission() {
             &mut session,
             &action,
             false,
-            |proof, view| {
-                service.submit(
-                    proof,
-                    view,
-                    Instant::now() + std::time::Duration::from_secs(5),
-                )
-            }
+            |proof, view| { service.submit(proof, view, Instant::now() + HANG_BOUND,) }
         )
         .is_err()
     );
@@ -310,7 +299,7 @@ fn output(
         pending.carrier.operation.path(),
         &[],
         &[1],
-        Instant::now() + std::time::Duration::from_secs(5),
+        Instant::now() + HANG_BOUND,
     );
     pending.respond(view, reply, request, Default::default())
 }
@@ -335,13 +324,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let reply = tilo_test_env::within("the native reply", async {
@@ -386,13 +369,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let reply = tilo_test_env::within("the fresh native reply", async {
@@ -457,13 +434,7 @@ fn native_private_idle_watch_keeps_original_custody_after_fresh_status() {
             &mut session,
             &action,
             false,
-            |proof, view| {
-                service.submit(
-                    proof,
-                    view,
-                    Instant::now() + std::time::Duration::from_secs(5),
-                )
-            },
+            |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
         )
         .unwrap();
         let incoming = receiver.try_recv().unwrap();
@@ -550,13 +521,7 @@ fn native_private_ready_event_old_fence_cannot_be_blessed_by_same_uuid_fresh_sta
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -612,13 +577,7 @@ fn native_private_ready_event_old_fence_cannot_be_blessed_by_same_uuid_fresh_sta
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -657,13 +616,7 @@ fn native_private_ready_event_old_fence_cannot_be_blessed_by_same_uuid_fresh_sta
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
@@ -713,13 +666,7 @@ fn native_private_retained_reply_expires_without_policy_document_change() {
         &mut session,
         &action,
         false,
-        |proof, view| {
-            service.submit(
-                proof,
-                view,
-                Instant::now() + std::time::Duration::from_secs(5),
-            )
-        },
+        |proof, view| service.submit(proof, view, Instant::now() + HANG_BOUND),
     )
     .unwrap();
     let incoming = receiver.try_recv().unwrap();
