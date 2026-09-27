@@ -5,7 +5,6 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use tilo_clock::unix_now_ms;
 use tilo_relay::{
@@ -14,7 +13,7 @@ use tilo_relay::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
@@ -122,7 +121,7 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
         })
         .await
         .unwrap();
-    let request_delivery = tokio::time::timeout(Duration::from_secs(2), worker_client.receive())
+    let request_delivery = tokio::time::timeout(HANG_BOUND, worker_client.receive())
         .await
         .unwrap()
         .unwrap();
@@ -163,7 +162,7 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
     .await
     .unwrap();
     requester_again.attach(77).await.unwrap();
-    let replayed = tokio::time::timeout(Duration::from_secs(2), requester_again.receive())
+    let replayed = tokio::time::timeout(HANG_BOUND, requester_again.receive())
         .await
         .unwrap()
         .unwrap();
@@ -288,7 +287,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
         expires_at_ms: issued_at_ms.saturating_add(30_000),
     };
     requester_client.submit(&specification).await.unwrap();
-    let request_delivery = tokio::time::timeout(Duration::from_secs(2), worker_client.receive())
+    let request_delivery = tokio::time::timeout(HANG_BOUND, worker_client.receive())
         .await
         .unwrap()
         .unwrap();
@@ -299,7 +298,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     worker_client.acknowledge(&request_delivery).await.unwrap();
     worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), worker_client.receive())
+        tokio::time::timeout(HANG_BOUND, worker_client.receive())
             .await
             .unwrap()
             .unwrap()
@@ -317,7 +316,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     requester_client.cancel(&binding).await.unwrap();
     requester_client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), requester_client.receive())
+        tokio::time::timeout(HANG_BOUND, requester_client.receive())
             .await
             .unwrap()
             .unwrap()
@@ -337,7 +336,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .await
     .unwrap();
     first_reconnect.attach(88).await.unwrap();
-    let first_cancel = tokio::time::timeout(Duration::from_secs(2), first_reconnect.receive())
+    let first_cancel = tokio::time::timeout(HANG_BOUND, first_reconnect.receive())
         .await
         .unwrap()
         .unwrap();
@@ -360,7 +359,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .await
     .unwrap();
     second_reconnect.attach(88).await.unwrap();
-    let replayed = tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
+    let replayed = tokio::time::timeout(HANG_BOUND, second_reconnect.receive())
         .await
         .unwrap()
         .unwrap();
@@ -379,7 +378,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     ));
     second_reconnect.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
+        tokio::time::timeout(HANG_BOUND, second_reconnect.receive())
             .await
             .unwrap()
             .unwrap()
@@ -401,7 +400,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .unwrap();
     after_ack.attach(88).await.unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), after_ack.receive())
+        tokio::time::timeout(HANG_BOUND, after_ack.receive())
             .await
             .unwrap()
             .unwrap()

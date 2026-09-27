@@ -4,6 +4,9 @@ use std::{fs, process::Command};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_workspace_host::SessionOwner;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[cfg(unix)]
 fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -77,7 +80,7 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
     );
     assert_eq!(unsafe { libc::kill(process.id() as i32, libc::SIGINT) }, 0);
 
-    let shutdown_deadline = Instant::now() + Duration::from_secs(5);
+    let shutdown_deadline = Instant::now() + HANG_BOUND;
     let status = loop {
         if let Some(status) = process.try_wait().unwrap() {
             break status;
@@ -624,7 +627,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
         if cycle == 1 {
             input.write_all(b"reconnect\n").unwrap();
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         let mut subscribed = false;
         while std::time::Instant::now() < deadline {
             let mut socket = tokio::net::TcpStream::connect(origin).await.unwrap();

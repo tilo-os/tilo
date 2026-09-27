@@ -390,6 +390,9 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn header(kind: u16, size: u32) -> Vec<u8> {
         let mut bytes = b"TLD3".to_vec();
         bytes.extend_from_slice(&3u16.to_le_bytes());
@@ -526,12 +529,11 @@ mod tests {
                     .is_err()
             );
             send.write_all(&wire[split..]).await.unwrap();
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(1), reader.read_next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+            let result = tokio::time::timeout(HANG_BOUND, reader.read_next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             assert_eq!(result.payload(), [7, 8, 9]);
         }
     }

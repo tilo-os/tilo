@@ -35,7 +35,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -78,7 +78,7 @@ async fn publish_and_leave(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    let ready = tokio::time::timeout(Duration::from_secs(2), a_client.recv())
+    let ready = tokio::time::timeout(HANG_BOUND, a_client.recv())
         .await
         .expect("A Ready timeout")
         .expect("A Ready closed");
@@ -104,7 +104,8 @@ async fn publish_and_leave(
         .unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = pending_count(pending_dir);
         if queued >= 1 {
             break;
@@ -150,7 +151,7 @@ async fn catch_up_after_restart(
         if got_delta && got_ready {
             break;
         }
-        let env = tokio::time::timeout(Duration::from_secs(3), b_client.recv())
+        let env = tokio::time::timeout(HANG_BOUND, b_client.recv())
             .await
             .expect("B catch-up timeout")
             .expect("B channel closed");

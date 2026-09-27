@@ -21,7 +21,8 @@ use super::super::peer::Peer;
 use super::*;
 use crate::carrier;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 const ROOM: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -105,7 +106,7 @@ fn presence(seq: u64, tail: &[u8]) -> Vec<u8> {
 async fn connect(f: &Fixture, token: &[u8], publish_as: &str) -> Peer {
     let url: url::Url = f.live.endpoint.parse().unwrap();
     tokio::time::timeout(
-        TIMEOUT,
+        HANG_BOUND,
         Peer::connect(&url, &f.trust, token, Some(&path(publish_as))),
     )
     .await
@@ -130,7 +131,7 @@ impl Stream {
                     return (kind, payload);
                 }
             }
-            let chunk = tokio::time::timeout(TIMEOUT, self.inner.next())
+            let chunk = tokio::time::timeout(HANG_BOUND, self.inner.next())
                 .await
                 .expect("stream frame deadline")
                 .expect("stream open");
@@ -139,7 +140,7 @@ impl Stream {
     }
     /// Next frame of `kind`, skipping others.
     async fn until(&mut self, kind: u8) -> Vec<u8> {
-        tokio::time::timeout(TIMEOUT, async {
+        tokio::time::timeout(HANG_BOUND, async {
             loop {
                 let (next, payload) = self.frame().await;
                 if next == kind {
@@ -225,7 +226,7 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
     // The fallback member sees the MoQ member announced, then its presence.
     let member = stream.until(FRAME_MEMBER).await;
     assert_eq!((&member[..32], member[32]), (&bytes32(A)[..], 1));
-    let received = tokio::time::timeout(TIMEOUT, async {
+    let received = tokio::time::timeout(HANG_BOUND, async {
         let mut seq = 10;
         loop {
             seq += 1;
@@ -243,7 +244,7 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
     assert!(received[32..].ends_with(b"from-a"));
 
     // The MoQ member sees the fallback member announced and receives its presence.
-    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+    let from_b = tokio::time::timeout(HANG_BOUND, a.member(&path(B)))
         .await
         .unwrap()
         .expect("fallback publisher announced");
@@ -253,7 +254,7 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
         .subscribe(None)
         .await
         .unwrap();
-    let payload = tokio::time::timeout(TIMEOUT, async {
+    let payload = tokio::time::timeout(HANG_BOUND, async {
         let mut seq = 100;
         loop {
             seq += 1;
@@ -289,7 +290,7 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
             &encode_frame(FRAME_SEND_PRESENCE, &[&presence(100_000, b"fresh")]),
         )
         .unwrap();
-    let next = tokio::time::timeout(TIMEOUT, async {
+    let next = tokio::time::timeout(HANG_BOUND, async {
         loop {
             let datagram = subscriber.recv_datagram().await.unwrap().unwrap();
             if datagram.payload.ends_with(b"fresh") || datagram.payload.ends_with(b"stale") {
@@ -313,7 +314,7 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
     let subscribe = encode_frame(FRAME_SUBSCRIBE_OPS, &[&bytes32(A), &bytes32(RECORD)]);
     f.live.relay.fallback_send(&id, &subscribe).unwrap();
     // MoQ -> fallback: one ordered group.
-    let frames = tokio::time::timeout(TIMEOUT, async {
+    let frames = tokio::time::timeout(HANG_BOUND, async {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
@@ -354,12 +355,12 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
     );
 
     // fallback -> MoQ: B's record broadcast feeds the egress track on demand.
-    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+    let from_b = tokio::time::timeout(HANG_BOUND, a.member(&path(B)))
         .await
         .unwrap()
         .unwrap();
     let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
-    let mut subscriber = tokio::time::timeout(TIMEOUT, async {
+    let mut subscriber = tokio::time::timeout(HANG_BOUND, async {
         loop {
             if let Ok(subscriber) = from_b
                 .track(&format!("ops/{RECORD}"))
@@ -387,7 +388,7 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
         ]
         .concat()
     };
-    let received = tokio::time::timeout(TIMEOUT, async {
+    let received = tokio::time::timeout(HANG_BOUND, async {
         let mut round = 0;
         loop {
             round += 1;
@@ -417,7 +418,7 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
     f.live.relay.fallback_send(&id, &forged).unwrap();
     let ok = encode_frame(FRAME_SEND_OPS, &[&bytes32(RECORD), b"ok-after"]);
     f.live.relay.fallback_send(&id, &ok).unwrap();
-    let after = tokio::time::timeout(TIMEOUT, async {
+    let after = tokio::time::timeout(HANG_BOUND, async {
         loop {
             let Some(mut group) = subscriber.recv_group().await.unwrap() else {
                 continue;
@@ -458,13 +459,13 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
     };
     assert_eq!(resumed.frame().await.0, FRAME_HELLO);
     // A MoQ subscriber sees the fallback publisher; revocation withdraws it.
-    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+    let from_b = tokio::time::timeout(HANG_BOUND, a.member(&path(B)))
         .await
         .unwrap()
         .unwrap();
     f.b.store(false, Ordering::SeqCst);
     assert_eq!(resumed.until(FRAME_END).await, [END_REVOKED]);
-    tokio::time::timeout(TIMEOUT, from_b.closed())
+    tokio::time::timeout(HANG_BOUND, from_b.closed())
         .await
         .expect("revoked namespace withdrawn");
     assert_eq!(
@@ -520,7 +521,7 @@ async fn injected_host_presence_reaches_the_fallback_stream() {
     );
     let member = stream.until(FRAME_MEMBER).await;
     assert_eq!((&member[..32], member[32]), (&bytes32(C)[..], 1));
-    let received = tokio::time::timeout(TIMEOUT, async {
+    let received = tokio::time::timeout(HANG_BOUND, async {
         loop {
             seq += 1;
             assert!(

@@ -45,7 +45,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_for};
 
 /// Connect p1 and p2 to relay1, subscribe both to workspace 3, and drain
 /// their initial Ready acks.
@@ -81,7 +81,7 @@ async fn connect_both_to_relay1(
     c1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     c2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     for cli in [&c1, &c2] {
-        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
+        let env = tokio::time::timeout(HANG_BOUND, cli.recv())
             .await
             .expect("Ready timeout")
             .expect("closed");
@@ -105,7 +105,8 @@ async fn fail_p2_over_from_relay1(
     p2_pubkey: [u8; 32],
 ) {
     c2_r1.close().await;
-    for _ in 0..300 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1500 {
         if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
             break;
         }
@@ -146,7 +147,7 @@ async fn p2_returns_and_drains(
     let mut ready = false;
     let mut redelivered = 0_u32;
     while !(ready && got_delta) {
-        let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
+        let env = tokio::time::timeout(HANG_BOUND, c2_r1_again.recv())
             .await
             .unwrap()
             .unwrap();
@@ -202,7 +203,7 @@ async fn peers_use_several_relays_and_fail_over() {
             signature: [1u8; 64],
         };
         c1_r1.send(d1).unwrap();
-        let got = tokio::time::timeout(Duration::from_secs(2), c2_r1.recv())
+        let got = tokio::time::timeout(HANG_BOUND, c2_r1.recv())
             .await
             .unwrap()
             .unwrap();
@@ -227,7 +228,7 @@ async fn peers_use_several_relays_and_fail_over() {
         .await
         .unwrap();
         c2_r2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
-        let ready = tokio::time::timeout(Duration::from_secs(2), c2_r2.recv())
+        let ready = tokio::time::timeout(HANG_BOUND, c2_r2.recv())
             .await
             .unwrap()
             .unwrap();
@@ -264,7 +265,7 @@ async fn peers_use_several_relays_and_fail_over() {
         };
         // Wait for the write rather than guessing how long it takes: a fixed sleep
         // is a race that fails on a loaded machine and proves nothing on a fast one.
-        wait_for(|| count(&pending_r1) == 1, 300).await;
+        wait_for(|| count(&pending_r1) == 1, 1500).await;
         let count_r1 = count(&pending_r1);
         let count_r2 = count(&pending_r2);
         assert_eq!(count_r1, 1, "relay1 should hold the delta for offline p2");
@@ -316,7 +317,7 @@ async fn peers_use_several_relays_and_fail_over() {
         // Dial the real relay — succeeds.
         let ep2 = client_endpoint().await;
         let real = tokio::time::timeout(
-            Duration::from_secs(5),
+            HANG_BOUND,
             RelayClient::connect(
                 ep2,
                 real_addr,

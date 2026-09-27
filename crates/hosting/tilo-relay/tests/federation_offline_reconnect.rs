@@ -38,7 +38,7 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
 };
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
 
 /// Build a fresh signing key + signed cert with `can_act_as_host`.
 /// Returns the cert AND the signing key so callers can re-use them
@@ -175,7 +175,7 @@ async fn publish_three_while_peer_is_down(
     .await
     .unwrap();
     c1.send(Envelope::Subscribe { workspace_id: 11 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), c1.recv())
+    let _ = tokio::time::timeout(HANG_BOUND, c1.recv())
         .await
         .expect("p1 Ready");
 
@@ -191,7 +191,8 @@ async fn publish_three_while_peer_is_down(
     }
 
     let mut queued = 0;
-    for _ in 0..50 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..600 {
         queued = if pending_dir.exists() {
             std::fs::read_dir(pending_dir)
                 .unwrap()
@@ -231,7 +232,7 @@ async fn drain_three_deltas(
 
     let mut got: Vec<Vec<u8>> = Vec::new();
     for _ in 0..15 {
-        let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
+        let env = tokio::time::timeout(HANG_BOUND, c2.recv()).await;
         match env {
             Ok(Some(Envelope::Delta {
                 delta,

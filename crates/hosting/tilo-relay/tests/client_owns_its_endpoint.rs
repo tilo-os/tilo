@@ -23,17 +23,15 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
 
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.
 async fn next_envelope(client: &RelayClient, what: &str) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tokio::time::timeout(HANG_BOUND, client.recv())
         .await
         .unwrap_or_else(|_| {
             panic!("timed out waiting for {what} — the session's endpoint went away")

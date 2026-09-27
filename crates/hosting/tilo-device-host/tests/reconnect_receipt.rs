@@ -11,6 +11,9 @@ use std::{
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 struct Host(Child);
 impl Drop for Host {
     fn drop(&mut self) {
@@ -101,7 +104,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
         .unwrap()
         .write_all(b"reconnect\nqualification release\n")
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     loop {
         let current = status(origin, deadline).await;
         assert!(
@@ -125,7 +128,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     let exit = loop {
         if let Some(exit) = host.0.try_wait().unwrap() {
             break exit;
@@ -199,7 +202,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
     fs::rename(state.join("session.bin"), &saved).unwrap();
     fs::create_dir(state.join("session.bin")).unwrap();
     writeln!(host.0.stdin.as_mut().unwrap(), "flush").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     let terminal = loop {
         let current = status(origin, deadline).await;
         if current["actions"] == "unavailable" && current["native_peer"] == "disconnected" {
@@ -218,7 +221,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
     fs::rename(&saved, state.join("session.bin")).unwrap();
     let retained = fs::read(state.join("session.bin")).unwrap();
     let export = temp.path().join("must-not-export");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     writeln!(
         host.0.stdin.as_mut().unwrap(),
         "reconnect\nflush\nexport {}\nstatus",

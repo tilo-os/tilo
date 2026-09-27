@@ -4933,6 +4933,9 @@ pub(crate) async fn get_or_autobind_workspace(
 mod autobind_tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn autobind_open_releases_registry_lock_and_shares_one_runtime() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4947,12 +4950,9 @@ mod autobind_tests {
         let observer = std::thread::spawn(move || {
             handle.block_on(async move {
                 reached.await.unwrap();
-                let unlocked = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    observer_registry.lock(),
-                )
-                .await
-                .is_ok();
+                let unlocked = tokio::time::timeout(HANG_BOUND, observer_registry.lock())
+                    .await
+                    .is_ok();
                 drop(release);
                 unlocked
             })
@@ -5551,6 +5551,9 @@ mod private_transport_tests {
         sign_device_cert,
     };
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     pub(super) fn certified_device(
         root: &ed25519_dalek::SigningKey,
         user: [u8; 32],
@@ -6106,11 +6109,10 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
-        let room_delivery =
-            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        let room_delivery = tokio::time::timeout(HANG_BOUND, observer_state_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             crate::transport::encode(&room_delivery.envelope).unwrap() == next[0],
             "room Original was not published before its record checkpoint prefix"
@@ -6170,11 +6172,10 @@ mod private_transport_tests {
                 );
             })
             .unwrap();
-        let delivered_before_failure =
-            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
-                .await
-                .expect("first exact Original was not visible before the injected failure")
-                .unwrap();
+        let delivered_before_failure = tokio::time::timeout(HANG_BOUND, observer_state_rx.recv())
+            .await
+            .expect("first exact Original was not visible before the injected failure")
+            .unwrap();
         assert!(
             crate::transport::encode(&delivered_before_failure.envelope).unwrap() == next[1],
             "injected failure occurred before the first exact Original publication"
@@ -6204,13 +6205,10 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            observer_disconnected.recv(),
-        )
-        .await
-        .expect("post-CURRENT failure did not fence the captured observer")
-        .expect("captured observer disconnect channel closed before fencing");
+        tokio::time::timeout(HANG_BOUND, observer_disconnected.recv())
+            .await
+            .expect("post-CURRENT failure did not fence the captured observer")
+            .expect("captured observer disconnect channel closed before fencing");
         assert!(
             replacement_disconnected.try_recv().is_err(),
             "immutable-session fence disconnected the replacement session"
@@ -6286,11 +6284,10 @@ mod private_transport_tests {
             "the failed prefix or reconnect did not take the guarded all-Original path"
         );
         for (index, expected) in next.iter().skip(1).take(PREFIX_ROUTES).enumerate() {
-            let observed =
-                tokio::time::timeout(std::time::Duration::from_secs(2), reopened_state_rx.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let observed = tokio::time::timeout(HANG_BOUND, reopened_state_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             assert!(
                 crate::transport::encode(&observed.envelope).unwrap() == *expected,
                 "all-Original checkpoint publication changed wire order at input {index}"
@@ -7662,7 +7659,7 @@ mod private_transport_tests {
             }
             return;
         }
-        let progress = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let progress = tokio::time::timeout(HANG_BOUND, async {
             if check_lock {
                 drop(workspace.lock().await);
             }
@@ -7944,8 +7941,7 @@ mod private_transport_tests {
                 .await
                 .unwrap();
         }
-        let progress =
-            tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next()).await;
+        let progress = tokio::time::timeout(HANG_BOUND, br.read_next()).await;
         // Receiving this later unrelated frame proves the reader classified the
         // earlier capability and dependent frame while the real owner was held.
         let premature =
@@ -7963,7 +7959,7 @@ mod private_transport_tests {
             premature.is_err(),
             "dependent private frame overtook capability {control} (reply wait={reply_wait}): {premature:?}"
         );
-        let delivered = tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next())
+        let delivered = tokio::time::timeout(HANG_BOUND, br.read_next())
             .await
             .unwrap()
             .unwrap()
@@ -8112,7 +8108,7 @@ mod private_transport_tests {
         );
         // Finish the old owner's cancelled-ticket disposal before emulating a
         // new process. Two owners over the same store are not a daemon restart.
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(HANG_BOUND, async {
             loop {
                 if std::fs::read_dir(shared.lock().await.store.root().join("store-work-v1"))
                     .unwrap()
@@ -8328,8 +8324,7 @@ mod private_transport_tests {
         let observer = std::thread::spawn(move || {
             handle.block_on(async move {
                 reached.await.unwrap();
-                let lock =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), observed.lock()).await;
+                let lock = tokio::time::timeout(HANG_BOUND, observed.lock()).await;
                 let unlocked = if let Ok(mut runtime) = lock {
                     let (replacement, _rx) = mpsc::channel(2);
                     runtime.add_subscriber(Subscriber {

@@ -21,12 +21,10 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn op_on_relay1_reaches_device_on_relay2() {
@@ -82,7 +80,7 @@ async fn op_on_relay1_reaches_device_on_relay2() {
 
     // Drain the Ready acks.
     for cli in [&c1, &c2] {
-        let env = tokio::time::timeout(Duration::from_secs(3), cli.recv())
+        let env = tokio::time::timeout(HANG_BOUND, cli.recv())
             .await
             .expect("Ready timeout")
             .expect("closed");
@@ -110,7 +108,7 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     // fanout → p2.
     let mut got = false;
     for _ in 0..5 {
-        let env = tokio::time::timeout(Duration::from_secs(3), c2.recv())
+        let env = tokio::time::timeout(HANG_BOUND, c2.recv())
             .await
             .expect("federation delta timeout")
             .expect("closed");

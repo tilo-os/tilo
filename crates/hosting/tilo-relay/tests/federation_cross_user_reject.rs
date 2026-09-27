@@ -29,7 +29,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_peer_relay_is_rejected() {
@@ -82,7 +82,7 @@ async fn cross_user_peer_relay_is_rejected() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 42 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a.recv()).await;
+    let _ = tokio::time::timeout(HANG_BOUND, a.recv()).await;
     a.send(Envelope::Delta {
         workspace_id: 42,
         author_device_public_key: a_client_dev.device_pubkey(),

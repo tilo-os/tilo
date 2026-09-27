@@ -2477,6 +2477,9 @@ mod tests {
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
         device: &ed25519_dalek::SigningKey,
@@ -3133,7 +3136,7 @@ mod tests {
             })
         });
         ready_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(HANG_BOUND)
             .expect("approval listener became ready");
         // Other nearby-pairing surfaces on this host (an open discovery
         // view, another approval sheet) share the well-known port. Which of

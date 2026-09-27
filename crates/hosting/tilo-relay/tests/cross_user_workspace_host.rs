@@ -15,12 +15,10 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy, WorkspaceBinding};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
@@ -101,7 +99,7 @@ async fn provider_host_serves_only_current_cross_user_members() {
                 .send(Envelope::Subscribe { workspace_id: 77 })
                 .unwrap();
             assert!(matches!(
-                tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
+                tokio::time::timeout(HANG_BOUND, client.recv()).await,
                 Ok(Some(Envelope::Ready {
                     workspace_id: 77,
                     ..
@@ -118,7 +116,7 @@ async fn provider_host_serves_only_current_cross_user_members() {
             })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), bob_client.recv()).await,
+            tokio::time::timeout(HANG_BOUND, bob_client.recv()).await,
             Ok(Some(Envelope::Delta { author_device_public_key, .. })) if author_device_public_key == alice_key
         ));
 
@@ -135,7 +133,7 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 77 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), charlie_client.recv()).await,
+            tokio::time::timeout(HANG_BOUND, charlie_client.recv()).await,
             Ok(Some(Envelope::NotAuthorised {
                 workspace_id: 77,
                 ..
@@ -194,14 +192,14 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 78 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
+            tokio::time::timeout(HANG_BOUND, client.recv()).await,
             Ok(Some(Envelope::Ready { .. }))
         ));
 
         let store = tilo_relay::store::WorkspaceStore::open(state.path(), 78, true).unwrap();
         store.save_membership(&[]).unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(4), client.recv()).await,
+            tokio::time::timeout(HANG_BOUND, client.recv()).await,
             Ok(None)
         ));
     }

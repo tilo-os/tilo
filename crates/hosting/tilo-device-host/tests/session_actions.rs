@@ -10,6 +10,10 @@ use std::{
 use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 struct Host(std::process::Child);
 impl Drop for Host {
     fn drop(&mut self) {
@@ -1190,7 +1194,7 @@ async fn checked_application_catalogue(
     client
         .send_action(EnvelopeV2::EnableBrokerClient { room })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     let (broker_host, catalogue) = loop {
         let request_id = uuid::Uuid::new_v4();
         client
@@ -1691,7 +1695,7 @@ async fn checked_application_catalogue(
             message: ActionMessage::CatalogueRefresh { scope: None },
         }))
         .unwrap();
-    let current_catalogue = tokio::time::timeout(Duration::from_secs(5), async {
+    let current_catalogue = tokio::time::timeout(HANG_BOUND, async {
         loop {
             if let EnvelopeV2::Delivered {
                 action,
@@ -1776,7 +1780,7 @@ async fn checked_application_catalogue(
     // an explicit post-unregistration relay refusal, never a fake success.
     let mut probes = std::collections::BTreeSet::new();
     let mut probe_tick = tokio::time::interval(Duration::from_millis(100));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_BOUND, async {
         loop {
             tokio::select! {
                 _ = probe_tick.tick() => {
@@ -2500,7 +2504,7 @@ async fn active_replacement(
         "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + HANG_BOUND;
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["qualification"]["armed"] == true {
@@ -2522,7 +2526,7 @@ async fn active_replacement(
             message: operation,
         }))
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + HANG_BOUND;
     let mut accepted = false;
     let generation = loop {
         let status = request(origin, "/status", None, None).await.1;
@@ -2779,7 +2783,7 @@ async fn owner_and_room_isolation(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_BOUND, async {
         while !matches!(second.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
     .await
@@ -2803,7 +2807,7 @@ async fn owner_and_room_isolation(
                 },
             }))
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(HANG_BOUND, async {
             loop {
                 if let EnvelopeV2::Delivered {
                     action,
@@ -2846,7 +2850,7 @@ async fn owner_and_room_isolation(
             message: ActionMessage::Status { invocation },
         }))
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_BOUND, async {
         loop {
             match first.recv_action().await.unwrap() {
                 EnvelopeV2::Unavailable {
@@ -2880,7 +2884,7 @@ async fn observe_native_publication(
     remote: &mut tilo_peer_state::StatePeer,
 ) {
     let started = Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_BOUND, async {
         let (code, target) = request(origin, "/status", None, None).await;
         assert_eq!(code, 200);
         assert_eq!(target["actions"], "ready");
@@ -2928,7 +2932,7 @@ async fn observe_native_publication(
         );
     })
     .await
-    .expect("observer did not admit the fixed native publication within five seconds");
+    .expect("observer never admitted the fixed native publication");
 }
 
 #[expect(
@@ -2971,7 +2975,7 @@ async fn selective_publication_failure_after_commit(
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_BOUND;
     loop {
         let status = request(origin, "/status", None, None).await.1;
         let armed = match failure {

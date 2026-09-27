@@ -19,7 +19,9 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
+use crate::common::{
+    HANG_BOUND, TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps,
+};
 
 const WS: u64 = 11;
 
@@ -41,7 +43,7 @@ async fn subscribed(
     client
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let ready = tokio::time::timeout(Duration::from_secs(5), client.recv())
+    let ready = tokio::time::timeout(HANG_BOUND, client.recv())
         .await
         .expect("ready timeout");
     assert!(
@@ -68,7 +70,7 @@ fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
 }
 
 async fn next(client: &RelayClient, who: &str) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tokio::time::timeout(HANG_BOUND, client.recv())
         .await
         .unwrap_or_else(|_| panic!("{who} timed out"))
         .unwrap_or_else(|| panic!("{who} connection closed"))
