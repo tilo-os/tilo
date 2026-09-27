@@ -39,6 +39,9 @@ ENGINE_OWNERS = (
     "crates/doc/qdoc/",
     "crates/doc/qdoc-codecs/",
     "crates/sdk/ui-core/",
+    # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
+    # into this non-default member; they still exercise the same surfaces.
+    "crates/dev/ui-examples/",
     "crates/collab/actions/",
     "crates/system/app-state/",
 )
