@@ -473,11 +473,19 @@ pub fn parse_inline(line: &str) -> InlineText {
 }
 
 fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
-    match (bytes.get(at), bytes.get(at + 1)) {
-        (Some(b'_'), Some(b'_')) => Some((b'_', Mark::Underline)),
-        (Some(b'~'), Some(b'~')) => Some((b'~', Mark::Strikethrough)),
-        _ => None,
+    // Double-character toggles whose open delimiter is two identical ASCII
+    // bytes (driven by [`mark_chrome`], not a second table).
+    for mark in [Mark::Underline, Mark::Strikethrough] {
+        let open = open_marker(&mark).as_bytes();
+        if open.len() == 2
+            && open[0] == open[1]
+            && bytes.get(at) == Some(&open[0])
+            && bytes.get(at + 1) == Some(&open[1])
+        {
+            return Some((open[0], mark));
+        }
     }
+    None
 }
 
 fn parse_external_link(
@@ -580,42 +588,41 @@ pub fn safe_external_url(value: &str) -> bool {
 /// 1. Bold (outermost)
 /// 2. Italic
 /// 3. Code / Link (innermost — exclusive with one another)
-fn open_marker(mark: &Mark) -> &'static str {
+
+/// Open delimiter, optional static close delimiter, and emission priority
+/// for a mark kind. One table feeds parse (`paired_mark_at`) and serialize
+/// (`open_marker` / `close_marker` / `priority`). External-link closes are
+/// value-dependent and handled in [`close_marker`].
+fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
     match mark {
-        Mark::Bold => "**",
-        Mark::Italic => "*",
-        Mark::Code => "`",
-        Mark::Link(_) => "[[",
-        Mark::Transclusion(_) => "![[",
-        Mark::Underline => "__",
-        Mark::Strikethrough => "~~",
-        Mark::ExternalLink(_) => "[",
+        Mark::Bold => ("**", Some("**"), 0),
+        Mark::Italic => ("*", Some("*"), 1),
+        Mark::Underline => ("__", Some("__"), 2),
+        Mark::Strikethrough => ("~~", Some("~~"), 3),
+        Mark::Code => ("`", Some("`"), 4),
+        Mark::Link(_) => ("[[", Some("]]"), 5),
+        Mark::Transclusion(_) => ("![[", Some("]]"), 6),
+        Mark::ExternalLink(_) => ("[", None, 7),
     }
 }
+
+fn open_marker(mark: &Mark) -> &'static str {
+    mark_chrome(mark).0
+}
+
 fn close_marker(mark: &Mark) -> std::borrow::Cow<'_, str> {
     match mark {
-        Mark::Bold => "**".into(),
-        Mark::Italic => "*".into(),
-        Mark::Code => "`".into(),
-        Mark::Link(_) | Mark::Transclusion(_) => "]]".into(),
-        Mark::Underline => "__".into(),
-        Mark::Strikethrough => "~~".into(),
         Mark::ExternalLink(url) => format!("]({url})").into(),
+        mark => match mark_chrome(mark) {
+            (_, Some(close), _) => close.into(),
+            // Only [`Mark::ExternalLink`] omits a static close; handled above.
+            _ => "".into(),
+        },
     }
 }
-// Sort marks for deterministic emission: by start ascending, then
-// by priority (Bold < Italic < Underline < Strikethrough < Code < Link).
+
 fn priority(m: &Mark) -> u8 {
-    match m {
-        Mark::Bold => 0,
-        Mark::Italic => 1,
-        Mark::Underline => 2,
-        Mark::Strikethrough => 3,
-        Mark::Code => 4,
-        Mark::Link(_) => 5,
-        Mark::Transclusion(_) => 6,
-        Mark::ExternalLink(_) => 7,
-    }
+    mark_chrome(m).2
 }
 
 pub fn serialize_inline(text: &InlineText) -> String {
@@ -965,29 +972,65 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
     out
 }
 
+/// Build a [`ui::widget::Block`] from a kind and plain text. Shared by
+/// [`specs_to_blocks`]; marks/nesting/code-group are applied by the caller.
+fn block_from_kind(kind: ui::widget::BlockKind, text: &str) -> ui::widget::Block {
+    use ui::widget::{Block, BlockKind};
+    match kind {
+        BlockKind::Paragraph => Block::paragraph(text),
+        BlockKind::Quote => Block::quote(text),
+        BlockKind::Heading(level) => Block::heading(level, text),
+        BlockKind::Bullet { indent } => Block::bullet(indent, text),
+        BlockKind::Numbered { indent } => Block::numbered(indent, text),
+        BlockKind::Checklist { indent, done } => Block::checklist(indent, done, text),
+        BlockKind::CodeBlock { lang } => Block::code_block(lang, text),
+        BlockKind::Table { visual } => Block::table(text, visual),
+        BlockKind::Divider => Block::divider(),
+    }
+}
+
+/// Map a simple (non-fence) editor kind + inline text back to a [`BlockSpec`].
+/// Fence rows need multi-line reassembly in [`blocks_to_specs`].
+fn spec_from_kind(kind: &ui::widget::BlockKind, inline: InlineText) -> Option<BlockSpec> {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => Some(BlockSpec::Paragraph(inline)),
+        BlockKind::Quote => Some(BlockSpec::Quote(inline)),
+        BlockKind::Heading(level) => Some(BlockSpec::Heading {
+            level: *level,
+            text: inline,
+        }),
+        BlockKind::Bullet { indent } => Some(BlockSpec::Bullet {
+            indent: *indent,
+            text: inline,
+        }),
+        BlockKind::Numbered { indent } => Some(BlockSpec::Numbered {
+            indent: *indent,
+            text: inline,
+        }),
+        BlockKind::Checklist { indent, done } => Some(BlockSpec::Checklist {
+            indent: *indent,
+            done: *done,
+            text: inline,
+        }),
+        BlockKind::Table { .. } => Some(BlockSpec::Table {
+            source: inline.text,
+        }),
+        BlockKind::Divider => Some(BlockSpec::Divider),
+        BlockKind::CodeBlock { .. } => None,
+    }
+}
+
 /// Convert a list of [`BlockSpec`]s into a list of
 /// [`ui::widget::Block`]s suitable for handing to
 /// [`ui::widget::BlockEditor::set_blocks`]. Mark spans on each block
 /// land on the inner `RichTextLine`'s mark list.
 pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
-    use ui::widget::{Block, BlockKind};
     let mut groups = std::collections::HashMap::new();
     expanded_rows(specs)
         .into_iter()
         .map(|(kind, inline, fence, nesting)| {
-            let mut block = match kind {
-                BlockKind::Paragraph => Block::paragraph(&inline.text),
-                BlockKind::Quote => Block::quote(&inline.text),
-                BlockKind::Heading(level) => Block::heading(level, &inline.text),
-                BlockKind::Bullet { indent } => Block::bullet(indent, &inline.text),
-                BlockKind::Numbered { indent } => Block::numbered(indent, &inline.text),
-                BlockKind::Checklist { indent, done } => {
-                    Block::checklist(indent, done, &inline.text)
-                }
-                BlockKind::CodeBlock { lang } => Block::code_block(lang, &inline.text),
-                BlockKind::Table { visual } => Block::table(&inline.text, visual),
-                BlockKind::Divider => Block::divider(),
-            };
+            let mut block = block_from_kind(kind, &inline.text);
             block.line.set_marks(inline.marks);
             block.nesting = nesting;
             block.code_group = fence.map(|fence| {
@@ -1094,79 +1137,30 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut i = 0usize;
     while let Some(b) = blocks.get(i) {
-        match &b.kind {
-            BlockKind::Paragraph => {
-                out.push(BlockSpec::Paragraph(InlineText::new(
-                    b.text(),
-                    b.line.marks().to_vec(),
-                )));
-                i += 1;
-            }
-            BlockKind::Quote => {
-                out.push(BlockSpec::Quote(InlineText::new(
-                    b.text(),
-                    b.line.marks().to_vec(),
-                )));
-                i += 1;
-            }
-            BlockKind::Heading(level) => {
-                out.push(BlockSpec::Heading {
-                    level: *level,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Bullet { indent } => {
-                out.push(BlockSpec::Bullet {
-                    indent: *indent,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Numbered { indent } => {
-                out.push(BlockSpec::Numbered {
-                    indent: *indent,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::Checklist { indent, done } => {
-                out.push(BlockSpec::Checklist {
-                    indent: *indent,
-                    done: *done,
-                    text: InlineText::new(b.text(), b.line.marks().to_vec()),
-                });
-                i += 1;
-            }
-            BlockKind::CodeBlock { lang } => {
-                // Reassemble the rows of one authored fence. Language alone
-                // cannot distinguish adjacent fences using the same syntax.
-                let mut lines: Vec<String> = vec![b.text().to_string()];
-                let run_lang = lang.clone();
-                i += 1;
-                while let Some(next) = blocks.get(i) {
-                    if b.same_code_group(next) {
-                        lines.push(next.text().to_string());
-                        i += 1;
-                        continue;
-                    }
-                    break;
+        if let BlockKind::CodeBlock { lang } = &b.kind {
+            // Reassemble the rows of one authored fence. Language alone
+            // cannot distinguish adjacent fences using the same syntax.
+            let mut lines: Vec<String> = vec![b.text().to_string()];
+            let run_lang = lang.clone();
+            i += 1;
+            while let Some(next) = blocks.get(i) {
+                if b.same_code_group(next) {
+                    lines.push(next.text().to_string());
+                    i += 1;
+                    continue;
                 }
-                out.push(BlockSpec::CodeBlock {
-                    lang: run_lang,
-                    text: lines.join("\n"),
-                });
+                break;
             }
-            BlockKind::Table { .. } => {
-                out.push(BlockSpec::Table {
-                    source: b.text().to_string(),
-                });
-                i += 1;
+            out.push(BlockSpec::CodeBlock {
+                lang: run_lang,
+                text: lines.join("\n"),
+            });
+        } else {
+            let inline = InlineText::new(b.text(), b.line.marks().to_vec());
+            if let Some(spec) = spec_from_kind(&b.kind, inline) {
+                out.push(spec);
             }
-            BlockKind::Divider => {
-                out.push(BlockSpec::Divider);
-                i += 1;
-            }
+            i += 1;
         }
         if b.nesting > 0
             && let Some(spec) = out.pop()
