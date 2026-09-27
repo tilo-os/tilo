@@ -285,41 +285,6 @@ tilo-test-env = { path = "../../dev/test-env" }
 capnp.workspace = true
 tokio-util.workspace = true
 
-[[example]]
-name = "ui-lab"
-path = "examples/ui_lab.rs"
-
-[[example]]
-name = "ui-shots"
-path = "examples/ui_shots.rs"
-
-[[example]]
-name = "ui-perf"
-path = "examples/ui_perf.rs"
-
-[[example]]
-name = "ui-managed-history-probe"
-path = "examples/managed_history_probe.rs"
-
-[[example]]
-name = "ui-native-input-probe"
-path = "examples/native_input_probe.rs"
-
-[[example]]
-name = "native-file-picker"
-path = "examples/native_file_picker.rs"
-required-features = ["portal"]
-
-[[example]]
-name = "windows-host"
-path = "examples/windows_host.rs"
-required-features = ["notifications"]
-
-[[example]]
-name = "ui-wpe"
-path = "examples/ui_wpe.rs"
-required-features = ["webview-wpe"]
-
 [[test]]
 name = "it"
 path = "tests/it.rs"
@@ -338,21 +303,6 @@ path = "tests/held_memory.rs"
 [lints]
 workspace = true
 
-[[example]]
-name = "card-composition-shots"
-path = "examples/card_composition_shots.rs"
-
-[[example]]
-name = "form-composition-shots"
-path = "examples/form_composition_shots.rs"
-
-[[example]]
-name = "manual-composition-shots"
-path = "examples/manual_composition_shots.rs"
-
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
 
-[[example]]
-name = "block-editor-typing"
-path = "examples/block_editor_typing.rs"

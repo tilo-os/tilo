@@ -3318,6 +3318,32 @@ impl TabBar {
     }
 }
 
+/// A window's application mark at any size: the app's own artwork when it
+/// has some, else the app-kind glyph its tab pill wears, scaled up from the
+/// pill's 14 px design size. Every surface that names a window by its app
+/// (the tab pill, the window switcher, the overview) paints this one mark.
+pub fn draw_app_mark(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    icon: Option<&icons::AppImage>,
+    kind: AppKind,
+    color: vello::peniko::Color,
+) {
+    if icon.is_some_and(|image| icons::draw_app_image(scene, transform, rect, image)) {
+        return;
+    }
+    let side = rect.width().min(rect.height());
+    if side <= 0.0 {
+        return;
+    }
+    let scale = side / ICON_W;
+    let glyph = transform
+        .pre_translate(rect.center().to_vec2())
+        .pre_scale(scale);
+    draw_app_icon(scene, glyph, square_at(Point::ORIGIN, ICON_W), kind, color);
+}
+
 /// Approximates lucide icon shapes with kurbo primitives so we don't need an
 /// icon-font codepoint; strokes are thin (1.1px) so glyphs read as chrome.
 fn draw_app_icon(

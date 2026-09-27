@@ -283,6 +283,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Power menu",
             "Lock, log out, restart or shut down",
         ),
+        (
+            ShortcutAction::NextInputSource,
+            "shortcuts.next_input_source",
+            "Next keyboard layout",
+            "Switch input source and remember the choice",
+        ),
     ]
     .to_vec()
 }
@@ -295,6 +301,15 @@ pub(crate) fn resource_entries() -> Vec<(&'static str, &'static str)> {
     entries()
         .into_iter()
         .map(|(_, key, label, _)| (key, label))
+        .collect()
+}
+
+/// Every shortcut the page lists, with its name, in page order — what a pen
+/// or pad button can be set to run.
+pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, &'static str)> {
+    entries()
+        .into_iter()
+        .map(|(action, _, label, _)| (action, label))
         .collect()
 }
 
@@ -320,6 +335,7 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::MagnifierZoomIn
             | ShortcutAction::MagnifierZoomOut
             | ShortcutAction::PowerMenu
+            | ShortcutAction::NextInputSource
     )
 }
 

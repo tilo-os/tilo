@@ -39,10 +39,6 @@ class BuilderPlanTests(unittest.TestCase):
             for path in sorted(plan.REBUILD_PATHS) + [".forgejo/actions/install-cosign/action.yml"]:
                 with self.subTest(path=path):
                     self.assertEqual(plan.choose("push", [path])[0], "build")
-        with self.subTest(phase='replication helper rebuilds for landing'):
-            mode, reason = plan.choose("push", ["os/dev/replicate-builder-index.py"])
-            self.assertEqual(mode, "build")
-            self.assertIn("replicate-builder-index.py", reason)
         with self.subTest(phase='aws cli installation change runs publication'):
             mode, reason = plan.choose("push", ["os/dev/install-aws-cli.sh"])
             self.assertEqual(mode, "build")

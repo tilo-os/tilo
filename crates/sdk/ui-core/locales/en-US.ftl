@@ -72,4 +72,5 @@ now-playing-choose-player = Choose player
 now-playing-choose-output = Choose where to play
 now-playing-output-local = On this computer
 now-playing-output-device = One of your devices
+now-playing-output-speaker-group = One of your speaker groups
 now-playing-route-gone = That destination is no longer available
