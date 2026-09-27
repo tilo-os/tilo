@@ -34,9 +34,24 @@ pub(in crate::https_owner) async fn fixture() -> (
 /// process can take it in between; a caller that sees the service fail with
 /// "Address already in use" assigns another one and starts again.
 pub(in crate::https_owner) fn assign_free_origin(transport_config: &std::path::Path) {
-    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let address = udp.local_addr().unwrap();
-    let tcp = std::net::TcpListener::bind(address).unwrap();
+    // The kernel picks a free UDP port, but its TCP twin may still be held:
+    // a just dropped transport's listener winds down asynchronously, and the
+    // kernel may hand that just-freed UDP port straight back. Keep every
+    // refused candidate bound until a pair is found, so each retry gets a
+    // different port.
+    let mut refused = Vec::new();
+    let (udp, address, tcp) = loop {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = udp.local_addr().unwrap();
+        match std::net::TcpListener::bind(address) {
+            Ok(tcp) => break (udp, address, tcp),
+            Err(error) => {
+                assert!(refused.len() < 64, "no free TCP/UDP loopback pair: {error}");
+                refused.push(udp);
+            }
+        }
+    };
+    drop(refused);
     let mut transport: serde_json::Value =
         serde_json::from_slice(&std::fs::read(transport_config).unwrap()).unwrap();
     transport["origin"] = serde_json::json!(format!("https://{address}"));

@@ -84,6 +84,22 @@ impl Client {
     async fn get(&self, target: &str) -> (reqwest::StatusCode, Vec<u8>) {
         self.send(reqwest::Method::GET, target, Vec::new()).await
     }
+    /// [`Self::post`], retried while the service answers its retryable 503
+    /// (the Store lock stayed contended past the deferral bound, as on a
+    /// loaded runner), exactly as a delivery client retries. Any other status
+    /// is returned; the bound only catches a service that never recovers.
+    async fn post_retrying(&self, target: &str, body: Vec<u8>) -> (reqwest::StatusCode, Vec<u8>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let (status, reply) = self.post(target, body.clone()).await;
+            if status != reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || tokio::time::Instant::now() >= deadline
+            {
+                return (status, reply);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 fn peer(root: &Path) -> tilo_peer_state::StatePeer {
@@ -1662,26 +1678,13 @@ async fn private_call(
         target: action.target,
     };
     let started = std::time::Instant::now();
-    // 503 is the carrier's retryable answer (owner contended past the request
-    // deadline, e.g. a loaded debug test process); retry like a client does.
-    let mut attempts = 0;
-    let (status, body) = loop {
-        let (status, body) = client
-            .post(
-                operation.path(),
-                private_wire::encode_request(operation, scope, action).unwrap(),
-            )
-            .await;
-        attempts += 1;
-        if status != reqwest::StatusCode::SERVICE_UNAVAILABLE || attempts == 5 {
-            break (status, body);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
-    eprintln!(
-        "private {operation:?} answered in {:?} ({attempts} attempt(s))",
-        started.elapsed()
-    );
+    let (status, body) = client
+        .post_retrying(
+            operation.path(),
+            private_wire::encode_request(operation, scope, action).unwrap(),
+        )
+        .await;
+    eprintln!("private {operation:?} answered in {:?}", started.elapsed());
     assert_eq!(
         status,
         reqwest::StatusCode::OK,
