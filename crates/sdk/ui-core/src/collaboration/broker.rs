@@ -6509,32 +6509,43 @@ mod tests {
                 Some(b"fixture certificate".to_vec()),
                 vec![runtime_identity::wire::Response::Signature(vec![7; 64])],
             );
-            let broker = Rc::new(FakeBroker {
-                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            });
-            let gate = HostJoinGate {
-                broker,
-                release: RefCell::new(delayed.then_some(wait)),
-                attempted,
-                stopped,
-            };
             let (client, server) = tokio::io::duplex(64 * 1024);
-            let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
-            let (r, w) = tokio::io::split(server);
-            let network = Box::new(twoparty::VatNetwork::new(
-                r.compat(),
-                w.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let rpc = RpcSystem::new(network, Some(broker_client.client));
-            tokio::task::spawn_local(async move {
-                let _ = rpc.await;
-            });
+            // The broker is another process in production: serve it on its
+            // own thread, so it ends only when the manager closes the
+            // connection, never because the manager's worker ended.
+            thread::Builder::new()
+                .name("ui-collab-test-join-gate".into())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    tokio::task::LocalSet::new().block_on(&runtime, async move {
+                        let broker = Rc::new(FakeBroker {
+                            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+                            op_backlog: vec![],
+                            presence_backlog: vec![],
+                            context_backlog: vec![],
+                            scrollback_response: None,
+                        });
+                        let gate = HostJoinGate {
+                            broker,
+                            release: RefCell::new(delayed.then_some(wait)),
+                            attempted,
+                            stopped,
+                        };
+                        let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
+                        let (r, w) = tokio::io::split(server);
+                        let network = Box::new(twoparty::VatNetwork::new(
+                            r.compat(),
+                            w.compat_write(),
+                            rpc_twoparty_capnp::Side::Server,
+                            capnp::message::ReaderOptions::default(),
+                        ));
+                        let _ = RpcSystem::new(network, Some(broker_client.client)).await;
+                    });
+                })
+                .unwrap();
             Ok((client, identity))
         });
         (connector, HostJoinRelease(Some(release)))
