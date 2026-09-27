@@ -36,9 +36,7 @@ fi
 # The same digest-pinned frozen RPM snapshot the desktop image installs from.
 TILO_CFS_RPMS_REF="${TILO_CFS_RPMS_REF:-}"
 if [ -z "$TILO_CFS_RPMS_REF" ]; then
-  # shellcheck source=/dev/null
-  source "$TILO_OS_DIR/rpms-snapshot.env"
-  TILO_CFS_RPMS_REF="$RPMS_REF"
+  TILO_CFS_RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || { echo "composefs: resolve-rpm-snapshot.sh failed" >&2; exit 1; }
 fi
 
 TILO_CFS_DISK="${TILO_CFS_DISK:-$TILO_CFS_RUN/disk.raw}"

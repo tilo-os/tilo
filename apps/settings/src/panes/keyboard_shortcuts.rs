@@ -12,7 +12,6 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime};
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
@@ -116,61 +115,11 @@ pub struct ShortcutPane {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     actions: ui::ActionHost,
-    /// Follows a keyboard layout switched elsewhere while the page is open.
-    layout: LayoutWatch,
-}
-
-/// The legends the page is spelled in, and when the settings file last
-/// changed: a layout switched in the shell while the page is open rebuilds
-/// the rows in the new layout's legends.
-struct LayoutWatch {
-    keycaps: ui::Keycaps,
-    settings_stamp: Option<SystemTime>,
-    next_check: Instant,
-    rebuild: bool,
-}
-
-impl LayoutWatch {
-    fn new() -> Self {
-        let keycaps = active_keycaps();
-        ui::keycaps::set_active(keycaps);
-        Self {
-            keycaps,
-            settings_stamp: settings_stamp(),
-            next_check: Instant::now() + LAYOUT_CHECK_INTERVAL,
-            rebuild: false,
-        }
-    }
-
-    /// When the settings file changed and names another layout, publish its
-    /// legends and ask for the rows to be rebuilt.
-    fn refresh(&mut self) {
-        self.next_check = Instant::now() + LAYOUT_CHECK_INTERVAL;
-        let stamp = settings_stamp();
-        if stamp == self.settings_stamp {
-            return;
-        }
-        self.settings_stamp = stamp;
-        let keycaps = active_keycaps();
-        if keycaps != self.keycaps {
-            self.keycaps = keycaps;
-            ui::keycaps::set_active(keycaps);
-            self.rebuild = true;
-        }
-    }
-}
-
-/// How often the page looks for a keyboard layout switched elsewhere.
-const LAYOUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-
-fn settings_stamp() -> Option<SystemTime> {
-    let path = settings_store::settings_path()?;
-    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 impl Default for ShortcutPane {
     fn default() -> Self {
-        let layout = LayoutWatch::new();
+        ui::keycaps::set_active(active_keycaps());
         let config = ShortcutConfig::load();
         let desktop_controls = settings_store::hardware::DesktopControlsConfig::load();
         let last_text = config
@@ -188,7 +137,6 @@ impl Default for ShortcutPane {
             composed: None,
             rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
-            layout,
         }
     }
 }
@@ -249,9 +197,6 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for ShortcutPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if Instant::now() >= self.layout.next_check {
-            self.layout.refresh();
-        }
         if self.needs_seed {
             for action in rebindable() {
                 let key = durable_key(action);
@@ -443,16 +388,6 @@ impl Widget for ShortcutPane {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.layout.rebuild);
-        own || self
-            .composed
-            .as_mut()
-            .is_some_and(|composed| composed.take_structure_dirty())
-    }
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        Some(self.layout.next_check)
-    }
     fn name(&self) -> &'static str {
         "ShortcutPane"
     }
@@ -515,29 +450,6 @@ mod tests {
                 read_str_or_text(&doc, &automerge::ROOT, QUICK_SETTINGS).as_deref(),
                 Some("Super+q")
             );
-        }
-
-        // Case `rows_follow_a_layout_switched_while_the_page_is_open`.
-        {
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let mut pane = ShortcutPane::default();
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(ui::keycaps::active(), ui::Keycaps::US);
-            let mut input = serde_json::Map::new();
-            input.insert("keyboard_layout".into(), "de".into());
-            input.insert("keyboard_layouts".into(), serde_json::json!(["us", "de"]));
-            settings_store::update_section("input", input).expect("switch layout");
-            pane.layout.settings_stamp = None;
-            pane.layout.next_check = Instant::now();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert!(pane.take_structure_dirty(), "the rows are rebuilt");
-            assert_eq!(ui::keycaps::active(), ui::Keycaps::from_xkb("de", ""));
-            let lock = pane.config.bindings[&ShortcutAction::Lock].clone();
-            assert_eq!(chord_label(&lock), "Super+L");
-            let terminal = pane.config.bindings[&ShortcutAction::OpenTerminal].clone();
-            assert_eq!(chord_label(&terminal), "Strg+Alt+T");
-            ui::keycaps::set_active(ui::Keycaps::US);
         }
 
         // Case `vim_mode_toggle_persists_to_the_shell_contract`.

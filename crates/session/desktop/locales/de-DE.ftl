@@ -441,6 +441,7 @@ search-badge-tab = Tab
 search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
 search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
 search-window-group-untitled = Fenstergruppe { $group }
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
@@ -823,7 +824,7 @@ launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
 
 # Empty-workspace launchpad: the keyboard hint under the cards
-launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  { $chord } zeigt alle Apps
+launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
 
 # Peers arriving in and leaving a workspace, batched into one toast
 peer-toast-joined-one = { $name } ist beigetreten

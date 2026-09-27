@@ -238,7 +238,7 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         host.draw_shortcut_help_button(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
         let rect = host.shortcut_help_button_rect();
         let (width, height) = renderer.measure_weighted(
-            "Help  F1 · Super+Shift+/",
+            "Help  F1 · Super+?",
             theme.tokens.typography.scale.sm / 2.0,
             None,
             TextWeight::Semibold,

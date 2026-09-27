@@ -14,8 +14,8 @@ tab-closed-undo-hint-unbound = Select to undo
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears. { $chord } moves to the next choice.
-display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, { $chord } moves to the next layout, Escape closes.
+display-sheet-subtitle = Choose where your desktop appears. Super+P moves to the next choice.
+display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
 display-mode-extend = Extend
 display-mode-extend-detail = One desktop across every display
 display-mode-mirror = Mirror
@@ -284,8 +284,8 @@ qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
 
 # Quick Settings: editing the control grid
 qs-edit-controls = Edit controls
-qs-edit-help = Drag to reorder · { $chord }
-qs-edit-a11y-description = Edit controls; drag or use { $modifier } plus Arrow keys to reorder
+qs-edit-help = Drag to reorder · Ctrl + Up/Down
+qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
 qs-edit-active-heading = ACTIVE CONTROLS
 qs-edit-available-heading = AVAILABLE
 qs-edit-reset = Reset defaults
@@ -295,8 +295,8 @@ qs-edit-done-a11y = Finish editing Quick Settings
 qs-edit-required-a11y = Required Quick Settings control
 qs-edit-remove-a11y = Remove Quick Settings control
 qs-edit-add-a11y = Add Quick Settings control
-qs-edit-required-control-a11y = Required; use { $modifier } plus Arrow keys to reorder
-qs-edit-optional-control-a11y = Select to add or remove; use { $modifier } plus Arrow keys to reorder
+qs-edit-required-control-a11y = Required; use Control plus Arrow keys to reorder
+qs-edit-optional-control-a11y = Select to add or remove; use Control plus Arrow keys to reorder
 
 # Quick Settings: Wi-Fi
 qs-wifi = Wi-Fi
@@ -767,7 +767,7 @@ capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
 # The shortcut-guide pill in the display corner
-help-pill = Help  F1 · { $chord }
+help-pill = Help  F1 · Super+?
 
 # Workspace overview panel
 overview-go-to = Go to
@@ -1685,12 +1685,12 @@ onboarding-tour-skip = Skip tour
 onboarding-tour-enter = Enter Tilo
 onboarding-tour-navigate-title = Everything is close at hand
 onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
-onboarding-tour-search-title = Search  ·  { $search } or { $alternate }
+onboarding-tour-search-title = Search  ·  Super+K or Super+Space
 onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
-onboarding-tour-overview-title = Overview  ·  { $chord } or four-finger swipe
+onboarding-tour-overview-title = Overview  ·  Super+Tab or four-finger swipe
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
-onboarding-tour-move-title = Move  ·  { $modifier }+arrow keys or three-finger swipe
+onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
 onboarding-tour-move-body = Up and down switch workspaces. Left and right step between tiled windows along the current strip.
 onboarding-tour-organise-title = A place for each kind of work
 onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
@@ -1699,7 +1699,7 @@ onboarding-tour-workspace-body = A durable place for a project, its people, perm
 onboarding-tour-strip-title = Strip
 onboarding-tour-strip-body = A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.
 onboarding-tour-window-group-title = Window group
-onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with { $previous } or { $next }.
+onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.
 onboarding-tour-tab-title = Tab
 onboarding-tour-tab-body = An app or document inside a window group. Drag tabs to arrange them without overlapping windows.
 onboarding-tour-collaborate-title = Sharing stays deliberate
@@ -1868,7 +1868,7 @@ shell-path-open-failed = Cannot open { $path }: { $error }
 shell-path-read-failed = Cannot read { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
-editor-hint-focused = Live-shared code  ·  { $chord } to undo
+editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
 editor-hint-click = Click to edit
 notes-empty-title = This note is empty
 notes-empty-body = Jot anything here. Changes are saved as you type.
@@ -1878,6 +1878,42 @@ window-move-unknown-workspace = That workspace is gone.
 window-move-same-workspace = The window is already in that workspace.
 window-move-pinned = This window belongs to its workspace and cannot move.
 window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
+window-move-hosted-workspace = A room owner keeps that workspace's documents, so windows can't be carried into or out of it from this device yet.
+window-move-not-permitted = That workspace doesn't let you open this app there.
+window-move-already-moving = This window is already being moved.
+window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-transfer-title = Move “{ $window }” to { $to }?
+window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
+window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.
+window-transfer-copy-detail = Copy: { $to } gets its own copy with the history so far, the original stays in { $from }, and from then on the two change separately.
+window-transfer-access-only-you = Only you can open it in { $from }.
+window-transfer-access-others = In { $from }, { $people } can open it now. After a move they lose access; after a copy they keep the original.
+window-transfer-access-destination = In { $to }, that workspace's members and permissions decide who can open it.
+window-transfer-grants-stay = What this app may do in { $from } stays there and doesn't come along: { $grants }.
+window-transfer-move-blocked = Move isn't available because another window in { $from } still shows this document. Close that window first, or make a copy.
+window-transfer-choice-move = Move — { $from } no longer has it
+window-transfer-choice-copy = Copy — { $from } keeps the original
+window-transfer-confirm = Continue
+window-transfer-fresh-title = “{ $window }” can't take its work to { $to }
+window-transfer-fresh-detail = This app keeps what you're doing inside its running program, so none of it can cross into another workspace. “{ $window }” stays open in { $from }, unchanged. You can open a new, empty window of the app in { $to } instead.
+window-transfer-choice-fresh = Open a new window in { $to }
+window-transfer-fresh-confirm = Open
+window-transfer-failed-title = Couldn't move “{ $window }”
+window-transfer-failed-detail = { $reason } Nothing was lost: the document is still in { $from }.
+window-transfer-failed-busy = The app still has the document open.
+window-transfer-failed-record = The app's document couldn't be read.
+window-transfer-failed-storage = The app's storage couldn't be reached.
+window-transfer-failed-timeout = The app didn't open a window in the other workspace in time.
+window-transfer-failed-closed = The new window was closed before it opened.
+window-transfer-reopen-failed = The document is here, but the app didn't open a window. Open it again to continue.
+window-transfer-bringing-edits = Bringing over your last edits…
+window-transfer-receipt-copied = Copied “{ $window }” here from { $from }
+window-transfer-receipt-moved-out = Moved “{ $window }” to { $to }
+window-transfer-receipt-moved-in = Moved “{ $window }” here from { $from }
+window-transfer-lost-title = “{ $window }” closed while it was moving
+window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
+window-transfer-late-edits-title = Your last edits in “{ $window }” came along
+window-transfer-late-edits-detail = Changes made in { $from } while the window was moving were added to the document.
 
 # Empty-workspace launchpad and the default command list
 global-search-create-workspace = Create Workspace

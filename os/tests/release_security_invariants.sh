@@ -91,7 +91,7 @@ grep -Fq '. os/dev/configure-cosign-kms.sh' "$workflow" \
   || bad 'release signing still accepts an exportable private key secret'
 
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$workflow" \
-   && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
+   && grep -Eq 'needs: \[plan, signing-preflight(, [A-Za-z0-9_-]+)*\]' "$workflow"; then
   ok 'OS construction starts only after release KMS identity preflight'
 else
   bad 'OS release construction can start before its signing authority is identity-bound'
