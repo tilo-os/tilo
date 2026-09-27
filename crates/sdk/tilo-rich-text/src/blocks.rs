@@ -125,7 +125,7 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
 /// the write, clear of every id elsewhere). `None` when there is nothing to
 /// write.
 fn prepare_fill(
-    doc: &mut Doc,
+    doc: &Doc,
     root: &ObjId,
     texts: &[&str],
 ) -> Result<Option<(qdoc::model::Containers, String, qdoc::model::IdGen)>, ActionError> {
@@ -148,7 +148,7 @@ fn prepare_fill(
         seed.extend_from_slice(text.as_bytes());
         seed.push(0);
     }
-    let cx = ui::tilo_resource::ActionCx::for_apply(doc, &seed, 0);
+    let cx = ui::tilo_resource::ActionCx::for_write(doc, &seed);
     Ok(Some((
         containers,
         empty.id.clone(),
