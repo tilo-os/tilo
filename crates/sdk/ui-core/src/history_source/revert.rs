@@ -140,16 +140,16 @@ pub fn run_bounds(
     doc: &mut AutoCommit,
     run: &ChangeRun,
 ) -> Result<(Vec<ChangeHash>, Vec<ChangeHash>, usize), RevertError> {
-    let versions = qdoc::history::versions(doc);
+    let versions = tilo_resource::history::versions(doc);
     let mut first = None;
     let mut last = None;
-    for v in &versions {
-        let id = entry_id_from_hash(&v.change_hash);
+    for (index, v) in versions.iter().enumerate() {
+        let id = entry_id_from_hash(&v.hash.to_string());
         if id == run.start && first.is_none() {
-            first = Some(v.index);
+            first = Some(index);
         }
         if id == run.end {
-            last = Some(v.index);
+            last = Some(index);
         }
     }
     let (Some(i0), Some(i1)) = (first, last) else {
@@ -164,9 +164,9 @@ pub fn run_bounds(
         Vec::new()
     } else {
         // `i0 != 0` in this branch, so this matches plain subtraction.
-        qdoc::history::prefix_heads(doc, i0.saturating_sub(1))
+        tilo_resource::history::prefix_heads(doc, i0.saturating_sub(1))
     };
-    let after = qdoc::history::prefix_heads(doc, i1);
+    let after = tilo_resource::history::prefix_heads(doc, i1);
     // `i1 >= i0` was just checked above, so the subtraction never
     // saturates and the result matches `i1 - i0 + 1` exactly.
     Ok((before, after, i1.saturating_sub(i0).saturating_add(1)))
@@ -204,7 +204,9 @@ fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
 fn first_index_after(doc: &mut AutoCommit, after: &[ChangeHash], total: usize) -> usize {
     let after_set: HashSet<ChangeHash> = after.iter().copied().collect();
     for i in 0..total {
-        let hs: HashSet<ChangeHash> = qdoc::history::prefix_heads(doc, i).into_iter().collect();
+        let hs: HashSet<ChangeHash> = tilo_resource::history::prefix_heads(doc, i)
+            .into_iter()
+            .collect();
         if hs == after_set {
             // `i < total` inside this loop, so this never saturates.
             return i.saturating_add(1);
@@ -258,7 +260,7 @@ fn later_writers(
     by: Option<&str>,
     created: &HashSet<ObjId>,
 ) -> HashMap<Slot, String> {
-    let versions = qdoc::history::versions(doc);
+    let versions = tilo_resource::history::versions(doc);
     let start_at = first_index_after(doc, after, versions.len());
     let mut out: HashMap<Slot, String> = HashMap::new();
     // `i` is more than an array subscript here -- `prefix_heads(doc, i)` and
@@ -275,16 +277,16 @@ fn later_writers(
         let Some(v) = versions.get(i).cloned() else {
             continue;
         };
-        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor_hex)) {
+        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor)) {
             continue;
         }
         let lo = if i == 0 {
             Vec::new()
         } else {
             // `i != 0` in this branch, so this matches plain subtraction.
-            qdoc::history::prefix_heads(doc, i.saturating_sub(1))
+            tilo_resource::history::prefix_heads(doc, i.saturating_sub(1))
         };
-        let hi = qdoc::history::prefix_heads(doc, i);
+        let hi = tilo_resource::history::prefix_heads(doc, i);
         let patches = doc.diff(&lo, &hi);
         // A change that only wrote a group or run marker did not touch content.
         if crate::history_source::groups::is_group_marker(&patches)
@@ -294,7 +296,7 @@ fn later_writers(
         }
         for p in &patches {
             if let Some(s) = slot_of(doc, p) {
-                out.entry(s).or_insert_with(|| v.actor_hex.clone());
+                out.entry(s).or_insert_with(|| v.actor.clone());
             }
             // Every created ancestor is protected: the inverse deletes the
             // *outermost* container, so protecting only the innermost object
@@ -302,7 +304,7 @@ fn later_writers(
             for o in std::iter::once(&p.obj).chain(p.path.iter().map(|(o, _)| o)) {
                 if created.contains(o) {
                     out.entry(Slot::Object(o.clone()))
-                        .or_insert_with(|| v.actor_hex.clone());
+                        .or_insert_with(|| v.actor.clone());
                 }
             }
         }
@@ -524,11 +526,11 @@ pub fn revert_run(
 /// maximal run of consecutive changes under that actor, stopping at the
 /// first change by anybody else.
 pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun> {
-    let versions = qdoc::history::versions(doc);
+    let versions = tilo_resource::history::versions(doc);
     // Schema genesis is written by a fixed actor nobody is, so inverting it
     // would take the document's containers with it.
-    let mine = |v: &qdoc::VersionMeta| {
-        !qdoc::history::is_schema_genesis(v) && v.actor_hex.eq_ignore_ascii_case(actor_hex)
+    let mine = |v: &tilo_resource::history::Version| {
+        !qdoc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
     };
     let last = versions.iter().rposition(mine)?;
     let mut first = last;
@@ -542,8 +544,8 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
         }
         first = prev;
     }
-    let start_hash = &versions.get(first)?.change_hash;
-    let end_hash = &versions.get(last)?.change_hash;
+    let start_hash = &versions.get(first)?.hash.to_string();
+    let end_hash = &versions.get(last)?.hash.to_string();
     Some(ChangeRun::new(
         entry_id_from_hash(start_hash),
         entry_id_from_hash(end_hash),

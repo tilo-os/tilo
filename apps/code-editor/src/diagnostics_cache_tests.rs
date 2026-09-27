@@ -190,7 +190,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     // The transaction's owner discards its empty transaction. Diagnostics
     // must not have committed it first and poisoned the actor table.
     assert_eq!(doc.rollback(), 0);
-    // Match the owner's safe empty-transaction cleanup in qdoc::history.
+    // Match the owner's safe empty-transaction cleanup in tilo_resource::history.
     doc.reset_diff_cursor();
     doc.set_actor(ActorId::from(vec![0x20]));
     doc.put(ROOT, "body", "edited").unwrap();

@@ -242,6 +242,21 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("resource reads")
     }
 
+    /// Read the stored document itself — the parts of a large resource its
+    /// state does not hold until a view demands them.
+    ///
+    /// # Panics
+    /// Panics when the record is not open, which the API does not allow.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test harness surfaces a closed record loudly"
+    )]
+    pub fn read_document<T>(&self, read: impl FnOnce(&tilo_resource::Doc) -> T) -> T {
+        self.records
+            .read(&self.checkout.id, read)
+            .expect("record is open")
+    }
+
     /// The record's version history.
     pub fn versions(&self) -> Vec<tilo_resource::history::Version> {
         self.records
@@ -259,6 +274,23 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns the host's refusal of a scenario action.
     pub fn stage(&mut self, scenario: Option<&str>) -> Result<(), LaunchError> {
         super::stage::stage::<A>(self.harness(), scenario)
+    }
+
+    /// The version at `heads` as History mode previews it: the app's own
+    /// view, read-only, over the document as it was then.
+    ///
+    /// # Errors
+    /// Returns why that version cannot be read or drawn.
+    pub fn past_version(
+        &self,
+        heads: &[ui_core::automerge::ChangeHash],
+    ) -> Result<super::preview::PastVersion<A::Resource>, String> {
+        let past = self
+            .records
+            .read(&self.checkout.id, |doc| doc.clone().fork_at(heads))
+            .ok_or("the record is not open")?
+            .map_err(|error| error.to_string())?;
+        super::preview::render_past::<A>(past, A::SHOT_VIEWPORT)
     }
 
     /// Undo the local participant's last action, as Ctrl+Z does.

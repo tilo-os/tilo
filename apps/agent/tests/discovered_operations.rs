@@ -307,11 +307,12 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
         // The refusal itself is still an attributed agent-authored document edit.
         let genesis = qdoc::model::schema_genesis_actor_hex();
         let seed = hex::encode("quinten");
-        let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
-            .into_iter()
-            .map(|v| v.actor_hex)
-            .filter(|a| *a != genesis && *a != seed)
-            .collect();
+        let actors: std::collections::HashSet<String> =
+            tilo_resource::history::versions(&mut replica)
+                .into_iter()
+                .map(|v| v.actor)
+                .filter(|a| *a != genesis && *a != seed)
+                .collect();
         assert_eq!(
             actors,
             std::collections::HashSet::from([hex::encode("Scribe")]),
@@ -451,11 +452,12 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         // the agent's local acknowledgement edit may retain its display actor.
         let genesis = qdoc::model::schema_genesis_actor_hex();
         let seed = hex::encode("quinten");
-        let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
-            .into_iter()
-            .map(|v| v.actor_hex)
-            .filter(|a| *a != genesis && *a != seed)
-            .collect();
+        let actors: std::collections::HashSet<String> =
+            tilo_resource::history::versions(&mut replica)
+                .into_iter()
+                .map(|v| v.actor)
+                .filter(|a| *a != genesis && *a != seed)
+                .collect();
         let invocation_actor = invocation_actor.expect("the app received a broker invocation");
         assert!(
             actors.contains(&hex::encode(&invocation_actor)),

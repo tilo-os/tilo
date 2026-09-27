@@ -580,8 +580,8 @@ impl Document {
     }
 
     /// Timeline of authored changes (oldest first).
-    pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
-        crate::history::versions(&mut self.doc)
+    pub fn versions(&mut self) -> Vec<tilo_resource::history::Version> {
+        tilo_resource::history::versions(&mut self.doc)
     }
 
     /// Reconstruct the document as of `version` (time-travel).
@@ -593,7 +593,7 @@ impl Document {
         &mut self,
         version: usize,
     ) -> Result<crate::snapshot::DocSnapshot, DocError> {
-        crate::history::materialize_at(&mut self.doc, version)
+        crate::snapshot::at(&mut self.doc, version)
     }
 
     /// Structural diff between two points on this document's own timeline (`from` → `to`, indices
@@ -1012,6 +1012,37 @@ mod tests {
             b.materialize(),
             "replicas converge: {what}"
         );
+    }
+
+    #[test]
+    fn action_minted_ids_are_replay_stable_and_unique_per_action() {
+        let mut d = Document::new();
+        let a = d.insert_block(None, "paragraph");
+        let c = d.c.clone();
+        let mint = |doc: &mut automerge::AutoCommit, payload: &[u8]| {
+            let mut replica = doc.fork();
+            replica.set_actor(doc.get_actor().clone());
+            let cx = tilo_resource::ActionCx::for_apply(&mut replica, payload, 0);
+            let mut ids = crate::model::IdGen::for_action(cx);
+            let mut dm = DocMut {
+                doc: &mut replica,
+                c: &c,
+                ids: &mut ids,
+            };
+            [
+                dm.insert_block(Some(&a), "paragraph"),
+                dm.insert_block(Some(&a), "paragraph"),
+            ]
+        };
+        let first = mint(&mut d.doc, b"split");
+        assert_eq!(
+            first,
+            mint(&mut d.doc, b"split"),
+            "replaying mints the same ids"
+        );
+        assert_ne!(first[0], first[1]);
+        assert_ne!(first, mint(&mut d.doc, b"another action"));
+        assert!(!first.contains(&a));
     }
 
     /// Two replicas edit the same document concurrently; after merging both
