@@ -383,32 +383,37 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     provider,
                     address: tilo_actions::ActionAddress::new(a.resource, a.action),
                 };
-                let confirmation = self.confirmation(&target, &a.revision).await?;
-                let request = InvokeRequest {
+                let mut request = InvokeRequest {
                     invocation,
                     target,
-                    // An empty object is the nullary call: some actions
-                    // (opening an app) read any argument as their input.
-                    argument: if a.arguments.is_empty() {
-                        InvokeArgument::None
-                    } else {
-                        InvokeArgument::Json(a.arguments)
-                    },
+                    argument: InvokeArgument::Json(a.arguments),
                     context: self.context(),
-                    confirmation,
+                    // The MCP client admitted this call under its own
+                    // allow/deny policy; that decision is the confirmation.
+                    confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
                     revision: Some(a.revision),
                 };
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    self.host().invoke(&self.caller(), request),
-                )
-                .await
-                .map_err(|_| {
-                    "TimedOut; admission may be unknown; retry with the same invocation_id"
-                        .to_string()
-                })?
-                .ok_or_else(|| "Unavailable".to_string())?
-                .map_err(|error| error.to_string())?;
+                if let Err(error) = self.start(request.clone()).await {
+                    if error
+                        != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string()
+                    {
+                        return Err(error);
+                    }
+                    // Only an exact-phrase contract refuses the plain
+                    // confirmation; answer with the phrase it names.
+                    let revision = request.revision.clone().unwrap_or_default();
+                    match self
+                        .contract_confirmation(&request.target, &revision)
+                        .await?
+                    {
+                        tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                            request.confirmation =
+                                Some(tilo_actions::remote::Confirmation::Phrase(phrase));
+                            self.start(request).await?;
+                        }
+                        _ => return Err(error),
+                    }
+                }
                 self.status(invocation)
             }
             "tilo_status" => {
@@ -430,26 +435,37 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     const fn host(&self) -> &H {
         &self.host
     }
-    /// The evidence the target's current contract asks for. The MCP client
-    /// admitted this call under its own allow/deny policy; that decision is
-    /// the confirmation, so the host never refuses on the contract alone.
-    async fn confirmation(
+    /// Start one invocation, reporting the host's refusal verbatim.
+    async fn start(&self, request: InvokeRequest) -> Result<(), String> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.host().invoke(&self.caller(), request),
+        )
+        .await
+        .map_err(|_| {
+            "TimedOut; admission may be unknown; retry with the same invocation_id".to_string()
+        })?
+        .ok_or_else(|| "Unavailable".to_string())?
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+    /// The confirmation the target's current contract asks for.
+    async fn contract_confirmation(
         &self,
         target: &RemoteActionTarget,
         revision: &str,
-    ) -> Result<Option<tilo_actions::remote::Confirmation>, String> {
+    ) -> Result<tilo_actions::ConfirmationPolicy, String> {
         let page = self
             .ask(CatalogueQuery::resolve(target, revision.to_owned()))
             .await?;
         if page.stale_cursor {
             return Err("StaleRevision".into());
         }
-        let action = page
-            .rows
+        page.rows
             .first()
             .and_then(|row| row.action.as_ref())
-            .ok_or("NotFound")?;
-        Ok(evidence_for(&action.contract.advertised_confirmation()))
+            .map(|action| action.contract.advertised_confirmation())
+            .ok_or_else(|| "NotFound".into())
     }
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.run.as_ref().map(|run| tilo_actions::ActionContext {
@@ -536,19 +552,6 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 }
 fn empty_object() -> Value {
     json!({})
-}
-fn evidence_for(
-    policy: &tilo_actions::ConfirmationPolicy,
-) -> Option<tilo_actions::remote::Confirmation> {
-    match policy {
-        tilo_actions::ConfirmationPolicy::None => None,
-        tilo_actions::ConfirmationPolicy::Confirm => {
-            Some(tilo_actions::remote::Confirmation::Confirmed)
-        }
-        tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-            Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
-        }
-    }
 }
 fn page_json(page: &CataloguePage) -> Value {
     json!({"revision":page.revision,"rows":page.rows.iter().map(row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
