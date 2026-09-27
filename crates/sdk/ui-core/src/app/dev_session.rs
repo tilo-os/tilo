@@ -176,6 +176,7 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
 ///
 /// Returns whether a catalog was installed. A missing directory leaves the
 /// translations this process already has.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn reload_dev_locale_catalogs_from(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;

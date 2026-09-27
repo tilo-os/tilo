@@ -2002,6 +2002,7 @@ impl App {
     ///
     /// Returns whether the running root accepted it. A root that is not the
     /// framework host leaves the current view in place.
+    #[cfg(feature = "native")]
     pub(crate) fn install_reloaded_view(
         &mut self,
         root: Box<dyn crate::widget::AppWidget>,
