@@ -28,3 +28,10 @@ chat-emoji-search = Search emoji
 chat-emoji-recent = Recently used
 chat-emoji-results = Results
 chat-emoji-no-results = No emoji found
+chat-emoji-insert = Insert emoji
+chat-emoji-group = Emoji group
+# A picker cell; the name is the emoji's name in the desktop's language.
+chat-emoji-choose = Choose { $name }
+# A reaction chip under a message, which adds or removes the user's own.
+chat-reaction-add = Add { $emoji } reaction
+chat-reaction-remove = Remove { $emoji } reaction

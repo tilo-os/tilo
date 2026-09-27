@@ -366,6 +366,14 @@ pub enum RichTextAction {
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks { blocks: Vec<String> },
+    /// Move body paragraphs `blocks`, in the order given, to directly after
+    /// `after`, or to the start of the body when `after` is `None`: a
+    /// dragged paragraph, or a run of them. Each keeps its id, text and
+    /// style.
+    MoveBlocks {
+        blocks: Vec<String>,
+        after: Option<String>,
+    },
     /// Replace the whole document body with `markdown` (re-import a template /
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
@@ -436,7 +444,8 @@ impl RichTextAction {
             Self::InsertPageBreak { .. }
             | Self::SplitBlock { .. }
             | Self::InsertField { .. }
-            | Self::GenerateToc { .. } => ActionDomain::Structure,
+            | Self::GenerateToc { .. }
+            | Self::MoveBlocks { .. } => ActionDomain::Structure,
             Self::AcceptChanges { .. }
             | Self::RejectChanges { .. }
             | Self::ResolveComment { .. }
@@ -994,6 +1003,12 @@ impl<'a> ActionValidator<'a> {
             } => {
                 self.block_len(*region, block).is_some_and(|len| *at <= len)
                     && field == qdoc::schema::FIELD_PAGE_NUMBER
+            }
+            RichTextAction::MoveBlocks { blocks, after } => {
+                self.unique_existing(RegionKind::Body, blocks)
+                    && after.as_ref().is_none_or(|after| {
+                        self.block_len(RegionKind::Body, after).is_some() && !blocks.contains(after)
+                    })
             }
             RichTextAction::GenerateToc { entries } => {
                 !entries.is_empty()
@@ -2087,6 +2102,13 @@ fn apply_structure_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             field: _,
         } => dm.insert_page_number_field(region.to_region(), block, *at),
         RichTextAction::GenerateToc { entries } => apply_generate_toc(dm, entries),
+        RichTextAction::MoveBlocks { blocks, after } => {
+            let mut previous = after.clone();
+            for block in blocks {
+                dm.move_block(block, previous.as_deref());
+                previous = Some(block.clone());
+            }
+        }
         _ => {}
     }
 }
@@ -2562,6 +2584,11 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
 
 pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
     RichTextAction::RemoveBlocks { blocks }
+}
+
+/// Move `blocks` to directly after `after` (the start of the body for `None`).
+pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
+    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.
