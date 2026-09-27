@@ -2465,7 +2465,7 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
 )]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("tilo-session/xwayland");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let authority = loop {
         let authority = std::fs::read_dir(&bridge).ok().and_then(|entries| {
             entries

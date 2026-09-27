@@ -164,14 +164,11 @@ impl FakeMenu {
     }
 }
 
-/// How long one step of the transcript may take. A D-Bus call has no reply
-/// timeout of its own, so without this a lost reply hangs the test until the
-/// harness kills it, naming nothing.
-const STEP_CAP: Duration = Duration::from_secs(60);
 /// How long the whole transcript, runtime teardown included, may take. It
-/// also catches a step blocked outside the runtime, where no step timer can
-/// fire.
-const TRANSCRIPT_CAP: Duration = Duration::from_secs(180);
+/// catches a step blocked outside the runtime, where no step timer can fire.
+fn transcript_cap() -> Duration {
+    tilo_test_env::hang_bound().saturating_mul(2)
+}
 
 /// What the transcript is waiting for, for the failure that names it.
 static PENDING: Mutex<&str> = Mutex::new("starting the runtime");
@@ -183,10 +180,10 @@ fn pending(what: &'static str) {
 }
 
 async fn step<T>(what: &'static str, future: impl std::future::Future<Output = T>) -> T {
+    // A D-Bus call has no reply timeout of its own, so without this bound a
+    // lost reply hangs the test until the harness kills it, naming nothing.
     pending(what);
-    tokio::time::timeout(STEP_CAP, future)
-        .await
-        .unwrap_or_else(|_| panic!("still waiting for {what} after {} s", STEP_CAP.as_secs()))
+    tilo_test_env::within(what, future).await
 }
 
 async fn eventually(what: &'static str, mut check: impl FnMut() -> bool) {
@@ -211,10 +208,10 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
             runtime.block_on(transcript());
         }));
         pending("the runtime to shut down");
-        runtime.shutdown_timeout(STEP_CAP);
+        runtime.shutdown_timeout(tilo_test_env::hang_bound());
         let _ = done.send(outcome);
     });
-    match finished.recv_timeout(TRANSCRIPT_CAP) {
+    match finished.recv_timeout(transcript_cap()) {
         Ok(Ok(())) => {}
         Ok(Err(panic)) => std::panic::resume_unwind(panic),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -222,7 +219,7 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
             "the tray transcript is stuck after {} s, still waiting for {}",
-            TRANSCRIPT_CAP.as_secs(),
+            transcript_cap().as_secs(),
             PENDING
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

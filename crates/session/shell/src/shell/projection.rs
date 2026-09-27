@@ -449,7 +449,7 @@ impl ProjectionController {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[derive(Default)]
     struct FakeBackend {
@@ -490,9 +490,7 @@ mod tests {
     }
 
     fn settle(controller: &mut ProjectionController) {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         while !controller.poll() && Instant::now() < deadline {
             std::thread::yield_now();
         }

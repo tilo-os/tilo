@@ -5547,9 +5547,10 @@ mod tests {
                 "master release must not run while a present still owns the gate"
             );
             drop(in_flight);
-            released_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .expect("master release proceeds once the present retires");
+            tilo_test_env::recv(
+                "master release proceeds once the present retires",
+                &released_rx,
+            );
             callback.join().expect("callback must finish");
         }
     }

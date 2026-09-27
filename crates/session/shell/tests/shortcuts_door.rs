@@ -377,7 +377,7 @@ impl FixtureApp {
 }
 
 fn answer<T>(pending: Pending<T>) -> T {
-    match pending.wait_timeout(Duration::from_secs(5)) {
+    match pending.wait_timeout(tilo_test_env::hang_bound()) {
         Ok(Some(value)) => value,
         _ => panic!("the broker did not answer"),
     }

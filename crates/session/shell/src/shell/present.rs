@@ -431,19 +431,6 @@ mod tests {
     // gate, so locals drop in reverse order and the render thread is released before `shutdown`
     // waits on it — the other order still works but pays `SHUTDOWN_GRACE` on every teardown instead of exercising the clean path.
 
-    fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .unwrap_or_else(std::time::Instant::now);
-        while std::time::Instant::now() < deadline {
-            if cond() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        panic!("timed out waiting for {what}");
-    }
-
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -466,7 +453,7 @@ mod tests {
                 dpms: Arc::new(Mutex::new(Vec::new())),
             }));
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            wait_until(|| pipe.presented() == 1, "the frame to be presented");
+            tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
             assert_eq!(seen.load(Ordering::Acquire), 1);
             pipe.shutdown();
         }
@@ -491,7 +478,7 @@ mod tests {
             );
             assert_eq!(pipe.presented(), 0, "the present is still blocked");
             drop(held);
-            wait_until(|| pipe.presented() == 1, "the released frame");
+            tilo_test_env::wait_until("the released frame", || pipe.presented() == 1);
             pipe.shutdown();
         }
 
@@ -511,7 +498,7 @@ mod tests {
                 )
                 .is_some()
             );
-            wait_until(|| pipe.presented() == 1, "the annotated frame to retire");
+            tilo_test_env::wait_until("the annotated frame to retire", || pipe.presented() == 1);
             assert_eq!(seen.load(Ordering::Acquire), 1);
             pipe.shutdown();
         }
@@ -530,7 +517,7 @@ mod tests {
             }));
 
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            wait_until(|| pipe.presented() == 1, "the older desktop frame");
+            tilo_test_env::wait_until("the older desktop frame", || pipe.presented() == 1);
 
             let held = gate.lock().expect("hold the lock frame in presentation");
             assert!(pipe.submit(Scene::new(), OutputId(0)));
@@ -542,10 +529,9 @@ mod tests {
                 "retiring the older desktop frame must not acknowledge lock frame {lock_frame}"
             );
             drop(held);
-            wait_until(
-                || pipe.presented() >= lock_frame,
-                "the specific lock frame to retire",
-            );
+            tilo_test_env::wait_until("the specific lock frame to retire", || {
+                pipe.presented() >= lock_frame
+            });
             pipe.shutdown();
         }
 
@@ -557,10 +543,9 @@ mod tests {
             let mut pipe = spawn_with_retire(Box::new(PanickingPresenter));
             assert!(pipe.submit(Scene::new(), OutputId(0)));
             let serial = pipe.submitted();
-            wait_until(
-                || pipe.is_finished(),
-                "the presenter panic to terminate its thread",
-            );
+            tilo_test_env::wait_until("the presenter panic to terminate its thread", || {
+                pipe.is_finished()
+            });
             assert!(pipe.is_finished());
             assert!(
                 pipe.presented() < serial,
@@ -614,10 +599,9 @@ mod tests {
                 "the refused ticks must be counted so the stats can attribute them"
             );
             drop(held);
-            wait_until(
-                || usize::try_from(pipe.presented()).is_ok_and(|presented| presented == accepted),
-                "the queued frames to drain",
-            );
+            tilo_test_env::wait_until("the queued frames to drain", || {
+                usize::try_from(pipe.presented()).is_ok_and(|presented| presented == accepted)
+            });
             assert!(
                 pipe.has_capacity(),
                 "capacity must come back once the queue drains"
@@ -647,10 +631,9 @@ mod tests {
             assert!(resizes.lock().expect("resizes").is_empty());
             assert!(dpms.lock().expect("dpms").is_empty());
             drop(held);
-            wait_until(
-                || dpms.lock().expect("dpms").len() == 1,
-                "the dpms message to be handled after the frame",
-            );
+            tilo_test_env::wait_until("the dpms message to be handled after the frame", || {
+                dpms.lock().expect("dpms").len() == 1
+            });
             assert_eq!(seen.load(Ordering::Acquire), 1, "the frame ran first");
             assert_eq!(*resizes.lock().expect("resizes"), vec![(800, 600)]);
             assert_eq!(*dpms.lock().expect("dpms"), vec![false]);
@@ -698,13 +681,10 @@ mod tests {
                  spurious wakeup would spin it against a still-full pipe"
             );
             drop(held);
-            wait_until(
-                || {
-                    usize::try_from(wakeups.load(Ordering::Acquire))
-                        .is_ok_and(|wakeups| wakeups == accepted)
-                },
-                "one wakeup per retired frame",
-            );
+            tilo_test_env::wait_until("one wakeup per retired frame", || {
+                usize::try_from(wakeups.load(Ordering::Acquire))
+                    .is_ok_and(|wakeups| wakeups == accepted)
+            });
             assert!(
                 pipe.has_capacity(),
                 "the decrement happens-before the signal, so a loop woken by it \
