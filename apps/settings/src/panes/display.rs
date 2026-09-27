@@ -209,11 +209,25 @@ pub struct DisplayOutput {
     pub hdr_unavailable_reason: Option<String>,
     pub vrr: bool,
     pub sink_vrr: bool,
-    pub vrr_unavailable_reason: Option<String>,
+    pub vrr_unavailable_reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
     pub color_profiles: Vec<String>,
     pub color_profile_labels: BTreeMap<String, String>,
     /// EDID identity; decides which saved arrangement applies.
     pub monitor: Option<MonitorIdentity>,
+}
+
+/// The Fluent key explaining why variable refresh rate cannot be used.
+fn adaptive_sync_unavailable_key(
+    sink_vrr: bool,
+    reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
+) -> &'static str {
+    use settings_store::hardware::AdaptiveSyncUnavailable;
+    match reason {
+        Some(AdaptiveSyncUnavailable::DriverUnsupported) => "display-vrr-driver-unsupported",
+        Some(AdaptiveSyncUnavailable::DriverRejected) => "display-vrr-driver-rejected",
+        None if sink_vrr => "display-vrr-driver-unsupported",
+        None => "display-vrr-unsupported",
+    }
 }
 
 /// Map a raw DRM connector directory name + its `status` file contents to a
@@ -1270,8 +1284,9 @@ impl DisplayPane {
             ));
         }
         if output.vrr {
-            out_rows.push(setting_row(
-                "Variable refresh rate",
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t("display-vrr-description"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.vrr", output.connector),
@@ -1289,15 +1304,11 @@ impl DisplayPane {
             ));
         } else {
             out_rows.push(value_row(
-                "Variable refresh rate",
-                output
-                    .vrr_unavailable_reason
-                    .as_deref()
-                    .unwrap_or(if output.sink_vrr {
-                        "Display support detected; compositor output support unavailable"
-                    } else {
-                        "Not supported by this display"
-                    }),
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t(adaptive_sync_unavailable_key(
+                    output.sink_vrr,
+                    output.vrr_unavailable_reason,
+                )),
             ));
         }
         if output.color_profiles.is_empty() {

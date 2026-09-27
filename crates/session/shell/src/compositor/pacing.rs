@@ -8,6 +8,11 @@
 //! [`FrameClock::note_presented`] advances deadlines in whole intervals from the *previous*
 //! deadline rather than resetting to "now", so the series stays phase-locked to the display
 //! instead of drifting frame by frame; a long-running frame skips missed deadlines rather than queueing a burst of zero-length budgets to catch up.
+//!
+//! With adaptive sync engaged ([`FrameClock::set_adaptive`]) the display follows the content
+//! instead: there is no grid to stay locked to, only the panel's shortest frame time. A frame is
+//! due one interval after the previous one was shown, and content that arrives later than that is
+//! presented at once rather than held for the next fixed deadline.
 
 use std::time::{Duration, Instant};
 
@@ -113,6 +118,8 @@ pub struct FrameClock {
     skipped: u64,
     /// Frames presented through [`Self::note_presented`].
     presented: u64,
+    /// Adaptive sync is engaged: pace by content readiness, not a fixed grid.
+    adaptive: bool,
 }
 
 impl FrameClock {
@@ -123,6 +130,7 @@ impl FrameClock {
             next_deadline: now,
             skipped: 0,
             presented: 0,
+            adaptive: false,
         }
     }
 
@@ -154,6 +162,19 @@ impl FrameClock {
         }
         self.interval = interval;
         true
+    }
+
+    /// Follow the content (adaptive sync on) or the fixed refresh grid. The
+    /// pending deadline stays put either way, so the switch neither drops nor
+    /// doubles a frame. Returns `true` when the mode changed.
+    pub fn set_adaptive(&mut self, adaptive: bool) -> bool {
+        let changed = self.adaptive != adaptive;
+        self.adaptive = adaptive;
+        changed
+    }
+
+    pub fn is_adaptive(&self) -> bool {
+        self.adaptive
     }
 
     pub fn due(&self, now: Instant) -> bool {
@@ -188,6 +209,14 @@ impl FrameClock {
     /// the display rather than drifting by however long each frame took. Deadlines already in the past are stepped over (counted in [`Self::skipped_deadlines`]) instead of producing a backlog of zero-length budgets that would spin the loop.
     pub fn note_presented(&mut self, at: Instant) {
         self.presented = self.presented.saturating_add(1);
+        if self.adaptive {
+            // The panel's shortest frame time from this frame is the only
+            // limit; a later frame is shown whenever its content is ready.
+            if let Some(next) = at.checked_add(self.interval) {
+                self.next_deadline = next;
+            }
+            return;
+        }
         let Some(mut next) = self.next_deadline.checked_add(self.interval) else {
             // Past the platform's representable `Instant` range — essentially unreachable
             // outside a multi-hundred-year uptime — so the series stops advancing rather than
@@ -438,6 +467,43 @@ mod tests {
                 pending + Duration::from_micros(6_944)
             );
         }
+    }
+
+    #[test]
+    fn adaptive_pacing_follows_content_readiness() {
+        let t0 = Instant::now();
+        let interval = Duration::from_millis(7);
+        let mut clock = FrameClock::new(interval, t0);
+        assert!(clock.set_adaptive(true));
+        assert!(!clock.set_adaptive(true), "no change reported twice");
+        assert!(clock.is_adaptive());
+
+        // Phase `the_panel_minimum_frame_time_still_gates_a_frame`.
+        clock.note_presented(t0);
+        assert!(!clock.due(t0 + Duration::from_millis(5)));
+        assert!(clock.due(t0 + interval));
+
+        // Phase `late_content_is_shown_at_once_and_resets_the_limit_from_there`.
+        let late = t0 + Duration::from_millis(19);
+        assert!(clock.due(late));
+        clock.note_presented(late);
+        assert_eq!(
+            clock.next_deadline(),
+            late + interval,
+            "no fixed grid to snap back to"
+        );
+        assert_eq!(
+            clock.skipped_deadlines(),
+            0,
+            "nothing is skipped in adaptive mode"
+        );
+
+        // Phase `returning_to_the_fixed_grid_keeps_the_pending_deadline`.
+        let pending = clock.next_deadline();
+        assert!(clock.set_adaptive(false));
+        assert_eq!(clock.next_deadline(), pending);
+        clock.note_presented(pending + Duration::from_millis(1));
+        assert_eq!(clock.next_deadline(), pending + interval);
     }
 
     #[test]
