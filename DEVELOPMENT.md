@@ -1115,9 +1115,10 @@ takes a narrow `#[allow]` whose reason says why that is safe there.
 ### Running tests like CI
 
 CI runs tests with `cargo nextest run --profile ci`: every test in its own
-process, one retry, a JUnit report in `target/nextest/ci/junit.xml`. The job
-summary lists every test that only passed on retry (FLAKY) or was retried
-before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
+process, no retry, a JUnit report in `target/nextest/ci/junit.xml`. A failure
+on the first run fails the job. The summary still lists slow tests, and any
+case that only passed on a retry if a profile turns retries back on; treat
+that as a bug, not as noise. Each run goes
 through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
 which sets `LANG=C.UTF-8` and
 `TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
