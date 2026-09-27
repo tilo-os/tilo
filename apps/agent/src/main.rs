@@ -130,10 +130,7 @@ fn triage(cli: &Cli, place: TriageIn) -> anyhow::Result<()> {
         })
     };
     let forge: Box<dyn triage::forge::Forge> = match &cli.forge_account {
-        Some(account) => Box::new(triage::forge::Custody::new(
-            account_custody::Custodian::live(),
-            accounts::AccountId::new(account.clone()),
-        )),
+        Some(account) => Box::new(triage::forge::AccountService::from_env(account.clone())),
         None => Box::new(triage::forge::Unconnected),
     };
     let mut agent = participant::Participant::connect(
@@ -147,6 +144,7 @@ fn triage(cli: &Cli, place: TriageIn) -> anyhow::Result<()> {
             endpoint: cli.endpoint.clone(),
             identity: None,
             records,
+            intents: triage::forge::Intents::for_room(&cli.workspace.to_string()),
         },
         think,
         forge,

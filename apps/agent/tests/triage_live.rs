@@ -20,9 +20,9 @@
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use account_custody::forge::fake::{FakeForge, connect};
 use ed25519_dalek::{Signer as _, SigningKey};
 use shell::shell::remote_actions::BrokerActionHost;
 use shell::shell::state::{RoomId, Workspace, WorkspaceId, WorkspaceTree};
@@ -37,6 +37,7 @@ use tilo_agent::triage::{self, forge::Forge, think::NoModel};
 const ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x7a1a_9e00_0000_4c0d_9a11_0000_0000_0077);
 const APP: &str = "so.tilo.chat";
 const AGENT: &str = "triage";
+const FORGE_ACCOUNT: &str = "tilo-forge";
 
 struct Person {
     root: SigningKey,
@@ -124,24 +125,63 @@ impl Person {
     }
 }
 
-/// A forge that keeps what it was asked to file.
-#[derive(Clone, Default)]
-struct Kept(Arc<Mutex<Vec<chat::feedback::IssueDraft>>>);
+/// The team's forge: a fake Forgejo repository behind the real accounts
+/// service, with the forge account and its token in custody.
+struct Filing {
+    forge: FakeForge,
+    custodian: account_custody::Custodian,
+}
 
-impl Forge for Kept {
+impl Filing {
+    fn new(root: &Path) -> Self {
+        let forge = FakeForge::start("team-forge-token");
+        connect(root, FORGE_ACCOUNT, &forge);
+        Self {
+            forge,
+            custodian: account_custody::Custodian::for_root(Some(root.to_path_buf())),
+        }
+    }
+
+    /// The agent's view of the forge: the accounts service, reached as the
+    /// launcher would connect it for tilo-agent.
+    fn service(&self) -> triage::forge::AccountService {
+        let custodian = self.custodian.clone();
+        triage::forge::AccountService::with_connector(
+            FORGE_ACCOUNT,
+            Box::new(move || {
+                let (mut app, service) = UnixStream::pair().ok()?;
+                tilo_account_service::HANDOFF_FRAMING
+                    .write(
+                        &mut app,
+                        &tilo_account_service::handoff("so.tilo.agent").ok()?,
+                    )
+                    .ok()?;
+                let custodian = custodian.clone();
+                std::thread::spawn(move || {
+                    account_custody::service::serve_client(&custodian, service)
+                });
+                Some(tilo_account_service::Client::from_stream(app))
+            }),
+        )
+    }
+}
+
+/// A forge whose filing reaches the forge and whose answer is lost, as when
+/// the agent stops between filing and saying so.
+struct LostAnswer(triage::forge::AccountService);
+
+impl Forge for LostAnswer {
+    fn find(&self, marker: &str) -> Result<Option<triage::forge::FiledIssue>, String> {
+        self.0.find(marker)
+    }
+
     fn file(
         &self,
         draft: &chat::feedback::IssueDraft,
-    ) -> Result<account_custody::forge::FiledIssue, String> {
-        let number = {
-            let mut kept = self.0.lock().unwrap();
-            kept.push(draft.clone());
-            kept.len()
-        };
-        Ok(account_custody::forge::FiledIssue {
-            number: u64::try_from(number).unwrap(),
-            url: format!("https://forge.example/tilo/tilo/issues/{number}"),
-        })
+        marker: &str,
+    ) -> Result<triage::forge::FiledIssue, String> {
+        self.0.file(draft, marker)?;
+        Err("the agent stopped before it heard the answer".into())
     }
 }
 
@@ -408,24 +448,28 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
     let team_chat = chat_provider(&host, &team, &[], &mut room);
     let reporter_chat = chat_provider(&host, &reporter, &[&team_chat], &mut room);
 
-    // The agent joins as its own Chat participant.
-    let forge = Kept::default();
-    let agent = Participant::connect(
-        participant::Config {
-            room: ROOM,
-            name: AGENT.into(),
-            scope: triage::Scope::community(),
-            endpoint: Some(socket),
-            identity: Some(agent_device.identity()),
-            records: ui::record::RecordOwners::new(dir.path().join("agent"))
-                .open(APP, &ROOM.to_string())
-                .expect("the agent's record store"),
-        },
-        Box::new(NoModel),
-        Box::new(forge.clone()),
-    )
-    .expect("the agent joins");
-    room.agent = Some(agent);
+    // The agent joins as its own Chat participant. Everything it keeps
+    // lives under `agent/`, so a restart finds it again.
+    let filing = Filing::new(&dir.path().join("accounts"));
+    let join = |forge: Box<dyn Forge>| {
+        Participant::connect(
+            participant::Config {
+                room: ROOM,
+                name: AGENT.into(),
+                scope: triage::Scope::community(),
+                endpoint: Some(socket.clone()),
+                identity: Some(agent_device.identity()),
+                records: ui::record::RecordOwners::new(dir.path().join("agent"))
+                    .open(APP, &ROOM.to_string())
+                    .expect("the agent's record store"),
+                intents: triage::forge::Intents::at(dir.path().join("agent/intents.json")),
+            },
+            Box::new(NoModel),
+            forge,
+        )
+        .expect("the agent joins")
+    };
+    room.agent = Some(join(Box::new(LostAnswer(filing.service()))));
     let feedback = tilo_reference::FEEDBACK_CHANNEL;
     succeeded(
         invoke(
@@ -515,7 +559,7 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
     room.until("the team to follow the draft", |room| {
         team_sees(room, "drafted a forge issue")
     });
-    assert!(forge.0.lock().unwrap().is_empty(), "nothing is filed yet");
+    assert!(filing.forge.issues().is_empty(), "nothing is filed yet");
 
     // The same problem again: a reply linking the first report.
     succeeded(
@@ -599,7 +643,7 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
     for _ in 0..40 {
         room.step();
     }
-    assert!(forge.0.lock().unwrap().is_empty(), "no approval, no issue");
+    assert!(filing.forge.issues().is_empty(), "no approval, no issue");
     succeeded(
         invoke(
             &host,
@@ -612,19 +656,41 @@ fn the_triage_agent_links_a_repeat_files_only_what_an_editor_approved_and_stops_
         ),
         "the Editor approving",
     );
-    room.until("the agent to file and say so", |room| {
+    // The agent files, and stops before it can say so in the thread.
+    room.until("the agent to file", |_| !filing.forge.issues().is_empty());
+    for _ in 0..20 {
+        room.step();
+    }
+    let said_filed = |room: &Room| {
         agent_replies(room, "m_first").iter().any(|m| {
             m.reference
                 .as_ref()
                 .is_some_and(|r| r.kind == triage::ISSUE_KIND)
         })
+    };
+    assert!(!said_filed(&room), "the answer was lost");
+    room.agent = None;
+    for _ in 0..20 {
+        room.step();
+    }
+
+    // Restarted, it finds its intent and the issue it filed, and only says
+    // so: the forge has exactly the approved draft, once.
+    room.agent = Some(join(Box::new(filing.service())));
+    room.until("the restarted agent to say where it filed", |room| {
+        said_filed(room)
     });
-    let filed = forge.0.lock().unwrap().clone();
-    assert_eq!(filed, vec![draft], "exactly the approved draft, once");
     for _ in 0..40 {
         room.step();
     }
-    assert_eq!(forge.0.lock().unwrap().len(), 1, "filed once");
+    let issues = filing.forge.issues();
+    assert_eq!(issues.len(), 1, "filed once across the restart: {issues:?}");
+    assert_eq!(issues[0].title, draft.title);
+    assert!(issues[0].body.starts_with(draft.body.trim_end()));
+    assert!(
+        !issues[0].body.contains("ada.lovelace@example.com"),
+        "the filed issue carries nothing personal"
+    );
 
     // The team removes the agent. It hears so and stops.
     let revoked = tree

@@ -21,7 +21,7 @@ use tilo_reference::ResourceRef;
 use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
 use ui::permissions::Verb;
 
-use super::forge::Forge;
+use super::forge::{self, FiledIssue, Forge, Intents};
 use super::think::Think;
 use super::{ISSUE_KIND, Move, Scope, Triage};
 
@@ -50,6 +50,8 @@ pub struct Config {
     pub identity: Option<CertifiedEndpointIdentity>,
     /// Where the agent keeps its own comment records.
     pub records: ui::record::RecordStore,
+    /// The filings it set out to make and has not seen answered.
+    pub intents: Intents,
 }
 
 /// Where the agent stands after a step.
@@ -98,9 +100,7 @@ pub struct Participant {
     forge: Box<dyn Forge>,
     /// Moves asked for and not yet shown in the room, by key, with when.
     busy: HashMap<String, (Instant, Duration)>,
-    /// Issues filed this run, by the draft they were filed from, so a reply
-    /// that has not shown yet is asked for again without filing twice.
-    filed: HashMap<String, account_custody::forge::FiledIssue>,
+    intents: Intents,
     admitted: bool,
 }
 
@@ -163,7 +163,7 @@ impl Participant {
             think,
             forge,
             busy: HashMap::new(),
-            filed: HashMap::new(),
+            intents: cfg.intents,
             admitted: false,
         })
     }
@@ -202,6 +202,14 @@ impl Participant {
         self.busy
             .retain(|_, (since, wait)| now.duration_since(*since) < *wait);
         let messages = self.hand.messages(&self.triage.scope.channel);
+        let me = self.triage.me.clone();
+        self.intents.settle(&|draft| {
+            messages
+                .iter()
+                .find(|m| m.id == draft)
+                .and_then(|m| m.parent.as_deref())
+                .is_some_and(|report| super::filed(&messages, &me, report))
+        });
         let busy = self.busy.keys().cloned().collect();
         if let Some(next) = self.triage.next(&messages, self.think.as_ref(), &busy) {
             self.perform(next);
@@ -242,14 +250,8 @@ impl Participant {
                 report,
                 draft_message,
                 draft,
-            } => match self
-                .filed
-                .get(&draft_message)
-                .cloned()
-                .map_or_else(|| self.forge.file(&draft), Ok)
-            {
+            } => match self.file(&draft_message, &draft) {
                 Ok(filed) => {
-                    self.filed.insert(draft_message.clone(), filed.clone());
                     tracing::info!(%report, %draft_message, number = filed.number, "triage: filed an approved issue");
                     self.reply(
                         &report,
@@ -265,6 +267,29 @@ impl Participant {
             },
         }
         self.busy.insert(key, (Instant::now(), wait));
+    }
+
+    /// File the approved draft on `draft_message`, at most once whatever
+    /// happens to this process: the intent is on disk before the forge is
+    /// asked, and an intent left by an earlier run is answered by the issue
+    /// its marker finds before anything is filed again.
+    fn file(
+        &mut self,
+        draft_message: &str,
+        draft: &chat::feedback::IssueDraft,
+    ) -> Result<FiledIssue, String> {
+        let marker = forge::marker(&self.triage.room, draft_message);
+        if self.intents.contains(draft_message) {
+            if let Some(found) = self.forge.find(&marker)? {
+                tracing::info!(%draft_message, number = found.number, "triage: found the issue an earlier run filed");
+                return Ok(found);
+            }
+        } else {
+            self.intents
+                .record(draft_message)
+                .map_err(|error| format!("could not record the intent to file: {error}"))?;
+        }
+        self.forge.file(draft, &marker)
     }
 
     /// Reply in `report`'s thread through Chat's `remark` action: the text,

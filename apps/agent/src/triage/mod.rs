@@ -176,7 +176,7 @@ fn said(messages: &[Message], me: &str, report: &str) -> Said {
 }
 
 /// Whether the agent already replied under `report` with a filing.
-fn filed(messages: &[Message], me: &str, report: &str) -> bool {
+pub(crate) fn filed(messages: &[Message], me: &str, report: &str) -> bool {
     messages.iter().any(|m| {
         m.author == me
             && m.parent.as_deref() == Some(report)

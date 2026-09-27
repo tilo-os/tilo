@@ -54,6 +54,10 @@ mode = "off"
 # and the agent has nothing to do.
 collab = "required@1"
 model-gateway = "required@1"
+# Filing an approved feedback issue: custody files it with the team's forge
+# token, which never enters this sandbox. Optional: without it, drafts can
+# still be approved and filing waits.
+accounts = "optional@1"
 
 [entrypoint]
 bin  = "bin/tilo-agent"
