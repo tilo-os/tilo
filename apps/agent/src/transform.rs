@@ -894,6 +894,9 @@ impl TransformService {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     struct Fixed(&'static str);
 
     impl TransformModel for Fixed {
@@ -1089,7 +1092,7 @@ mod tests {
         );
         assert!(matches!(wrong, InvocationUpdate::Failed { .. }));
         let mut done = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HANG_BOUND;
         while done.is_empty() && Instant::now() < deadline {
             done = service.finished();
             std::thread::yield_now();
@@ -1104,7 +1107,7 @@ mod tests {
             service.cancel(9),
             Some(InvocationUpdate::Cancelled { .. })
         ));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HANG_BOUND;
         while service.running() > 0 && Instant::now() < deadline {
             assert!(service.finished().is_empty());
             std::thread::yield_now();

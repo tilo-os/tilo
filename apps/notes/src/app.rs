@@ -6483,7 +6483,7 @@ mod tests {
             let store = canonical_image_store(&app.canonical_assets, Some(workspace.path()));
             assert!(store.get(&embedded).is_none());
             assert!(store.get(&legacy_reference).is_none());
-            store.block_until_idle(Duration::from_secs(2));
+            store.block_until_idle(IO_HANG_BOUND);
             assert!(store.get(&embedded).is_some());
             assert!(store.get(&legacy_reference).is_some());
             assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_bytes);

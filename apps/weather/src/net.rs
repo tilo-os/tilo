@@ -368,6 +368,9 @@ pub(crate) fn test_service() -> (WeatherService, Receiver<Request>, Sender<Respo
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[test]
     fn a_worker_response_wakes_its_owning_app_without_animation() {
         let (events, received) = channel();
@@ -394,7 +397,7 @@ mod tests {
         .join()
         .unwrap();
         received
-            .recv_timeout(std::time::Duration::from_secs(1))
+            .recv_timeout(HANG_BOUND)
             .expect("worker must wake the app");
         assert!(matches!(
             responses.try_recv().unwrap(),

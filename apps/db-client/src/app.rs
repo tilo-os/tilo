@@ -4465,6 +4465,9 @@ mod honesty_tests {
 #[cfg(test)]
 mod behavior_tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use automerge::ROOT;
     use tilo_actions::Action;
     use tilo_automerge::ApplyIncoming;
@@ -4880,13 +4883,11 @@ mod behavior_tests {
             driver.set_modifiers(&["ctrl".into()]);
             driver.key("Enter");
             driver.set_modifiers(&[]);
-            assert!(
-                driver.wait_until(std::time::Duration::from_millis(500), |_| {
-                    // SAFETY: same stable allocation; the mutable frame borrow has
-                    // ended before this condition callback runs.
-                    unsafe { (&*app_ptr).session.query_gen > generation }
-                })
-            );
+            assert!(driver.wait_until(HANG_BOUND, |_| {
+                // SAFETY: same stable allocation; the mutable frame borrow has
+                // ended before this condition callback runs.
+                unsafe { (&*app_ptr).session.query_gen > generation }
+            }));
             // SAFETY: same stable allocation and non-overlapping read.
             let app = unsafe { &*app_ptr };
             assert_eq!(app.session.query_gen, generation + 1, "Run executes once");

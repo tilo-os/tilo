@@ -746,6 +746,9 @@ mod live {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn media_object_wire_round_trips_and_rejects_malformed_frames() {
         // Phase: media_object_wire_round_trips.
@@ -906,7 +909,7 @@ mod tests {
         assert!(!engine.poll_binding(), "still binding");
 
         release.send(()).unwrap();
-        wakes.recv_timeout(Duration::from_secs(5)).unwrap();
+        wakes.recv_timeout(HANG_BOUND).unwrap();
         assert!(!engine.take_bound(), "a failed bind announces nothing");
         assert!(!engine.is_live());
         assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));

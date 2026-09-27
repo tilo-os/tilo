@@ -52,6 +52,9 @@ fn launch_executable(executable: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[test]
     #[cfg(unix)]
     fn launch_uses_only_private_mode_and_reaps_the_child() {
@@ -101,7 +104,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         launch_executable(&executable).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while !capture.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

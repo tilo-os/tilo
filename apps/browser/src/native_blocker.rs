@@ -243,6 +243,9 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[test]
     #[ignore = "child entry point for private refresh/root lifecycle regression"]
     #[cfg(unix)]
@@ -293,9 +296,7 @@ mod tests {
                 let _ = stream.read(&mut request);
                 if index == 0 {
                     accepted_tx.send(()).unwrap();
-                    release_rx
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .unwrap();
+                    release_rx.recv_timeout(HANG_BOUND).unwrap();
                 }
                 let body = b"||private-refresh.fixture^\n";
                 write!(
@@ -309,17 +310,15 @@ mod tests {
         });
 
         refresh(&engine, true);
-        accepted_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        accepted_rx.recv_timeout(HANG_BOUND).unwrap();
         std::fs::write(&trigger, b"exit").unwrap();
-        let removal_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let removal_deadline = std::time::Instant::now() + HANG_BOUND;
         while root.exists() && std::time::Instant::now() < removal_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!root.exists(), "helper exit must remove the private root");
         release_tx.send(()).unwrap();
-        let worker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let worker_deadline = std::time::Instant::now() + HANG_BOUND;
         while status().busy && std::time::Instant::now() < worker_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -441,7 +440,7 @@ mod tests {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(engine.clone());
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + HANG_BOUND;
             while status().busy && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }

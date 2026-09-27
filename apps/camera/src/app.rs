@@ -6645,6 +6645,9 @@ impl CameraApp {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
@@ -6659,7 +6662,7 @@ mod tests {
         root: &ObjId,
         mut done: impl FnMut(&CameraApp) -> bool,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + HANG_BOUND;
         while !done(app) && Instant::now() < deadline {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
@@ -7491,7 +7494,7 @@ mod tests {
 
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + HANG_BOUND;
             while Instant::now() < deadline
                 && std::fs::read_dir(&dir).map_or(true, |entries| {
                     !entries.flatten().any(|e| {

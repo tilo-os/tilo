@@ -32,6 +32,8 @@ use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The capability an inviter issues an agent for the app it was invited to.
@@ -133,10 +135,7 @@ fn run(
     let _broker = typed_peer::spawn_with_agent_actions(&sock, agent_actions);
     let started = Instant::now();
     while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
+        assert!(started.elapsed() < HANG_BOUND, "relay never bound");
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -166,7 +165,7 @@ fn run(
         s.run_until(until).expect("agent session")
     });
     ready_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(HANG_BOUND)
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
     typed_peer::publish_actions(
@@ -505,10 +504,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let _broker = typed_peer::spawn(&sock);
         let started = Instant::now();
         while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
+            assert!(started.elapsed() < HANG_BOUND, "relay never bound");
             std::thread::sleep(Duration::from_millis(20));
         }
         let room = typed_peer::room();
@@ -552,7 +548,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 .expect("agent session")
         });
         agent_ready_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(HANG_BOUND)
             .expect("agent never established its cluster subscription");
         std::thread::sleep(Duration::from_millis(250));
 

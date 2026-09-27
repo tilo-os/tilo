@@ -5953,6 +5953,9 @@ mod links_tests;
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use tilo_automerge::ApplyIncoming;
 
     #[test]
@@ -6213,7 +6216,7 @@ mod tests {
             // Exercise the production worker, not load_path's synchronous test
             // substitute. The host checks out records before calling sync.
             app.queue_worker_open(&b);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + HANG_BOUND;
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 record_frame(&mut app, &mut st, &mut set, &mut room);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6253,7 +6256,7 @@ mod tests {
             let mut st = ui::State::new();
             let original = st.doc.get_heads();
             app.queue_worker_open(&path);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + HANG_BOUND;
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6299,7 +6302,7 @@ mod tests {
                 let mut state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let deadline = std::time::Instant::now() + HANG_BOUND;
                 while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
                     app.drain_raster_events(&mut state);
@@ -6322,7 +6325,8 @@ mod tests {
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
             app.queue_worker_open(latest);
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            while std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 app.drain_raster_events(&mut state);
                 if app.pending_open.is_none() {

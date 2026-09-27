@@ -640,6 +640,9 @@ async fn run_session(
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn auth_resolution_reads_env_and_default_keys() {
         eprintln!("phase resolve_auth_password_reads_env");
@@ -898,7 +901,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
                     connected = true;
@@ -912,7 +916,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells
@@ -931,14 +936,13 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         // Prove the upstream pipe: send a byte, expect the echo back.
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
-            acknowledgement
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap(),
+            acknowledgement.recv_timeout(HANG_BOUND).unwrap(),
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells

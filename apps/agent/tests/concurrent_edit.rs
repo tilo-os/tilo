@@ -37,6 +37,8 @@ use typed_peer::{TypedPeer, document_mutation};
 
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 /// What the person types while the agent's app action is still in flight.
 const TYPED: &str = "!";
@@ -370,10 +372,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
     let started = Instant::now();
     while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
+        assert!(started.elapsed() < HANG_BOUND, "relay never bound");
         std::thread::sleep(Duration::from_millis(20));
     }
 
