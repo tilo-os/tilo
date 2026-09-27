@@ -162,7 +162,7 @@ fn locale_falls_back_to_english() {
 fn locale_tags_resolve_to_their_language() {
     assert_eq!(
         Catalogue::locales().collect::<Vec<_>>(),
-        ["en", "de", "es", "fr", "it", "ja", "zh"]
+        ["en", "de", "es", "fr", "it", "ja", "zh", "zh_Hant"]
     );
     for (tag, locale) in [
         ("de-DE", "de"),
@@ -172,6 +172,11 @@ fn locale_tags_resolve_to_their_language() {
         ("it_IT@euro", "it"),
         ("ja-JP", "ja"),
         ("zh-Hans-CN", "zh"),
+        ("zh-CN", "zh"),
+        ("zh-TW", "zh_Hant"),
+        ("zh_HK.UTF-8", "zh_Hant"),
+        ("zh-Hant", "zh_Hant"),
+        ("zh-Hans-HK", "zh"),
     ] {
         assert_eq!(Catalogue::for_locale(tag).locale(), locale, "{tag}");
     }
@@ -206,8 +211,10 @@ fn translated_names_and_search() {
         assert!(found.contains(&"👍"), "{locale} {query}: {found:?}");
     }
 
-    // A translated catalogue searches its own language, not English.
-    assert!(de.search("thumbs", 5).is_empty());
+    assert_eq!(
+        Catalogue::for_locale("zh-TW").get("👍").unwrap().name(),
+        "讚"
+    );
     // Structure is shared: tones and genders work the same in every locale.
     assert_eq!(de.with_skin_tone("👍", Some(SkinTone::Dark)), Some("👍🏿"));
     assert_eq!(de.emoji().len(), cat().emoji().len());
@@ -266,4 +273,30 @@ fn recents_round_trip_and_renormalise() {
     let merged: Recents =
         serde_json::from_str(r#"{"capacity":2,"items":["🍕","👍","🍕","🎉"]}"#).unwrap();
     assert_eq!(merged.items(), ["🍕", "👍"]);
+}
+
+#[test]
+fn translated_search_also_matches_english_after_native_matches() {
+    let de = Catalogue::for_locale("de-DE");
+    // English still finds emoji, shown by their German names.
+    let found = de.search("thumbs", 5);
+    assert_eq!(texts(&found)[..2], ["👍", "👎"]);
+    assert_eq!(found[0].name(), "Daumen hoch");
+    assert_eq!(de.search("thumbs up", 1)[0].text(), "👍");
+    // An emoji matching in both languages is listed once.
+    let pizza = texts(&de.search("pizza", 50));
+    assert_eq!(pizza.iter().filter(|e| **e == "🍕").count(), 1);
+    // Every native match ranks before every English-only one. A term only
+    // matches text that contains it, so containment tells them apart.
+    // Search folds umlauts, so "Händchen" matches "hand" too.
+    let folded = |s: &str| s.to_lowercase().replace('ä', "a");
+    let native = |e: &crate::Emoji| {
+        folded(e.name()).contains("hand") || e.keywords().any(|k| folded(k).contains("hand"))
+    };
+    let found = de.search("hand", 500);
+    let first_english = found.iter().position(|e| !native(e)).unwrap();
+    assert!(first_english > 0, "German has native \"hand\" matches");
+    assert!(found[first_english..].iter().all(|e| !native(e)));
+    // The English catalogue has no second pass.
+    assert!(cat().search("daumen", 5).is_empty());
 }
