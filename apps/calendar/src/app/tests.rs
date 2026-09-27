@@ -392,16 +392,13 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         );
 
         let event = app.model.events[0].id;
-        crate::actions::CalendarAction::ApplyNoteOps {
+        crate::actions::CalendarAction::EditNotes {
             owner: crate::actions::NoteOwner::Event {
                 id: event.to_string(),
             },
-            ops: vec![ui::widget::BlockEditOp::Insert {
-                block_id: Uuid::new_v4().to_string(),
-                after: None,
-                kind: "paragraph".to_string(),
+            edit: qdoc_rich_text::RichTextAction::AppendParagraph {
                 text: "post hydration note needle".to_string(),
-            }],
+            },
         }
         .apply(&mut doc)
         .expect("note action applies");
@@ -1071,16 +1068,8 @@ fn user_edits_and_source_identity_persist_across_restart() {
 
         // Reload the on-disk document and read the note back through a fresh
         // editor binding — the typed text must have survived the restart.
-        let mut doc2 = crate::store::load(&path).expect("document present on disk");
-        let list = CalDoc::event_notes(&mut doc2, eid).expect("event notes list present");
-        let mut ed = BlockEditor::new();
-        ed.bind_blocks(&mut doc2, list);
-        let joined: String = ed
-            .blocks()
-            .iter()
-            .map(|b| b.text().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let doc2 = crate::store::load(&path).expect("document present on disk");
+        let joined = CalDoc::note_text(&doc2, true, eid);
         assert!(
             joined.contains("ZQ9"),
             "typed note persisted across restart: {joined:?}"
@@ -1515,18 +1504,15 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // carries no seeded body text.
         h.app.sync(&mut h.doc, &automerge::ROOT);
         assert_eq!(
-            h.app.notes_editor.empty_hint(),
+            h.app.notes_editor.editor().empty_hint(),
             NOTES_PLACEHOLDER,
             "the notes editor shows a calendar-specific placeholder hint"
         );
-        let list = CalDoc::event_notes(&mut h.doc, id).expect("notes list exists");
-        let mut ed = BlockEditor::new();
-        ed.bind_blocks(&mut h.doc, list);
-        let joined: String = ed
-            .blocks()
-            .iter()
-            .map(|b| b.text().to_string())
-            .collect::<String>();
+        assert!(
+            CalDoc::notes(&h.doc, true, id).is_some(),
+            "the new event has notes"
+        );
+        let joined = CalDoc::note_text(&h.doc, true, id);
         assert!(
             joined.trim().is_empty(),
             "notes start empty, not seeded: {joined:?}"

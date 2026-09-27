@@ -1779,7 +1779,7 @@ mod tests {
     use super::*;
 
     fn wait_for(mut condition: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !condition() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1947,7 +1947,7 @@ mod tests {
             );
             assert!(!engine.is_playing_real());
             engine.play();
-            assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
             wait_for(|| {
                 assert!(!engine.pump());
                 engine.frames_rendered() > 0
@@ -1995,7 +1995,7 @@ mod tests {
             engine.load(&uri);
             engine.play();
             assert!(
-                engine.wait_until_playing(std::time::Duration::from_secs(5)),
+                engine.wait_until_playing(tilo_test_env::hang_bound()),
                 "pipeline reached PLAYING"
             );
 
@@ -2088,9 +2088,7 @@ mod tests {
                     drop(job);
                 }
                 release.send(()).unwrap();
-                disposal
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                disposal.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             }
         }
 
@@ -2247,14 +2245,14 @@ mod tests {
                 started: false,
             });
             assert!(!engine.pump(), "staged audio did not report an error");
-            assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
             let uri = engine
                 .inner
                 .playbin
                 .property::<Option<String>>("current-uri")
                 .expect("playbin committed the staged URI after entering PLAYING");
             assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let mut pcm = capture.snapshot();
             while pcm.peak == 0 && std::time::Instant::now() < deadline {
                 pcm = capture.wait_for_more(std::time::Duration::from_millis(100));
@@ -2324,7 +2322,7 @@ mod tests {
         engine.load(&uri);
         engine.play();
 
-        let reached = engine.wait_until_playing(std::time::Duration::from_secs(5));
+        let reached = engine.wait_until_playing(tilo_test_env::hang_bound());
         assert!(
             reached,
             "real sink pipeline reached PLAYING for a decoded stream"

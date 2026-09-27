@@ -287,12 +287,13 @@ mod tests {
                 // failure path, including a call queued before the driver polls.
                 let request = client
                     .new_call::<capnp::any_pointer::Owned, capnp::any_pointer::Owned>(0, 0, None);
-                let error =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), request.send().promise)
-                        .await
-                        .expect("closed peer must resolve the outstanding RPC")
-                        .err()
-                        .expect("closed transport cannot complete a service call");
+                let error = tilo_test_env::within(
+                    "the closed peer to resolve the outstanding RPC",
+                    request.send().promise,
+                )
+                .await
+                .err()
+                .expect("closed transport cannot complete a service call");
                 assert_eq!(error.kind, capnp::ErrorKind::Disconnected);
             })
             .await;
