@@ -5,6 +5,10 @@ name: CI / Windows ARM64 tilo-vm CLI
 on:
   workflow_dispatch:
 
+env:
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   cli:
     runs-on: runner-arm64

@@ -58,6 +58,8 @@ runs:
         name=sccache-v0.17.0-aarch64-unknown-linux-musl
         tar -xzf "os/external-assets/cache/$name.tar.gz" -C "$RUNNER_TEMP"
         printf '%s\n' "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+        # shellcheck disable=SC1091
+        source tools/ci/compiler_cache_env.sh
         PATH="$RUNNER_TEMP/$name:$PATH" bash tools/ci/sccache.sh prepare
 
     - id: xwin
