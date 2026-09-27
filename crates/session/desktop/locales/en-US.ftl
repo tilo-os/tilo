@@ -477,3 +477,5 @@ notification-dnd-held = { $status } · { $count } held
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
+notification-app-failed-title = Couldn't open an app
+notification-service-unavailable = This isn't available on this desktop yet
