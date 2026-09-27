@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -106,6 +107,9 @@ pub(crate) struct HostHistoryLayout {
     pub search: Option<NodeId>,
     toolbar_group: Option<NodeId>,
     pub pane: Option<NodeId>,
+    /// The selected version, drawn by the app's own root, tiled where the
+    /// live app would be.
+    pub preview: Option<NodeId>,
     pub app_visible: bool,
     content: NodeId,
 }
@@ -124,7 +128,15 @@ pub(crate) struct StandaloneHistoryHost {
     review: Option<RestoreReview>,
     confirmed_restore: Option<RestoreReview>,
     structure_dirty: bool,
+    canvas: crate::history_mode::canvas::PreviewCanvas,
+    /// Heads of the version whose preview the host still has to build.
+    preview_request: Option<Vec<automerge::ChangeHash>>,
+    preview_visible: bool,
+    preview_root: Option<PreviewRootFactory>,
 }
+
+/// Builds a fresh, read-only instance of the app's own root for a preview.
+pub(crate) type PreviewRootFactory = std::rc::Rc<dyn Fn() -> Result<Box<dyn Widget>, String>>;
 
 /// The pane message for a refused or completed restore.
 fn restore_message(result: &Result<bool, HistoryError>) -> &'static str {
@@ -161,7 +173,62 @@ impl StandaloneHistoryHost {
             review: None,
             confirmed_restore: None,
             structure_dirty: false,
+            canvas: crate::history_mode::canvas::PreviewCanvas::new(),
+            preview_request: None,
+            preview_visible: false,
+            preview_root: None,
         }
+    }
+
+    pub(crate) fn set_preview_root(&mut self, factory: PreviewRootFactory) {
+        self.preview_root = Some(factory);
+    }
+
+    pub(crate) fn preview_root(&self) -> Option<PreviewRootFactory> {
+        self.preview_root.clone()
+    }
+
+    /// Whether a selected version waits for its preview root. Building the
+    /// root belongs to the app host, which owns the wake scope it runs in.
+    pub(crate) fn has_preview_request(&self) -> bool {
+        self.preview_request.is_some()
+    }
+
+    /// Show the requested version drawn by `root`, a fresh read-only instance
+    /// of the app's root; without one, the version's document outline.
+    pub(crate) fn install_preview(
+        &mut self,
+        root: Option<Box<dyn Widget>>,
+        context: &HistoryReadContext<'_>,
+    ) {
+        let Some(heads) = self.preview_request.take() else {
+            return;
+        };
+        let doc = crate::history_mode::frozen_root::document_at(context.document, &heads);
+        let root = root.unwrap_or_else(|| crate::history_mode::frozen_root::outline_root(&doc));
+        self.canvas.install(Ok(Box::new(
+            crate::history_mode::frozen_root::FrozenRootPreview::new(
+                root,
+                doc,
+                I18nManager::lookup_plain("standalone-history-preview-resource"),
+            ),
+        )));
+        self.structure_dirty = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn clear_preview(&mut self) {
+        self.preview_request = None;
+        if self.canvas.preview.is_some() {
+            self.canvas.clear();
+            self.structure_dirty = true;
+        }
+    }
+
+    pub(crate) fn preview_mut(
+        &mut self,
+    ) -> Option<&mut crate::history_mode::canvas::PreviewCanvas> {
+        self.preview_visible.then_some(&mut self.canvas)
     }
 
     /// A restore the person confirmed against the still-current frontier.
@@ -365,6 +432,17 @@ impl StandaloneHistoryHost {
                     model.compare_selection(context)?;
                     self.update_summary();
                 }
+                match ids.as_slice() {
+                    [id] => {
+                        let mut committed = context.document.clone();
+                        if committed.pending_ops() > 0 {
+                            committed.rollback();
+                        }
+                        self.preview_request =
+                            crate::history_source::heads_for_entry(&mut committed, id);
+                    }
+                    _ => self.clear_preview(),
+                }
             }
             HistoryCommand::Compare { session } if session == expected => {
                 self.session
@@ -435,6 +513,7 @@ impl StandaloneHistoryHost {
     }
 
     fn close(&mut self) {
+        self.clear_preview();
         self.close_review();
         self.confirmed_restore = None;
         self.session = None;
@@ -501,6 +580,9 @@ impl StandaloneHistoryHost {
         if self.is_open() {
             roots.push(&self.pane);
         }
+        if self.preview_visible {
+            roots.push(&self.canvas);
+        }
         Ok(roots)
     }
 
@@ -534,6 +616,9 @@ impl StandaloneHistoryHost {
         let mut content_children: Vec<&dyn Widget> = Vec::new();
         if layout.app_visible {
             content_children.push(app);
+        }
+        if layout.preview.is_some() {
+            content_children.push(&self.canvas);
         }
         if self.is_open() {
             content_children.push(&self.pane);
@@ -648,7 +733,14 @@ impl StandaloneHistoryHost {
         let pane = self
             .is_open()
             .then(|| self.pane.build_layout(taffy, theme, nodes));
-        let app_visible = pane.is_none() || viewport_width >= 900.0;
+        let wide = viewport_width >= 900.0;
+        // A selected version takes the live app's place beside the pane:
+        // tiled, never floating over the document it replaces.
+        self.preview_visible = pane.is_some() && wide && self.canvas.preview.is_some();
+        let preview = self
+            .preview_visible
+            .then(|| self.canvas.build_layout(taffy, theme, nodes));
+        let app_visible = (pane.is_none() || wide) && preview.is_none();
         if let Ok(style) = taffy.style(app) {
             let mut style = style.clone();
             if !app_visible {
@@ -666,7 +758,7 @@ impl StandaloneHistoryHost {
             && let Ok(style) = taffy.style(pane)
         {
             let mut style = style.clone();
-            style.size.width = if app_visible {
+            style.size.width = if app_visible || preview.is_some() {
                 Dimension::length(360.0)
             } else {
                 Dimension::percent(1.0)
@@ -674,7 +766,16 @@ impl StandaloneHistoryHost {
             style.flex_shrink = 0.0;
             let _ = taffy.set_style(pane, style);
         }
+        if let Some(preview) = preview
+            && let Ok(style) = taffy.style(preview)
+        {
+            let mut style = style.clone();
+            style.size.width = Dimension::auto();
+            style.flex_basis = Dimension::length(0.0);
+            let _ = taffy.set_style(preview, style);
+        }
         let mut content_children = if app_visible { vec![app] } else { Vec::new() };
+        content_children.extend(preview);
         content_children.extend(pane);
         let content = taffy.parent_node(
             Style {
@@ -715,6 +816,7 @@ impl StandaloneHistoryHost {
             search,
             toolbar_group,
             pane,
+            preview,
             app_visible,
             content,
         }
@@ -754,6 +856,9 @@ impl StandaloneHistoryHost {
         if let Some(pane) = layout.pane {
             self.pane.apply_layout(taffy, pane, content_origin);
         }
+        if let Some(preview) = layout.preview {
+            self.canvas.apply_layout(taffy, preview, content_origin);
+        }
         content_origin
     }
 
@@ -787,6 +892,9 @@ impl StandaloneHistoryHost {
         }
         if self.is_open() {
             self.pane.draw(scene, transform, text, theme, presence);
+        }
+        if self.preview_visible {
+            self.canvas.draw(scene, transform, text, theme, presence);
         }
         Ok(())
     }

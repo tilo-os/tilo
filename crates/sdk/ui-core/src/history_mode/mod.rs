@@ -14,8 +14,9 @@ pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAsse
 pub(crate) mod owner;
 pub mod registration;
 pub use owner::HistoryOwner;
-mod canvas;
+pub(crate) mod canvas;
 pub(crate) mod frame;
+pub(crate) mod frozen_root;
 pub(crate) mod host;
 pub mod pending_controls;
 pub use preview::*;
