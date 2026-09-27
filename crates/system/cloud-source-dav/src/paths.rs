@@ -96,32 +96,12 @@ pub fn child_of(parent: &ItemId, name: &str) -> Option<ItemId> {
     })
 }
 
-/// Strict percent-decoding to UTF-8.
+/// Percent-decoding to UTF-8; `None` when the decoded bytes are not UTF-8.
 pub fn percent_decode(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0_usize;
-    while let Some(&byte) = bytes.get(index) {
-        if byte == b'%' {
-            let high = hex(*bytes.get(index.checked_add(1)?)?)?;
-            let low = hex(*bytes.get(index.checked_add(2)?)?)?;
-            out.push(high.checked_mul(16)?.checked_add(low)?);
-            index = index.checked_add(3)?;
-        } else {
-            out.push(byte);
-            index = index.checked_add(1)?;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-fn hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => byte.checked_sub(b'0'),
-        b'a'..=b'f' => byte.checked_sub(b'a').and_then(|v| v.checked_add(10)),
-        b'A'..=b'F' => byte.checked_sub(b'A').and_then(|v| v.checked_add(10)),
-        _ => None,
-    }
+    percent_encoding::percent_decode_str(raw)
+        .decode_utf8()
+        .ok()
+        .map(std::borrow::Cow::into_owned)
 }
 
 const MONTHS: [&str; 12] = [
