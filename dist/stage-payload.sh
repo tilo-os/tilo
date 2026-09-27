@@ -23,7 +23,7 @@ if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/shell"; then
     exit 1
 fi
 
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license,community}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/tilo-shell"
 install -pm 0755 "$bin_dir/tilo-launcher"      "$stage/bin/tilo-launcher"
 install -pm 0755 "$bin_dir/tilo-unlock-helper" "$stage/libexec/tilo-unlock-helper"
@@ -49,3 +49,11 @@ install -pm 0644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" 
 install -pm 0644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
                  "$stage/pipewire/tilo-echo-cancel.conf"
 install -pm 0644 "$repo_root/LICENSE" "$stage/license/LICENSE"
+# Where this release finds the Tilo community and the Tilo team, read by the
+# shell from /usr/share/tilo/community.toml. A release (TILO_REQUIRE_COMMUNITY=1)
+# refuses the empty placeholder; a development build may ship it.
+community_src=$repo_root/os/usr/share/tilo/community.toml
+community_args=(check)
+[[ ${TILO_REQUIRE_COMMUNITY:-0} != 1 ]] || community_args+=(--require)
+"$repo_root/dist/community-config.sh" "${community_args[@]}" "$community_src"
+install -pm 0644 "$community_src" "$stage/community/community.toml"

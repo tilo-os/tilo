@@ -1888,8 +1888,18 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # is a principal rather than a key.
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The Tilo community room's standing invitation and the Tilo team principal,
-# read by the shell for public and private feedback.
+# read by the shell for public and private feedback. A published image
+# (TILO_REQUIRE_COMMUNITY=1) refuses the empty placeholder; a development
+# image may ship it. CI may materialize TILO_COMMUNITY_TOML over the file first.
 COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
+ARG TILO_REQUIRE_COMMUNITY=0
+RUN --network=none \
+    --mount=type=bind,source=dist/community-config.sh,target=/tmp/community-config.sh,ro \
+    if [ "$TILO_REQUIRE_COMMUNITY" = 1 ]; then \
+      bash /tmp/community-config.sh check --require /usr/share/tilo/community.toml; \
+    else \
+      bash /tmp/community-config.sh check /usr/share/tilo/community.toml; \
+    fi
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
 # without re-hashing; see the snippet and docs/device-local-state.md.

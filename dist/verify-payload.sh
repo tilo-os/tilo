@@ -24,6 +24,7 @@ for file in /usr/share/applications/tilo-import-folders.desktop /etc/pam.d/tilo-
             /usr/share/xdg-desktop-portal/portals/tilo.portal \
             /usr/share/xdg-desktop-portal/tilo-portals.conf \
             /usr/share/pipewire/tilo-echo-cancel.conf \
+            /usr/share/tilo/community.toml \
             /usr/lib/systemd/user/tilo-graphical-session.target; do
     [[ -f $(path "$file") ]] || { echo "missing file: $file" >&2; exit 1; }
 done
@@ -39,6 +40,7 @@ grep -q '^DesktopNames=tilo$' "$(path /usr/share/wayland-sessions/tilo.desktop)"
 grep -q '^UseIn=tilo$' "$(path /usr/share/xdg-desktop-portal/portals/tilo.portal)"
 grep -q '^default=tilo$' "$(path /usr/share/xdg-desktop-portal/tilo-portals.conf)"
 grep -q 'libpipewire-module-echo-cancel' "$(path /usr/share/pipewire/tilo-echo-cancel.conf)"
+grep -q '^\[community\]$' "$(path /usr/share/tilo/community.toml)"
 grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' "$(path "$libexec_dir/tilo-session")"
 grep -Fqx "SESSION_RUNNER=$libexec_dir/tilo-session-runner" "$(path "$libexec_dir/tilo-session")"
 grep -q '^SYSTEMD_CAT=/usr/bin/systemd-cat$' "$(path "$libexec_dir/tilo-session-runner")"

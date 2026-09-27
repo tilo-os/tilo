@@ -16,6 +16,7 @@ for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock
             share/xdg-desktop-portal/portals/tilo.portal \
             share/xdg-desktop-portal/tilo-portals.conf \
             share/pipewire/tilo-echo-cancel.conf \
+            share/tilo/community.toml \
             share/systemd/user/tilo-graphical-session.target \
             share/licenses/tilo-session/LICENSE; do
     [[ -f $result/$file ]] || { echo "missing file: $file" >&2; exit 1; }

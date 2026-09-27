@@ -126,6 +126,7 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env CARGO_PROFILE_RELEASE_LTO=thin \
             --env CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
             --env CARGO_TERM_COLOR=never \
+            --env TILO_REQUIRE_COMMUNITY="${TILO_REQUIRE_COMMUNITY:-0}" \
             "${signing_env[@]}" \
             "${cache_env[@]}" \
             "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))

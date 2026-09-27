@@ -31,6 +31,7 @@ if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]
     exit 1
 fi
 
+"$repo_root/dist/ci/test-community-config.sh"
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 python3 "$repo_root/dist/session/tests/flight-recorder.py"
 python3 "$repo_root/dist/session/tests/session-report.py"
@@ -74,7 +75,7 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
+mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/tilo,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
@@ -94,6 +95,7 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
     "$fhs/usr/share/xdg-desktop-portal/tilo-portals.conf"
 install -m644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
     "$fhs/usr/share/pipewire/tilo-echo-cancel.conf"
+install -m644 "$repo_root/os/usr/share/tilo/community.toml" "$fhs/usr/share/tilo/community.toml"
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/tilo-session/LICENSE"
@@ -221,7 +223,7 @@ if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
 fi
 
 nix=$work/nix-result
-mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
+mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/tilo,share/licenses/tilo-session}
 for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
@@ -239,6 +241,7 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
     "$nix/share/xdg-desktop-portal/tilo-portals.conf"
 install -m644 "$repo_root/os/usr/share/pipewire/tilo-echo-cancel.conf" \
     "$nix/share/pipewire/tilo-echo-cancel.conf"
+install -m644 "$repo_root/os/usr/share/tilo/community.toml" "$nix/share/tilo/community.toml"
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$nix/share/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/tilo-session/LICENSE"

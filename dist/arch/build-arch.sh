@@ -14,6 +14,10 @@ git -C "$repo_root" archive HEAD | tar -x -C "$work/tilo-$version"
 # before commit, without copying dist/*/build back into its own source archive.
 mkdir -p "$work/tilo-$version/dist/session" "$work/tilo-$version/.cargo"
 install -pm 0755 "$repo_root/dist/stage-payload.sh" "$work/tilo-$version/dist/stage-payload.sh"
+install -pm 0755 "$repo_root/dist/community-config.sh" "$work/tilo-$version/dist/community-config.sh"
+# CI may materialize the community configuration over the checked-in one.
+install -Dpm 0644 "$repo_root/os/usr/share/tilo/community.toml" \
+    "$work/tilo-$version/os/usr/share/tilo/community.toml"
 install -pm 0644 "$repo_root/dist/VERSION" "$work/tilo-$version/dist/VERSION"
 cp -a "$repo_root/dist/session/." "$work/tilo-$version/dist/session/"
 install -pm 0644 "$repo_root/.cargo/config.toml" "$work/tilo-$version/.cargo/config.toml"

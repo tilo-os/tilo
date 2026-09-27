@@ -60,6 +60,7 @@ package_tilo-session() {
   install -Dm644 portal/tilo.portal -t "$pkgdir/usr/share/xdg-desktop-portal/portals"
   install -Dm644 portal/tilo-portals.conf -t "$pkgdir/usr/share/xdg-desktop-portal"
   install -Dm644 pipewire/tilo-echo-cancel.conf -t "$pkgdir/usr/share/pipewire"
+  install -Dm644 community/community.toml -t "$pkgdir/usr/share/tilo"
   install -Dm644 systemd-user/tilo-graphical-session.target -t "$pkgdir/usr/lib/systemd/user"
   install -Dm644 license/LICENSE "$pkgdir/usr/share/licenses/tilo-session/LICENSE"
   install -Dm644 applications/tilo-import-folders.desktop "$pkgdir/usr/share/applications/tilo-import-folders.desktop"
