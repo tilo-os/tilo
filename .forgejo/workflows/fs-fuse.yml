@@ -58,6 +58,7 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - "crates/doc/tilo-automerge-isolate/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"

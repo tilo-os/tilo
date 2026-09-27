@@ -518,7 +518,6 @@ readers = [
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/src/shell/topbar_chrome.rs",
 ]
 
 [[cargo]]
@@ -565,6 +564,62 @@ readers = ["apps/typst-editor/src/framework_history_tests.rs"]
 package = "weather"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/weather/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "chat"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/chat/src/component_tests.rs"]
+
+[[cargo]]
+package = "containers"
+inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
+readers = ["apps/containers/src/framework_history_tests.rs"]
+
+[[cargo]]
+package = "vpn"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/vpn/src/app.rs"]
+
+[[cargo]]
+package = "word-processor"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/word-processor/tests/canonical_component.rs"]
+
+[[cargo]]
+package = "tilo-desktop"
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["crates/session/desktop/src/topbar.rs"]
+
+[[cargo]]
+package = "tilo-cloud-host"
+# Owner-commit fixtures are a shared contract with tilo-peer-state.
+inputs = ["crates/collab/tilo-peer-state/src/owner_commit/fixtures/"]
+readers = [
+  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
+  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",
+]
+
+[[cargo]]
+package = "tilo-moq"
+# The voice test checks the browser's voice profile against the native one.
+inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
+readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
+
+[[cargo]]
+package = "tilo-device-host"
+# The ignored regeneration test rewrites tilo-relay's checked-in fixture.
+inputs = ["crates/hosting/tilo-relay/tests/fixtures/shell-selection/"]
+readers = ["crates/hosting/tilo-device-host/tests/publication.rs"]
+
+[[cargo]]
+package = "tilo-workspace-host"
+inputs = ["apps/settings/shots/settings.png"]
+readers = ["crates/hosting/tilo-workspace-host/src/action_host/scoped_fixture/notes.rs"]
+
+[[cargo]]
+package = "tilo-relay-protocol"
+inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
+readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
 
 [[cargo-exempt]]
 file = "crates/session/shell/tests/headless_examples_smoke.rs"
