@@ -266,7 +266,7 @@ def transform(args):
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
                 if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
-                    raise ValueError('dracut did not exit successfully')
+                    raise ValueError('dracut did not exit successfully: ' + sanitized_diagnostic(log))
                 modules = module_evidence(log)
                 context = work / 'context'
                 context.mkdir()
