@@ -585,6 +585,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             record_kind: crate::record::RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: factory,
         };
         let context = HostContext::prepare(
@@ -887,6 +888,7 @@ impl ActionFixture {
                 record_kind: crate::record::RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
+                opens: &[],
                 create,
             };
             let target = if shared && !bindings.is_empty() {

@@ -1195,6 +1195,7 @@ impl RoutedPrimary {
             record_kind: crate::RecordKind::new("primary.probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
