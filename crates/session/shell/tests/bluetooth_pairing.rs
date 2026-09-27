@@ -19,7 +19,7 @@
 )]
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use shell::bluetooth::{PairingPromptHandle, PairingService};
@@ -181,15 +181,10 @@ impl Rig {
 
     /// Paint until `done` holds, or fail naming `what`.
     fn until(&mut self, what: &str, done: impl Fn(&FrameBuilder) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
+        tilo_test_env::wait_until(what, || {
             self.frame();
-            if done(&self.fb) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("timed out waiting for {what}");
+            done(&self.fb)
+        });
     }
 
     fn prompt(&self) -> Option<PairingPrompt> {
@@ -216,8 +211,7 @@ impl Rig {
 
     fn answer(&self, call: tokio::task::JoinHandle<Answer>) -> Answer {
         self.rt
-            .block_on(async { tokio::time::timeout(Duration::from_secs(10), call).await })
-            .expect("the daemon hears back")
+            .block_on(tilo_test_env::within("the daemon to hear back", call))
             .expect("the call task finishes")
     }
 
@@ -385,11 +379,9 @@ fn pairing_questions_are_answered_only_in_the_shells_protected_dialog() {
         });
         rig.click("bluetooth.pair.reject");
         rig.wait_for_no_prompt();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !rig.calls().iter().any(|call| call == "CancelPairing") {
-            assert!(Instant::now() < deadline, "the pairing is cancelled");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the pairing to be cancelled", || {
+            rig.calls().iter().any(|call| call == "CancelPairing")
+        });
     }
 
     // Phase `the_daemon_withdrawing_its_question_closes_the_dialog`.

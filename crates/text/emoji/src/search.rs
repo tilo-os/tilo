@@ -51,24 +51,29 @@ impl Key {
     }
 }
 
-/// Lowercase and strip the Latin diacritics and typographic quotes CLDR
-/// names use, so "cote" finds "Côte d’Ivoire".
+/// Lowercase and strip the Latin diacritics, ligatures and typographic
+/// quotes CLDR names use, so "cote" finds "Côte d’Ivoire", "coeur" finds
+/// "cœur" and "strasse" finds "Straße".
 fn fold(s: &str) -> String {
-    s.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
-            'ç' => 'c',
-            'è' | 'é' | 'ê' | 'ë' => 'e',
-            'ì' | 'í' | 'î' | 'ï' => 'i',
-            'ñ' => 'n',
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
-            'ù' | 'ú' | 'û' | 'ü' => 'u',
-            'ý' | 'ÿ' => 'y',
-            '’' | '‘' => '\'',
-            c => c,
-        })
-        .collect()
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars().flat_map(char::to_lowercase) {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => out.push('a'),
+            'ç' => out.push('c'),
+            'è' | 'é' | 'ê' | 'ë' => out.push('e'),
+            'ì' | 'í' | 'î' | 'ï' => out.push('i'),
+            'ñ' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => out.push('o'),
+            'ù' | 'ú' | 'û' | 'ü' => out.push('u'),
+            'ý' | 'ÿ' => out.push('y'),
+            'œ' => out.push_str("oe"),
+            'æ' => out.push_str("ae"),
+            'ß' => out.push_str("ss"),
+            '’' | '‘' => out.push('\''),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn words(s: &str) -> impl Iterator<Item = &str> {

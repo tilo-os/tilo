@@ -4241,31 +4241,28 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let leader_watch = leader.clone();
     let sleeper_watch = sleeper.clone();
     let source = app.join("src/main.rs");
-    std::thread::spawn(move || {
-        let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
-            return;
-        };
-        while Instant::now() < deadline {
-            if leader_watch.is_file() && sleeper_watch.is_file() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    let edited = std::sync::Arc::new(std::sync::OnceLock::new());
+    let edited_at = edited.clone();
+    let watcher = std::thread::spawn(move || {
+        tilo_test_env::wait_until("the fake cargo and its child to start", || {
+            leader_watch.is_file() && sleeper_watch.is_file()
+        });
+        let _ = edited_at.set(Instant::now());
         let _ = sender.send(Ok(Event::new(EventKind::Modify(
             notify::event::ModifyKind::Any,
         ))
         .add_path(source)));
     });
-    let started = Instant::now();
     let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    watcher.join().unwrap();
     assert!(
         matches!(outcome, DevCandidate::Superseded),
         "a source edit during the build must cancel it"
     );
+    let cancel = edited.get().expect("the edit was sent").elapsed();
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "cancelling a stale build took {:?}",
-        started.elapsed()
+        cancel < Duration::from_secs(2),
+        "cancelling a stale build took {cancel:?}"
     );
     let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
     let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();

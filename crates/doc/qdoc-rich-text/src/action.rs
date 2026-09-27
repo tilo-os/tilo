@@ -606,7 +606,7 @@ impl<'a> ActionValidator<'a> {
             "align" => {
                 matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
             }
-            "page_break_before" | "flip_h" | "flip_v" | "checked" | "code" => {
+            "page_break_before" | "flip_h" | "flip_v" | "checked" | "code" | "table_source" => {
                 matches!(value, AttrVal::Bool(_))
             }
             "indent" | "line_spacing" => {
@@ -628,7 +628,10 @@ impl<'a> ActionValidator<'a> {
 
     /// Attributes whose absence is their default, so an edit may remove them.
     fn clearable_attr(key: &str) -> bool {
-        matches!(key, "checked" | "code" | "lang" | "code_group" | "nesting")
+        matches!(
+            key,
+            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source"
+        )
     }
 
     fn valid_style_property(key: &str, value: &AttrVal) -> bool {

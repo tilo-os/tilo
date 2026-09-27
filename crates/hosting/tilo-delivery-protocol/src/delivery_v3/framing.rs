@@ -526,12 +526,11 @@ mod tests {
                     .is_err()
             );
             send.write_all(&wire[split..]).await.unwrap();
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(1), reader.read_next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+            let result = tokio::time::timeout(tilo_test_env::hang_bound(), reader.read_next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             assert_eq!(result.payload(), [7, 8, 9]);
         }
     }

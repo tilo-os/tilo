@@ -151,6 +151,17 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
 }
 
 #[test]
+fn shift_enter_is_a_line_break_inside_the_paragraph() {
+    let mut app = open();
+    app.harness().type_text("Alpha");
+    app.harness().set_modifiers(&["shift".into()]);
+    app.harness().key("Enter");
+    app.harness().set_modifiers(&[]);
+    app.harness().type_text("Beta");
+    assert_eq!(paragraphs(&app), ["Alpha\nBeta"]);
+}
+
+#[test]
 fn a_viewer_is_refused_and_the_document_is_untouched() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<Document>::with_role(Role::Viewer).unwrap();
