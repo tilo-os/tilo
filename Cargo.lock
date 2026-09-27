@@ -579,7 +579,6 @@ dependencies = [
  "bounded-command",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "clap",
  "ed25519-dalek 3.0.0",
  "futures-util",
@@ -1732,15 +1731,6 @@ dependencies = [
  "capnp",
  "capnp-futures",
  "futures",
-]
-
-[[package]]
-name = "capnpc"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13aea06b902f885cb0313b11e900e96cd57fef775e9e601a96e14e1d655f3cd3"
-dependencies = [
- "capnp",
 ]
 
 [[package]]
@@ -3283,6 +3273,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
@@ -4299,7 +4310,6 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "format-provider-abi",
  "futures",
  "getrandom 0.4.3",
@@ -6484,6 +6494,7 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "crc32fast",
  "hex",
  "libc",
  "reqwest",
@@ -9593,6 +9604,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "option-operations"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11357,6 +11374,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
+dependencies = [
+ "getrandom 0.2.17",
+ "libredox",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11901,7 +11929,6 @@ dependencies = [
  "cap-std",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "postcard",
  "runtime-portal",
  "rustix 1.1.4",
@@ -13133,6 +13160,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -13664,6 +13692,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssip-client"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5349534527378e1e24486a9b361127c0a044b0311857f778ec1ec2953c5ffbbf"
+dependencies = [
+ "dirs",
+ "log",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13780,6 +13821,12 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+
+[[package]]
+name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
@@ -13794,6 +13841,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros 0.28.0",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -16433,6 +16493,8 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "rustix 1.1.4",
+ "ssip-client",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "workspace-hack",
