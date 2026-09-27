@@ -535,6 +535,15 @@ def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> in
     return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
 
 
+def android_apps(packages: dict[str, dict]) -> set[str]:
+    """Apps that opt into the Android host by declaring an `<app>-android` example."""
+    return {
+        name for name, package in packages.items()
+        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
+               for target in package.get("targets", ()))
+    }
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -714,6 +723,7 @@ def make_plan(
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
+    android = sorted(android_apps(packages) & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -722,6 +732,10 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
+        # Selected apps with an Android host example; check.yml's `android`
+        # job type-checks them for the Android targets.
+        "android_required": bool(android),
+        "android": android,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -767,6 +781,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"suites={' '.join(plan['suites'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
+        handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
+        handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

@@ -5,12 +5,12 @@
 #[cfg(all(feature = "portal", windows))]
 mod windows;
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 use std::fs::{File, OpenOptions};
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 use std::path::Path;
 
-#[cfg(not(all(feature = "portal", unix)))]
+#[cfg(not(all(feature = "portal", freedesktop)))]
 use crate::portal::spawn_worker;
 #[cfg(feature = "portal")]
 use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_selected_uri};
@@ -18,7 +18,7 @@ use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
 };
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 use crate::portal::{LaunchKind, open_regular_file};
 #[cfg(all(feature = "portal", windows))]
 use crate::portal::{LaunchKind, to_local_path};
@@ -29,7 +29,7 @@ use crate::portal::{LaunchKind, to_local_path};
 /// feature every request fails cleanly.
 pub struct DesktopFilePicker;
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 impl crate::host::FilePicker for DesktopFilePicker {
     fn pick(&self, request: PickRequest) -> PortalChannel {
         deliver(async move {
@@ -80,22 +80,16 @@ impl crate::host::FilePicker for DesktopFilePicker {
 /// Run one portal request on the app runtime and return the channel its
 /// outcome arrives on. Sending it wakes the event loop of the wake scope the
 /// request was made under.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 fn deliver<T: Send + 'static>(
     request: impl std::future::Future<Output = T> + Send + 'static,
 ) -> std::sync::mpsc::Receiver<T> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let wake = crate::wake::WakeHandle::new();
-    drop(tilo_rt::app().spawn_then(request, move |outcome| {
-        // The UI may have moved on (window closed); ignore a dead channel.
-        if tx.send(outcome).is_ok() {
-            wake.wake();
-        }
-    }));
+    let (reply, rx) = crate::wake::reply();
+    drop(tilo_rt::app().spawn_then(request, move |outcome| reply.send(outcome)));
     rx
 }
 
-#[cfg(not(all(feature = "portal", unix)))]
+#[cfg(not(all(feature = "portal", freedesktop)))]
 impl crate::host::FilePicker for DesktopFilePicker {
     fn pick(&self, request: PickRequest) -> PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -179,7 +173,7 @@ fn launch(req: LaunchRequest) -> LaunchOutcome {
 // The ashpd round-trip.
 // ---------------------------------------------------------------------------
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 async fn launch(req: LaunchRequest) -> LaunchOutcome {
     use std::os::fd::AsFd;
 
@@ -223,7 +217,7 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
 
 /// Hand an open picture to the XDG Wallpaper portal; the desktop previews it
 /// and asks the user before applying.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 pub(crate) fn set_wallpaper(
     file: std::fs::File,
     target: crate::portal::WallpaperTarget,
@@ -248,7 +242,7 @@ pub(crate) fn set_wallpaper(
 
 /// Hand `uri` to the XDG `OpenURI` portal, blocking until the desktop has
 /// launched its handler or refused the request.
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
     let uri = ashpd::Uri::parse(uri).map_err(|error| {
         std::io::Error::new(
@@ -271,7 +265,7 @@ pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
         .map_err(std::io::Error::other)
 }
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 fn open_directory(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -312,7 +306,7 @@ impl PortalFailure {
     }
 }
 
-#[cfg(all(feature = "portal", unix))]
+#[cfg(all(feature = "portal", freedesktop))]
 async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -398,7 +392,7 @@ fn launch(_req: LaunchRequest) -> LaunchOutcome {
 #[cfg(not(feature = "portal"))]
 const NO_PORTAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
 
-#[cfg(all(test, feature = "portal", unix))]
+#[cfg(all(test, feature = "portal", freedesktop))]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test assertions")]
 
