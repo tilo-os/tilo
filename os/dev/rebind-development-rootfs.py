@@ -85,11 +85,13 @@ def sanitized_diagnostic(value, limit=DIAGNOSTIC_LIMIT):
 
 
 def dracut_failure_diagnostic(log):
-    errors = '\n'.join(line for line in log.splitlines()
-                       if re.search(r'dracut\[E\]|\b(?:error|failed|cannot)\b|ldconfig:',
+    safe_log = sanitized_diagnostic(log, limit=8 * 1024 * 1024)
+    errors = '\n'.join(line for line in safe_log.splitlines()
+                       if re.search(r'dracut\[[EW]\]|\b(?:error|failed|cannot)\b|ldconfig:',
                                     line, re.IGNORECASE))
-    return ('errors=' + sanitized_diagnostic(errors, limit=1024)
-            + '\ntail=' + sanitized_diagnostic(log, limit=1024))
+    return ('warnings=' + sanitized_diagnostic(errors, limit=1024)
+            + '\nstart=' + safe_log[:1024]
+            + '\ntail=' + safe_log[-1024:])
 
 
 def failure_diagnostic(error):
@@ -274,7 +276,8 @@ def transform(args):
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
                 if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
-                    raise ValueError('dracut did not exit successfully: '
+                    raise ValueError(f"dracut status={state.get('Status')!r} "
+                                     f"exit={state.get('ExitCode')!r}: "
                                      + dracut_failure_diagnostic(log))
                 modules = module_evidence(log)
                 context = work / 'context'

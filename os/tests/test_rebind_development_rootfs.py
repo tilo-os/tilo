@@ -212,7 +212,7 @@ class TransformTests(unittest.TestCase):
             diagnostic = transform.dracut_failure_diagnostic(log)
             self.assertIn('dracut[E]: cannot open key Bearer [REDACTED]', diagnostic)
             self.assertNotIn('secret-token', diagnostic)
-            self.assertLess(len(diagnostic), 2100)
+            self.assertLess(len(diagnostic), 3150)
         with self.subTest(phase="real_subprocess_output_time_and_exit_bounds"):
             if not (os.name == 'posix'):
                 self.skipTest('Linux process-group and pipe semantics')
