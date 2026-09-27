@@ -21,6 +21,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 hex.workspace = true
 tilo-clock = { path = "../../crates/system/tilo-clock" }
+chrono = { workspace = true, features = ["clock", "std"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.

@@ -119,6 +119,10 @@ pub struct SettingsApp {
     /// Use stable, host-independent hardware fixtures in visual captures.
     /// Live construction always leaves this false.
     deterministic_hardware_for_shot: bool,
+    /// Whether this Settings acts on the machine it runs on, as the owning
+    /// compositor told it. When it does not, every pane that changes the
+    /// machine shows that the host system manages it instead of controls.
+    system_surfaces: os_actions::SystemSurfaces,
     account_probe: Option<(
         tilo_actions::InvocationId,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -178,6 +182,7 @@ impl SettingsApp {
             account_directory_override: None,
             account_form_override: None,
             deterministic_hardware_for_shot: false,
+            system_surfaces: os_actions::owner::current(),
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
@@ -228,6 +233,16 @@ impl SettingsApp {
     #[doc(hidden)]
     pub fn with_deterministic_hardware_for_shot(mut self) -> Self {
         self.deterministic_hardware_for_shot = true;
+        // The fixture hardware is this capture's own machine.
+        self.system_surfaces = os_actions::SystemSurfaces::Owned;
+        self
+    }
+
+    /// Present Settings as running on a machine it does or does not own.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn with_system_surfaces(mut self, surfaces: os_actions::SystemSurfaces) -> Self {
+        self.system_surfaces = surfaces;
         self
     }
 
@@ -443,6 +458,9 @@ impl SettingsApp {
         reason = "one exhaustive match constructs every category's pane"
     )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
+        if self.selected.acts_on_machine() && !self.system_surfaces.is_owned() {
+            return crate::widgets::host_managed(self.selected.label());
+        }
         match self.selected {
             // A capture never waits for NetworkManager; it renders the
             // loaded pane without host networks.
@@ -2419,6 +2437,34 @@ impl AppWidget for SettingsApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn machine_panes_show_the_host_manages_them_on_a_machine_settings_does_not_own() {
+        fn says_host_managed(widget: &dyn Widget) -> bool {
+            widget
+                .accessibility()
+                .and_then(|node| node.name)
+                .is_some_and(|name| name == os_actions::HOST_MANAGED_REASON)
+                || widget.children().into_iter().any(says_host_managed)
+        }
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        for &category in Category::ALL {
+            let hosted = config
+                .app()
+                .with_category(category)
+                .with_system_surfaces(os_actions::SystemSurfaces::Hosted);
+            assert_eq!(
+                says_host_managed(hosted.build_pane_body().as_ref()),
+                category.acts_on_machine(),
+                "{category:?} on a hosted shell"
+            );
+        }
+        let owned = config
+            .app()
+            .with_category(Category::TimeDate)
+            .with_system_surfaces(os_actions::SystemSurfaces::Owned);
+        assert!(!says_host_managed(owned.build_pane_body().as_ref()));
+    }
+
     use super::*;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};

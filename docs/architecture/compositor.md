@@ -70,6 +70,10 @@ action catalogue:
 - in the catalogue, the Quick Settings effects and log out are
   `Availability::Unavailable { code: "host_managed" }`. Invoking one returns
   that refusal.
+- Settings reads the same answer from its environment. Every pane that
+  changes the machine (network, Bluetooth, sound, displays, date and time,
+  users, printers, power, updates) shows "Managed by the host system" in
+  place of its controls.
 
 The answer reaches child processes through `TILO_SYSTEM_SURFACES` (`owned` or
 `hosted`). A shell nested in an owning Tilo session overwrites the value it

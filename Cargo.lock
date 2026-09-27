@@ -12724,6 +12724,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "bounded-command",
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",

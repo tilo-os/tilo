@@ -138,8 +138,8 @@ pub use session::{
     user_switching_supported,
 };
 pub use time::{
-    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
-    set_timezone, valid_timezone,
+    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, set_ntp, set_timezone,
+    valid_timezone,
 };
 pub use tool_intent::{
     BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,

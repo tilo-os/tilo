@@ -85,7 +85,10 @@ impl Harness {
     fn at_size(width: f32, height: f32) -> Self {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut h = Harness {
-            app: config.app(),
+            // The panes under test, not the host-managed notice.
+            app: config
+                .app()
+                .with_system_surfaces(os_actions::SystemSurfaces::Owned),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
