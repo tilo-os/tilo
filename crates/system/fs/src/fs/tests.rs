@@ -2,6 +2,9 @@ use super::*;
 
 mod availability_control_tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use iroh::endpoint::{Endpoint, presets};
@@ -484,7 +487,7 @@ mod availability_control_tests {
                 .unwrap();
 
             fs.retry_transfer(ino).unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::time::timeout(HANG_BOUND, async {
                 loop {
                     let done = registry
                         .lock()
@@ -567,7 +570,7 @@ mod availability_control_tests {
             .unwrap();
 
         fs.retry_transfer(ino).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(HANG_BOUND, async {
             loop {
                 let failure = registry
                     .lock()

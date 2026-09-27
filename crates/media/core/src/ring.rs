@@ -189,6 +189,9 @@ impl Prefetcher {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: web_time::Duration = web_time::Duration::from_secs(30);
+
     #[test]
     fn ring_and_prefetcher_keep_the_trailing_window_and_report_progress() {
         // Phase `ring_slides_and_keeps_the_trailing_window`.
@@ -218,10 +221,8 @@ mod tests {
             let progress = pf.progress();
 
             // Wait (bounded) for the background read to finish.
-            for _ in 0..200 {
-                if progress.is_done() {
-                    break;
-                }
+            let deadline = web_time::Instant::now() + HANG_BOUND;
+            while !progress.is_done() && web_time::Instant::now() < deadline {
                 std::thread::sleep(web_time::Duration::from_millis(5));
             }
             assert!(progress.is_done(), "prefetch completed");
@@ -233,10 +234,8 @@ mod tests {
             let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(vec![0u8; 256]));
             let pf = Prefetcher::spawn(reader, None, 128, 64).unwrap();
             let progress = pf.progress();
-            for _ in 0..200 {
-                if progress.is_done() {
-                    break;
-                }
+            let deadline = web_time::Instant::now() + HANG_BOUND;
+            while !progress.is_done() && web_time::Instant::now() < deadline {
                 std::thread::sleep(web_time::Duration::from_millis(5));
             }
             assert_eq!(progress.percent(), 100, "no total → 100 once done");

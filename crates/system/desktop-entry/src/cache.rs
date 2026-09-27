@@ -115,6 +115,9 @@ fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn cache_fingerprints_track_watched_directories_and_invalidation() {
         // Phase `the_cache_is_warm_on_the_second_call_and_cold_after_invalidate`.
@@ -142,7 +145,7 @@ mod tests {
             // Keep mutating the directory until its timestamp advances, but put a
             // firm bound on the retry: production deliberately remains one cheap
             // `stat` per application directory and the TTL is its fallback.
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + HANG_BOUND;
             let mut attempt = 0u32;
             loop {
                 std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();

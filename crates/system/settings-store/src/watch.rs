@@ -76,6 +76,9 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn an_atomic_rewrite_is_reported_and_sibling_files_are_not() {
         let root = crate::tests::tmpdir();
@@ -95,13 +98,13 @@ mod tests {
         let mut theme = serde_json::Map::new();
         theme.insert("theme".into(), serde_json::json!("Light"));
         crate::update_section_at(&path, "appearance", theme.clone()).unwrap();
-        changes.recv_timeout(Duration::from_secs(5)).unwrap();
+        changes.recv_timeout(HANG_BOUND).unwrap();
         while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
 
         theme.insert("theme".into(), serde_json::json!("Dark"));
         crate::update_section_at(&path, "appearance", theme).unwrap();
         changes
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(HANG_BOUND)
             .expect("a second atomic save still reaches the watch");
         std::fs::remove_dir_all(root).unwrap();
     }

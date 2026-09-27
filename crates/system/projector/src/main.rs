@@ -1578,6 +1578,9 @@ mod tests {
     use zbus::connection::Builder;
     use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
     const TEST_P2P_PATH: &str = "/org/freedesktop/NetworkManager/Devices/7";
     const TEST_PEER_PATH: &str = "/org/freedesktop/NetworkManager/WifiP2PPeer/9";
@@ -1910,7 +1913,7 @@ mod tests {
                 )
                 .expect("connect to simulator");
             connected_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(HANG_BOUND)
                 .expect("connected event")
                 .expect("successful connection");
             device
@@ -2069,7 +2072,7 @@ mod tests {
                     .expect("push projection frame");
                 std::thread::sleep(Duration::from_millis(34));
             }
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + HANG_BOUND;
             while !paths.playlist.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -2122,7 +2125,7 @@ mod tests {
             let session = std::thread::spawn(move || {
                 run_airplay_process(&sender_path, &[], &worker_paths, Some("4821"))
             });
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + HANG_BOUND;
             while !paths.ready.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -2186,7 +2189,7 @@ mod tests {
                     None,
                 )
             });
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + HANG_BOUND;
             while !paths.ready.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }

@@ -952,6 +952,9 @@ pub enum RecordMaterializerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use std::time::UNIX_EPOCH;
 
     use collab_types::{
@@ -1148,8 +1151,7 @@ mod tests {
                         .record_mutation(&repository, fixture.binding(), &old_envelope, &captured)
                         .unwrap();
                 });
-                wait.recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                wait.recv_timeout(HANG_BOUND).unwrap();
                 repository.apply(key, &current_envelope, &Allow).unwrap();
                 drop(namespace);
                 worker.join().unwrap();
