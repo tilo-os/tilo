@@ -28,10 +28,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextWeight};
-use ui::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
-    word_boundaries_chars,
-};
+use ui::text_selection::{Selection, clipboard_copy, clipboard_paste, word_boundaries_chars};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -811,20 +808,10 @@ pub struct SlidesApp {
     cur_slide: usize,
     sel: Option<Id>,
     editing_text: bool,
-    caret: usize,
     editing_notes: bool,
-    /// Selection anchor (char index) for the active on-canvas text editor.
-    /// `sel_anchor == active_caret()` means "no live selection"; the
-    /// pair is a [`ui::text_selection::Selection`] over the CRDT-backed text, so
-    /// the on-canvas editor gets the same selection semantics as every other
-    /// `ui` text field (shift+arrow, word-wise, drag-select, select-all,
-    /// clipboard) without a per-app text buffer. Reset to the caret whenever an
-    /// editor is (re)entered.
-    sel_anchor: usize,
     /// Inline deck-title rename in progress (toolbar title clicked). Typing
     /// splices into the CRDT title; Enter/Esc/clicking away commits.
     editing_title: bool,
-    title_caret: usize,
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
     /// Local routing policy selected from the presentation resource actions.
@@ -1076,11 +1063,8 @@ impl SlidesApp {
             cur_slide: 1,
             sel: None,
             editing_text: false,
-            caret: 0,
             editing_notes: false,
-            sel_anchor: 0,
             editing_title: false,
-            title_caret: 0,
             presentation: Presentation::default(),
             presentation_target: ui::fullscreen::FullscreenTarget::Largest,
             help_overlay: HelpOverlay::default(),
@@ -1414,7 +1398,6 @@ impl SlidesApp {
             Self::element_char_to_byte(&text, a),
             Self::element_char_to_byte(&text, b),
         );
-        self.sync_legacy_from_element_core();
         self.bootstrapped = true;
     }
 
@@ -3911,39 +3894,27 @@ impl SlidesApp {
             .map_or(text.len(), |(byte, _)| byte)
     }
 
-    fn sync_element_core_from_legacy(&mut self) {
-        let text = self.cur_edit_text();
-        if self.editing_text {
-            self.element_edit_core.set_selection(
-                Self::element_char_to_byte(&text, self.sel_anchor),
-                Self::element_char_to_byte(&text, self.caret),
-            );
-            self.element_edit_core.clamp_to(&text);
-        }
-    }
-
+    /// The editing element's caret and selection anchor as char indices, for
+    /// painting over the character-addressed text.
     #[expect(
         clippy::string_slice,
         reason = "the element edit core keeps its offsets on char boundaries of this same text"
     )]
-    fn sync_legacy_from_element_core(&mut self) {
-        if !self.editing_text {
-            return;
-        }
+    fn element_selection_chars(&self) -> Selection {
         let text = self.cur_edit_text();
         let selection = self.element_edit_core.selection();
-        self.sel_anchor = text[..selection.anchor.min(text.len())].chars().count();
-        self.caret = text[..selection.cursor.min(text.len())].chars().count();
+        let chars = |byte: usize| text[..byte.min(text.len())].chars().count();
+        Selection {
+            anchor: chars(selection.anchor),
+            cursor: chars(selection.cursor),
+        }
     }
 
     fn begin_element_edit_at_end(&mut self) {
         self.editing_text = true;
         self.editing_notes = false;
         let text = self.cur_edit_text();
-        let end = text.len();
-        self.element_edit_core.set_caret(end);
-        self.sel_anchor = text.chars().count();
-        self.caret = self.sel_anchor;
+        self.element_edit_core.set_caret(text.len());
     }
 
     fn set_element_selection_chars(&mut self, anchor: usize, cursor: usize) {
@@ -3952,7 +3923,6 @@ impl SlidesApp {
             Self::element_char_to_byte(&text, anchor),
             Self::element_char_to_byte(&text, cursor),
         );
-        self.sync_legacy_from_element_core();
     }
 
     #[expect(
@@ -3977,123 +3947,52 @@ impl SlidesApp {
         );
         self.mark();
         self.reload(doc);
-        self.sync_legacy_from_element_core();
     }
 
+    /// The editing element's text with the core's offsets clamped to it: the
+    /// text may have changed under the caret (a collaborator, an undo).
+    fn element_edit_text(&mut self) -> Option<String> {
+        if !self.editing_text {
+            return None;
+        }
+        let text = self.cur_edit_text();
+        self.element_edit_core.clamp_to(&text);
+        Some(text)
+    }
+
+    /// On-canvas editing uses the shared byte-safe core; the canvas only
+    /// translates its edit into Automerge's character-addressed splice.
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
-        if self.editing_title {
-            // A title is one line — drop any embedded newlines from a paste.
-            let s: String = s.chars().filter(|c| *c != '\n').collect();
-            if s.is_empty() {
-                return;
-            }
-            SlidesDoc::splice_title(doc, self.title_caret, 0, &s);
-            self.title_caret += s.chars().count();
-            self.reload(doc);
+        if self.element_edit_text().is_none() {
             return;
         }
-        // On-canvas editing uses the shared byte-safe core; the canvas only
-        // translates its edit into Automerge's character-addressed splice.
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let edit = self.element_edit_core.insert(s);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        // Typing over a selection replaces it (delete first, then insert at the
-        // collapsed caret).
-        self.delete_selection(doc);
-        if let Some(id) = self.sel.clone() {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 0, s);
-            self.caret += s.chars().count();
-            self.sel_anchor = self.caret;
-            self.reload(doc);
-        }
+        let edit = self.element_edit_core.insert(s);
+        self.apply_element_edit(doc, &edit);
     }
 
     fn backspace_text(&mut self, doc: &mut AutoCommit) {
-        if self.editing_title {
-            if self.title_caret > 0 {
-                SlidesDoc::splice_title(doc, self.title_caret - 1, 1, "");
-                self.title_caret -= 1;
-                self.mark();
-                self.reload(doc);
-            }
+        let Some(text) = self.element_edit_text() else {
             return;
-        }
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        // A live selection is deleted whole; otherwise delete the char before.
-        if self.delete_selection(doc) {
-            return;
-        }
-        if let Some(id) = self.sel.clone()
-            && self.caret > 0
-        {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret - 1, 1, "");
-            self.caret -= 1;
-            self.sel_anchor = self.caret;
-            self.mark();
-            self.reload(doc);
-        }
+        };
+        let edit = self.element_edit_core.delete_backward(&text, false);
+        self.apply_element_edit(doc, &edit);
     }
 
     /// Forward-delete: remove the selection if any, else the char after the
     /// caret (the `Delete` key inside a text editor).
     fn forward_delete_text(&mut self, doc: &mut AutoCommit) {
-        if self.editing_title {
-            let len = self.deck.title.chars().count();
-            if self.title_caret < len {
-                SlidesDoc::splice_title(doc, self.title_caret, 1, "");
-                self.mark();
-                self.reload(doc);
-            }
+        let Some(text) = self.element_edit_text() else {
             return;
-        }
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_forward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return;
-        }
-        if self.delete_selection(doc) {
-            return;
-        }
-        let len = self.cur_text_len();
-        if let Some(id) = self.sel.clone()
-            && self.caret < len
-        {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 1, "");
-            self.mark();
-            self.reload(doc);
-        }
+        };
+        let edit = self.element_edit_core.delete_forward(&text, false);
+        self.apply_element_edit(doc, &edit);
     }
 
-    fn cur_text_len(&self) -> usize {
-        if self.editing_title {
-            self.deck.title.chars().count()
-        } else {
-            self.selected_element()
-                .map_or(0, |e| e.text.chars().count())
-        }
-    }
-
-    /// The text currently being edited (title / notes / selected element), used
-    /// by the caret helpers for vertical navigation.
+    /// The text of the element being edited.
     fn cur_edit_text(&self) -> String {
-        if self.editing_title {
-            self.deck.title.clone()
-        } else {
-            self.selected_element()
-                .map(|e| e.text.clone())
-                .unwrap_or_default()
-        }
+        self.selected_element()
+            .map(|e| e.text.clone())
+            .unwrap_or_default()
     }
 
     /// Start renaming the deck title inline via the shared [`TextInput`] (caret
@@ -4103,7 +4002,6 @@ impl SlidesApp {
         self.editing_text = false;
         self.editing_notes = false;
         self.sel = None;
-        self.title_caret = self.deck.title.chars().count();
         self.title_input.set_text(&self.deck.title);
         // `set_text` clamps but doesn't advance the caret, so park it at the end.
         self.title_input.set_cursor_pos(self.deck.title.len());
@@ -4297,193 +4195,51 @@ impl SlidesApp {
         input_handled
     }
 
-    /// The char-index caret of whatever text is being edited.
-    fn active_caret(&self) -> usize {
-        if self.editing_title {
-            self.title_caret
-        } else {
-            self.caret
-        }
-    }
-
-    fn set_active_caret(&mut self, v: usize) {
-        if self.editing_title {
-            self.title_caret = v;
-        } else {
-            self.caret = v;
-        }
-    }
-
-    /// The active editor's [`Selection`] (anchor + caret) over the CRDT text,
-    /// clamped to the current text length. Collapsed when nothing is selected.
-    fn selection(&self) -> Selection {
-        let len = self.cur_text_len();
-        Selection {
-            anchor: self.sel_anchor.min(len),
-            cursor: self.active_caret().min(len),
-        }
-    }
-
-    /// Whether the active editor has a non-empty text selection.
-    fn has_text_selection(&self) -> bool {
-        !self.selection().is_collapsed()
-    }
-
-    /// Move the caret to `pos`; unless `extend`, collapse the selection there.
-    fn place_caret(&mut self, pos: usize, extend: bool) {
-        let len = self.cur_text_len();
-        let pos = pos.min(len);
-        self.set_active_caret(pos);
-        if !extend {
-            self.sel_anchor = pos;
-        }
-    }
-
-    /// Collapse the selection to its caret (anchor follows the cursor).
+    /// Collapse the selection to its caret.
     fn collapse_selection(&mut self) {
-        self.sel_anchor = self.active_caret();
+        let cursor = self.element_edit_core.selection().cursor;
+        self.element_edit_core.set_caret(cursor);
     }
 
     /// Delete the current selection from the CRDT, if any. Returns `true` when
     /// something was deleted (the caret is left at the deletion point).
     fn delete_selection(&mut self, doc: &mut AutoCommit) -> bool {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            if !self.element_edit_core.has_selection() {
-                return false;
-            }
-            let text = self.cur_edit_text();
-            let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, &edit);
-            return true;
-        }
-        let sel = self.selection();
-        if sel.is_collapsed() {
+        let Some(text) = self.element_edit_text() else {
+            return false;
+        };
+        if !self.element_edit_core.has_selection() {
             return false;
         }
-        let (a, b) = (sel.min(), sel.max());
-        if let Some(id) = self.sel.clone() {
-            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, a, b - a, "");
-            self.caret = a;
-        } else {
-            return false;
-        }
-        self.sel_anchor = a;
-        self.mark();
-        self.reload(doc);
+        let edit = self.element_edit_core.delete_backward(&text, false);
+        self.apply_element_edit(doc, &edit);
         true
     }
 
-    /// The currently-selected substring of the active editor's text.
+    /// The currently-selected substring of the editing element's text.
     fn selected_text(&self) -> String {
-        let sel = self.selection();
-        if sel.is_collapsed() {
+        if !self.editing_text {
             return String::new();
         }
-        self.cur_edit_text()
-            .chars()
-            .skip(sel.min())
-            .take(sel.max() - sel.min())
-            .collect()
+        let text = self.cur_edit_text();
+        let selection = self.element_edit_core.selection();
+        let end = selection.max().min(text.len());
+        text.get(selection.min().min(end)..end)
+            .unwrap_or_default()
+            .to_owned()
     }
 
-    /// Select the whole of the active editor's text.
+    /// Select the whole of the editing element's text.
     fn select_all_text(&mut self) {
-        let len = self.cur_text_len();
-        if self.editing_text {
-            let text = self.cur_edit_text();
+        if let Some(text) = self.element_edit_text() {
             self.element_edit_core.select_all(&text);
         }
-        self.sel_anchor = 0;
-        self.set_active_caret(len);
     }
 
-    /// Move the active caret one char left (`dir < 0`) or right. When `extend`
-    /// is false and a selection is live, collapse to the selection edge in that
-    /// direction instead of moving past it (standard editor behaviour).
-    fn move_caret(&mut self, dir: i32, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if dir < 0 { Motion::Left } else { Motion::Right },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
+    /// Move the caret of the editing element; `extend` keeps the anchor.
+    fn move_caret_by(&mut self, motion: Motion, extend: bool) {
+        if let Some(text) = self.element_edit_text() {
+            self.element_edit_core.motion(&text, motion, extend);
         }
-        if !extend && self.has_text_selection() {
-            let sel = self.selection();
-            let edge = if dir < 0 { sel.min() } else { sel.max() };
-            self.place_caret(edge, false);
-            return;
-        }
-        let len = self.cur_text_len();
-        let cur = self.active_caret().min(len);
-        let next = if dir < 0 {
-            cur.saturating_sub(1)
-        } else {
-            (cur + 1).min(len)
-        };
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret one word left (`dir < 0`) or right, via the shared
-    /// word-boundary walker (`ctrl`+arrow).
-    fn move_caret_word(&mut self, dir: i32, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if dir < 0 {
-                    Motion::WordLeft
-                } else {
-                    Motion::WordRight
-                },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
-        }
-        let text = self.cur_edit_text();
-        let cur = self.active_caret().min(text.chars().count());
-        let next = if dir < 0 {
-            prev_word_boundary_chars(&text, cur)
-        } else {
-            next_word_boundary_chars(&text, cur)
-        };
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret up/down one explicit line, keeping the column.
-    fn move_caret_vertical(&mut self, dir: i32, extend: bool) {
-        let text = self.cur_edit_text();
-        let next = caret_line_move(&text, self.active_caret(), dir);
-        self.place_caret(next, extend);
-    }
-
-    /// Move the active caret to the start (`end=false`) or end of its line.
-    fn move_caret_home_end(&mut self, end: bool, extend: bool) {
-        if self.editing_text {
-            self.sync_element_core_from_legacy();
-            let text = self.cur_edit_text();
-            self.element_edit_core.motion(
-                &text,
-                if end {
-                    Motion::LineEnd
-                } else {
-                    Motion::LineStart
-                },
-                extend,
-            );
-            self.sync_legacy_from_element_core();
-            return;
-        }
-        let text = self.cur_edit_text();
-        let next = caret_line_home_end(&text, self.active_caret(), end);
-        self.place_caret(next, extend);
     }
 
     /// Copy the selection to the clipboard (shared `ui` clipboard). Returns
@@ -5526,7 +5282,8 @@ impl SlidesApp {
         s: f64,
     ) {
         let style = TextBoxStyle::for_element(el, er, s);
-        self.draw_caret_in_box(paint, pal.accent, &el.text, self.caret, style);
+        let caret = self.element_selection_chars().cursor;
+        self.draw_caret_in_box(paint, pal.accent, &el.text, caret, style);
     }
 
     /// Paint a vertical caret over one line of text inside `er`. The caret
@@ -5759,11 +5516,8 @@ impl SlidesApp {
             self.set_element_selection_chars(a, b);
         } else if let Some((p, extend)) = self.caret_click.take() {
             let idx = self.char_at_point_in_box(tr, &el.text, style, p);
-            self.element_edit_core.set_selection(
-                Self::element_char_to_byte(&el.text, if extend { self.sel_anchor } else { idx }),
-                Self::element_char_to_byte(&el.text, idx),
-            );
-            self.sync_legacy_from_element_core();
+            self.element_edit_core
+                .place(Self::element_char_to_byte(&el.text, idx), extend);
         }
     }
 
@@ -5776,7 +5530,7 @@ impl SlidesApp {
         er: Rect,
         s: f64,
     ) {
-        let sel = self.selection();
+        let sel = self.element_selection_chars();
         if sel.is_collapsed() {
             return;
         }
@@ -5955,62 +5709,6 @@ fn line_starts(chars: &[char]) -> Vec<usize> {
         }
     }
     starts
-}
-
-/// Move a char-index caret up (`dir < 0`) or down one explicit (`\n`-delimited)
-/// line, keeping the column where the target line is long enough. At the first
-/// line (up) or last line (down) the caret is returned unchanged.
-fn caret_line_move(text: &str, caret: usize, dir: i32) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let caret = caret.min(chars.len());
-    let starts = line_starts(&chars);
-    // Current line = the largest start <= caret.
-    let mut li = 0usize;
-    for (k, &st) in starts.iter().enumerate() {
-        if caret >= st {
-            li = k;
-        } else {
-            break;
-        }
-    }
-    let col = caret - starts.get(li).copied().unwrap_or(0);
-    let target = if dir < 0 {
-        if li == 0 {
-            return caret;
-        }
-        li - 1
-    } else {
-        if li + 1 >= starts.len() {
-            return caret;
-        }
-        li + 1
-    };
-    let tstart = starts.get(target).copied().unwrap_or(0);
-    let tend = starts
-        .get(target + 1)
-        .map_or(chars.len(), |&s| s.saturating_sub(1)); // drop the trailing '\n'
-    tstart + col.min(tend.saturating_sub(tstart))
-}
-
-/// Move a char-index caret to the start (`end=false`) or end of its explicit
-/// line.
-fn caret_line_home_end(text: &str, caret: usize, end: bool) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let caret = caret.min(chars.len());
-    let mut ls = 0usize;
-    for (i, ch) in chars.iter().enumerate().take(caret) {
-        if *ch == '\n' {
-            ls = i + 1;
-        }
-    }
-    if !end {
-        return ls;
-    }
-    let mut le = caret;
-    while chars.get(le).is_some_and(|&c| c != '\n') {
-        le += 1;
-    }
-    le
 }
 
 /// Write a small, unmistakably-photographic test raster to a temp PNG and
@@ -6455,8 +6153,7 @@ impl Widget for SlidesApp {
                 if edit_text {
                     // A text search result restores an immediately useful edit
                     // state: the exact text resource is selected in full.
-                    self.sel_anchor = 0;
-                    self.caret = text_len;
+                    self.set_element_selection_chars(0, text_len);
                 }
                 self.scroll_rail_to_current();
             }
@@ -8449,44 +8146,48 @@ impl SlidesApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                if ctrl {
-                    self.move_caret_word(-1, shift);
-                } else {
-                    self.move_caret(-1, shift);
-                }
+                self.move_caret_by(if ctrl { Motion::WordLeft } else { Motion::Left }, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if ctrl {
-                    self.move_caret_word(1, shift);
-                } else {
-                    self.move_caret(1, shift);
-                }
+                self.move_caret_by(
+                    if ctrl {
+                        Motion::WordRight
+                    } else {
+                        Motion::Right
+                    },
+                    shift,
+                );
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_caret_vertical(-1, shift);
+                self.move_caret_by(Motion::LineUp, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_caret_vertical(1, shift);
+                self.move_caret_by(Motion::LineDown, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
-                if ctrl {
-                    self.place_caret(0, shift);
-                } else {
-                    self.move_caret_home_end(false, shift);
-                }
+                self.move_caret_by(
+                    if ctrl {
+                        Motion::DocStart
+                    } else {
+                        Motion::LineStart
+                    },
+                    shift,
+                );
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                if ctrl {
-                    let len = self.cur_text_len();
-                    self.place_caret(len, shift);
-                } else {
-                    self.move_caret_home_end(true, shift);
-                }
+                self.move_caret_by(
+                    if ctrl {
+                        Motion::DocEnd
+                    } else {
+                        Motion::LineEnd
+                    },
+                    shift,
+                );
                 *handled = true;
             }
             _ => return false,
@@ -11337,12 +11038,8 @@ mod tests {
 
     // --- text caret alignment (was hard-coded to the left edge) -------------
 
-    /// Caret placement under alignment, line moves, Home/End and word-wise moves.
+    /// Caret placement under alignment and word-wise moves.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn caret_navigation_tracks_alignment_and_lines() {
         // Case `caret_tracks_center_and_right_alignment_not_just_left`.
         {
@@ -11386,48 +11083,6 @@ mod tests {
             );
         }
 
-        // Case `caret_line_move_keeps_column_and_clamps_at_edges`.
-        {
-            let t = "abc\ndef\nghij";
-            // Down/up keep the column.
-            assert_eq!(
-                caret_line_move(t, 2, 1),
-                6,
-                "down from line0 col2 → line1 col2"
-            );
-            assert_eq!(
-                caret_line_move(t, 6, -1),
-                2,
-                "up from line1 col2 → line0 col2"
-            );
-            // A longer column clamps to a shorter target line's length.
-            assert_eq!(
-                caret_line_move(t, 12, -1),
-                7,
-                "up from line2 col4 clamps to line1 col3"
-            );
-            // Edges are no-ops.
-            assert_eq!(
-                caret_line_move(t, 2, -1),
-                2,
-                "up on the first line is unchanged"
-            );
-            assert_eq!(
-                caret_line_move(t, 10, 1),
-                10,
-                "down on the last line is unchanged"
-            );
-        }
-
-        // Case `caret_line_home_end_snaps_within_the_line`.
-        {
-            let t = "abc\ndef";
-            assert_eq!(caret_line_home_end(t, 5, false), 4, "Home → line start");
-            assert_eq!(caret_line_home_end(t, 5, true), 7, "End → line end");
-            assert_eq!(caret_line_home_end(t, 1, false), 0);
-            assert_eq!(caret_line_home_end(t, 1, true), 3);
-        }
-
         // Case `ctrl_arrow_moves_word_wise`.
         // Ctrl+Arrow moves word-wise via the shared word-boundary walker.
         {
@@ -11444,7 +11099,7 @@ mod tests {
             let (mut app, mut doc) = app_doc(s);
             app.sel = Some(id);
             app.editing_text = true;
-            app.place_caret(app.cur_text_len(), false);
+            app.begin_element_edit_at_end();
             assert!(key_named_mods(
                 &mut app,
                 &mut doc,
@@ -11452,12 +11107,12 @@ mod tests {
                 ModifiersState::CONTROL
             ));
             assert_eq!(
-                app.active_caret(),
+                app.element_selection_chars().cursor,
                 6,
                 "ctrl+left jumps to the start of the last word"
             );
             assert!(
-                !app.has_text_selection(),
+                !app.element_edit_core.has_selection(),
                 "a plain word move collapses the selection"
             );
         }
@@ -11536,7 +11191,7 @@ mod tests {
             // Enter opens the text editor on the selected box.
             assert!(keyn(&mut app, &mut doc, NamedKey::Enter));
             assert!(app.editing_text);
-            assert_eq!(app.caret, "Hi".chars().count());
+            assert_eq!(app.element_selection_chars().cursor, "Hi".chars().count());
             assert!(keyc(&mut app, &mut doc, "!"));
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
@@ -11558,8 +11213,11 @@ mod tests {
             use winit::keyboard::ModifiersState;
             let (mut app, mut doc, _id) = selected_text_app();
             app.editing_text = true;
-            app.place_caret(app.cur_text_len(), false);
-            assert!(!app.has_text_selection(), "starts with no selection");
+            app.begin_element_edit_at_end();
+            assert!(
+                !app.element_edit_core.has_selection(),
+                "starts with no selection"
+            );
             assert!(key_named_mods(
                 &mut app,
                 &mut doc,
@@ -11573,7 +11231,7 @@ mod tests {
                 ModifiersState::SHIFT
             ));
             assert!(
-                app.has_text_selection(),
+                app.element_edit_core.has_selection(),
                 "shift+arrow builds a live selection"
             );
             assert_eq!(app.selected_text(), "Hi", "the selection spans both chars");
@@ -11585,7 +11243,7 @@ mod tests {
             use winit::keyboard::ModifiersState;
             let (mut app, mut doc, id) = selected_text_app();
             app.editing_text = true;
-            app.place_caret(0, false);
+            app.set_element_selection_chars(0, 0);
             assert!(key_char_mods(
                 &mut app,
                 &mut doc,
@@ -11620,7 +11278,7 @@ mod tests {
         {
             let (mut app, mut doc, id) = selected_text_app();
             app.editing_text = true;
-            app.place_caret(0, false);
+            app.set_element_selection_chars(0, 0);
             assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
             assert_eq!(
                 loaded(&doc).slides[0].element(&id).unwrap().text,
@@ -11906,7 +11564,7 @@ mod tests {
             assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
             assert!(app.editing_text);
             assert_eq!(
-                app.selection(),
+                app.element_selection_chars(),
                 Selection {
                     anchor: 0,
                     cursor: text_len,
@@ -12205,12 +11863,13 @@ mod history_interruption_tests {
             app.sync(&mut doc, &automerge::ROOT);
             assert_eq!(app.notes_input.value(), "TWO ONE Selected notes");
             app.begin_title_edit();
-            app.insert_text(&mut doc, " one");
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            app.insert_text(&mut doc, " two");
-            doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
+            for typed in [" one", " two"] {
+                let end = app.deck.title.chars().count();
+                SlidesDoc::splice_title(&mut doc, end, 0, typed);
+                app.reload(&doc);
+                doc.get_heads();
+                app.sync(&mut doc, &automerge::ROOT);
+            }
             assert!(app.editing_title);
             assert!(app.deck.title.ends_with(" one two"));
         }

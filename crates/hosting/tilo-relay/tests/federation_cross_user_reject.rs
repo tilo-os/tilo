@@ -24,8 +24,6 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -91,7 +89,18 @@ async fn cross_user_peer_relay_is_rejected() {
         signature: [1u8; 64],
     })
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Alice's host must have committed the delta before we judge that Bob
+    // never saw it — otherwise a slow disk makes the isolation check a
+    // race against the writer's own latency.
+    let alice_log = a_relay
+        .state_root
+        .join("workspaces")
+        .join("42")
+        .join("log.jsonl");
+    wait_until("Alice's relay persisted the published delta", || {
+        std::fs::read(&alice_log).is_ok_and(|b| !b.is_empty())
+    })
+    .await;
 
     // Bob's relay must have received NO deltas — the log file
     // either doesn't exist or is empty.

@@ -256,6 +256,8 @@ pub struct TextInput {
     bound_text: Option<ObjId>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
+    /// Horizontal alignment of wrapped text within the input's width.
+    align: TextAlign,
     /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
     disabled: bool,
@@ -424,6 +426,7 @@ impl TextInput {
             plain: false,
             bound_text: None,
             local_author: None,
+            align: TextAlign::Left,
             secret: false,
             disabled: false,
             kind: TextInputKind::Prose,
@@ -470,6 +473,20 @@ impl TextInput {
     }
 
     /// `None` disables authorship stamping.
+    /// Align the text within the input's width (a centred title).
+    pub fn set_align(&mut self, align: TextAlign) {
+        if self.align != align {
+            self.align = align;
+            self.single_layout = None;
+            self.dirty = true;
+        }
+    }
+
+    /// How the text is aligned within the input's width.
+    pub fn align(&self) -> TextAlign {
+        self.align
+    }
+
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.local_author = author;
     }
@@ -777,6 +794,7 @@ impl TextInput {
         display.hash(&mut hash);
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
+        (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if !self.preedit.is_empty() {
             self.cursor_pos.hash(&mut hash);
@@ -1860,7 +1878,7 @@ impl TextInput {
                 &spans,
                 style,
                 Some(available_width),
-                TextAlign::Left,
+                self.align,
                 Vec::new(),
                 Vec::new(),
                 self.single_layout.take(),
@@ -2838,12 +2856,9 @@ impl TextInput {
             return;
         };
         // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
-        let mut sig: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in self.text.as_bytes() {
-            sig ^= u64::from(b);
-            sig = sig.wrapping_mul(0x100_0000_01b3);
-        }
-        sig ^= self.text.len() as u64;
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, self.text.as_bytes());
+        let sig = std::hash::Hasher::finish(&hasher) ^ self.text.len() as u64;
         if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
             return;
         }

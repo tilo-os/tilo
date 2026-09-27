@@ -526,7 +526,9 @@ struct NewArgs {
     /// Cargo package name, for example `reading-list`.
     name: Option<String>,
 
-    /// Reverse-DNS application id. Defaults to `so.tilo.<name>`.
+    /// Reverse-DNS application id. Defaults to `so.tilo.<name>` in the Tilo
+    /// workspace and `local.dev.<name>` elsewhere; publishing needs a
+    /// namespace you have verified.
     #[arg(long)]
     id: Option<String>,
 
@@ -542,9 +544,20 @@ struct NewArgs {
     #[arg(long)]
     directory: Option<PathBuf>,
 
-    /// Override the discovered toolkit `ui` crate (or set `TILO_UI_PATH`).
-    #[arg(long)]
+    /// Build against the toolkit `ui` crate of this Tilo checkout (or set
+    /// `TILO_UI_PATH`).
+    #[arg(long, conflicts_with_all = ["sdk_git", "sdk_rev"])]
     ui_path: Option<PathBuf>,
+
+    /// Build a standalone app against this Tilo git repository. Without a
+    /// checkout nearby, the default is <https://code.tilo.so/tilo/tilo.git>.
+    #[arg(long, value_name = "URL")]
+    sdk_git: Option<String>,
+
+    /// Pin the SDK repository to this commit. Defaults to the commit this
+    /// `tilo-app` was built from.
+    #[arg(long, value_name = "COMMIT")]
+    sdk_rev: Option<String>,
 
     /// Print the files that would be created without writing them.
     #[arg(long, conflicts_with = "dev")]
@@ -1687,6 +1700,8 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
         }),
         directory: args.directory,
         ui_path: args.ui_path,
+        sdk_git: args.sdk_git,
+        sdk_rev: args.sdk_rev,
         dry_run: args.dry_run,
     };
     let outcome = if interactive {

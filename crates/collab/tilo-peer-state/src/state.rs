@@ -57,9 +57,9 @@ fn now_secs(now: SystemTime) -> u64 {
         .as_secs()
 }
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
-    key.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, key);
+    std::hash::Hasher::finish(&hasher)
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeedDocument {

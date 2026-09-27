@@ -504,7 +504,13 @@ fn test_click_interaction_in_sandbox() {
             surface_height: 256.0,
         })
         .unwrap();
-    thread::sleep(Duration::from_millis(500));
+    // Pointer enter is what makes the subsequent click land on the surface.
+    // The client logs EVENT:ENTER on the production path — wait for that.
+    tilo_test_env::wait_until("client received pointer enter", || {
+        fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .contains("EVENT:ENTER")
+    });
 
     input_tx
         .send(WaylandInput::Button {
@@ -515,8 +521,6 @@ fn test_click_interaction_in_sandbox() {
             surface_height: 256.0,
         })
         .unwrap();
-    thread::sleep(Duration::from_millis(200));
-
     input_tx
         .send(WaylandInput::Button {
             button: 0x110,
@@ -561,11 +565,15 @@ fn test_click_interaction_in_sandbox() {
         })
         .unwrap();
 
-    thread::sleep(Duration::from_secs(2));
-
-    // 5. Verify Log
-    let log_content = fs::read_to_string(&log_path).unwrap_or_default();
+    // 5. Verify Log — the client writes EVENT:CLICK when the button release
+    // reaches it; wait for that production log line instead of sleeping 2 s.
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
+    tilo_test_env::wait_until("client logged the click at the pointer", || {
+        fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .contains(&expected_pattern)
+    });
+    let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     println!("DEBUG: Final Client Log:\n{log_content}");
 
     // Reap the sandboxed client before asserting, so a failing assert can't

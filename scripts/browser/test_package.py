@@ -24,8 +24,7 @@ class PackageTests(unittest.TestCase):
         def external(command, **kwargs):
             if command[0] == "cargo":
                 name = command[command.index("-p") + 1]
-                if name == "shell":
-                    self.assertIn("--no-default-features", command)
+                if "--bin" in command:
                     name = command[command.index("--bin") + 1]
                 profile = command[command.index("--profile") + 1]
                 target = root / "target" / ("debug" if profile == "dev" else profile)
@@ -52,9 +51,11 @@ class PackageTests(unittest.TestCase):
                 root = Path(directory)
                 self.package_fixture(root, system)
                 executables = root / executables_path
-                host = executables / "tilo-runtime-mcp"
+                # A package runs outside the Tilo desktop: the standalone runtime.
+                host = executables / "tilo-runtime"
                 self.assertTrue(host.is_file(), "packaged browser must not need PATH or Cargo for its runtime")
-                self.assertEqual(host.read_bytes(), b"tilo-runtime-mcp fixture")
+                self.assertEqual(host.read_bytes(), b"tilo-runtime fixture")
+                self.assertFalse((executables / "tilo-runtime-mcp").exists())
                 self.assertTrue(host.stat().st_mode & 0o111)
                 self.assertEqual((executables / "browser").read_bytes(), b"browser fixture")
 

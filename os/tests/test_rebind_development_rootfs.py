@@ -69,6 +69,14 @@ class TransformTests(unittest.TestCase):
                     transform.create_arguments(image, kernel, epoch, Path('/hooks'))
 
     def test_container_lifecycle(self):
+        with self.subTest(phase="terminal_podman_states_require_zero_integer_exit"):
+            for status, exit_code, expected in (
+                    ('exited', 0, True), ('stopped', 0, True),
+                    ('running', 0, False), ('stopped', 1, False),
+                    ('stopped', True, False)):
+                with self.subTest(status=status, exit_code=exit_code):
+                    self.assertEqual(transform.dracut_succeeded({
+                        'Status': status, 'ExitCode': exit_code}), expected)
         with self.subTest(phase="mount_cleanup_on_consumer_failure"):
             with tempfile.TemporaryDirectory() as temporary:
                 calls = []
@@ -206,6 +214,13 @@ class TransformTests(unittest.TestCase):
                     self.assertFalse(any(call[0] == 'commit' for call in calls))
 
     def test_subprocess_bounds_and_diagnostics(self):
+        with self.subTest(phase="early_dracut_error_survives_bounded_diagnostic"):
+            log = ('dracut[E]: cannot open key Bearer secret-token\n'
+                   + 'ordinary progress\n' * 300)
+            diagnostic = transform.dracut_failure_diagnostic(log)
+            self.assertIn('dracut[E]: cannot open key Bearer [REDACTED]', diagnostic)
+            self.assertNotIn('secret-token', diagnostic)
+            self.assertLess(len(diagnostic), 3150)
         with self.subTest(phase="real_subprocess_output_time_and_exit_bounds"):
             if not (os.name == 'posix'):
                 self.skipTest('Linux process-group and pipe semantics')

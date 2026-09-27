@@ -40,6 +40,7 @@ dev-session = []
 dev-overrides = []
 
 [dependencies]
+fnv.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -224,9 +225,6 @@ runtime-fs = { path = "../../runtime/runtime-fs" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 # The app identity service: broker, registry, device fleet, provisioning.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-# The compositor-free runtime host serves its apps' document media from the
-# same content store and capability implementation as the filesystem daemon.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
@@ -280,6 +278,8 @@ tar.workspace = true
 # writer, ICU tokenizer, and other extras we don't need for a
 # home-directory index.
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+# Tilo's search layer: the providers' retained indexes.
+tilo-search = { path = "../../sdk/search" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -85,18 +85,17 @@ path = "src/lib.rs"
 
 [dependencies.atspi-common]
 version = "0.13.0"
-path = "../atspi-common"
+path = "../atspi-common-0.13.0"
 default-features = false
 
 [dependencies.atspi-connection]
 version = "0.13.0"
-path = "../atspi-connection"
 optional = true
 default-features = false
 
 [dependencies.atspi-proxies]
 version = "0.13.0"
-path = "../atspi-proxies"
+path = "../atspi-proxies-0.13.0"
 optional = true
 default-features = false
 

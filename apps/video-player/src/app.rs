@@ -565,11 +565,9 @@ fn local_source_token(source: &media::Source, generation: u64) -> String {
     // FNV-1a is used only as an opaque UI identifier, not as a security
     // boundary. The monotonic generation prevents a same-path reopen from
     // accepting stale dynamic stream/chapter actions.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in media::session::session_key(source).bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, media::session::session_key(source).as_bytes());
+    let hash = std::hash::Hasher::finish(&hasher);
     format!("local-media-{hash:016x}-open-{generation}")
 }
 

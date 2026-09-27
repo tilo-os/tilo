@@ -24,6 +24,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 mod json;
 pub mod portability;
+pub mod standalone;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -180,7 +181,35 @@ pub struct NewAppRequest {
     /// Explicit toolkit crate. `None` discovers `TILO_UI_PATH`, a surrounding
     /// checkout, the running executable's checkout, or the build checkout.
     pub ui_path: Option<PathBuf>,
+    /// Build a standalone app against this Tilo git repository instead of a
+    /// checkout. `None` uses the public repository when no checkout is found.
+    pub sdk_git: Option<String>,
+    /// Commit of the SDK repository. `None` pins the commit this CLI was
+    /// built from.
+    pub sdk_rev: Option<String>,
     pub dry_run: bool,
+}
+
+enum SdkRequest {
+    Discover,
+    Checkout(PathBuf),
+    Git {
+        url: Option<String>,
+        rev: Option<String>,
+    },
+}
+
+impl NewAppRequest {
+    fn sdk_request(&self) -> SdkRequest {
+        match (&self.ui_path, &self.sdk_git, &self.sdk_rev) {
+            (Some(ui), _, _) => SdkRequest::Checkout(ui.clone()),
+            (None, None, None) => SdkRequest::Discover,
+            (None, url, rev) => SdkRequest::Git {
+                url: url.clone(),
+                rev: rev.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -191,6 +220,8 @@ pub struct CreateOutcome {
     pub files: Vec<PathBuf>,
     pub dry_run: bool,
     pub workspace_member: bool,
+    /// Where a standalone app gets the SDK; `None` for a workspace member.
+    pub sdk: Option<standalone::SdkSource>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3929,36 +3960,16 @@ pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> 
 ///
 /// Returns an error when the selected app directory cannot be resolved.
 pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
-    doctor_app_with_capnp_probe(start, probe_capnp_compiler)
-}
-
-fn doctor_app_with_capnp_probe(
-    start: &Path,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) -> Result<DoctorReport> {
-    let app_dir = resolve_app_dir(start)?;
-    Ok(doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp))
+    Ok(doctor_resolved_app(resolve_app_dir(start)?))
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
-    #[cfg(not(test))]
-    let probe = probe_capnp_compiler;
-    #[cfg(test)]
-    let probe = || Ok("Cap'n Proto version 1.0.2".to_owned());
-    doctor_resolved_app_with_capnp_probe(app_dir, probe)
-}
-
-fn doctor_resolved_app_with_capnp_probe(
-    app_dir: PathBuf,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let manifest = check_package_manifest(&app_dir, &mut checks);
     let package_id = manifest
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
-    check_capnp_compiler(&mut checks, probe_capnp);
 
     check_source_file(
         &app_dir,
@@ -4003,51 +4014,6 @@ fn doctor_resolved_app_with_capnp_probe(
     }
 
     DoctorReport { app_dir, checks }
-}
-
-fn probe_capnp_compiler() -> std::result::Result<String, String> {
-    let output = ProcessCommand::new("capnp")
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("could not run `capnp --version`: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let error_detail = if stderr.trim().is_empty() {
-            String::new()
-        } else {
-            format!(": {}", stderr.trim())
-        };
-        return Err(format!(
-            "`capnp --version` exited with {}{}",
-            output.status, error_detail
-        ));
-    }
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    Ok(if version.is_empty() {
-        "`capnp --version` succeeded".to_owned()
-    } else {
-        version
-    })
-}
-
-fn check_capnp_compiler(
-    checks: &mut Vec<DoctorCheck>,
-    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
-) {
-    let (status, detail) = match probe_capnp() {
-        Ok(version) => (DoctorStatus::Pass, version),
-        Err(error) => (
-            DoctorStatus::Fail,
-            format!(
-                "{error}; install the Cap'n Proto compiler (`capnp`) or run tilo-app inside the Tilo development container"
-            ),
-        ),
-    };
-    checks.push(DoctorCheck {
-        status,
-        label: "Cap'n Proto compiler",
-        detail,
-    });
 }
 
 fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
@@ -5095,8 +5061,7 @@ fn rebuild_running_dev_app(
         report_child_exit(child);
         eprintln!("[tilo-app] change detected; rebuilding");
         let building_revision = source_revision.load(Ordering::Acquire);
-        // The startup plan already passed preflight. Re-running it shells out
-        // to `capnp --version` before rustc starts. A newer edit cancels this
+        // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
         let in_place = app_supports_in_place_reload(&plan.app_dir);
         let candidate = if in_place {
@@ -5196,6 +5161,7 @@ enum DevCandidate {
 
 struct DevCargo {
     args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
     pick: DevPick,
 }
 
@@ -5238,6 +5204,7 @@ fn build_dev_candidate_interruptible(
                 OsString::from(&expected_binary),
                 OsString::from("--message-format=json-render-diagnostics"),
             ],
+            env: Vec::new(),
             pick: DevPick::Executable(expected_binary),
         },
     )
@@ -5255,6 +5222,7 @@ fn run_dev_cargo(
     let mut command = ProcessCommand::new(&plan.program);
     command
         .args(&cargo.args)
+        .envs(cargo.env.iter().map(|(key, value)| (key, value)))
         .current_dir(&plan.app_dir)
         .stdin(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -5913,87 +5881,161 @@ fn build_in_place_dev_app(
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let binary = dev_binary_name(&manifest)?;
-    eprintln!("[tilo-app] building the shared toolkit");
-    if let DevCandidate::Superseded = run_dev_cargo(
-        plan,
-        events,
-        roots,
-        &mut observe,
-        &DevCargo {
-            args: vec![
-                OsString::from("rustc"),
-                OsString::from("-p"),
-                OsString::from("runtime-dylib"),
-                OsString::from("--message-format=json-render-diagnostics"),
-                OsString::from("--"),
-                OsString::from("-C"),
-                OsString::from("prefer-dynamic"),
-            ],
-            pick: DevPick::ExitStatus,
-        },
-    )? {
-        return Ok(DevCandidate::Superseded);
-    }
-    let executable = if need_host {
-        eprintln!("[tilo-app] building the reload host");
-        match run_dev_cargo(
-            plan,
-            events,
-            roots,
-            &mut observe,
-            &DevCargo {
-                args: vec![
-                    OsString::from("rustc"),
-                    OsString::from("--manifest-path"),
-                    manifest.as_os_str().to_os_string(),
-                    OsString::from("--bin"),
-                    OsString::from(&binary),
-                    OsString::from("--features"),
-                    OsString::from("thin"),
-                    OsString::from("--message-format=json-render-diagnostics"),
-                    OsString::from("--"),
-                    OsString::from("-C"),
-                    OsString::from("prefer-dynamic"),
-                ],
-                pick: DevPick::Executable(binary),
-            },
-        )? {
-            DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
-            DevCandidate::Built(executable) => executable,
-        }
+    let linkage = if app_is_workspace_member(&plan.app_dir) {
+        ThinDevLinkage::WorkspaceToolkit
     } else {
-        PathBuf::new()
+        ThinDevLinkage::Target(host_triple(&plan.app_dir)?)
     };
-    eprintln!("[tilo-app] building the reload library");
-    let library = match run_dev_cargo(
-        plan,
-        events,
-        roots,
-        &mut observe,
-        &DevCargo {
-            args: vec![
-                OsString::from("rustc"),
-                OsString::from("--manifest-path"),
-                manifest.as_os_str().to_os_string(),
-                OsString::from("--lib"),
-                OsString::from("--crate-type"),
-                OsString::from("cdylib"),
-                OsString::from("--features"),
-                OsString::from("thin"),
-                OsString::from("--message-format=json-render-diagnostics"),
-                OsString::from("--"),
-                OsString::from("-C"),
-                OsString::from("prefer-dynamic"),
-            ],
-            pick: DevPick::DynamicLibrary,
-        },
-    )? {
-        DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
-        DevCandidate::Built(library) => library,
-    };
-    let staged = stage_dev_reload_library(&plan.app_dir, &library)?;
-    eprintln!("[tilo-app] reload library {}", staged.display());
+    let mut executable = PathBuf::new();
+    for step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
+        eprintln!("[tilo-app] building {}", step.label);
+        match run_dev_cargo(plan, events, roots, &mut observe, &step.cargo)? {
+            DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
+            DevCandidate::Built(artifact) => match step.cargo.pick {
+                DevPick::Executable(_) => executable = artifact,
+                DevPick::DynamicLibrary => {
+                    let staged = stage_dev_reload_library(&plan.app_dir, &artifact)?;
+                    eprintln!("[tilo-app] reload library {}", staged.display());
+                }
+                DevPick::ExitStatus => {}
+            },
+        }
+    }
     Ok(DevCandidate::Built(executable))
+}
+
+/// How a thin development build links the toolkit and `libstd` dynamically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ThinDevLinkage {
+    /// `runtime-dylib` is a member of the app's workspace and is built on its
+    /// own with `-C prefer-dynamic`.
+    WorkspaceToolkit,
+    /// Outside the Tilo workspace Cargo cannot select `runtime-dylib` or set
+    /// its features. Every artifact for this target triple is built with
+    /// `-C prefer-dynamic` instead, so the toolkit is a dependency of the host.
+    /// Build scripts and proc macros are host artifacts and keep their flags.
+    Target(String),
+}
+
+struct ThinDevStep {
+    label: &'static str,
+    cargo: DevCargo,
+}
+
+fn thin_dev_steps(
+    manifest: &Path,
+    binary: &str,
+    linkage: &ThinDevLinkage,
+    need_host: bool,
+) -> Vec<ThinDevStep> {
+    let (target_args, env) = match linkage {
+        ThinDevLinkage::WorkspaceToolkit => (Vec::new(), Vec::new()),
+        ThinDevLinkage::Target(triple) => {
+            let key = format!(
+                "CARGO_TARGET_{}_RUSTFLAGS",
+                triple.to_ascii_uppercase().replace(['-', '.'], "_")
+            );
+            let mut flags = std::env::var_os(&key).unwrap_or_default();
+            if !flags.is_empty() {
+                flags.push(" ");
+            }
+            flags.push("-C prefer-dynamic");
+            (
+                vec![OsString::from("--target"), OsString::from(triple)],
+                vec![(OsString::from(key), flags)],
+            )
+        }
+    };
+    let app_step = |label, target: &[&str], pick| {
+        let mut args = vec![
+            OsString::from("rustc"),
+            OsString::from("--manifest-path"),
+            manifest.as_os_str().to_os_string(),
+        ];
+        args.extend(target.iter().map(OsString::from));
+        args.extend(target_args.iter().cloned());
+        args.extend(
+            [
+                "--features",
+                "thin",
+                "--message-format=json-render-diagnostics",
+                "--",
+                "-C",
+                "prefer-dynamic",
+            ]
+            .map(OsString::from),
+        );
+        ThinDevStep {
+            label,
+            cargo: DevCargo {
+                args,
+                env: env.clone(),
+                pick,
+            },
+        }
+    };
+    let mut steps = Vec::new();
+    if *linkage == ThinDevLinkage::WorkspaceToolkit {
+        steps.push(ThinDevStep {
+            label: "the shared toolkit",
+            cargo: DevCargo {
+                args: [
+                    "rustc",
+                    "-p",
+                    "runtime-dylib",
+                    "--message-format=json-render-diagnostics",
+                    "--",
+                    "-C",
+                    "prefer-dynamic",
+                ]
+                .map(OsString::from)
+                .to_vec(),
+                env: Vec::new(),
+                pick: DevPick::ExitStatus,
+            },
+        });
+    }
+    if need_host {
+        steps.push(app_step(
+            "the reload host",
+            &["--bin", binary],
+            DevPick::Executable(binary.to_owned()),
+        ));
+    }
+    steps.push(app_step(
+        "the reload library",
+        &["--lib", "--crate-type", "cdylib"],
+        DevPick::DynamicLibrary,
+    ));
+    steps
+}
+
+/// Whether `app_dir` is a member of the Tilo workspace around it.
+fn app_is_workspace_member(app_dir: &Path) -> bool {
+    let app_dir = app_dir
+        .canonicalize()
+        .unwrap_or_else(|_| app_dir.to_path_buf());
+    find_repo_root(&app_dir).is_some_and(|root| {
+        std::fs::read_to_string(root.join("Cargo.toml")).is_ok_and(|manifest| {
+            app_dir
+                .strip_prefix(&root)
+                .is_ok_and(|member| manifest.contains(&format!("{:?}", member.to_string_lossy())))
+        })
+    })
+}
+
+/// The triple the app's own compiler builds for by default.
+fn host_triple(app_dir: &Path) -> Result<String> {
+    let output = ProcessCommand::new("rustc")
+        .arg("-vV")
+        .current_dir(app_dir)
+        .output()
+        .context("asking rustc for the host target")?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("rustc -vV did not name a host target"))
 }
 
 /// Copy `library` to a new file in the dev session and point `reload.path` at
@@ -6041,7 +6083,7 @@ fn spawn_thin_dev_binary(
     command.args(forwarded).current_dir(app_dir);
     attach_live_graph_env(&mut command, app_dir);
     attach_dev_session_env(&mut command, app_dir);
-    attach_dynamic_loader_env(&mut command, executable);
+    attach_dynamic_loader_env(&mut command, app_dir, executable);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -6052,12 +6094,14 @@ fn spawn_thin_dev_binary(
 }
 
 /// The host and the library it loads share `libstd` and `libruntime_dylib`.
-fn attach_dynamic_loader_env(command: &mut ProcessCommand, executable: &Path) {
+/// A toolkit built as a dependency stays in `deps/`, beside the host.
+fn attach_dynamic_loader_env(command: &mut ProcessCommand, app_dir: &Path, executable: &Path) {
     let mut dirs = Vec::new();
     if let Some(parent) = executable.parent() {
         dirs.push(parent.to_path_buf());
+        dirs.push(parent.join("deps"));
     }
-    if let Some(libdir) = rustc_target_libdir() {
+    if let Some(libdir) = rustc_target_libdir(app_dir) {
         dirs.push(libdir);
     }
     if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
@@ -6075,10 +6119,12 @@ fn attach_dynamic_loader_env(command: &mut ProcessCommand, executable: &Path) {
     }
 }
 
-fn rustc_target_libdir() -> Option<PathBuf> {
+/// The `libstd` of the compiler the app's `rust-toolchain.toml` selects.
+fn rustc_target_libdir(app_dir: &Path) -> Option<PathBuf> {
     let output = ProcessCommand::new("rustc")
         .arg("--print")
         .arg("target-libdir")
+        .current_dir(app_dir)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -6350,10 +6396,23 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<
                     )
                 }
             }
-            (Some("tilo-app"), None) => (
-                DoctorStatus::Warning,
-                "non-path tilo-app dependency; SDK source could not be verified".to_string(),
-            ),
+            (Some("tilo-app"), None) => match ui.get("git").and_then(toml::Value::as_str) {
+                Some(url) => {
+                    let pin = ["rev", "tag", "branch"].iter().find_map(|key| {
+                        ui.get(key)
+                            .and_then(toml::Value::as_str)
+                            .map(|value| format!(" {key} {value}"))
+                    });
+                    (
+                        DoctorStatus::Pass,
+                        format!("{url}{}", pin.as_deref().unwrap_or(" (default branch)")),
+                    )
+                }
+                None => (
+                    DoctorStatus::Warning,
+                    "non-path tilo-app dependency; SDK source could not be verified".to_string(),
+                ),
+            },
             (Some(package), _) => (
                 DoctorStatus::Fail,
                 format!("dependency `ui` renames `{package}`, expected the `tilo-app` SDK"),
@@ -7118,8 +7177,19 @@ impl CreateOutcome {
         }
         let develop = format!("tilo-app dev {destination}");
         let verify = format!("tilo-app check {destination}");
+        let mut notes = String::new();
+        if let Some(sdk) = &self.sdk {
+            let _ = write!(notes, "\n\nSDK: {}", sdk.describe());
+        }
+        if self.app_id.starts_with("local.") {
+            let _ = write!(
+                notes,
+                "\n\nThe app id {} is for local development. Change it in tilo-app.toml and src/lib.rs to a namespace you control before publishing.",
+                self.app_id
+            );
+        }
         format!(
-            "{}\n\nStart developing:\n  {develop}\n\nVerify everything:\n  {verify}\n\nRun `tilo-app --help` for testing, scenarios, screenshots, inspection, localization, and packaging.",
+            "{}{notes}\n\nStart developing:\n  {develop}\n\nVerify everything:\n  {verify}\n\nRun `tilo-app --help` for testing, scenarios, screenshots, inspection, localization, and packaging.",
             self.headline()
         )
     }
@@ -7131,9 +7201,17 @@ struct AppSpec {
     crate_name: String,
     title: String,
     app_id: String,
-    ui_path: PathBuf,
-    workspace_member: bool,
+    sdk: AppSdk,
     template: Template,
+}
+
+#[derive(Debug)]
+enum AppSdk {
+    /// A member of the Tilo workspace, with the path from the app to `ui-core`.
+    Workspace {
+        ui_path: PathBuf,
+    },
+    Standalone(standalone::Standalone),
 }
 
 /// Create an app, prompting for missing identity, title, and template fields
@@ -7150,6 +7228,9 @@ pub fn create_app_interactive(request: NewAppRequest) -> Result<CreateOutcome> {
     create_app_interactive_with(request, &mut stdin.lock(), &mut stdout.lock(), interactive)
 }
 
+/// The wizard's answer that selects the Tilo repository over a checkout.
+const SDK_FROM_GIT: &str = "git";
+
 fn create_app_interactive_with(
     request: NewAppRequest,
     input: &mut impl io::BufRead,
@@ -7158,6 +7239,37 @@ fn create_app_interactive_with(
 ) -> Result<CreateOutcome> {
     let current_dir = std::env::current_dir().context("reading current directory")?;
     create_app_interactive_from(&current_dir, request, input, output, interactive)
+}
+
+/// Ask for the checkout to build against, defaulting to the one discovered, or
+/// to the Tilo repository when there is none.
+fn prompt_sdk(
+    current_dir: &Path,
+    request: &mut NewAppRequest,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<()> {
+    let discovered = discover_ui_dir(current_dir, None).map(|path| path.display().to_string());
+    let value = prompt_validated(
+        input,
+        output,
+        "Toolkit ui path, or `git` for the Tilo repository",
+        Some(discovered.as_deref().unwrap_or(SDK_FROM_GIT)),
+        |value| {
+            if value == SDK_FROM_GIT {
+                return Ok(());
+            }
+            resolve_ui_dir(current_dir, None, Some(Path::new(value)))
+                .map(|_| ())
+                .context("invalid toolkit path")
+        },
+    )?;
+    if value == SDK_FROM_GIT {
+        request.sdk_git = Some(standalone::DEFAULT_SDK_GIT.to_owned());
+    } else {
+        request.ui_path = Some(PathBuf::from(value));
+    }
+    Ok(())
 }
 
 fn create_app_interactive_from(
@@ -7186,8 +7298,14 @@ fn create_app_interactive_from(
     if request.title.is_none() && interactive {
         request.title = Some(prompt(input, output, "App title", Some(&default_title))?);
     }
+    let repo = find_repo_root(current_dir);
     if request.app_id.is_none() && full_wizard {
-        let default_id = format!("so.tilo.{}", name.replace('-', "."));
+        let workspace_member = repo.is_some()
+            && request.directory.as_deref().is_none_or(|dir| {
+                repo.as_deref()
+                    .is_some_and(|root| current_dir.join(dir).starts_with(root))
+            });
+        let default_id = default_app_id(name, workspace_member);
         request.app_id = Some(prompt_validated(
             input,
             output,
@@ -7203,23 +7321,25 @@ fn create_app_interactive_from(
             Template::Starter
         });
     }
-    let repo = find_repo_root(current_dir);
-    if request.ui_path.is_none() && repo.is_none() && interactive {
-        let discovered = discover_ui_dir(current_dir, None).map(|path| path.display().to_string());
-        let value = prompt_validated(
-            input,
-            output,
-            "Toolkit ui path",
-            discovered.as_deref(),
-            |value| {
-                resolve_ui_dir(current_dir, None, Some(Path::new(value)))
-                    .map(|_| ())
-                    .context("invalid toolkit path")
-            },
-        )?;
-        request.ui_path = Some(PathBuf::from(value));
+    let choose_sdk = request.ui_path.is_none()
+        && request.sdk_git.is_none()
+        && request.sdk_rev.is_none()
+        && repo.is_none();
+    if choose_sdk && interactive {
+        prompt_sdk(current_dir, &mut request, input, output)?;
     }
-    let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
+    let toolkit = match request.sdk_request() {
+        SdkRequest::Git { url, rev } => standalone::SdkSource::Git {
+            url: url.unwrap_or_else(|| standalone::DEFAULT_SDK_GIT.to_owned()),
+            rev: rev.or_else(|| standalone::BUILT_FROM_REV.map(str::to_owned)),
+        }
+        .describe(),
+        SdkRequest::Discover | SdkRequest::Checkout(_) => {
+            resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?
+                .display()
+                .to_string()
+        }
+    };
     if full_wizard {
         let destination = new_app_destination(
             current_dir,
@@ -7236,7 +7356,7 @@ fn create_app_interactive_from(
             request.app_id.as_deref().unwrap_or_default(),
             template.name(),
             template.description(),
-            ui_dir.display(),
+            toolkit,
             destination.display(),
         )
         .context("showing app review")?;
@@ -7264,6 +7384,7 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("an app name is required"))?;
     validate_package_name(package_name)?;
+    let sdk_request = request.sdk_request();
 
     let repo = find_repo_root(current_dir);
     let destination = new_app_destination(
@@ -7274,9 +7395,15 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
     );
     validate_destination(&destination)?;
 
+    let workspace_path = repo
+        .as_deref()
+        .and_then(|root| destination.strip_prefix(root).ok())
+        .filter(|path| path.components().next().is_some())
+        .map(Path::to_path_buf);
+    let workspace_member = workspace_path.is_some();
     let app_id = request
         .app_id
-        .unwrap_or_else(|| format!("so.tilo.{}", package_name.replace('-', ".")));
+        .unwrap_or_else(|| default_app_id(package_name, workspace_member));
     validate_app_id(&app_id)?;
     let title = request
         .title
@@ -7285,21 +7412,29 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         bail!("app title must not be empty");
     }
 
-    let workspace_path = repo
-        .as_deref()
-        .and_then(|root| destination.strip_prefix(root).ok())
-        .filter(|path| path.components().next().is_some())
-        .map(Path::to_path_buf);
-    let workspace_member = workspace_path.is_some();
-    let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
-    let ui_path = relative_path(&destination, &ui_dir);
+    let sdk = if workspace_member {
+        let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
+        AppSdk::Workspace {
+            ui_path: relative_path(&canonical_destination(&destination), &ui_dir),
+        }
+    } else {
+        AppSdk::Standalone(resolve_standalone_sdk(
+            current_dir,
+            &destination,
+            repo.as_deref(),
+            &sdk_request,
+        )?)
+    };
+    let sdk_source = match &sdk {
+        AppSdk::Workspace { .. } => None,
+        AppSdk::Standalone(standalone) => Some(standalone.source.clone()),
+    };
     let spec = AppSpec {
         package_name: package_name.to_string(),
         crate_name: package_name.replace('-', "_"),
         title,
         app_id: app_id.clone(),
-        ui_path,
-        workspace_member,
+        sdk,
         template: request.template.unwrap_or(Template::Starter),
     };
     let rendered = render(&spec)?;
@@ -7322,6 +7457,57 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         files,
         dry_run: request.dry_run,
         workspace_member,
+        sdk: sdk_source,
+    })
+}
+
+/// Apps in the Tilo workspace belong to Tilo. Anyone else's app starts in a
+/// namespace nobody can publish to until they choose one they have verified.
+fn default_app_id(package_name: &str, workspace_member: bool) -> String {
+    let prefix = if workspace_member {
+        "so.tilo"
+    } else {
+        "local.dev"
+    };
+    format!("{prefix}.{}", package_name.replace('-', "."))
+}
+
+/// A toolkit named with `--ui-path` or `TILO_UI_PATH`, or a checkout around
+/// the app, this CLI or its build, is used in place. Otherwise the app builds
+/// against the Tilo repository at the commit this CLI came from.
+fn resolve_standalone_sdk(
+    current_dir: &Path,
+    destination: &Path,
+    repo: Option<&Path>,
+    request: &SdkRequest,
+) -> Result<standalone::Standalone> {
+    let checkout_ui = match request {
+        SdkRequest::Discover => discover_ui_dir(current_dir, repo)
+            .map(|_| resolve_ui_dir(current_dir, repo, None))
+            .transpose()?,
+        SdkRequest::Checkout(ui) => Some(resolve_ui_dir(current_dir, repo, Some(ui))?),
+        SdkRequest::Git { .. } => None,
+    };
+    if let Some(ui_dir) = checkout_ui {
+        let root = checkout_root_for_ui(&ui_dir).to_path_buf();
+        let relative_ui = relative_path(&canonical_destination(destination), &ui_dir);
+        return Ok(standalone::Standalone {
+            source: standalone::SdkSource::Checkout(
+                checkout_root_for_ui(&relative_ui).to_path_buf(),
+            ),
+            baseline: standalone::Baseline::from_checkout(&root)?,
+        });
+    }
+    let (url, rev) = match request {
+        SdkRequest::Git { url, rev } => (url.clone(), rev.clone()),
+        SdkRequest::Discover | SdkRequest::Checkout(_) => (None, None),
+    };
+    Ok(standalone::Standalone {
+        source: standalone::SdkSource::Git {
+            url: url.unwrap_or_else(|| standalone::DEFAULT_SDK_GIT.to_owned()),
+            rev: rev.or_else(|| standalone::BUILT_FROM_REV.map(str::to_owned)),
+        },
+        baseline: standalone::Baseline::embedded()?,
     })
 }
 
@@ -7802,10 +7988,12 @@ fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(ui) = ui_dir_from_ancestor(&executable)
+        && !standalone::in_cargo_cache(&ui)
     {
         return Some(ui);
     }
     ui_dir_from_ancestor(Path::new(env!("CARGO_MANIFEST_DIR")))
+        .filter(|ui| !standalone::in_cargo_cache(ui))
 }
 
 fn resolve_ui_dir(
@@ -7839,6 +8027,19 @@ fn resolve_ui_dir(
         .with_context(|| format!("resolving UI path {}", candidate.display()))
 }
 
+/// `destination` with its deepest existing ancestor canonicalised, so that it
+/// shares a prefix with the canonical toolkit path even through a symlink.
+fn canonical_destination(destination: &Path) -> PathBuf {
+    let absolute = std::path::absolute(destination).unwrap_or_else(|_| destination.to_path_buf());
+    absolute
+        .ancestors()
+        .find_map(|ancestor| {
+            let canonical = ancestor.canonicalize().ok()?;
+            Some(canonical.join(absolute.strip_prefix(ancestor).ok()?))
+        })
+        .unwrap_or(absolute)
+}
+
 fn relative_path(from_dir: &Path, target: &Path) -> PathBuf {
     let from: Vec<_> = from_dir.components().collect();
     let to: Vec<_> = target.components().collect();
@@ -7855,7 +8056,7 @@ fn relative_path(from_dir: &Path, target: &Path) -> PathBuf {
 
 fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
     let mut files = vec![
-        (PathBuf::from("Cargo.toml"), cargo_toml(spec)),
+        (PathBuf::from("Cargo.toml"), cargo_toml(spec)?),
         (PathBuf::from("src/lib.rs"), app_lib(spec)),
         (
             PathBuf::from("src/locales.rs"),
@@ -7882,6 +8083,9 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
             component_registry_source(&[], &BTreeSet::new())?,
         ));
     }
+    if let AppSdk::Standalone(standalone) = &spec.sdk {
+        files.extend(standalone.files()?);
+    }
     for (path, source) in &mut files {
         if path.extension().is_some_and(|extension| extension == "rs") {
             *source = rustfmt_source(source, path)?;
@@ -7890,54 +8094,45 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
     Ok(files)
 }
 
-fn cargo_toml(spec: &AppSpec) -> String {
-    let lints = if spec.workspace_member {
-        "\n[lints]\nworkspace = true\n"
-    } else {
-        ""
+fn cargo_toml(spec: &AppSpec) -> Result<String> {
+    let license = match spec.sdk {
+        AppSdk::Workspace { .. } => "license.workspace = true\n",
+        AppSdk::Standalone(_) => "license = \"AGPL-3.0-only\"\n",
     };
-    let patches = if spec.workspace_member {
-        String::new()
-    } else {
-        let repo = checkout_root_for_ui(&spec.ui_path);
-        format!(
-            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\nvello_shaders = {{ path = {:?} }}\n",
-            repo.join("vendor/winit").to_string_lossy(),
-            repo.join("vendor/vello_encoding").to_string_lossy(),
-            repo.join("vendor/vello").to_string_lossy(),
-            repo.join("vendor/vello_shaders").to_string_lossy(),
-        )
-    };
-    let license = if spec.workspace_member {
-        "license.workspace = true\n"
-    } else {
-        "license = \"AGPL-3.0-only\"\n"
-    };
-    let extras = format!("{lints}{patches}");
-    // CI rejects a workspace member that cargo-hakari has not been told about.
-    let workspace_hack = if spec.workspace_member {
-        "workspace-hack = { version = \"0.1\" }\n"
-    } else {
-        ""
-    };
-    let sdk_path = sdk_path_for_ui(&spec.ui_path);
-    let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
-        || PathBuf::from("../../crates/runtime/runtime-dylib"),
-        |crates| crates.join("runtime/runtime-dylib"),
-    );
-    format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\n{workspace_hack}{lints}",
+    let mut manifest = format!(
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\n",
         name = spec.package_name,
-        license = license,
         crate_name = spec.crate_name,
-        sdk_path = sdk_path.to_string_lossy(),
-        runtime = runtime_path.to_string_lossy(),
-        lints = extras,
-    )
+    );
+    match &spec.sdk {
+        AppSdk::Workspace { ui_path } => {
+            let sdk_path = sdk_path_for_ui(ui_path);
+            let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
+                || PathBuf::from("../../crates/runtime/runtime-dylib"),
+                |crates| crates.join("runtime/runtime-dylib"),
+            );
+            // CI rejects a workspace member that cargo-hakari has not been told about.
+            let _ = write!(
+                manifest,
+                "ui = {{ package = \"tilo-app\", path = {:?} }}\nruntime-dylib = {{ path = {:?}, optional = true }}\nworkspace-hack = {{ version = \"0.1\" }}\n\n[lints]\nworkspace = true\n",
+                sdk_path.to_string_lossy(),
+                runtime_path.to_string_lossy(),
+            );
+        }
+        AppSdk::Standalone(standalone) => {
+            manifest.push_str(&standalone.dependencies());
+            manifest.push_str(&standalone.manifest_tail()?);
+        }
+    }
+    Ok(manifest)
+}
+
+fn is_sdk_crate_path(ui_path: &Path) -> bool {
+    ui_path.ends_with("crates/sdk/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
 }
 
 fn checkout_root_for_ui(ui_path: &Path) -> &Path {
-    if ui_path.ends_with("crates/sdk/ui-core") {
+    if is_sdk_crate_path(ui_path) {
         ui_path
             .ancestors()
             .nth(3)
@@ -7948,7 +8143,7 @@ fn checkout_root_for_ui(ui_path: &Path) -> &Path {
 }
 
 fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
-    if ui_path.ends_with("crates/sdk/ui-core") {
+    if is_sdk_crate_path(ui_path) {
         ui_path
             .parent()
             .unwrap_or_else(|| Path::new(".."))

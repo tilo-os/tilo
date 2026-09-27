@@ -21,7 +21,6 @@
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
@@ -318,10 +317,20 @@ fn clients_are_configured_with_their_laid_out_tab_size_or_eventually_anyway() {
         let mut h = Harness::new();
         let configures = open_a_window(&mut h);
 
-        // Past the grace `flush_configures` gives a tab rect to arrive in.
-        std::thread::sleep(Duration::from_millis(400));
-        h.flush_configures();
-
+        // `flush_configures` only sends the backstop once
+        // `OPENING_CONFIGURE_GRACE` (250 ms) has elapsed. Poll that production
+        // path instead of sleeping past a guessed 400 ms.
+        tilo_test_env::wait_until(
+            "a never-laid-out toplevel received its backstop configure",
+            || {
+                h.flush_configures();
+                configures
+                    .lock()
+                    .expect("configures")
+                    .first()
+                    .is_some_and(|&(w, height)| w > 0 && height > 0)
+            },
+        );
         let seen = configures.lock().expect("configures").clone();
         let first = *seen.first().expect(
             "a toplevel the strip never laid out was never configured, so its \
