@@ -22,8 +22,8 @@ use std::time::{Duration, SystemTime};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
-    ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
-    validate_inbound_op,
+    ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_history_op,
+    validate_admitted_inbound_op, validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -291,6 +291,77 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
             incoming: 7
         })
     ));
+}
+
+/// A host's replay of retained history is admitted whatever its age, but
+/// still refuses forgery, a forbidding role and future dating, and an
+/// earlier op arriving behind a later live one neither fails nor moves the
+/// author's sequence back.
+#[test]
+fn history_is_admitted_at_any_age_but_is_otherwise_checked_as_live() {
+    let f = fixture();
+    let skew = Duration::from_secs(5);
+    let old = build_op(&f, OpClass::Splice, t(10), 3);
+    let an_hour_later = t(10) + Duration::from_secs(3_600);
+    assert_eq!(
+        validate_admitted_inbound_op(
+            &old,
+            Role::Editor,
+            &mut f.state.clone(),
+            an_hour_later,
+            skew
+        ),
+        Err(ValidationError::OutsideValidityWindow),
+        "live, an hour-old op is stale"
+    );
+    let mut state = f.state.clone();
+    assert!(
+        validate_admitted_history_op(&old, Role::Editor, &mut state, an_hour_later, skew).is_ok(),
+        "as history, it is the room's past"
+    );
+
+    let mut forged = old.clone();
+    forged.payload.push(0xff);
+    assert!(matches!(
+        validate_admitted_history_op(
+            &forged,
+            Role::Editor,
+            &mut f.state.clone(),
+            an_hour_later,
+            skew
+        ),
+        Err(ValidationError::BadOpSignature(_))
+    ));
+    assert_eq!(
+        validate_admitted_history_op(
+            &old,
+            Role::Viewer,
+            &mut f.state.clone(),
+            an_hour_later,
+            skew
+        ),
+        Err(ValidationError::RoleForbidsOpClass)
+    );
+    let future = build_op(&f, OpClass::Splice, t(20), 4);
+    assert_eq!(
+        validate_admitted_history_op(&future, Role::Editor, &mut f.state.clone(), t(10), skew),
+        Err(ValidationError::OutsideValidityWindow),
+        "history is never dated into the future"
+    );
+
+    let live = build_op(&f, OpClass::Splice, t(10), 9);
+    let author = f.author_pub;
+    let mut state = f.state;
+    assert!(validate_admitted_inbound_op(&live, Role::Editor, &mut state, t(10), skew).is_ok());
+    assert!(
+        validate_admitted_history_op(&old, Role::Editor, &mut state, t(10), skew).is_ok(),
+        "an earlier op replayed behind a later live one is kept"
+    );
+    assert_eq!(
+        state.last_seq_per_author.get(&author).copied(),
+        Some(9),
+        "and never moves the author's sequence back"
+    );
 }
 
 // ---------- steps 1-4: attestation and signature ----------

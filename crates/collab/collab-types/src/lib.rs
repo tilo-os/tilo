@@ -186,5 +186,6 @@ pub use share_control::{
 };
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
+    ChannelState, ValidationError, validate_admitted_history_op, validate_admitted_inbound_op,
+    validate_inbound_op,
 };
