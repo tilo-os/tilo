@@ -794,7 +794,7 @@ mod tests {
             .stdout(std::fs::File::create(root.path().join("child.stdout")).unwrap())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::HANG_BOUND;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
