@@ -28,6 +28,7 @@ pub mod i18n;
 pub mod intents;
 pub mod launchpad;
 pub mod notifications;
+pub mod overview;
 pub mod peer_join_toast;
 pub mod records;
 pub mod resolver;

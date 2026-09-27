@@ -863,3 +863,22 @@ window-switcher-caption-paged = { $title } ({ $position } of { $count })
 a11y-shell-wheel = Workspace wheel
 a11y-shell-wheel-switch = Switch to { $workspace }
 a11y-shell-wheel-add = Add a workspace
+
+# Workspace overview
+overview-empty-window = Empty window
+overview-untitled = Untitled
+overview-access-nobody = No one has access
+overview-access-private = Private to you
+overview-access-one = Shared with { $name }
+overview-access-two = Shared with { $name } and { $other }
+overview-access-many = Shared with { $name } and { $count } others
+overview-shares = { $count ->
+        [one] 1 item shared
+       *[other] { $count } items shared
+    }
+overview-presence-you = You are here
+overview-presence-you-and-one = You and { $name } are here
+overview-presence-you-and-many = You and { $count } others are here
+overview-presence-one = { $name } is here
+overview-presence-many = { $count } people are here
+overview-collaborators-here = { $count } collaborators are here

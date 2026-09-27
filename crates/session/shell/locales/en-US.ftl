@@ -1849,9 +1849,6 @@ state-notice-newer-detail = { $path } was written by a newer version of Tilo (la
 state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
 
 # Workspace overview: who is in a room and what it shares
-overview-empty-window = Empty window
-overview-access-nobody = No one has access
-overview-access-private = Private to you
 overview-access-shared-one = Shared with { $name }
 overview-access-shared-two = Shared with { $first } and { $second }
 overview-access-shared-many = { $count ->
@@ -1862,12 +1859,6 @@ overview-items-shared = { $count ->
     [one] 1 item shared
    *[other] { $count } items shared
 }
-overview-presence-you = You are here
-overview-presence-you-and-one = You and { $name } are here
-overview-presence-you-and-many = You and { $count } others are here
-overview-presence-one = { $name } is here
-overview-presence-many = { $count } people are here
-overview-collaborators-here = { $count } collaborators are here
 
 # Windows and documents the shell hosts
 shell-window-restoring = Restoring this window…

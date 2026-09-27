@@ -551,7 +551,7 @@ pub struct ShellOverlayHost {
     /// A press on the overview until it is let go: a click or tap on a
     /// window preview goes to that window, a drag carries it to another
     /// room.
-    overview_press: Option<crate::shell::overview::OverviewPress>,
+    overview_press: Option<tilo_desktop::overview::OverviewPress>,
     /// Overview panel density for the current theme, refreshed each
     /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
     /// helpers hit-testing calls (no theme in hand) read the same numbers
@@ -9521,12 +9521,12 @@ impl ShellOverlayHost {
     ///
     /// Geometry and paint both read it, so the panel can never be sized
     /// for one set of rooms and painted with another.
-    fn overview_cards(&self) -> Vec<crate::shell::overview::RoomCard> {
+    fn overview_cards(&self) -> Vec<tilo_desktop::overview::RoomCard> {
         match self.chrome.as_ref() {
             Some(chrome) => {
                 let state = chrome.borrow();
                 let local_user = state.active_local_user();
-                crate::shell::overview::room_cards_with_local_user(&state.tree(), &local_user)
+                crate::shell::overview::room_cards(&state.tree(), &local_user)
             }
             None => Vec::new(),
         }
@@ -9540,7 +9540,7 @@ impl ShellOverlayHost {
     /// How many share rows the "shared out of here" list draws — at least
     /// one, so a room sharing nothing says so on its own line rather than
     /// collapsing the section away.
-    fn overview_share_rows(card: &crate::shell::overview::RoomCard) -> usize {
+    fn overview_share_rows(card: &tilo_desktop::overview::RoomCard) -> usize {
         let shown = card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
         let overflow = usize::from(card.shares.len() > shown);
         shown.saturating_add(overflow).max(1)
@@ -9632,7 +9632,7 @@ impl ShellOverlayHost {
     fn overview_drop_target(&self) -> Option<usize> {
         let press = self
             .overview_press
-            .filter(crate::shell::overview::OverviewPress::is_dragging)?;
+            .filter(tilo_desktop::overview::OverviewPress::is_dragging)?;
         self.hit_test_overview(press.at)
             .filter(|room| Some(*room) != self.overview_here_index())
     }
@@ -14905,7 +14905,7 @@ impl ShellOverlayHost {
     /// preview, and a finger anywhere on the overview. A middle click on a
     /// preview closes that window. Returns whether the event was taken.
     fn handle_overview_press_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
-        use crate::shell::overview::{OverviewPress, PressSource};
+        use tilo_desktop::overview::{OverviewPress, PressSource};
         let taken = match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -15011,8 +15011,8 @@ impl ShellOverlayHost {
     }
 
     /// Act on a press that was let go.
-    fn finish_overview_press(&mut self, end: crate::shell::overview::PressEnd) {
-        use crate::shell::overview::PressEnd;
+    fn finish_overview_press(&mut self, end: tilo_desktop::overview::PressEnd) {
+        use tilo_desktop::overview::PressEnd;
         match end {
             PressEnd::Tap { tab: Some(tab), at } => {
                 if self.overview_window_at(at) == Some(tab) {
@@ -20825,7 +20825,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         right_x: f64,
         cy: f64,
-        people: &[crate::shell::overview::RoomPerson],
+        people: &[tilo_desktop::overview::RoomPerson],
         colors_for: &std::collections::HashMap<String, (u8, u8, u8)>,
         ground: Color,
     ) -> f64 {
@@ -20920,7 +20920,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         rect: Rect,
         idx: usize,
-        card: &crate::shell::overview::RoomCard,
+        card: &tilo_desktop::overview::RoomCard,
         selected: bool,
     ) {
         let tokens = &theme.tokens;
@@ -21011,9 +21011,9 @@ impl ShellOverlayHost {
         let sub_size = tokens.typography.scale.sm;
         // Who's in the room now outranks who could be; access is what
         // the line says when it's empty.
-        let mut sub = crate::shell::overview::room_presence_label(card)
-            .unwrap_or_else(|| crate::shell::overview::room_access_label(card));
-        if let Some(shares) = crate::shell::overview::room_shares_label(card) {
+        let mut sub = tilo_desktop::overview::room_presence_label(card)
+            .unwrap_or_else(|| tilo_desktop::overview::room_access_label(card));
+        if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
         let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
@@ -21204,7 +21204,7 @@ impl ShellOverlayHost {
         let s1 = f64::from(tokens.spacing.s1);
         let carried = self
             .overview_press
-            .filter(crate::shell::overview::OverviewPress::is_dragging)
+            .filter(tilo_desktop::overview::OverviewPress::is_dragging)
             .and_then(|press| press.tab);
         let pressed = self.overview_press.and_then(|press| press.tab);
         for (index, window) in windows.iter().enumerate() {
@@ -21291,7 +21291,7 @@ impl ShellOverlayHost {
     ) {
         let Some(press) = self
             .overview_press
-            .filter(crate::shell::overview::OverviewPress::is_dragging)
+            .filter(tilo_desktop::overview::OverviewPress::is_dragging)
         else {
             return;
         };
@@ -21350,7 +21350,7 @@ impl ShellOverlayHost {
         content: Rect,
         here_rect: Rect,
         here_idx: Option<usize>,
-        cards: &[crate::shell::overview::RoomCard],
+        cards: &[tilo_desktop::overview::RoomCard],
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -21399,7 +21399,7 @@ impl ShellOverlayHost {
         content: Rect,
         here_rect: Rect,
         hi: usize,
-        card: &crate::shell::overview::RoomCard,
+        card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
         use ui::widget::{Chip, ChipLead, ChipStyle};
@@ -21475,7 +21475,7 @@ impl ShellOverlayHost {
             text_renderer,
         );
 
-        let access = crate::shell::overview::room_access_label(card);
+        let access = tilo_desktop::overview::room_access_label(card);
         text_renderer.draw_text(
             scene,
             &access,
@@ -21554,7 +21554,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         content: Rect,
         here_idx: Option<usize>,
-        cards: &[crate::shell::overview::RoomCard],
+        cards: &[tilo_desktop::overview::RoomCard],
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -21572,7 +21572,7 @@ impl ShellOverlayHost {
         );
         let row_h = m.share_row_h;
         let sy = shares_top + m.caption_h;
-        let empty_card = crate::shell::overview::RoomCard {
+        let empty_card = tilo_desktop::overview::RoomCard {
             id: crate::shell::state::WorkspaceId::default(),
             name: String::new(),
             is_current: false,
@@ -21664,7 +21664,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
-        here_card: &crate::shell::overview::RoomCard,
+        here_card: &tilo_desktop::overview::RoomCard,
         mut sy: f64,
         row_h: f64,
     ) {
@@ -21721,7 +21721,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
-        share: &crate::shell::overview::RoomShare,
+        share: &tilo_desktop::overview::RoomShare,
         sy: f64,
         row_h: f64,
         glyph: f64,
@@ -21812,7 +21812,7 @@ impl ShellOverlayHost {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        cards: &[crate::shell::overview::RoomCard],
+        cards: &[tilo_desktop::overview::RoomCard],
         band: Rect,
     ) {
         // A carried window shows the room it would land in as chosen.
