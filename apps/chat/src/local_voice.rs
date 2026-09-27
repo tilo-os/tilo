@@ -41,7 +41,7 @@ impl LocalVoice {
     pub(crate) fn submit(&mut self, command: Command) -> Result<(), String> {
         let request = Request::new(command.clone());
         if !request.valid() {
-            return Err("Invalid call command".into());
+            return Err(crate::i18n::t("chat-error-call-invalid"));
         }
         let stopping = matches!(command, Command::Leave | Command::SetMuted { muted: true });
         if stopping {
@@ -50,12 +50,12 @@ impl LocalVoice {
             self.pending_since = None;
         }
         if self.pending.len() >= 8 {
-            return Err("Call controls are busy".into());
+            return Err(crate::i18n::t("chat-error-call-busy"));
         }
         let id = self
             .next_request
             .checked_add(1)
-            .ok_or("Call control sequence exhausted")?;
+            .ok_or_else(|| crate::i18n::t("chat-error-call-exhausted"))?;
         self.next_request = id;
         if !matches!(command, Command::Status) {
             self.intent_floor = id;
@@ -180,7 +180,7 @@ impl crate::app::ChatApp {
                         .iter()
                         .any(|c| c.id == channel && c.kind == crate::model::ChannelKind::Voice)
                 {
-                    return Err("Voice channel no longer exists".into());
+                    return Err(crate::i18n::t("chat-error-voice-channel-gone"));
                 }
                 CallAction::Join
             }
@@ -189,7 +189,7 @@ impl crate::app::ChatApp {
             Command::SelectInput { .. } | Command::Status => CallAction::Join,
         };
         if !self.call_allows(action) {
-            return Err("Call action is not permitted".into());
+            return Err(crate::i18n::t("chat-error-call-not-permitted"));
         }
         if !matches!(&command, Command::Join { .. } | Command::Status)
             && self
@@ -198,7 +198,7 @@ impl crate::app::ChatApp {
                 .as_deref()
                 .is_some_and(|active| active != channel)
         {
-            return Err("This is not the active call".into());
+            return Err(crate::i18n::t("chat-error-call-not-active"));
         }
         self.native_voice.submit(command)?;
         self.project_native_voice();
@@ -224,17 +224,16 @@ impl crate::app::ChatApp {
             self.call.leave();
         }
         self.media_error = snapshot.issue.map(|issue| {
-            match issue {
-                ui::native_media::Issue::Unavailable => "Voice is unavailable",
-                ui::native_media::Issue::Denied => "Call access was denied",
-                ui::native_media::Issue::PermissionDenied => "Microphone permission was denied",
-                ui::native_media::Issue::SourceLost => "Microphone disconnected",
-                ui::native_media::Issue::CaptureFailed => "Microphone could not start",
-                ui::native_media::Issue::TransportFailed => "Call disconnected",
-                ui::native_media::Issue::SessionEnded => "Call ended",
-                ui::native_media::Issue::Stale => "Call session expired",
-            }
-            .to_string()
+            crate::i18n::t(match issue {
+                ui::native_media::Issue::Unavailable => "chat-status-voice-unavailable",
+                ui::native_media::Issue::Denied => "chat-status-call-denied",
+                ui::native_media::Issue::PermissionDenied => "chat-status-mic-permission-denied",
+                ui::native_media::Issue::SourceLost => "chat-status-mic-disconnected",
+                ui::native_media::Issue::CaptureFailed => "chat-status-mic-failed",
+                ui::native_media::Issue::TransportFailed => "chat-status-call-disconnected",
+                ui::native_media::Issue::SessionEnded => "chat-status-call-ended",
+                ui::native_media::Issue::Stale => "chat-status-call-expired",
+            })
         });
         self.refresh_native_streams();
         self.request_relayout();
