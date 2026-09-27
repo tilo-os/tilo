@@ -27,6 +27,9 @@ pub struct MetricsSnapshot {
     pub bytes_queued: u64,
     /// Total deltas fanned out to live peers.
     pub deltas_fanned_out: u64,
+    /// Peer sessions the relay ended because the peer broke the protocol
+    /// or the store failed it; each is also logged with its reason.
+    pub peer_sessions_ended: u64,
 }
 
 /// Failure reading or writing [`METRICS_FILE`].

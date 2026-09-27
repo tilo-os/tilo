@@ -138,6 +138,7 @@ fn json_encodings_are_pinned() {
         deltas_received: 4,
         bytes_queued: 5,
         deltas_fanned_out: 6,
+        peer_sessions_ended: 7,
     };
     let encoded = r#"{
   "conns_accepted": 1,
@@ -145,7 +146,8 @@ fn json_encodings_are_pinned() {
   "auth_rejected": 3,
   "deltas_received": 4,
   "bytes_queued": 5,
-  "deltas_fanned_out": 6
+  "deltas_fanned_out": 6,
+  "peer_sessions_ended": 7
 }"#;
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),

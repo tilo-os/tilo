@@ -228,7 +228,9 @@ where
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
         if let Some(ws) = wsmap.get(id) {
-            ws.lock().await.remove_subscriber(&peer.device_public_key);
+            ws.lock()
+                .await
+                .remove_subscriber_of(&peer.device_public_key, &tx);
         }
     }
     drop(wsmap);
@@ -798,7 +800,9 @@ async fn handle_unsubscribe(
         map.get(&workspace_id).cloned()
     };
     if let Some(ws) = ws {
-        ws.lock().await.remove_subscriber(&peer.device_public_key);
+        ws.lock()
+            .await
+            .remove_subscriber_of(&peer.device_public_key, session.outbound);
     }
     subscribed.retain(|id| id != &workspace_id);
     Ok(None)

@@ -172,6 +172,11 @@ pub struct RelayIdentity {
 }
 
 impl Relay {
+    /// Every counter, as `admin status` reports them.
+    pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     /// Start the daemon with the given config + identity.
     ///
     /// Binds an iroh endpoint (using the persistent secret at
@@ -1637,7 +1642,7 @@ async fn handle_conn(
             revocations: ctx.revocations,
             trust_policy: ctx.trust_policy,
             own_user_public_key: ctx.own_user_pk,
-            metrics: ctx.metrics,
+            metrics: Arc::clone(&ctx.metrics),
             own_device_public_key: ctx.own_cert.device_public_key,
             own_device_signing_key: ctx.own_sk.clone(),
             direct_rooms: ctx.direct_rooms,
@@ -1646,8 +1651,16 @@ async fn handle_conn(
         },
     )
     .await;
-    if let Err(e) = peer_result {
-        tracing::debug!("peer session ended with error: {e}");
+    match peer_result {
+        // A device that broke the protocol, or a store that failed it, is
+        // ended for a reason the operator must be able to read.
+        Err(e @ (crate::peer::PeerError::Protocol(_) | crate::peer::PeerError::Store(_))) => {
+            ctx.metrics.inc_peer_sessions_ended();
+            tracing::warn!("ended a peer session: {e}");
+        }
+        // A connection that went away is ordinary.
+        Err(e) => tracing::debug!("peer session ended with error: {e}"),
+        Ok(()) => {}
     }
     connection.close(0u32.into(), b"relay session ended");
     Ok(())

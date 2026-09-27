@@ -417,6 +417,19 @@ impl WorkspaceRuntime {
         self.subscribers.remove(device);
     }
 
+    /// Remove `device`'s subscription only if it is still the one fed by
+    /// `tx`: a session that ends must not take with it the subscription a
+    /// newer session of the same device has since made.
+    pub fn remove_subscriber_of(&mut self, device: &[u8; 32], tx: &mpsc::Sender<OutboundFrame>) {
+        if self
+            .subscribers
+            .get(device)
+            .is_some_and(|sub| sub.tx.same_channel(tx))
+        {
+            self.subscribers.remove(device);
+        }
+    }
+
     /// Whether `device` currently holds a subscription here.
     pub fn has_subscriber(&self, device: &[u8; 32]) -> bool {
         self.subscribers.contains_key(device)
@@ -794,6 +807,11 @@ impl WorkspaceRuntime {
                 continue;
             }
             if sub.tx.try_send(Arc::clone(frame)).is_err() {
+                tracing::warn!(
+                    workspace_id = self.store.workspace_id(),
+                    device = %hex::encode(peer),
+                    "a subscriber could not keep up and was dropped from the workspace"
+                );
                 let _ = sub.disconnect.try_send(());
                 dead.push(*peer);
             } else {

@@ -23,6 +23,8 @@ pub struct Metrics {
     bytes_queued: AtomicU64,
     /// Total deltas fanned out to live peers.
     deltas_fanned_out: AtomicU64,
+    /// Peer sessions ended for a protocol breach or a store failure.
+    peer_sessions_ended: AtomicU64,
 }
 
 impl Metrics {
@@ -51,6 +53,11 @@ impl Metrics {
         self.deltas_fanned_out.fetch_add(n, Ordering::Relaxed);
     }
 
+    /// Bump the ended-session counter.
+    pub fn inc_peer_sessions_ended(&self) {
+        self.peer_sessions_ended.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Read a snapshot of every counter (for `admin status`).
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -60,6 +67,7 @@ impl Metrics {
             deltas_received: self.deltas_received.load(Ordering::Relaxed),
             bytes_queued: self.bytes_queued.load(Ordering::Relaxed),
             deltas_fanned_out: self.deltas_fanned_out.load(Ordering::Relaxed),
+            peer_sessions_ended: self.peer_sessions_ended.load(Ordering::Relaxed),
         }
     }
 }

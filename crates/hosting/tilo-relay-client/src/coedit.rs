@@ -205,6 +205,12 @@ pub enum Inbound {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
     },
+    /// The host refused this device the workspace. The session carries
+    /// nothing more; `reason` says why, for the log a person reads.
+    Refused {
+        /// The host's reason.
+        reason: String,
+    },
 }
 
 /// Failure modes for [`RelayCoeditSession`] operations.
@@ -429,8 +435,8 @@ impl RelayCoeditSession {
     /// Await the next inbound co-edit event, translating the host
     /// [`Envelope`] into the toolkit-facing [`Inbound`]. Keep-alives
     /// (`Ping`/`Pong`) and other non-co-edit frames are skipped; a
-    /// `NotAuthorised` reply or a closed connection ends the stream
-    /// (`None`).
+    /// `NotAuthorised` reply surfaces once as [`Inbound::Refused`]; a closed
+    /// connection ends the stream (`None`).
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
             match self.client.recv().await? {
@@ -511,7 +517,9 @@ impl RelayCoeditSession {
                         pending: pending_deltas,
                     });
                 }
-                Envelope::NotAuthorised { .. } => return None,
+                Envelope::NotAuthorised { reason, .. } => {
+                    return Some(Inbound::Refused { reason });
+                }
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}
