@@ -8,6 +8,11 @@
 
 use super::*;
 
+#[cfg(not(target_os = "android"))]
+type PrimaryA11yAdapter = accesskit_winit::Adapter;
+#[cfg(target_os = "android")]
+type PrimaryA11yAdapter = crate::accesskit_android_adapter::Adapter;
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -37,7 +42,7 @@ struct AppHandler {
     /// `None` until `resumed` creates the window (must be built while
     /// hidden); lazy, so the hot path pays nothing with no screen reader
     /// running.
-    a11y_adapter: Option<accesskit_winit::Adapter>,
+    a11y_adapter: Option<PrimaryA11yAdapter>,
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
@@ -2891,11 +2896,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.set_window_icon(icon);
 
         // Must be created before the window is shown.
-        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
-            event_loop,
-            &window,
-            self.a11y_proxy.clone(),
-        ));
+        #[cfg(not(target_os = "android"))]
+        {
+            self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+                event_loop,
+                &window,
+                self.a11y_proxy.clone(),
+            ));
+        }
+        // One provider per view: the previous one must be withdrawn first.
+        #[cfg(target_os = "android")]
+        {
+            self.a11y_adapter = None;
+            match PrimaryA11yAdapter::new(event_loop, &window, self.a11y_proxy.clone()) {
+                Ok(adapter) => self.a11y_adapter = Some(adapter),
+                Err(error) => crate::diag!("tilo: no TalkBack access: {error}"),
+            }
+        }
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
