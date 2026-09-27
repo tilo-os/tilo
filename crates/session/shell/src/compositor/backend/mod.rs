@@ -523,6 +523,11 @@ pub trait Backend {
     /// released pointer lock asks with its cursor position hint.
     fn warp_pointer(&mut self, _x: f64, _y: f64) {}
 
+    /// Switch the physical keyboard to input source `index` without
+    /// waiting for the settings poll. Default no-op: only the DRM backend
+    /// translates raw keycodes itself.
+    fn set_keyboard_source(&mut self, _index: usize) {}
+
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
     fn cancel_touch(&mut self) {}

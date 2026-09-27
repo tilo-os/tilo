@@ -118,6 +118,7 @@ policies! {
         "tilo.input.touchpad_scroll_method",
         "tilo.input.scroll_speed",
         "tilo.input.compose_key",
+        "tilo.input.caps_lock",
         "tilo.input.keyboard_layouts",
         "tilo.audio.system_sounds",
         "tilo.audio.balance",
@@ -138,6 +139,7 @@ policies! {
         "tilo.display.auto_brightness",
         "tilo.display.scale",
         "tilo.input.pen_output",
+        "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
@@ -402,6 +404,7 @@ mod tests {
                     "message": null
                 },
                 "shortcuts": {"bindings": {}},
+                "input": {"touchpad_enabled": false},
                 "desktop_controls": {"vim_mode": false},
                 "quick_settings": {"controls": ["wifi"]},
                 "text_assistance": {"check_spelling": true, "auto_correct": true},
