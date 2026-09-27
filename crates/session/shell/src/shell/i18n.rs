@@ -186,6 +186,96 @@ mod tests {
         strict_bundle("en-US", SOURCE_FTL);
     }
 
+    /// Every literal key passed to [`t`] or [`t_args`] in `src/`.
+    fn keys_used_in_code() -> BTreeMap<String, String> {
+        fn visit(dir: &std::path::Path, found: &mut BTreeMap<String, String>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .expect("read source directory")
+                .map(|entry| entry.expect("source entry").path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    visit(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("read source file");
+                    for key in literal_keys(&source) {
+                        found
+                            .entry(key)
+                            .or_insert_with(|| path.display().to_string());
+                    }
+                }
+            }
+        }
+        let mut found = BTreeMap::new();
+        visit(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        found
+    }
+
+    /// The string literal that opens each `t(` / `t_args(` call in `source`.
+    fn literal_keys(source: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        for call in ["t(", "t_args("] {
+            for (start, _) in source.match_indices(call) {
+                let preceded_by_ident = source[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                if preceded_by_ident {
+                    continue;
+                }
+                let Some(rest) = source[start..].strip_prefix(call) else {
+                    continue;
+                };
+                let Some(literal) = rest.trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = literal.find('"') else {
+                    continue;
+                };
+                let key = &literal[..end];
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn literal_key_scan_finds_direct_and_wrapped_calls() {
+        let source = "t(\"a-b\") + crate::shell::i18n::t_args(\n    \"c-d\", &[]) + format(\"x\") + tt(\"no\")";
+        assert_eq!(literal_keys(source), vec!["a-b", "c-d"]);
+    }
+
+    /// A key the code asks for but a catalogue lacks renders as the raw key
+    /// (or English on a German desktop), so every one must be defined.
+    #[test]
+    fn every_key_used_in_code_is_in_every_catalogue() {
+        let used = keys_used_in_code();
+        assert!(
+            used.len() > 100,
+            "the source scan found only {} keys",
+            used.len()
+        );
+        for (locale, catalogue) in [("en-US", SOURCE_FTL), ("de-DE", DE_FTL)] {
+            let defined = catalog_messages(catalogue);
+            let missing: Vec<_> = used
+                .iter()
+                .filter(|(key, _)| !defined.contains_key(*key))
+                .map(|(key, file)| format!("{key} ({file})"))
+                .collect();
+            assert!(missing.is_empty(), "{locale}.ftl lacks {missing:?}");
+        }
+    }
+
     #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("continuity-dismiss");

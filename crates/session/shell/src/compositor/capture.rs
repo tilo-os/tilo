@@ -678,12 +678,17 @@ impl CaptureExecutor {
                 self.sequence = self.sequence.saturating_add(1);
                 let title = intent.targets.first().map_or_else(
                     || match intent.source {
-                        ui::widget::SourceMode::Region => "Live selection".to_string(),
-                        ui::widget::SourceMode::Window => "Live app".to_string(),
-                        ui::widget::SourceMode::Display => "Live screen".to_string(),
-                        ui::widget::SourceMode::Multi => {
-                            format!("{} live areas", intent.regions.len())
+                        ui::widget::SourceMode::Region => {
+                            crate::shell::i18n::t("capture-live-selection")
                         }
+                        ui::widget::SourceMode::Window => crate::shell::i18n::t("capture-live-app"),
+                        ui::widget::SourceMode::Display => {
+                            crate::shell::i18n::t("capture-live-screen")
+                        }
+                        ui::widget::SourceMode::Multi => crate::shell::i18n::t_args(
+                            "capture-live-areas",
+                            &[("count", intent.regions.len().into())],
+                        ),
                     },
                     |target| target.title.clone(),
                 );
@@ -1158,7 +1163,13 @@ impl CaptureExecutor {
         let preview = capture_preview(&rgba, width, height);
         let id = format!("pinned-capture:{}", self.sequence);
         self.sequence = self.sequence.saturating_add(1);
-        let title = format!("Screenshot · {width} × {height}");
+        let title = crate::shell::i18n::t_args(
+            "capture-pinned-title",
+            &[
+                ("width", width.to_string().into()),
+                ("height", height.to_string().into()),
+            ],
+        );
         frame_builder
             .host_mut()
             .upsert_capture_surface(CaptureSurfaceRequest {

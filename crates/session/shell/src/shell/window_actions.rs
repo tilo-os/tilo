@@ -120,13 +120,11 @@ pub enum DuplicateError {
 }
 
 impl DuplicateError {
-    pub fn user_message(self) -> &'static str {
+    pub fn user_message(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            DuplicateError::NoActiveTab => "There is no tab to duplicate.",
-            DuplicateError::ForeignWindow => {
-                "This window belongs to an app the compositor doesn't host, so it can't be copied. \
-                 Open a second one from search instead."
-            }
+            DuplicateError::NoActiveTab => t("window-duplicate-no-tab"),
+            DuplicateError::ForeignWindow => t("window-duplicate-foreign"),
         }
     }
 }
@@ -214,16 +212,13 @@ pub enum TabActionError {
 }
 
 impl TabActionError {
-    pub fn user_message(self) -> &'static str {
+    pub fn user_message(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            TabActionError::NoActiveTab => "There is no tab to act on.",
-            TabActionError::UnknownTab => "That tab is no longer open.",
-            TabActionError::OnlyTab => {
-                "This is the window's only tab; there is nothing to split it from."
-            }
-            TabActionError::DocumentRefused => {
-                "The workspace document did not accept the change, so nothing was moved."
-            }
+            TabActionError::NoActiveTab => t("window-tab-action-no-tab"),
+            TabActionError::UnknownTab => t("window-tab-action-unknown-tab"),
+            TabActionError::OnlyTab => t("window-tab-action-only-tab"),
+            TabActionError::DocumentRefused => t("window-tab-action-document-refused"),
         }
     }
 }
