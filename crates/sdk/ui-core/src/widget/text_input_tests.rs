@@ -431,10 +431,8 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
     // Case `code_gutter_numbers_do_not_apply_accessibility_scale_twice`.
     {
         let paragraph_style = TextStyle::new(26.0).with_letter_spacing(0.4);
-        let number_style = TextInput::gutter_number_style(
-            &paragraph_style,
-            &Theme::dark().with_text_scale(2.0),
-        );
+        let number_style =
+            TextInput::gutter_number_style(&paragraph_style, &Theme::dark().with_text_scale(2.0));
         assert_eq!(number_style.size, 13.0);
         assert_eq!(number_style.letter_spacing, 0.2);
     }
@@ -1091,9 +1089,8 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
 fn char_key_event(s: &str) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-    ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-        winit::keyboard::NativeKeyCode::Unidentified,
-    );
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
@@ -2008,9 +2005,8 @@ fn command_mods() -> Modifiers {
 fn named_key_event(k: NamedKey) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = Key::Named(k);
-    ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-        winit::keyboard::NativeKeyCode::Unidentified,
-    );
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
@@ -2191,10 +2187,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_string_action_binding());
         let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(
-            &mut input,
-            &std::collections::HashSet::new(),
-        );
+        Widget::refresh_control_action_availability(&mut input, &std::collections::HashSet::new());
         assert!(input.is_disabled());
         Widget::refresh_control_action_availability(
             &mut input,
@@ -2420,12 +2413,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             },
             &mut renderer,
         );
-        input.apply_layout_external(Rect::new(
-            0.0,
-            0.0,
-            180.0,
-            f64::from(measured_large.height),
-        ));
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
         draw_with_theme(&mut input, &large);
         let drawn_large = input.content_height() as f32;
         assert!((measured_large.height - drawn_large).abs() < 0.1);
@@ -2462,8 +2450,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
     // Case `measured_multiline_pointer_geometry_tracks_applied_origin_before_draw`.
     {
-        let text =
-            "first wrapped row continues for a while before the second hard line\nsecond";
+        let text = "first wrapped row continues for a while before the second hard line\nsecond";
         let mut input = TextInput::local().multiline(true).with_initial_value(text);
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
