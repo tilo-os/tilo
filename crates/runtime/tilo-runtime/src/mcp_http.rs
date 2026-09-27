@@ -104,17 +104,25 @@ pub struct Endpoint<H> {
     room: String,
     actor: String,
     token: Option<String>,
+    computer: Option<Arc<crate::computer::Computer>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
 }
 
 impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     #[must_use]
-    pub fn new(host: H, room: String, actor: String, token: Option<String>) -> Arc<Self> {
+    pub fn new(
+        host: H,
+        room: String,
+        actor: String,
+        token: Option<String>,
+        computer: Option<Arc<crate::computer::Computer>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host,
             room,
             actor,
             token,
+            computer,
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -216,7 +224,8 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let id = uuid::Uuid::new_v4().to_string();
         let server = Arc::new(tokio::sync::Mutex::new(
             McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
-                .with_agent_run(format!("mcp:{id}"), client_label(initialize)),
+                .with_agent_run(format!("mcp:{id}"), client_label(initialize))
+                .with_computer(self.computer.clone()),
         ));
         let now = Instant::now();
         let session = Session {
