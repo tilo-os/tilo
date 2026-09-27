@@ -11798,10 +11798,12 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "app-cli",
  "app-host",
+ "async-imap",
  "atomic-file",
  "chrono-tz",
  "cli",
@@ -11828,6 +11830,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-ui",
