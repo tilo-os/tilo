@@ -10234,7 +10234,7 @@ mod tests {
                 native_loop_park(
                     now,
                     false,
-                    true,
+                    false,
                     true,
                     frame,
                     [lock_animation_park_deadline(now, due)]
