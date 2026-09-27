@@ -1178,6 +1178,14 @@ impl RoomActivityPane {
         self.replay_unavailable
     }
 
+    /// Workspace names at each checkpoint Replay can play, oldest first.
+    pub fn replay_checkpoint_names(&self) -> Vec<Vec<String>> {
+        self.replay_frames
+            .iter()
+            .map(|frame| frame.workspaces.iter().map(|ws| ws.name.clone()).collect())
+            .collect()
+    }
+
     pub fn replay_is_playing(&self) -> bool {
         self.view == ActivityView::Replay && self.replay_playing
     }
@@ -7886,7 +7894,7 @@ impl PatchCounts {
     }
 
     /// The highest-priority signal wins — governance beats structural
-    /// noise, and a whole-list rewrite (`seed_doc_from_cache`) is
+    /// noise, and a whole-list write (the first `seed_doc_from_cache`) is
     /// recognised before the per-field cases, or a flush that granted
     /// nothing reads as "granted 4 capabilities".
     fn describe(&self) -> Option<(String, OpClass)> {
