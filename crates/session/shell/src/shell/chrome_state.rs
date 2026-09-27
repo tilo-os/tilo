@@ -2750,6 +2750,35 @@ impl ChromeState {
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
 
+/// The workspace wheel's view of the shell: its summon flag lives in the
+/// chrome state, and a switch or a new workspace lands in the tree with a
+/// bump so the rest of the shell re-syncs on the next frame.
+pub struct ChromeWheel(pub Chrome);
+
+impl tilo_desktop::sidebar_wheel_disc::WheelHost for ChromeWheel {
+    fn summon(&self) -> Option<vello::kurbo::Point> {
+        self.0.borrow().wheel_summon()
+    }
+
+    fn dismiss_summon(&self) {
+        self.0.borrow_mut().set_wheel_summon(None);
+    }
+
+    fn active_workspace(&self) -> Option<crate::shell::state::WorkspaceId> {
+        Some(self.0.borrow().tree().desktop.active)
+    }
+
+    fn select_workspace(&self, workspace: crate::shell::state::WorkspaceId) {
+        let mut state = self.0.borrow_mut();
+        state.tree_mut().set_active(workspace);
+        state.bump();
+    }
+
+    fn add_workspace(&self) {
+        self.0.borrow_mut().add_workspace("Untitled");
+    }
+}
+
 #[cfg(test)]
 mod panel_exclusion_tests {
     use super::*;

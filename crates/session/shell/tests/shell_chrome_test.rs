@@ -15,8 +15,8 @@ use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
-use shell::shell::overview::OverviewView;
 use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_desktop::overview::OverviewView;
 
 /// Caller-supplied workspace id, so each test keeps a stable shape
 /// without minting fresh monotonic ids.
@@ -46,9 +46,9 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
         tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut ov = OverviewView::new();
-        ov.sync(&tree);
+        ov.sync(&tree.desktop);
         assert_eq!(ov.card_count(), 2);
-        ov.click_card(1, &mut tree);
+        ov.click_card(1, &mut tree.desktop);
         assert_eq!(tree.desktop.active, b_id);
     }
 

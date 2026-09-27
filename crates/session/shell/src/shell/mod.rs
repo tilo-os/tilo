@@ -58,7 +58,7 @@ pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;
-pub mod emoji_picker;
+pub mod emoji_recents;
 pub mod fabric_clock;
 mod file_picker_overlay;
 pub mod fixed_chords;
@@ -128,7 +128,6 @@ pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod shell_narrator;
-pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;
@@ -146,14 +145,12 @@ pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
 pub mod test_support;
-pub mod text_entry;
 pub mod tile;
 pub mod tool_intents;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;
-pub mod window_switcher;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
@@ -1548,7 +1545,7 @@ pub(crate) fn workspace_surface_chrome(
         display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
         // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
         // lives in the overlay layer, so wheel and strip pan together.
-        leading_inset: f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
+        leading_inset: f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
         notify: None,
     }
 }
@@ -1682,11 +1679,11 @@ fn build_overlay_host_from_chrome(
     let (root, group_row_ptrs) = build_workspace_root(tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
-    let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
+    let spokes: Vec<tilo_desktop::sidebar_wheel_disc::SpokeLabel> = tree
         .desktop
         .workspaces
         .iter()
-        .map(|w| sidebar_wheel_disc::SpokeLabel {
+        .map(|w| tilo_desktop::sidebar_wheel_disc::SpokeLabel {
             text: w.name.clone(),
             workspace_id: Some(w.id.0),
         })
@@ -1698,9 +1695,9 @@ fn build_overlay_host_from_chrome(
         .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
-        sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
+        tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
             .with_active_idx(active_idx)
-            .with_chrome(chrome.clone()),
+            .with_host(std::rc::Rc::new(chrome_state::ChromeWheel(chrome.clone()))),
     );
 
     // The slot's top is pinned below the topbar so the sidebar's

@@ -6,11 +6,12 @@
 //! `draw` uses the offset from the active workspace's rest position instead
 //! ([`SidebarWheelDisc::visual_residual_deg`]), so the selected rim marker
 //! doesn't march down the arc as you switch.
+//!
+//! The wheel never edits the desktop itself: it asks its [`WheelHost`] to
+//! switch or add a workspace, and reads from it where it was summoned.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -28,8 +29,29 @@ use ui::theme::Theme;
 use ui::tokens::{Gesture, SpringPresets, rubber_band};
 use ui::widget::{Chip, ChipLead, ChipStyle, Widget};
 
-use crate::shell::chrome_state::ChromeState;
-use crate::shell::state::WorkspaceId;
+use tilo_desktop_model::WorkspaceId;
+use ui::time::{Duration, Instant};
+
+use crate::i18n::{t, t_args};
+
+/// What the wheel asks of the desktop it switches.
+pub trait WheelHost {
+    /// Where the wheel has been summoned to, if anywhere. A summon is
+    /// raised outside the wheel (a keyboard chord on the host).
+    fn summon(&self) -> Option<Point>;
+
+    /// The wheel went back to its dock.
+    fn dismiss_summon(&self);
+
+    /// The workspace the desktop shows now.
+    fn active_workspace(&self) -> Option<WorkspaceId>;
+
+    /// Show `workspace`.
+    fn select_workspace(&self, workspace: WorkspaceId);
+
+    /// Add a workspace and show it (the "+" slot).
+    fn add_workspace(&self);
+}
 
 /// The accepted wheel used a 96 px left gutter. Keep that layout contract even
 /// though the rim itself now stops 30 px earlier, leaving a little air between
@@ -78,15 +100,15 @@ pub struct SidebarWheelDisc {
     /// rightmost sliver is laid out on-screen.
     pub diameter_px: f64,
     /// When present, a snap that lands on a spoke with a known
-    /// `workspace_id` writes the new active workspace to `chrome.tree`.
-    pub chrome: Option<Rc<RefCell<ChromeState>>>,
+    /// `workspace_id` shows that workspace through it.
+    pub host: Option<Rc<dyn WheelHost>>,
     /// `Some(spring)` while a post-release snap is easing the rim from
     /// the pre-snap rotation to the snapped target.
     pub rotation_spring: Option<Spring>,
     /// Previous `update` tick, used to feed the spring the *real* frame
     /// dt. Under frame drops a fixed dt made the spring run in
     /// slow-motion.
-    pub last_update_at: Option<std::time::Instant>,
+    pub last_update_at: Option<Instant>,
     /// Cached bounding rect of the "+" add-workspace slot. `Rect::ZERO`
     /// until the first draw pass populates it.
     pub plus_rect: Rect,
@@ -235,7 +257,7 @@ const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 /// outside the rim and still be faded with everything else. Read by the
 /// host to size the wallpaper gutter between the disc and the first
 /// window (`overlay_host::WHEEL_TO_STRIP_GAP_PX` must exceed it).
-pub(crate) const RIM_SHADOW_REACH: f64 = 26.0;
+pub const RIM_SHADOW_REACH: f64 = 26.0;
 
 /// How close the band's inner arc may reach the left edge (fraction of half
 /// the footprint height) — trades band depth for height; at the extreme
@@ -301,7 +323,7 @@ impl SidebarWheelDisc {
             drag_raw_deg: 0.0,
             rect: Rect::ZERO,
             diameter_px: DEFAULT_DIAMETER_PX,
-            chrome: None,
+            host: None,
             rotation_spring: None,
             last_update_at: None,
             plus_rect: Rect::ZERO,
@@ -329,20 +351,20 @@ impl SidebarWheelDisc {
         self.summon_at.is_some()
     }
 
-    /// Send a summoned disc back to its dock, clearing the shared
-    /// chrome flag so the overlay host re-anchors it on the next layout.
+    /// Send a summoned disc back to its dock, telling the host so it
+    /// re-anchors it on the next layout.
     pub fn dismiss_summon(&mut self) {
         self.summon_at = None;
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().set_wheel_summon(None);
+        if let Some(host) = self.host.as_ref() {
+            host.dismiss_summon();
         }
     }
 
-    /// After a snap commits a new `active_idx`, the disc writes it back
-    /// to `chrome.tree` via `set_active`.
+    /// After a snap commits a new `active_idx`, the disc shows that
+    /// workspace through `host`.
     #[must_use]
-    pub fn with_chrome(mut self, chrome: Rc<RefCell<ChromeState>>) -> Self {
-        self.chrome = Some(chrome);
+    pub fn with_host(mut self, host: Rc<dyn WheelHost>) -> Self {
+        self.host = Some(host);
         self
     }
 
@@ -988,12 +1010,12 @@ impl Widget for SidebarWheelDisc {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // Pick up a summon raised elsewhere in chrome (the keyboard
-        // chord lives on the overlay host, which has the pointer); kept
-        // as its own copy so tests and non-chrome hosts can drive it
-        // directly through `set_summon`.
-        if let Some(chrome) = self.chrome.as_ref() {
-            self.summon_at = chrome.borrow().wheel_summon();
+        // Pick up a summon raised elsewhere on the host (the keyboard
+        // chord lives with whatever has the pointer); kept as its own copy
+        // so tests and hostless wheels can drive it directly through
+        // `set_summon`.
+        if let Some(host) = self.host.as_ref() {
+            self.summon_at = host.summon();
         }
         // `TaffyTree::layout` only ever returns `Err` for a config this
         // compositor never sets (rounding is always on); a stale/foreign
@@ -1179,7 +1201,7 @@ impl Widget for SidebarWheelDisc {
         // under frame drops. Clamped to 1/30 s: semi-implicit Euler
         // stays stable, and a long stall just resumes rather than
         // exploding.
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         // `saturating_duration_since` rather than `now - prev`: `Instant`
         // subtraction panics if `prev` is somehow later than `now` (not
         // guaranteed impossible across every platform's clock), and a
@@ -1244,7 +1266,7 @@ impl Widget for SidebarWheelDisc {
                 let key = Self::spoke_action_target(idx);
                 let placed = self.spoke_hit_rects.get(idx).copied().unwrap_or(Rect::ZERO);
                 let mut node = AccessNode::new(Role::Button)
-                    .with_name(crate::shell::i18n::t_args(
+                    .with_name(t_args(
                         "a11y-shell-wheel-switch",
                         &[("workspace", (&spoke.text).into())],
                     ))
@@ -1263,7 +1285,7 @@ impl Widget for SidebarWheelDisc {
             })
             .collect();
         let mut add = AccessNode::new(Role::Button)
-            .with_name(crate::shell::i18n::t("a11y-shell-wheel-add"))
+            .with_name(t("a11y-shell-wheel-add"))
             .with_semantic_key(Self::ADD_ACTION_TARGET)
             .with_action_target(Self::ADD_ACTION_TARGET)
             .with_key(u64::try_from(self.spokes.len()).unwrap_or(u64::MAX))
@@ -1277,7 +1299,7 @@ impl Widget for SidebarWheelDisc {
         children.push(add);
         Some(
             AccessNode::new(Role::Group)
-                .with_name(crate::shell::i18n::t("a11y-shell-wheel"))
+                .with_name(t("a11y-shell-wheel"))
                 .with_semantic_key("wheel")
                 .with_children(children),
         )
@@ -1852,8 +1874,8 @@ impl SidebarWheelDisc {
                 .last_cursor_pos
                 .is_some_and(|p| self.plus_rect.contains(p))
         {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().add_workspace("Untitled");
+            if let Some(host) = self.host.as_ref() {
+                host.add_workspace();
             }
             *handled = true;
             return;
@@ -2036,8 +2058,8 @@ impl SidebarWheelDisc {
             return true;
         }
         if idx == self.spokes.len() {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().add_workspace("Untitled");
+            if let Some(host) = self.host.as_ref() {
+                host.add_workspace();
             }
             return true;
         }
@@ -2090,7 +2112,7 @@ impl SidebarWheelDisc {
         self.rotation_deg = self.rotation_for_idx(idx);
         self.active_idx = idx;
         self.wheel_overscroll_px = 0.0;
-        self.publish_active_to_chrome(idx);
+        self.publish_active_to_host(idx);
     }
 
     /// Decide where a released drag ends up. Past an end → back to the end;
@@ -2124,7 +2146,7 @@ impl SidebarWheelDisc {
         self.wheel_overscroll_px = 0.0;
         // The tree is written exactly once per gesture, here — the
         // indicator's motion during the drag was display only.
-        self.publish_active_to_chrome(idx);
+        self.publish_active_to_host(idx);
         self.aim_settle_spring(from, target);
         self.sync_active_from_visual();
     }
@@ -2270,29 +2292,21 @@ impl SidebarWheelDisc {
         total
     }
 
-    /// If a chrome handle is attached and the active spoke carries a
-    /// `workspace_id`, push the new active workspace to `chrome.tree`.
-    /// Uses `tree.set_active` + `bump()` so the rest of the shell re-syncs on
-    /// the next frame.
-    fn publish_active_to_chrome(&self, idx: usize) {
-        let Some(chrome) = self.chrome.as_ref() else {
+    /// If a host is attached and the active spoke carries a
+    /// `workspace_id`, show that workspace through it. A gesture that ends
+    /// where it started asks nothing: the host re-syncs everything against
+    /// a workspace change.
+    fn publish_active_to_host(&self, idx: usize) {
+        let Some(host) = self.host.as_ref() else {
             return;
         };
-        let Some(spoke) = self.spokes.get(idx) else {
+        let Some(id) = self.spokes.get(idx).and_then(|spoke| spoke.workspace_id) else {
             return;
         };
-        let Some(id) = spoke.workspace_id else {
-            return;
-        };
-        let mut state = chrome.borrow_mut();
-        if state.tree().desktop.active == WorkspaceId(id) {
-            // Already there. Bumping anyway re-syncs the rest of the
-            // shell against a tree that didn't change — every gesture
-            // that ends where it started does exactly that.
+        if host.active_workspace() == Some(WorkspaceId(id)) {
             return;
         }
-        state.tree_mut().set_active(WorkspaceId(id));
-        state.bump();
+        host.select_workspace(WorkspaceId(id));
     }
 }
 
@@ -2307,8 +2321,55 @@ impl SidebarWheelDisc {
 )]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+    /// A desktop of `workspaces` workspaces numbered from 1, counting
+    /// every change the wheel asks of it.
+    struct CountingHost {
+        workspaces: Cell<usize>,
+        active: Cell<u64>,
+        changes: Cell<usize>,
+        summon: Cell<Option<Point>>,
+    }
+
+    impl CountingHost {
+        fn new(workspaces: usize) -> Rc<Self> {
+            Rc::new(Self {
+                workspaces: Cell::new(workspaces),
+                active: Cell::new(1),
+                changes: Cell::new(0),
+                summon: Cell::new(None),
+            })
+        }
+    }
+
+    impl WheelHost for CountingHost {
+        fn summon(&self) -> Option<Point> {
+            self.summon.get()
+        }
+
+        fn dismiss_summon(&self) {
+            self.summon.set(None);
+        }
+
+        fn active_workspace(&self) -> Option<WorkspaceId> {
+            Some(WorkspaceId(self.active.get()))
+        }
+
+        fn select_workspace(&self, workspace: WorkspaceId) {
+            self.active.set(workspace.0);
+            self.changes.set(self.changes.get().saturating_add(1));
+        }
+
+        fn add_workspace(&self) {
+            let count = self.workspaces.get().saturating_add(1);
+            self.workspaces.set(count);
+            self.active.set(count as u64);
+            self.changes.set(self.changes.get().saturating_add(1));
+        }
+    }
 
     fn labels(names: &[&str]) -> Vec<SpokeLabel> {
         names
@@ -2847,13 +2908,10 @@ mod tests {
         // than comparing rectangles — the ordering where
         // the button resolves before a sector is the thing that must hold.
         {
-            use crate::shell::chrome_state::ChromeState;
-            use crate::shell::state::WorkspaceTree;
-
-            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-            let before = chrome.borrow().tree().desktop.workspaces.len();
+            let host = CountingHost::new(1);
+            let before = host.workspaces.get();
             let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"])
-                .with_chrome(chrome.clone());
+                .with_host(host.clone());
             layout_into_slot(&mut d, live_slot());
 
             for step in 0..72 {
@@ -2875,7 +2933,7 @@ mod tests {
                     d.rotation_deg
                 );
                 assert_eq!(
-                    chrome.borrow().tree().desktop.workspaces.len(),
+                    host.workspaces.get(),
                     expected,
                     "the press at {}° did not create a workspace",
                     d.rotation_deg
@@ -2884,23 +2942,19 @@ mod tests {
             }
         }
 
-        // Phase `press_on_plus_rect_calls_chrome_add_workspace`.
+        // Phase `press_on_plus_rect_asks_the_host_to_add_a_workspace`.
         {
-            use crate::shell::chrome_state::ChromeState;
-            use crate::shell::state::WorkspaceTree;
-
-            // First-boot tree: one empty workspace — the state where "+"
+            // First boot: one empty workspace — the state where "+"
             // matters most, so it has to work from a single spoke.
-            let tree = WorkspaceTree::bootstrap_default();
-            let initial_count = tree.desktop.workspaces.len();
-            let initial_active = tree.desktop.active;
-            let chrome = ChromeState::new(tree);
+            let host = CountingHost::new(1);
+            let initial_count = host.workspaces.get();
+            let initial_active = host.active_workspace();
 
             let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
                 text: "Home".into(),
                 workspace_id: None,
             }])
-            .with_chrome(chrome.clone());
+            .with_host(host.clone());
             layout_into_slot(&mut d, live_slot());
             paint(&mut d);
             assert!(
@@ -2925,14 +2979,13 @@ mod tests {
                 "press on plus slot must be handled"
             );
 
-            let state = chrome.borrow();
             assert_eq!(
-                state.tree().desktop.workspaces.len(),
+                host.workspaces.get(),
                 initial_count + 1,
                 "plus-press must grow the workspace count by exactly 1"
             );
             assert_ne!(
-                state.tree().desktop.active,
+                host.active_workspace(),
                 initial_active,
                 "plus-press must activate the newly-created workspace"
             );
@@ -3425,24 +3478,16 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn snapping_publishes_to_chrome_only_when_the_workspace_changes() {
-        // Phase `snap_publishes_active_workspace_to_chrome`.
+    fn snapping_asks_the_host_only_when_the_workspace_changes() {
+        // Phase `snap_shows_the_new_workspace_through_the_host`.
         {
-            use crate::shell::chrome_state::ChromeState;
-            use crate::shell::state::WorkspaceTree;
-
-            let tree = WorkspaceTree::bootstrap_demo();
-            assert_eq!(tree.desktop.workspaces.len(), 3);
-            let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
-            let initial_active = tree.desktop.active;
-            assert_eq!(
-                initial_active, ws_ids[0],
-                "bootstrap_demo should leave active = ws_ids[0]"
-            );
+            let host = CountingHost::new(3);
+            let ws_ids: Vec<WorkspaceId> = (1..=3).map(WorkspaceId).collect();
+            let initial_active = host.active_workspace();
+            assert_eq!(initial_active, Some(ws_ids[0]));
 
             // Spokes carry workspace ids so write-back can map active_idx →
             // WorkspaceId.
-            let chrome = ChromeState::new(tree);
             let spokes: Vec<SpokeLabel> = ws_ids
                 .iter()
                 .enumerate()
@@ -3451,7 +3496,7 @@ mod tests {
                     workspace_id: Some(id.0),
                 })
                 .collect();
-            let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+            let mut d = SidebarWheelDisc::new(spokes).with_host(host.clone());
             let visible_w = d.visible_width_px();
             d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
 
@@ -3472,21 +3517,21 @@ mod tests {
             );
             let expected_id = ws_ids[d.selected_idx()];
             assert_eq!(
-                chrome.borrow().tree().desktop.active,
-                expected_id,
-                "snap_to_nearest must publish the new active workspace id to chrome"
+                host.active_workspace(),
+                Some(expected_id),
+                "snap_to_nearest must show the new workspace through the host"
             );
             assert_ne!(
-                chrome.borrow().tree().desktop.active,
+                host.active_workspace(),
                 initial_active,
-                "chrome's tree.active must have changed after the snap"
+                "the host's active workspace must have changed after the snap"
             );
         }
 
-        // Phase `disc_without_chrome_snaps_without_panicking`.
+        // Phase `disc_without_host_snaps_without_panicking`.
         {
             let mut d = mk(&["Home", "Research", "Design"]);
-            assert!(d.chrome.is_none());
+            assert!(d.host.is_none());
             let idx_before = d.active_idx;
             let diameter = d.diameter_px;
             let start_y = diameter / 2.0;
@@ -3500,16 +3545,12 @@ mod tests {
             assert_ne!(d.selected_idx(), idx_before);
         }
 
-        // Phase `a_gesture_that_lands_where_it_started_does_not_bump_the_chrome`.
-        // A gesture that ends where it started must not bump the chrome
-        // revision — the shell re-syncs the whole tree against it.
+        // Phase `a_gesture_that_lands_where_it_started_asks_nothing`.
+        // A gesture that ends where it started must not ask the host for a
+        // change — the shell re-syncs the whole tree against one.
         {
-            use crate::shell::chrome_state::ChromeState;
-            use crate::shell::state::WorkspaceTree;
-
-            let tree = WorkspaceTree::bootstrap_demo();
-            let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
-            let chrome = ChromeState::new(tree);
+            let host = CountingHost::new(3);
+            let ws_ids: Vec<WorkspaceId> = (1..=3).map(WorkspaceId).collect();
             let spokes: Vec<SpokeLabel> = ws_ids
                 .iter()
                 .map(|id| SpokeLabel {
@@ -3517,11 +3558,11 @@ mod tests {
                     workspace_id: Some(id.0),
                 })
                 .collect();
-            let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+            let mut d = SidebarWheelDisc::new(spokes).with_host(host.clone());
             let visible_w = d.visible_width_px();
             d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
 
-            let before = chrome.borrow().revision;
+            let before = host.changes.get();
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, &cursor_event(cx, start_y));
@@ -3536,9 +3577,9 @@ mod tests {
                 "the pull cannot have selected anything"
             );
             assert_eq!(
-                chrome.borrow().revision,
+                host.changes.get(),
                 before,
-                "a bounce off the end bumped the chrome, forcing a full re-sync for a \
+                "a bounce off the end asked for a change, forcing a full re-sync for a \
                  workspace that never changed"
             );
 
@@ -3565,9 +3606,9 @@ mod tests {
             assert!(pump(&mut d, &release_event()));
             assert_ne!(d.selected_idx(), 0);
             assert_ne!(
-                chrome.borrow().revision,
+                host.changes.get(),
                 before,
-                "an actual workspace change must still bump the chrome"
+                "an actual workspace change must still reach the host"
             );
         }
     }

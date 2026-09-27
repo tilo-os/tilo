@@ -10,16 +10,17 @@
 //! shell: groups are frames around windows, not windows themselves.
 //!
 //! This module owns the recency history, the open session, its geometry,
-//! painting and semantic tree. The overlay host routes input here and
-//! focuses whatever a session commits to.
+//! painting and semantic tree. The host routes input here and focuses
+//! whatever a session commits to. What only the host knows (an app's own
+//! artwork, which windows may be pictured, the pictures themselves) comes
+//! through [`WindowSource`] and [`WindowThumbnails`].
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -27,11 +28,132 @@ use ui::i18n::ArgValue;
 use ui::icons::AppImage;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::time::{Duration, Instant};
 use ui::widget::AppKind as UiAppKind;
 
-use crate::shell::i18n::{t, t_args};
-use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceId, WorkspaceTree};
-use crate::shell::window_previews::{PreviewRequest, PreviewSource, PreviewState, WindowPreviews};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceId};
+
+use crate::i18n::{t, t_args};
+
+/// Where a window's preview comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreviewSource {
+    /// A client's own latest buffer, from the host's frame store. Works for
+    /// every tab of a client, shown or not.
+    Client { surface: u64 },
+    /// A window the host draws itself, painted through the same live path
+    /// a screenshot of it takes. Only the tab its group shows is painted.
+    Painted { capture_id: String },
+    /// Never pictured: the app holds secrets.
+    Withheld,
+    /// Nothing worth picturing: a hidden tab of a host-drawn app, a window
+    /// that is still a placeholder card, or a host that pictures nothing.
+    Unavailable,
+}
+
+impl PreviewSource {
+    /// Whether this source can produce pixels at all.
+    pub fn renderable(&self) -> bool {
+        matches!(self, Self::Client { .. } | Self::Painted { .. })
+    }
+}
+
+/// One window the host should picture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewRequest {
+    pub tab: u64,
+    pub source: PreviewSource,
+}
+
+/// What a card can show for a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewState {
+    /// A live picture is ready.
+    Live,
+    /// The app holds secrets; its mark stands in.
+    Withheld,
+    /// No picture (yet); its mark stands in.
+    None,
+}
+
+impl PreviewState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Withheld => "withheld",
+            Self::None => "none",
+        }
+    }
+}
+
+/// What only the host knows about a window: its application's artwork and
+/// whether (and from where) it may be pictured. The defaults suit a host
+/// with neither.
+pub trait WindowSource {
+    /// The glyph shown for `tile` when its application has no artwork.
+    fn app_kind(&self, tile: &TileContent) -> UiAppKind {
+        crate::resolver::tile_app_kind(tile)
+    }
+
+    /// The application's own artwork for `tile`.
+    fn app_icon(&self, _tile: &TileContent) -> Option<AppImage> {
+        None
+    }
+
+    /// Where a preview of `tile`, the tab `tab` of group `group`, comes
+    /// from. `shown` is whether that tab is the one its group displays.
+    fn preview_source(
+        &self,
+        _tile: &TileContent,
+        _group: GroupId,
+        _tab: u64,
+        _shown: bool,
+    ) -> PreviewSource {
+        PreviewSource::Unavailable
+    }
+}
+
+/// A host that knows nothing beyond the desktop tree.
+pub struct PlainWindows;
+
+impl WindowSource for PlainWindows {}
+
+/// The host's live window pictures, keyed by tab.
+pub trait WindowThumbnails {
+    /// A picture of `tab` is on hand.
+    fn has(&self, tab: u64) -> bool;
+
+    /// Paint the picture of `tab` fitted inside `rect`, keeping its shape.
+    /// Returns the rect it covers, or `None` when there is none.
+    fn paint(
+        &mut self,
+        tab: u64,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        theme: &Theme,
+    ) -> Option<Rect>;
+}
+
+/// A host with no pictures: every card shows its app mark.
+pub struct NoThumbnails;
+
+impl WindowThumbnails for NoThumbnails {
+    fn has(&self, _tab: u64) -> bool {
+        false
+    }
+
+    fn paint(
+        &mut self,
+        _tab: u64,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _rect: Rect,
+        _theme: &Theme,
+    ) -> Option<Rect> {
+        None
+    }
+}
 
 /// How long Alt has to stay down after Tab before the switcher appears.
 /// Shorter than a deliberate look, longer than a practised Alt+Tab, so the
@@ -61,18 +183,15 @@ pub struct WindowApp {
 }
 
 impl WindowApp {
-    pub fn of(tile: &TileContent) -> Self {
-        let kind = crate::shell::tile_app_kind(tile);
+    pub fn of(tile: &TileContent, source: &dyn WindowSource) -> Self {
+        let kind = source.app_kind(tile);
         match tile {
-            TileContent::Foreign { app_id, .. } => Self {
+            TileContent::Foreign { app_id, .. }
+            | TileContent::LocalApp { app_id, .. }
+            | TileContent::PeerWindow { app_id, .. } => Self {
                 key: format!("app:{app_id}"),
                 kind,
-                icon: crate::app_icons::for_tile(tile),
-            },
-            TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => Self {
-                key: format!("app:{app_id}"),
-                kind,
-                icon: crate::app_icons::for_window_app_id(app_id),
+                icon: source.app_icon(tile),
             },
             TileContent::AppPlaceholder { kind: app, .. } | TileContent::Stub { kind: app, .. } => {
                 Self {
@@ -109,6 +228,23 @@ pub enum SwitcherScope {
     FocusedApp,
 }
 
+impl SwitcherScope {
+    /// The switcher chord `key` presses with `mods` held, if any: Alt+Tab
+    /// walks the workspace, Alt with the key above Tab the focused app.
+    pub fn for_chord(key: &Key, mods: ModifiersState) -> Option<Self> {
+        if !mods.alt_key() {
+            return None;
+        }
+        match key {
+            Key::Named(NamedKey::Tab) => Some(Self::Workspace),
+            key if is_grave(key) && !mods.control_key() && !mods.super_key() => {
+                Some(Self::FocusedApp)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// What the host must do after the switcher saw an input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwitcherOutcome {
@@ -123,8 +259,10 @@ pub enum SwitcherOutcome {
 }
 
 /// Every window of the active workspace, in tree order, with the focused one.
-fn workspace_windows(tree: &WorkspaceTree) -> (Vec<SwitcherWindow>, Option<usize>) {
-    let desktop = &tree.desktop;
+fn workspace_windows(
+    desktop: &DesktopTree,
+    source: &dyn WindowSource,
+) -> (Vec<SwitcherWindow>, Option<usize>) {
     let Some(workspace) = desktop.active_workspace() else {
         return (Vec::new(), None);
     };
@@ -160,8 +298,8 @@ fn workspace_windows(tree: &WorkspaceTree) -> (Vec<SwitcherWindow>, Option<usize
                         tab: tab.id,
                     },
                     title,
-                    app: WindowApp::of(&tab.tile),
-                    preview: PreviewSource::for_tab(
+                    app: WindowApp::of(&tab.tile, source),
+                    preview: source.preview_source(
                         &tab.tile,
                         group.id,
                         tab.id,
@@ -175,8 +313,7 @@ fn workspace_windows(tree: &WorkspaceTree) -> (Vec<SwitcherWindow>, Option<usize
 }
 
 /// The focused tab of the active workspace, cheaply: no titles or icons.
-fn focused_tab(tree: &WorkspaceTree) -> Option<(WorkspaceId, u64)> {
-    let desktop = &tree.desktop;
+fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceId, u64)> {
     let workspace = desktop.active_workspace()?;
     let strip = desktop
         .active_strip
@@ -203,7 +340,7 @@ pub struct FocusHistory {
 
 impl FocusHistory {
     /// Record the focused window as the most recent in its workspace.
-    pub fn observe(&mut self, tree: &WorkspaceTree) {
+    pub fn observe(&mut self, tree: &DesktopTree) {
         let Some((workspace, tab)) = focused_tab(tree) else {
             return;
         };
@@ -214,22 +351,25 @@ impl FocusHistory {
         recent.retain(|id| *id != tab);
         recent.insert(0, tab);
         recent.truncate(HISTORY_LIMIT);
-        if self.recent.len() > tree.desktop.workspaces.len() {
+        if self.recent.len() > tree.workspaces.len() {
             self.recent
-                .retain(|id, _| tree.desktop.workspaces.iter().any(|ws| ws.id == *id));
+                .retain(|id, _| tree.workspaces.iter().any(|ws| ws.id == *id));
         }
     }
 
     /// The active workspace's windows, focused one first, then by recency.
     /// Windows never focused follow in strip order from the focused one, so
     /// on a fresh desktop Alt+Tab steps to the next window along the strip.
-    pub fn ordered_windows(&self, tree: &WorkspaceTree) -> Vec<SwitcherWindow> {
-        let (windows, current) = workspace_windows(tree);
+    pub fn ordered_windows(
+        &self,
+        tree: &DesktopTree,
+        source: &dyn WindowSource,
+    ) -> Vec<SwitcherWindow> {
+        let (windows, current) = workspace_windows(tree, source);
         let count = windows.len();
         let start = current.unwrap_or(0);
         let mut rank: HashMap<u64, usize> = HashMap::new();
         if let Some(recent) = tree
-            .desktop
             .active_workspace()
             .and_then(|ws| self.recent.get(&ws.id))
         {
@@ -442,13 +582,17 @@ fn is_grave(key: &Key) -> bool {
 impl WindowSwitcher {
     /// Note which window has focus now, so recency stays true whichever
     /// path moved it (click, keyboard, search, an app).
-    pub fn observe(&mut self, tree: &WorkspaceTree) {
+    pub fn observe(&mut self, tree: &DesktopTree) {
         self.history.observe(tree);
     }
 
     /// The windows Alt+Tab would walk right now, in order.
-    pub fn ordered_windows(&self, tree: &WorkspaceTree) -> Vec<SwitcherWindow> {
-        self.history.ordered_windows(tree)
+    pub fn ordered_windows(
+        &self,
+        tree: &DesktopTree,
+        source: &dyn WindowSource,
+    ) -> Vec<SwitcherWindow> {
+        self.history.ordered_windows(tree, source)
     }
 
     /// A session is open: Alt is held after Tab.
@@ -487,13 +631,14 @@ impl WindowSwitcher {
     /// switch to.
     pub fn begin(
         &mut self,
-        tree: &WorkspaceTree,
+        tree: &DesktopTree,
+        source: &dyn WindowSource,
         scope: SwitcherScope,
         backwards: bool,
         now: Instant,
     ) -> bool {
         self.observe(tree);
-        let mut windows = self.history.ordered_windows(tree);
+        let mut windows = self.history.ordered_windows(tree, source);
         if scope == SwitcherScope::FocusedApp {
             let Some(app) = windows.first().map(|window| window.app.key.clone()) else {
                 return false;
@@ -615,6 +760,45 @@ impl WindowSwitcher {
             // nobody chose yet.
             _ if !mods.alt_key() && !matches!(key, Key::Named(NamedKey::Alt)) => self.commit(),
             _ => SwitcherOutcome::Consumed,
+        }
+    }
+
+    /// Input while a session is open. Keys all belong to it; the pointer
+    /// (at `cursor`, in the host's coordinates) does once the panel is on
+    /// screen. A modifier change is reported but belongs to the host too.
+    pub fn route_event(
+        &mut self,
+        event: &WindowEvent,
+        mods: ModifiersState,
+        cursor: Option<Point>,
+        now: Instant,
+    ) -> SwitcherOutcome {
+        if self.session.is_none() {
+            return SwitcherOutcome::Ignored;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                self.key(&key.logical_key, key.state, mods)
+            }
+            WindowEvent::ModifiersChanged(changed) => self.modifiers_changed(changed.state()),
+            WindowEvent::CursorMoved { .. } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.pointer_moved(point, now)
+            }),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.pointer_pressed(point, now)
+            }),
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+                if self.is_revealed(now) =>
+            {
+                SwitcherOutcome::Consumed
+            }
+            _ => SwitcherOutcome::Ignored,
         }
     }
 
@@ -777,7 +961,7 @@ impl WindowSwitcher {
         theme: &Theme,
         host: Rect,
         now: Instant,
-        previews: &mut WindowPreviews,
+        previews: &mut dyn WindowThumbnails,
     ) {
         self.host_rect = host;
         self.metrics = Metrics::from_tokens(&theme.tokens);
@@ -818,7 +1002,7 @@ impl WindowSwitcher {
     }
 
     /// What a card can show for `window` right now.
-    pub fn preview_state(window: &SwitcherWindow, previews: &WindowPreviews) -> PreviewState {
+    pub fn preview_state(window: &SwitcherWindow, previews: &dyn WindowThumbnails) -> PreviewState {
         match window.preview {
             PreviewSource::Withheld => PreviewState::Withheld,
             _ if previews.has(window.address.tab) => PreviewState::Live,
@@ -828,7 +1012,7 @@ impl WindowSwitcher {
 
     /// The open session as data: each window, whether it is selected, and
     /// whether its card shows a live preview. Never the pixels themselves.
-    pub fn state_json(&self, previews: &WindowPreviews, now: Instant) -> serde_json::Value {
+    pub fn state_json(&self, previews: &dyn WindowThumbnails, now: Instant) -> serde_json::Value {
         let Some(session) = self.session.as_ref() else {
             return serde_json::json!({ "open": false });
         };
@@ -862,7 +1046,7 @@ impl WindowSwitcher {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        previews: &mut WindowPreviews,
+        previews: &mut dyn WindowThumbnails,
     ) {
         let Some(session) = self.session.as_ref() else {
             return;
@@ -972,7 +1156,7 @@ impl WindowSwitcher {
         card: Rect,
         window: &SwitcherWindow,
         state: ui::chrome::SelectionState,
-        previews: &mut WindowPreviews,
+        previews: &mut dyn WindowThumbnails,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -1057,7 +1241,7 @@ impl WindowSwitcher {
 
 /// Where a window's preview well sits and how its stand-in mark is sized.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PreviewWell {
+pub struct PreviewWell {
     pub rect: Rect,
     pub radius: f64,
     /// Edge of the app mark shown when there is no live preview.
@@ -1068,13 +1252,13 @@ pub(crate) struct PreviewWell {
 /// preview, or its app mark when it has none (not rendered yet, or an app
 /// that holds secrets). Shared by the switcher and the overview so a
 /// window looks the same in both. Returns whether a preview was painted.
-pub(crate) fn draw_preview_well(
+pub fn draw_preview_well(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
     well: PreviewWell,
     window: &SwitcherWindow,
-    previews: &mut WindowPreviews,
+    previews: &mut dyn WindowThumbnails,
 ) -> bool {
     let colors = &theme.tokens.colors;
     let well_rr = RoundedRect::from_rect(well.rect, well.radius);
@@ -1129,7 +1313,7 @@ pub(crate) fn draw_preview_well(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{FreshId as _, Strip, Tab, WindowGroup, WindowWidth};
+    use tilo_desktop_model::{Strip, Tab, WindowGroup, WindowWidth, Workspace};
 
     fn tab(id: u64, app: &str) -> Tab {
         Tab {
@@ -1153,11 +1337,15 @@ mod tests {
     }
 
     /// One strip of four single-tab groups (tabs 1..=4), group 10 focused.
-    fn tree() -> WorkspaceTree {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let strip = StripId::new();
-        let workspace = tree.desktop.workspaces[0].id;
-        tree.desktop.workspaces[0].strips = vec![Strip {
+    fn tree() -> DesktopTree {
+        let workspace = WorkspaceId(1);
+        let mut tree = DesktopTree {
+            active: workspace,
+            workspaces: vec![Workspace::new(workspace, "Home")],
+            ..Default::default()
+        };
+        let strip = StripId(100);
+        tree.workspaces[0].strips = vec![Strip {
             id: strip,
             name: String::new(),
             window_groups: vec![
@@ -1167,19 +1355,19 @@ mod tests {
                 group(40, vec![tab(4, "c")]),
             ],
         }];
-        tree.desktop.active_strip.insert(workspace, strip);
-        tree.desktop.set_active_group(strip, 10);
+        tree.active_strip.insert(workspace, strip);
+        tree.set_active_group(strip, 10);
         tree
     }
 
-    fn focus(tree: &mut WorkspaceTree, group: u64) {
-        let strip = tree.desktop.workspaces[0].strips[0].id;
-        tree.desktop.set_active_group(strip, group);
+    fn focus(tree: &mut DesktopTree, group: u64) {
+        let strip = tree.workspaces[0].strips[0].id;
+        tree.set_active_group(strip, group);
     }
 
-    fn order(switcher: &WindowSwitcher, tree: &WorkspaceTree) -> Vec<u64> {
+    fn order(switcher: &WindowSwitcher, tree: &DesktopTree) -> Vec<u64> {
         switcher
-            .ordered_windows(tree)
+            .ordered_windows(tree, &PlainWindows)
             .iter()
             .map(|window| window.address.tab)
             .collect()
@@ -1210,15 +1398,15 @@ mod tests {
         let mut switcher = WindowSwitcher::default();
         focus(&mut tree, 40);
         switcher.observe(&tree);
-        let home = tree.desktop.active;
-        let away = WorkspaceId::new();
-        let mut other = tree.desktop.workspaces[0].clone();
+        let home = tree.active;
+        let away = WorkspaceId(2);
+        let mut other = tree.workspaces[0].clone();
         other.id = away;
-        other.strips[0].id = StripId::new();
-        tree.desktop.workspaces.push(other);
-        tree.desktop.active = away;
+        other.strips[0].id = StripId(200);
+        tree.workspaces.push(other);
+        tree.active = away;
         switcher.observe(&tree);
-        tree.desktop.active = home;
+        tree.active = home;
         assert_eq!(order(&switcher, &tree).first(), Some(&4));
     }
 
@@ -1230,7 +1418,7 @@ mod tests {
         switcher.observe(&tree);
         focus(&mut tree, 10);
         let now = Instant::now();
-        assert!(switcher.begin(&tree, SwitcherScope::Workspace, false, now));
+        assert!(switcher.begin(&tree, &PlainWindows, SwitcherScope::Workspace, false, now));
         assert!(!switcher.is_revealed(now));
         assert!(switcher.is_revealed(now + REVEAL_DELAY));
         let outcome = switcher.key(
@@ -1246,7 +1434,13 @@ mod tests {
     fn the_app_scope_walks_only_the_focused_apps_windows() {
         let tree = tree();
         let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(&tree, SwitcherScope::FocusedApp, false, Instant::now()));
+        assert!(switcher.begin(
+            &tree,
+            &PlainWindows,
+            SwitcherScope::FocusedApp,
+            false,
+            Instant::now()
+        ));
         assert_eq!(switcher.selected().map(|w| w.address.tab), Some(3));
         switcher.key(
             &Key::Character("`".into()),
@@ -1257,7 +1451,13 @@ mod tests {
         let mut lone = tree;
         focus(&mut lone, 40);
         assert!(
-            !switcher.begin(&lone, SwitcherScope::FocusedApp, false, Instant::now()),
+            !switcher.begin(
+                &lone,
+                &PlainWindows,
+                SwitcherScope::FocusedApp,
+                false,
+                Instant::now()
+            ),
             "an app with one window has nothing to switch to"
         );
     }
