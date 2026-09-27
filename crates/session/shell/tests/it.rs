@@ -121,8 +121,6 @@ mod input_method_wire;
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
-#[path = "keyboard_shortcuts_door.rs"]
-mod keyboard_shortcuts_door;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "lock_screen_visual.rs"]
@@ -189,8 +187,6 @@ mod shell_chrome_test;
 mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
-#[path = "shortcuts_door.rs"]
-mod shortcuts_door;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "state_file_format.rs"]
