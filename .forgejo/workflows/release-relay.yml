@@ -312,8 +312,12 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DISPATCH_REQUIRE_CACHE: ${{ inputs.require_compiler_cache }}
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
           require=0
           if [ "${DISPATCH_REQUIRE_CACHE:-false}" = true ]; then
             require=1
