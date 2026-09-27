@@ -3132,9 +3132,7 @@ mod tests {
                 ready: Some(&ready_tx),
             })
         });
-        ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("approval listener became ready");
+        tilo_test_env::recv("the approval listener to become ready", &ready_rx);
         // Other nearby-pairing surfaces on this host (an open discovery
         // view, another approval sheet) share the well-known port. Which of
         // them the kernel hands a unicast datagram must not decide whether

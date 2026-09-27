@@ -4947,12 +4947,10 @@ mod autobind_tests {
         let observer = std::thread::spawn(move || {
             handle.block_on(async move {
                 reached.await.unwrap();
-                let unlocked = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    observer_registry.lock(),
-                )
-                .await
-                .is_ok();
+                let unlocked =
+                    tokio::time::timeout(tilo_test_env::hang_bound(), observer_registry.lock())
+                        .await
+                        .is_ok();
                 drop(release);
                 unlocked
             })
@@ -6107,9 +6105,8 @@ mod private_transport_tests {
             .await
             .unwrap();
         let room_delivery =
-            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
+            tilo_test_env::within("a message on observer_state_rx", observer_state_rx.recv())
                 .await
-                .unwrap()
                 .unwrap();
         assert!(
             crate::transport::encode(&room_delivery.envelope).unwrap() == next[0],
@@ -6154,7 +6151,7 @@ mod private_transport_tests {
         .unwrap();
         // A liveness guard, not a latency budget: a busy machine must not
         // fail this on timing.
-        tokio::time::timeout(std::time::Duration::from_secs(30), reached)
+        tokio::time::timeout(tilo_test_env::hang_bound(), reached)
             .await
             .unwrap_or_else(|_| {
                 let source_disconnect = match source_disconnected.try_recv() {
@@ -6170,11 +6167,12 @@ mod private_transport_tests {
                 );
             })
             .unwrap();
-        let delivered_before_failure =
-            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
-                .await
-                .expect("first exact Original was not visible before the injected failure")
-                .unwrap();
+        let delivered_before_failure = tilo_test_env::within(
+            "first exact Original was not visible before the injected failure",
+            observer_state_rx.recv(),
+        )
+        .await
+        .unwrap();
         assert!(
             crate::transport::encode(&delivered_before_failure.envelope).unwrap() == next[1],
             "injected failure occurred before the first exact Original publication"
@@ -6204,12 +6202,11 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+        tilo_test_env::within(
+            "post-CURRENT failure did not fence the captured observer",
             observer_disconnected.recv(),
         )
         .await
-        .expect("post-CURRENT failure did not fence the captured observer")
         .expect("captured observer disconnect channel closed before fencing");
         assert!(
             replacement_disconnected.try_recv().is_err(),
@@ -6287,9 +6284,8 @@ mod private_transport_tests {
         );
         for (index, expected) in next.iter().skip(1).take(PREFIX_ROUTES).enumerate() {
             let observed =
-                tokio::time::timeout(std::time::Duration::from_secs(2), reopened_state_rx.recv())
+                tilo_test_env::within("a message on reopened_state_rx", reopened_state_rx.recv())
                     .await
-                    .unwrap()
                     .unwrap();
             assert!(
                 crate::transport::encode(&observed.envelope).unwrap() == *expected,
@@ -7101,10 +7097,12 @@ mod private_transport_tests {
         )
         .await
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), reached)
-            .await
-            .expect("selected activation never reached its fault barrier")
-            .unwrap();
+        tilo_test_env::within(
+            "selected activation never reached its fault barrier",
+            reached,
+        )
+        .await
+        .unwrap();
         assert_ne!(
             std::fs::read(&current).unwrap(),
             before,
@@ -7662,7 +7660,7 @@ mod private_transport_tests {
             }
             return;
         }
-        let progress = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let progress = tokio::time::timeout(tilo_test_env::hang_bound(), async {
             if check_lock {
                 drop(workspace.lock().await);
             }
@@ -7944,8 +7942,7 @@ mod private_transport_tests {
                 .await
                 .unwrap();
         }
-        let progress =
-            tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next()).await;
+        let progress = tokio::time::timeout(tilo_test_env::hang_bound(), br.read_next()).await;
         // Receiving this later unrelated frame proves the reader classified the
         // earlier capability and dependent frame while the real owner was held.
         let premature =
@@ -7963,9 +7960,8 @@ mod private_transport_tests {
             premature.is_err(),
             "dependent private frame overtook capability {control} (reply wait={reply_wait}): {premature:?}"
         );
-        let delivered = tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next())
+        let delivered = tilo_test_env::within("the next frame from br", br.read_next())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         if control > 0 {
@@ -8112,7 +8108,7 @@ mod private_transport_tests {
         );
         // Finish the old owner's cancelled-ticket disposal before emulating a
         // new process. Two owners over the same store are not a daemon restart.
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("old owner did not release cancelled replay", async {
             loop {
                 if std::fs::read_dir(shared.lock().await.store.root().join("store-work-v1"))
                     .unwrap()
@@ -8124,8 +8120,7 @@ mod private_transport_tests {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("old owner did not release cancelled replay");
+        .await;
         // Emulate a crash during resumable duplicate cleanup: write the complete
         // replay, remove only its first duplicate, then reopen before the rest
         // of the cleanup list can be processed.
@@ -8328,8 +8323,7 @@ mod private_transport_tests {
         let observer = std::thread::spawn(move || {
             handle.block_on(async move {
                 reached.await.unwrap();
-                let lock =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), observed.lock()).await;
+                let lock = tokio::time::timeout(tilo_test_env::hang_bound(), observed.lock()).await;
                 let unlocked = if let Ok(mut runtime) = lock {
                     let (replacement, _rx) = mpsc::channel(2);
                     runtime.add_subscriber(Subscriber {
