@@ -21,7 +21,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -183,9 +183,11 @@ pub(super) const STARTUP: StartupLimits = StartupLimits {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Observation {
     /// What the process is doing, for errors: "while <stage>".
-    pub(super) stage: &'static str,
-    /// Changes whenever the process shows any sign of progress.
-    pub(super) progress: u64,
+    pub(super) stage: String,
+    /// Every sign of progress by name, in the same order at each instant:
+    /// its current value, or `None` while it cannot be read. Any value that
+    /// changes counts as progress.
+    pub(super) signals: Vec<(&'static str, Option<u64>)>,
 }
 
 /// A spawned process that has not reported ready yet.
@@ -200,28 +202,55 @@ pub(super) trait StartingProcess {
     fn observe(&mut self) -> Observation;
     /// End a process that will not become ready.
     fn stop(&mut self);
-    /// Where to look next, with the process's most recent output.
+    /// Where to look next, with the process's most recent output and, while
+    /// it still runs, what it is blocked on.
     fn diagnostics(&self) -> String;
+}
+
+/// When each progress signal last changed, for the error that names which
+/// of them went quiet.
+fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> String {
+    observation
+        .signals
+        .iter()
+        .zip(changed)
+        .map(|((name, value), changed)| match (value, changed) {
+            (_, Some(at)) => format!(
+                "{name} last changed {:.1} s ago",
+                at.elapsed().as_secs_f32()
+            ),
+            (None, None) => format!("{name} unreadable"),
+            (Some(_), None) => format!("{name} unchanged since launch"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Wait until `process` is ready, failing as soon as it exits, stalls or
 /// exceeds the absolute cap.
 /// # Errors
-/// Names the stage the process reached and includes its diagnostics.
+/// Names the stage the process reached, when each progress signal last
+/// changed, and the process's diagnostics.
 pub(super) fn wait_until_ready<P: StartingProcess>(
     process: &mut P,
     limits: StartupLimits,
 ) -> io::Result<P::Ready> {
     let started = Instant::now();
     let mut last = process.observe();
+    let mut changed = vec![None; last.signals.len()];
     let mut last_progress = started;
     loop {
         if let Some(ready) = process.ready() {
             return Ok(ready);
         }
         let now = process.observe();
-        if now.progress != last.progress {
-            last_progress = Instant::now();
+        for (index, (signal, value)) in now.signals.iter().enumerate() {
+            if last.signals.get(index) != Some(&(*signal, *value)) {
+                last_progress = Instant::now();
+                if let Some(slot) = changed.get_mut(index) {
+                    *slot = Some(last_progress);
+                }
+            }
         }
         last = now;
         if let Some(status) = process.exited()? {
@@ -233,98 +262,251 @@ pub(super) fn wait_until_ready<P: StartingProcess>(
         }
         let failure = if last_progress.elapsed() >= limits.stall {
             format!(
-                "native runtime stalled while {}: no progress for {} s",
+                "native runtime stalled while {}: no progress for {} s ({})",
                 last.stage,
-                limits.stall.as_secs_f32()
+                limits.stall.as_secs_f32(),
+                signal_report(&last, &changed)
             )
         } else if started.elapsed() >= limits.cap {
             format!(
-                "native runtime did not become ready within {} s (still {})",
+                "native runtime did not become ready within {} s (still {}; {})",
                 limits.cap.as_secs_f32(),
-                last.stage
+                last.stage,
+                signal_report(&last, &changed)
             )
         } else {
             std::thread::sleep(limits.poll);
             continue;
         };
+        // What it is blocked on is only visible while it still runs.
+        let diagnostics = process.diagnostics();
         process.stop();
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            format!("{failure}; {}", process.diagnostics()),
+            format!("{failure}; {diagnostics}"),
         ));
     }
 }
 
-/// Files `Session::start` and `serve` create in order, each paired with what
-/// the daemon does once it exists.
-const MILESTONES: [(&str, &str); 6] = [
-    ("runtime.lock", "provisioning the collaboration identity"),
-    ("workspace.json", "starting the identity service"),
-    ("identity.sock", "starting the collaboration broker"),
-    ("collab.sock", "opening the content store"),
-    ("blobs.sock", "binding the native endpoint"),
-    ("native.sock", "answering the status probe"),
-];
+/// The file a starting daemon names each startup step in, one line per step,
+/// before taking it.
+const STAGES_FILE: &str = "startup.stages";
+/// What a daemon does before it names its first step: the executable loads
+/// and prepares its profile environment.
+const FIRST_STAGE: &str = "loading the runtime";
 const OUTPUT_TAIL: u64 = 4096;
+/// The longest step name a launcher repeats from the stages file.
+const STAGE_LIMIT: usize = 200;
+/// Processes, and threads per process, a launcher inspects in a daemon's tree.
+const TREE_LIMIT: usize = 256;
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::symlink_metadata(path).ok()?.modified().ok()
+/// The daemon's side of [`STAGES_FILE`].
+struct StartupStages(std::fs::File);
+
+impl StartupStages {
+    fn open(profile: &Path) -> io::Result<Self> {
+        let file = unix::private_file(&profile.join(STAGES_FILE))?;
+        // A daemon started by hand still reports only its own steps.
+        file.set_len(0)?;
+        Ok(Self(file))
+    }
+    /// Report is best effort: a launcher that cannot read it still sees the
+    /// daemon's other signs of progress.
+    fn enter(&mut self, stage: &str) {
+        let _ = self.0.write_all(format!("{stage}\n").as_bytes());
+    }
+}
+
+/// The most recent step named in a stages file's contents.
+fn current_stage(stages: &[u8]) -> String {
+    let stages = String::from_utf8_lossy(stages);
+    stages
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map_or_else(
+            || FIRST_STAGE.to_owned(),
+            |line| line.chars().take(STAGE_LIMIT).collect(),
+        )
+}
+
+/// One `/proc/<pid>/stat` or `/proc/<pid>/task/<tid>/stat`: the scheduler
+/// state letter and the user plus system CPU time in clock ticks. A process
+/// stat counts every thread it has ever run; a task stat only that thread.
+#[cfg(target_os = "linux")]
+fn stat(path: &Path) -> Option<(char, u64)> {
+    let stat = std::fs::read_to_string(path).ok()?;
+    // The command name may contain spaces; the fields after it are fixed:
+    // state is the first, user and system time the 12th and 13th.
+    let mut fields = stat.get(stat.rfind(')')?.checked_add(2)?..)?.split(' ');
+    let state = fields.next()?.chars().next()?;
+    let user = fields.nth(10)?.parse::<u64>().ok()?;
+    let system = fields.next()?.parse::<u64>().ok()?;
+    Some((state, user.checked_add(system)?))
 }
 
 /// Total CPU time the process has used, in clock ticks.
 #[cfg(target_os = "linux")]
 fn cpu_ticks(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // The command name may contain spaces; the fields after it are fixed:
-    // state is the first, user and system time the 12th and 13th.
-    let mut fields = stat.get(stat.rfind(')')?.checked_add(2)?..)?.split(' ');
-    let user = fields.nth(11)?.parse::<u64>().ok()?;
-    let system = fields.next()?.parse::<u64>().ok()?;
-    user.checked_add(system)
+    stat(Path::new(&format!("/proc/{pid}/stat"))).map(|(_, ticks)| ticks)
+}
+
+/// Bytes the process has moved through read and write calls and to or from
+/// storage, over all its threads.
+#[cfg(target_os = "linux")]
+fn io_bytes(pid: u32) -> Option<u64> {
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    io.lines()
+        .filter_map(|line| line.split_once(": "))
+        .filter(|(key, _)| matches!(*key, "rchar" | "wchar" | "read_bytes" | "write_bytes"))
+        .try_fold(0_u64, |total, (_, value)| {
+            total.checked_add(value.trim().parse().ok()?)
+        })
+}
+
+/// The daemon and every process it started, at one instant.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TreeSample {
+    /// CPU time of the whole tree, in clock ticks.
+    cpu_ticks: u64,
+    /// Read, write and storage bytes of the tree, when any are readable.
+    io_bytes: Option<u64>,
+    /// Some thread is running, waiting for a CPU, or waiting on the disk:
+    /// the tree is held up by the machine rather than stuck.
+    held_by_machine: bool,
+    /// Each thread as "name state kernel-wait", when asked for.
+    threads: Vec<String>,
+}
+
+/// Thread ids of `pid`, bounded.
+#[cfg(target_os = "linux")]
+fn tasks(pid: u32) -> Vec<String> {
+    std::fs::read_dir(format!("/proc/{pid}/task")).map_or_else(
+        |_| Vec::new(),
+        |entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .take(TREE_LIMIT)
+                .collect()
+        },
+    )
+}
+
+/// Sample `root` and its descendants, or `None` once `root` is gone.
+/// `describe` also names each thread and what it waits on in the kernel.
+#[cfg(target_os = "linux")]
+fn sample_tree(root: u32, describe: bool) -> Option<TreeSample> {
+    let mut sample = TreeSample::default();
+    let mut pending = vec![root];
+    for _ in 0..TREE_LIMIT {
+        let Some(pid) = pending.pop() else { break };
+        let Some(ticks) = cpu_ticks(pid) else {
+            if pid == root {
+                return None;
+            }
+            continue;
+        };
+        sample.cpu_ticks = sample.cpu_ticks.saturating_add(ticks);
+        if let Some(bytes) = io_bytes(pid) {
+            let total = sample.io_bytes.get_or_insert(0);
+            *total = total.saturating_add(bytes);
+        }
+        for tid in tasks(pid) {
+            let task = PathBuf::from(format!("/proc/{pid}/task/{tid}"));
+            if let Some((state, _)) = stat(&task.join("stat")) {
+                sample.held_by_machine |= matches!(state, 'R' | 'D');
+            }
+            if describe && let Some((state, _)) = stat(&task.join("stat")) {
+                let read = |name: &str| {
+                    std::fs::read_to_string(task.join(name))
+                        .map(|text| text.trim().to_owned())
+                        .unwrap_or_default()
+                };
+                let wchan = read("wchan");
+                let wchan = if wchan.is_empty() || wchan == "0" {
+                    String::new()
+                } else {
+                    format!(" {wchan}")
+                };
+                sample
+                    .threads
+                    .push(format!("{} {state}{wchan}", read("comm")));
+            }
+            if let Ok(children) = std::fs::read_to_string(task.join("children")) {
+                pending.extend(
+                    children
+                        .split_whitespace()
+                        .filter_map(|child| child.parse::<u32>().ok()),
+                );
+            }
+        }
+    }
+    Some(sample)
 }
 #[cfg(not(target_os = "linux"))]
-fn cpu_ticks(_pid: u32) -> Option<u64> {
+fn sample_tree(_root: u32, _describe: bool) -> Option<TreeSample> {
     None
 }
 
 /// The daemon child of this launcher. Progress is anything it visibly does:
-/// reaching a startup milestone, writing output or using CPU time.
-struct DaemonStart<'a> {
-    profile: &'a Path,
+/// naming its next startup step, writing output, using CPU time, reading or
+/// writing, or waiting for a CPU or the disk, anywhere in its process tree.
+struct DaemonStart {
     log: PathBuf,
+    stages: PathBuf,
     child: Child,
-    /// Milestone modification times before the spawn, so files left by an
-    /// earlier daemon do not count as this one's progress.
-    before: [Option<SystemTime>; MILESTONES.len()],
+    profile: PathBuf,
+    /// Samples in which the machine, not the daemon, held it up.
+    held_samples: u64,
 }
 
-impl StartingProcess for DaemonStart<'_> {
+impl DaemonStart {
+    fn new(profile: &Path, child: Child) -> Self {
+        Self {
+            log: profile.join("daemon.log"),
+            stages: profile.join(STAGES_FILE),
+            child,
+            profile: profile.to_path_buf(),
+            held_samples: 0,
+        }
+    }
+}
+
+impl StartingProcess for DaemonStart {
     type Ready = Status;
     fn ready(&mut self) -> Option<Status> {
-        probe(self.profile).ok()
+        probe(&self.profile).ok()
     }
     fn exited(&mut self) -> io::Result<Option<String>> {
         Ok(self.child.try_wait()?.map(|status| status.to_string()))
     }
     fn observe(&mut self) -> Observation {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        let mut stage = "loading the runtime";
-        for ((name, next), before) in MILESTONES.iter().zip(&self.before) {
-            let now = modified(&self.profile.join(name));
-            if now.is_some() && now != *before {
-                stage = next;
-            }
-            now.hash(&mut hasher);
+        let stages = std::fs::read(&self.stages).ok();
+        let tree = sample_tree(self.child.id(), false);
+        if tree.as_ref().is_some_and(|tree| tree.held_by_machine) {
+            self.held_samples = self.held_samples.saturating_add(1);
         }
-        std::fs::metadata(&self.log)
-            .map(|metadata| metadata.len())
-            .ok()
-            .hash(&mut hasher);
-        cpu_ticks(self.child.id()).hash(&mut hasher);
+        let length = |bytes: usize| u64::try_from(bytes).unwrap_or(u64::MAX);
         Observation {
-            stage,
-            progress: hasher.finish(),
+            stage: current_stage(stages.as_deref().unwrap_or_default()),
+            signals: vec![
+                (
+                    "startup step",
+                    stages.as_ref().map(|stages| length(stages.len())),
+                ),
+                (
+                    "output",
+                    std::fs::metadata(&self.log)
+                        .map(|metadata| metadata.len())
+                        .ok(),
+                ),
+                ("CPU time", tree.as_ref().map(|tree| tree.cpu_ticks)),
+                ("I/O", tree.as_ref().and_then(|tree| tree.io_bytes)),
+                (
+                    "waiting for CPU or disk",
+                    tree.as_ref().map(|_| self.held_samples),
+                ),
+            ],
         }
     }
     fn stop(&mut self) {
@@ -345,10 +527,16 @@ impl StartingProcess for DaemonStart<'_> {
         }
         let tail = String::from_utf8_lossy(&tail);
         let tail = tail.trim();
-        if tail.is_empty() {
+        let output = if tail.is_empty() {
             format!("it wrote nothing to {}", self.log.display())
         } else {
             format!("last output from {}:\n{tail}", self.log.display())
+        };
+        match sample_tree(self.child.id(), true) {
+            Some(tree) if !tree.threads.is_empty() => {
+                format!("threads: {}; {output}", tree.threads.join(", "))
+            }
+            _ => output,
         }
     }
 }
@@ -365,11 +553,10 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     if let Ok(status) = probe(profile) {
         return Ok(status);
     }
-    let log_path = profile.join("daemon.log");
-    let log = unix::private_file(&log_path)?;
-    // Each start's log holds only its own daemon's output.
+    let log = unix::private_file(&profile.join("daemon.log"))?;
+    // Each start's log and steps are only its own daemon's.
     log.set_len(0)?;
-    let before = MILESTONES.map(|(name, _)| modified(&profile.join(name)));
+    unix::private_file(&profile.join(STAGES_FILE))?.set_len(0)?;
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("--profile")
@@ -388,16 +575,7 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
             Ok(())
         });
     }
-    let child = command.spawn()?;
-    wait_until_ready(
-        &mut DaemonStart {
-            profile,
-            log: log_path,
-            child,
-            before,
-        },
-        STARTUP,
-    )
+    wait_until_ready(&mut DaemonStart::new(profile, command.spawn()?), STARTUP)
 }
 
 /// Start one production Session. The executable prepares its profile environment
@@ -406,7 +584,8 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 /// Returns profile ownership, service startup, socket or worker-spawn errors.
 pub fn serve(profile: &Path) -> io::Result<()> {
     validate_profile(profile)?;
-    let session = Session::start(profile)?;
+    let mut stages = StartupStages::open(profile)?;
+    let session = Session::start_reporting(profile, &mut |stage| stages.enter(stage))?;
     let broker = session
         .broker
         .app_action_broker()
@@ -425,8 +604,11 @@ pub fn serve(profile: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
+    stages.enter("binding the native endpoint");
     let listener = UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    stages.enter("answering the status probe");
+    drop(stages);
     let status = Status {
         version: 1,
         pid: std::process::id(),
