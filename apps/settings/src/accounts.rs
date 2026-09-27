@@ -643,11 +643,14 @@ pub enum AccountKind {
     OneDrive,
     Dropbox,
     ICloudDrive,
+    /// A Microsoft work or school account the AI hub signed in to Azure
+    /// `OpenAI` with.
+    AzureOpenAi,
 }
 
 impl AccountKind {
     /// Every kind, in panel order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Mail,
         Self::CalDav,
         Self::WebDav,
@@ -656,6 +659,7 @@ impl AccountKind {
         Self::OneDrive,
         Self::Dropbox,
         Self::ICloudDrive,
+        Self::AzureOpenAi,
     ];
 
     pub fn label(self) -> &'static str {
@@ -668,6 +672,7 @@ impl AccountKind {
             AccountKind::OneDrive => "OneDrive",
             AccountKind::Dropbox => "Dropbox",
             AccountKind::ICloudDrive => "iCloud Drive",
+            AccountKind::AzureOpenAi => "Azure OpenAI",
         }
     }
 
@@ -681,6 +686,7 @@ impl AccountKind {
             | AccountKind::OneDrive
             | AccountKind::Dropbox
             | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
+            AccountKind::AzureOpenAi => "\u{f06a9}", // md-robot
         }
     }
 
@@ -694,6 +700,7 @@ impl AccountKind {
             AccountKind::OneDrive => "onedrive",
             AccountKind::Dropbox => "dropbox",
             AccountKind::ICloudDrive => "icloud-drive",
+            AccountKind::AzureOpenAi => "azure-openai",
         }
     }
 
@@ -708,6 +715,7 @@ impl AccountKind {
             AccountKind::OneDrive => account_custody::providers::ONEDRIVE_TYPE,
             AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
             AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
+            AccountKind::AzureOpenAi => account_custody::providers::AZURE_OPENAI_TYPE,
         }
     }
 
@@ -724,16 +732,36 @@ impl AccountKind {
         account_custody::OAuthCloud::from_type_id(self.type_id())
     }
 
-    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: accounts held
-    /// entirely by credential custody, listed from the canonical store.
+    /// The `OAuth` use a grant of this kind is for: a storage provider's,
+    /// or Azure `OpenAI`'s.
+    pub fn oauth_use(self) -> Option<account_custody::OAuthUse> {
+        account_custody::OAuthUse::of_account_type(self.type_id())
+    }
+
+    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: the storage
+    /// daemon mounts them.
     pub fn is_cloud_storage(self) -> bool {
         self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
+    }
+
+    /// Accounts held entirely by credential custody and listed from the
+    /// canonical store: cloud storage and Azure `OpenAI`. They have nothing
+    /// to edit; they sign in again.
+    pub fn is_custodied(self) -> bool {
+        self.is_cloud_storage() || self.oauth_use().is_some()
     }
 
     /// Whether accounts of this kind are connected through a sign-in flow
     /// (browser or Apple ID) rather than a typed password.
     pub fn signs_in(self) -> bool {
-        self.is_cloud_storage() || self == AccountKind::Nextcloud
+        self.is_custodied() || self == AccountKind::Nextcloud
+    }
+
+    /// Whether the Accounts pane offers to add one. An Azure `OpenAI`
+    /// account is added where it is used: signing a provider in in the AI
+    /// hub.
+    pub fn is_addable(self) -> bool {
+        self != AccountKind::AzureOpenAi
     }
 
     /// Whether the provider is reached through an undocumented API and is
@@ -764,8 +792,8 @@ pub struct AccountDirectory {
     pub calendar: DavStore,
     pub files: DavStore,
     pub nextcloud: NextcloudStore,
-    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive accounts,
-    /// straight from the canonical store.
+    /// Google Drive, `OneDrive`, Dropbox, `iCloud` Drive and Azure `OpenAI`
+    /// accounts, straight from the canonical store.
     pub cloud: Vec<accounts::Account>,
 }
 
@@ -825,7 +853,7 @@ impl AccountDirectory {
                 .iter()
                 .filter(|account| {
                     AccountKind::from_type_id(account.type_id.as_str())
-                        .is_some_and(AccountKind::is_cloud_storage)
+                        .is_some_and(AccountKind::is_custodied)
                 })
                 .cloned()
                 .collect(),
@@ -867,7 +895,8 @@ impl AccountDirectory {
             AccountKind::GoogleDrive
             | AccountKind::OneDrive
             | AccountKind::Dropbox
-            | AccountKind::ICloudDrive => self
+            | AccountKind::ICloudDrive
+            | AccountKind::AzureOpenAi => self
                 .cloud
                 .iter()
                 .filter(|account| account.type_id.as_str() == kind.type_id())
@@ -926,10 +955,14 @@ fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
         .get("identity")
         .and_then(serde_json::Value::as_str)
         .filter(|identity| !identity.is_empty());
-    let summary = match (identity, kind.oauth_cloud()) {
+    let summary = match (identity, kind.oauth_use()) {
         (Some(identity), _) => format!("{} · {identity}", kind.label()),
-        (None, Some(cloud)) => {
-            format!("{} · signed in with {}", kind.label(), cloud.sign_in_with())
+        (None, Some(oauth_use)) => {
+            format!(
+                "{} · signed in with {}",
+                kind.label(),
+                oauth_use.issuer.label()
+            )
         }
         (None, None) => format!("{} · Apple ID", kind.label()),
     };

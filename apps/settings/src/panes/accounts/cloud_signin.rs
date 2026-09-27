@@ -1,5 +1,6 @@
 //! Sign-in for the accounts that never take a typed password in Settings:
-//! Google Drive, `OneDrive` and Dropbox (`OAuth` in the system browser),
+//! Google Drive, `OneDrive`, Dropbox and Azure `OpenAI` (`OAuth` in the
+//! system browser),
 //! Nextcloud (Login Flow v2 in the system browser) and `iCloud` Drive (Apple
 //! ID, password, then the verification code).
 //!
@@ -14,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
-use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthCloud};
+use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthUse};
 use ui::widget::{Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
@@ -75,7 +76,7 @@ enum Stage {
     /// Every redirect port registered for the provider was taken, so the
     /// provider shows the code on its own page for the person to paste.
     PastedCode {
-        cloud: OAuthCloud,
+        oauth_use: OAuthUse,
         authorization: Box<Authorization>,
     },
 }
@@ -98,26 +99,32 @@ pub struct SignInFlow {
     message: Option<String>,
 }
 
-/// The account configuration of an `OAuth` sign-in: the provider and its
-/// storage as the provider describes it (drive ids, a team space root),
-/// asked once with the fresh access token.
+/// The account configuration of an `OAuth` sign-in. A storage provider's
+/// names the provider and its storage as the provider describes it (drive
+/// ids, a team space root), asked once with the fresh access token; any
+/// other use (Azure `OpenAI`) keeps no configuration beyond the grant.
 fn oauth_completed(
     custodian: &Custodian,
-    cloud: OAuthCloud,
     kind: AccountKind,
     existing_id: Option<String>,
     display_name: String,
     tokens: &account_custody::TokenSet,
 ) -> Result<Outcome, CustodyError> {
-    let mount = custodian.resolve_storage(cloud, tokens)?;
+    let config = match kind.oauth_cloud() {
+        Some(cloud) => {
+            let mount = custodian.resolve_storage(cloud, tokens)?;
+            serde_json::json!({
+                "provider": cloud.type_id(),
+                accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
+            })
+        }
+        None => serde_json::json!({}),
+    };
     Ok(Outcome::Completed(Completed {
         kind,
         existing_id,
         display_name,
-        config: serde_json::json!({
-            "provider": cloud.type_id(),
-            accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
-        }),
+        config,
         secret: account_custody::oauth_secret(tokens),
     }))
 }
@@ -139,12 +146,12 @@ fn icloud_config(
 
 /// Why this kind cannot start a sign-in in this build, if it cannot.
 pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<String> {
-    if let Some(cloud) = kind.oauth_cloud() {
-        return match custodian.oauth_config(cloud) {
+    if let Some(oauth_use) = kind.oauth_use() {
+        return match custodian.use_config(oauth_use) {
             Err(CustodyError::NotConfigured { provider, key }) => Some(format!(
                 "{provider} sign-in is not configured in this build: it needs an OAuth client \
                  ID registered with {}, provided as {key} when Tilo is built or started.",
-                cloud.sign_in_with()
+                oauth_use.issuer.label()
             )),
             _ => None,
         };
@@ -234,13 +241,13 @@ impl SignInFlow {
         self.message = None;
         if matches!(self.stage, Stage::PastedCode { .. }) {
             let Stage::PastedCode {
-                cloud,
+                oauth_use,
                 authorization,
             } = std::mem::replace(&mut self.stage, Stage::Form)
             else {
                 return;
             };
-            self.redeem_pasted_code(cloud, *authorization);
+            self.redeem_pasted_code(oauth_use, *authorization);
             return;
         }
         if let Stage::Code {
@@ -253,16 +260,16 @@ impl SignInFlow {
             self.verify_code(challenge, apple_id);
             return;
         }
-        match self.kind.oauth_cloud() {
-            Some(cloud) => self.start_oauth(cloud),
+        match self.kind.oauth_use() {
+            Some(oauth_use) => self.start_oauth(oauth_use),
             None if self.kind == AccountKind::Nextcloud => self.start_nextcloud(),
             None if self.kind == AccountKind::ICloudDrive => self.start_icloud(),
             None => self.message = Some("this account type does not sign in here".into()),
         }
     }
 
-    fn start_oauth(&mut self, cloud: OAuthCloud) {
-        let authorization = match self.custodian.begin_sign_in(cloud, None) {
+    fn start_oauth(&mut self, oauth_use: OAuthUse) {
+        let authorization = match self.custodian.begin_sign_in_for(oauth_use, None) {
             Ok(authorization) => authorization,
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -275,12 +282,12 @@ impl SignInFlow {
             self.message = Some(format!(
                 "Another program is using the ports Tilo listens on for {}'s answer. Sign in \
                  and allow access in your browser, then paste the code {} shows you here.",
-                cloud.sign_in_with(),
-                cloud.sign_in_with()
+                oauth_use.issuer.label(),
+                oauth_use.issuer.label()
             ));
             self.code.set(String::new());
             self.stage = Stage::PastedCode {
-                cloud,
+                oauth_use,
                 authorization: Box::new(authorization),
             };
             // The opener's outcome is not awaited here; a failure to open
@@ -296,13 +303,13 @@ impl SignInFlow {
         let custodian = self.custodian.clone();
         std::thread::spawn(move || {
             let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
-                oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+                oauth_completed(&custodian, kind, existing_id, display_name, &tokens)
             });
             let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
         });
         self.message = Some(format!(
             "Continue in your browser: sign in with {} and allow access. This page updates when you are done.",
-            cloud.sign_in_with()
+            oauth_use.issuer.label()
         ));
         self.stage = Stage::Waiting {
             urls: None,
@@ -312,15 +319,15 @@ impl SignInFlow {
         };
     }
 
-    fn redeem_pasted_code(&mut self, cloud: OAuthCloud, authorization: Authorization) {
+    fn redeem_pasted_code(&mut self, oauth_use: OAuthUse, authorization: Authorization) {
         let code = self.code.with(|code| code.trim().to_string());
         if code.is_empty() {
             self.message = Some(format!(
                 "paste the code {} showed you",
-                cloud.sign_in_with()
+                oauth_use.issuer.label()
             ));
             self.stage = Stage::PastedCode {
-                cloud,
+                oauth_use,
                 authorization: Box::new(authorization),
             };
             return;
@@ -333,7 +340,7 @@ impl SignInFlow {
         std::thread::spawn(move || {
             let outcome =
                 Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
-                    oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+                    oauth_completed(&custodian, kind, existing_id, display_name, &tokens)
                 });
             let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
         });
@@ -757,12 +764,17 @@ impl SignInFlow {
                 ));
             }
             _ => {
-                if let Some(cloud) = self.kind.oauth_cloud() {
+                if let Some(oauth_use) = self.kind.oauth_use() {
+                    let what = if self.kind == AccountKind::AzureOpenAi {
+                        "your Azure OpenAI resources"
+                    } else {
+                        "your files"
+                    };
                     fields.push(caption(&format!(
                         "Continue opens {}'s sign-in page in your browser. Tilo never sees your \
-                         password; it keeps a revocable access grant for your files, sealed on \
+                         password; it keeps a revocable access grant for {what}, sealed on \
                          this device.",
-                        cloud.sign_in_with()
+                        oauth_use.issuer.label()
                     )));
                 }
             }

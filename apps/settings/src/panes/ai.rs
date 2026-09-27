@@ -37,7 +37,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 use zeroize::Zeroize;
 
-use crate::ai_settings::{AiState, target_value};
+use crate::ai_settings::{AccountSignIn, AiState, target_value};
 use crate::i18n::{arg, t, t_args};
 use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, choice_row, hgap, rows, semantic_status_pill,
@@ -1157,6 +1157,10 @@ impl AiPane {
         if !profile.enabled {
             return semantic_status_pill(&t("ai-health-disabled"), StatusTone::Neutral);
         }
+        // The account store decides, whatever the gateway last said.
+        if self.state.account_sign_in(profile) == AccountSignIn::SignedOut {
+            return semantic_status_pill(&t("ai-health-signed-out"), StatusTone::Warning);
+        }
         let Some(health) = self.state.health.get(&profile.id) else {
             return semantic_status_pill(
                 &t(if tilo_model_gateway::available() {
@@ -1300,8 +1304,14 @@ impl AiPane {
         body.push(Box::new(actions));
 
         // Credential.
-        let signed_in = matches!(profile.credential, Some(Credential::Account { .. }));
-        if signed_in {
+        let sign_in = self.state.account_sign_in(profile);
+        if sign_in == AccountSignIn::SignedOut {
+            body.push(value_row(
+                &t("ai-provider-credential"),
+                &t("ai-provider-signed-out"),
+            ));
+        }
+        if matches!(sign_in, AccountSignIn::SignedIn { .. }) {
             body.push(value_row(
                 &t("ai-provider-credential"),
                 &t("ai-provider-signed-in"),
@@ -1360,7 +1370,11 @@ impl AiPane {
                         Some(&resource_id),
                         "sign-in",
                         &format!("{id}-sign-in"),
-                        &t("ai-action-sign-in-microsoft"),
+                        &t(if sign_in == AccountSignIn::SignedOut {
+                            "ai-action-sign-in-again"
+                        } else {
+                            "ai-action-sign-in-microsoft"
+                        }),
                     )
                     .with_enabled(registered && signing_in().is_none()),
                 ));
@@ -2531,6 +2545,7 @@ fn hub_state(snapshot: LocalModelSnapshot) -> AiState {
         snapshot: Ok(snapshot),
         health,
         agents: vec!["Claude".into(), "Scribe".into()],
+        accounts: std::collections::BTreeSet::from(["entra-work".to_string()]),
     }
 }
 

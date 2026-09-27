@@ -457,3 +457,120 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
         "cloud storage accounts have no password form to edit"
     );
 }
+
+/// An account the hub's sign-in left behind, its grant since revoked.
+fn revoked_azure_account(root: &AccountRoot) -> accounts::AccountId {
+    let id = accounts::AccountId::from("azure-openai-work");
+    let mut account =
+        accounts::Account::new(id.clone(), account_custody::providers::AZURE_OPENAI_TYPE);
+    account.display_name = "Azure OpenAI".into();
+    AccountsPane::commit_account(
+        root,
+        account,
+        Some(&account_custody::oauth_secret(
+            &account_custody::TokenSet::default(),
+        )),
+    )
+    .unwrap();
+    id
+}
+
+#[test]
+fn an_azure_openai_account_is_listed_signs_in_again_and_its_removal_signs_the_provider_out() {
+    let (_dir, root) = scratch_root();
+    let server = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let custodian = root
+        .custodian()
+        .with_client_table(
+            account_custody::ClientTable::parse(
+                "[microsoft]\nclient_id = \"shared\"\n[microsoft.scopes]\nai = [\"offline_access\", \"ai\"]\n",
+            )
+            .unwrap(),
+        )
+        .with_issuer_endpoints(account_custody::OAuthIssuer::Microsoft, server.provider());
+    let id = revoked_azure_account(&root);
+
+    let (mut pane, commands) = pane(&root, custodian.clone(), FakeBrowser::new(true));
+    let mut doc = AutoCommit::new();
+    let views = pane.directory().views_of(AccountKind::AzureOpenAi);
+    assert_eq!(views.len(), 1, "listed like every other account");
+    assert_eq!(views[0].summary, "Azure OpenAI · signed in with Microsoft");
+    command(
+        &mut pane,
+        &commands,
+        &mut doc,
+        AccountViewCommand::Add(AccountKind::AzureOpenAi),
+    );
+    assert!(!pane.sign_in_open(), "added from the AI hub, not here");
+
+    command(
+        &mut pane,
+        &commands,
+        &mut doc,
+        AccountViewCommand::Reauthenticate(id.to_string()),
+    );
+    assert!(pane.sign_in_open());
+    command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
+    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+    let signed_in = only_account(&root, account_custody::providers::AZURE_OPENAI_TYPE);
+    assert_eq!(signed_in.id, id, "signing in again keeps the account");
+    assert!(
+        root.vault()
+            .get(&id)
+            .and_then(|secret| secret.token)
+            .is_some_and(|grant| grant.contains("refresh-")),
+        "the new grant replaced the dead one"
+    );
+    assert!(
+        custodian.verify(&id).is_ok(),
+        "Verify sign-in asks custody for a fresh token"
+    );
+    // The pane checks the new sign-in on a worker too; its report lands
+    // as the same health.
+    let deadline = std::time::Instant::now() + STEP;
+    while root.statuses().get(&id).map(|status| status.health)
+        != Some(accounts::AccountSyncHealth::Healthy)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the row's status reports the verified sign-in"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // The hub derives the provider's state from the store.
+    let mut provider = agent_provider_config::ProviderProfile::hosted(
+        agent_provider_config::ProviderProtocol::AzureOpenAi,
+    );
+    provider.credential = Some(agent_provider_config::Credential::Account {
+        account_id: id.to_string(),
+    });
+    let hub = |store: &accounts::AccountStore| {
+        let mut state = crate::panes::ai::demo_state(false);
+        state.accounts = crate::ai_settings::provider_accounts(store);
+        state.account_sign_in(&provider)
+    };
+    assert_eq!(
+        hub(&root.store()),
+        crate::ai_settings::AccountSignIn::SignedIn {
+            account_id: id.to_string()
+        }
+    );
+    AccountsPane::remove_account(
+        &root,
+        &custodian,
+        account_custody::providers::AZURE_OPENAI_TYPE,
+        id.as_str(),
+    )
+    .unwrap();
+    assert_eq!(
+        hub(&root.store()),
+        crate::ai_settings::AccountSignIn::SignedOut,
+        "removing the account in Settings › Accounts signs the provider out"
+    );
+}

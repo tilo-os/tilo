@@ -669,9 +669,52 @@ pub struct AiState {
     pub health: std::collections::BTreeMap<String, tilo_model_gateway::ProviderHealth>,
     /// Agents admitted to the person's workspaces.
     pub agents: Vec<String>,
+    /// Ids of the Azure `OpenAI` accounts the account store holds: a
+    /// provider naming any other account is signed out.
+    pub accounts: std::collections::BTreeSet<String>,
+}
+
+/// Whether a provider is signed in with an account, as the account store
+/// has it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountSignIn {
+    /// The provider takes a key (or nothing), not an account.
+    NotAnAccount,
+    SignedIn {
+        account_id: String,
+    },
+    /// The provider names an account the store no longer holds: it was
+    /// removed, here or in Settings › Accounts.
+    SignedOut,
+}
+
+/// The Azure `OpenAI` account ids in `store`.
+#[must_use]
+pub fn provider_accounts(store: &accounts::AccountStore) -> std::collections::BTreeSet<String> {
+    store
+        .list(&accounts::AccountTypeId::from(
+            account_custody::providers::AZURE_OPENAI_TYPE,
+        ))
+        .into_iter()
+        .map(|account| account.id.to_string())
+        .collect()
 }
 
 impl AiState {
+    /// How `profile` is signed in, derived from the account store.
+    #[must_use]
+    pub fn account_sign_in(&self, profile: &ProviderProfile) -> AccountSignIn {
+        match &profile.credential {
+            Some(Credential::Account { account_id }) if self.accounts.contains(account_id) => {
+                AccountSignIn::SignedIn {
+                    account_id: account_id.clone(),
+                }
+            }
+            Some(Credential::Account { .. }) => AccountSignIn::SignedOut,
+            _ => AccountSignIn::NotAnAccount,
+        }
+    }
+
     /// Read the durable state and project `snapshot` into this device's
     /// runtime record, which the gateway resolves against.
     #[must_use]
@@ -688,6 +731,7 @@ impl AiState {
             snapshot,
             health: std::collections::BTreeMap::new(),
             agents: crate::panes::permissions::agent_members(),
+            accounts: provider_accounts(&crate::accounts::AccountRoot::live().store()),
         }
     }
 

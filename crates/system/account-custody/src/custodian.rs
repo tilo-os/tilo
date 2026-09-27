@@ -400,6 +400,9 @@ impl Custodian {
     /// type names ([`OAuthUse::of_account_type`]): the model gateway's path
     /// to an Azure `OpenAI` token. See [`Self::oauth_access_token`].
     ///
+    /// The outcome is the account's health, which Settings shows on its
+    /// row: reported when it changes (up to date, offline, sign in again).
+    ///
     /// # Errors
     /// [`CustodyError::Account`] when the account is missing or its type
     /// holds no `OAuth` grant, else as [`Self::oauth_access_token`].
@@ -416,7 +419,59 @@ impl Custodian {
         let oauth_use = OAuthUse::of_account_type(account.type_id.as_str()).ok_or_else(|| {
             CustodyError::Account("this account type does not sign in with OAuth".into())
         })?;
-        self.oauth_access_token(id, oauth_use, force)
+        let result = self.oauth_access_token(id, oauth_use, force);
+        self.report_health(id, &result);
+        result
+    }
+
+    /// Report the health a token request found, when it differs from what
+    /// the account last reported.
+    fn report_health<T>(&self, id: &AccountId, result: &Result<T, CustodyError>) {
+        use accounts::AccountSyncHealth as Health;
+        let health = match result {
+            Ok(_) => Health::Healthy,
+            Err(CustodyError::NeedsAuthentication) => Health::NeedsAuthentication,
+            Err(CustodyError::Offline) => Health::Offline,
+            Err(_) => Health::Error,
+        };
+        let statuses = match &self.config_root {
+            Some(root) => accounts::AccountSyncStatusStore::load_in(root),
+            None => accounts::AccountSyncStatusStore::load(),
+        };
+        if statuses.get(id).map(|status| status.health) == Some(health) {
+            return;
+        }
+        let reporter = self.reporter(id);
+        let _ = match health {
+            Health::Healthy => reporter.succeeded(),
+            Health::NeedsAuthentication => reporter.needs_authentication(),
+            Health::Offline => reporter.offline(),
+            _ => reporter.failed(),
+        };
+    }
+
+    /// Ask the provider for a fresh credential now, as "Verify sign-in"
+    /// does: a storage account publishes one for the daemon, any other
+    /// `OAuth` account (Azure `OpenAI`) refreshes its access token.
+    ///
+    /// # Errors
+    /// See [`Self::publish`] and [`Self::account_access_token`].
+    pub fn verify(&self, id: &AccountId) -> Result<(), CustodyError> {
+        self.renew(id, true)
+    }
+
+    fn renew(&self, id: &AccountId, force: bool) -> Result<(), CustodyError> {
+        let type_id = self
+            .store()
+            .get(id)
+            .map(|account| account.type_id.as_str().to_string())
+            .ok_or_else(|| CustodyError::Account("account no longer exists".into()))?;
+        if OAuthCloud::from_type_id(&type_id).is_none()
+            && OAuthUse::of_account_type(&type_id).is_some()
+        {
+            return self.account_access_token(id, force).map(drop);
+        }
+        self.publish(id, force)
     }
 
     /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with
@@ -499,13 +554,14 @@ impl Custodian {
     }
 
     /// After a sign-in was saved: clear a stale "sign in again" health
-    /// state and publish the first short-lived credential.
+    /// state and publish the first short-lived credential (for a storage
+    /// account) or check the new access token (for any other).
     ///
     /// # Errors
-    /// See [`Self::publish`].
+    /// See [`Self::verify`].
     pub fn signed_in(&self, id: &AccountId) -> Result<(), CustodyError> {
         let _ = self.reporter(id).remove();
-        self.publish(id, false)
+        self.renew(id, false)
     }
 
     /// Publish a short-lived credential for one account in the handoff

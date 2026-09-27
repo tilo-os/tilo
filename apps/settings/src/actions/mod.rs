@@ -6983,6 +6983,7 @@ mod tests {
                 }),
                 health: std::collections::BTreeMap::new(),
                 agents: vec!["Claude".into()],
+                accounts: std::collections::BTreeSet::new(),
             };
             let hub = ai_section_for(&state);
             let confirm = |resource: &str, action: &str| {

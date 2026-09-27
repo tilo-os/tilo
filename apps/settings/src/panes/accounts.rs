@@ -62,6 +62,7 @@ pub const ADD_GOOGLE_DRIVE_KEY: &str = "settings.accounts.add.google-drive";
 pub const ADD_ONEDRIVE_KEY: &str = "settings.accounts.add.onedrive";
 pub const ADD_DROPBOX_KEY: &str = "settings.accounts.add.dropbox";
 pub const ADD_ICLOUD_DRIVE_KEY: &str = "settings.accounts.add.icloud-drive";
+pub const ADD_AZURE_OPENAI_KEY: &str = "settings.accounts.add.azure-openai";
 /// Keys the inline form's Save / Cancel buttons write.
 pub const FORM_SAVE_KEY: &str = "settings.accounts.form.save";
 pub const FORM_CANCEL_KEY: &str = "settings.accounts.form.cancel";
@@ -633,6 +634,7 @@ impl AccountsPane {
         let command = self.commands.with(Clone::clone);
         self.commands.set(None);
         match command {
+            Some(AccountViewCommand::Add(kind)) if !kind.is_addable() => {}
             Some(AccountViewCommand::Add(kind)) if kind.signs_in() => {
                 self.open_sign_in(kind, None);
             }
@@ -781,6 +783,7 @@ impl AccountsPane {
             AccountKind::OneDrive,
             AccountKind::Dropbox,
             AccountKind::ICloudDrive,
+            AccountKind::AzureOpenAi,
         ] {
             panel.push(self.kind_card(kind, theme));
         }
@@ -809,6 +812,9 @@ impl AccountsPane {
 
     fn kind_card(&self, kind: AccountKind, theme: &Theme) -> El {
         let views = self.dir.views_of(kind);
+        if !kind.is_addable() {
+            return card(kind.label(), self.kind_body(kind, &views, theme));
+        }
         card_with_action(
             kind.label(),
             Box::new(account_action_button(
@@ -833,7 +839,13 @@ impl AccountsPane {
         } else {
             views.iter().map(|v| self.account_row(v, theme)).collect()
         };
-        if kind.is_cloud_storage()
+        if kind == AccountKind::AzureOpenAi {
+            body.push(caption(
+                "Added when a provider signs in with Microsoft in Settings › AI. Removing one \
+                 here signs that provider out.",
+            ));
+        }
+        if kind.is_custodied()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
         {
             body.push(caption(&reason));
@@ -930,7 +942,7 @@ impl AccountsPane {
                 "Sign in again"
             };
             let mut primary_actions = Row::new();
-            if !view.kind.is_cloud_storage() {
+            if !view.kind.is_custodied() {
                 primary_actions = primary_actions.push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.edit.{}", view.id),
@@ -1067,7 +1079,8 @@ impl AccountsPane {
                 AccountKind::GoogleDrive
                 | AccountKind::OneDrive
                 | AccountKind::Dropbox
-                | AccountKind::ICloudDrive => "",
+                | AccountKind::ICloudDrive
+                | AccountKind::AzureOpenAi => "",
             })
             .with_font_size(13.0);
         let buttons = Row::new()
@@ -1213,7 +1226,7 @@ impl AccountsPane {
         server: &str,
         password: &str,
     ) -> Result<(accounts::Account, accounts::Secret), String> {
-        if kind.is_cloud_storage() {
+        if kind.is_custodied() {
             return Err(format!(
                 "{} accounts are connected by signing in",
                 kind.label()
@@ -1316,7 +1329,8 @@ impl AccountsPane {
             AccountKind::GoogleDrive
             | AccountKind::OneDrive
             | AccountKind::Dropbox
-            | AccountKind::ICloudDrive => {
+            | AccountKind::ICloudDrive
+            | AccountKind::AzureOpenAi => {
                 return Err(format!(
                     "{} accounts are connected by signing in",
                     kind.label()
@@ -1548,7 +1562,10 @@ impl AccountsPane {
 
     /// Open the add-email form (and seed its bound `Text` objects).
     fn handle_add(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for kind in AccountKind::ALL {
+        for kind in AccountKind::ALL
+            .into_iter()
+            .filter(|kind| kind.is_addable())
+        {
             let key = add_key(kind);
             if read_bool(state, root, key).unwrap_or(false) {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
@@ -2156,6 +2173,7 @@ fn add_key(kind: AccountKind) -> &'static str {
         AccountKind::OneDrive => ADD_ONEDRIVE_KEY,
         AccountKind::Dropbox => ADD_DROPBOX_KEY,
         AccountKind::ICloudDrive => ADD_ICLOUD_DRIVE_KEY,
+        AccountKind::AzureOpenAi => ADD_AZURE_OPENAI_KEY,
     }
 }
 
@@ -2243,6 +2261,10 @@ mod tests {
     /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
     #[test]
     fn accounts_pane_renders_only_real_accounts_as_removable() {
+        let addable = AccountKind::ALL
+            .into_iter()
+            .filter(|kind| kind.is_addable())
+            .count();
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
@@ -2251,7 +2273,7 @@ mod tests {
             lay_out(&mut pane);
             assert_eq!(
                 count_named(&pane, "Button"),
-                AccountKind::ALL.len(),
+                addable,
                 "every provider kind can be added over the sample"
             );
         }
@@ -2264,7 +2286,7 @@ mod tests {
             let mut pane = AccountsPane::from_dir(dir, false);
             lay_out(&mut pane);
             // One Add per kind + four maintenance actions on each of four accounts.
-            assert_eq!(count_named(&pane, "Button"), AccountKind::ALL.len() + 16);
+            assert_eq!(count_named(&pane, "Button"), addable + 16);
         }
 
         // Case `account_removal_is_labeled_and_visibly_destructive`.
@@ -2289,7 +2311,7 @@ mod tests {
                     .iter()
                     .filter(|label| label.as_str() == "Add account")
                     .count(),
-                AccountKind::ALL.len(),
+                addable,
                 "each provider card exposes a compact add action"
             );
         }

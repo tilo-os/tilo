@@ -130,8 +130,10 @@ in with a Microsoft work or school account through account custody
 `offline_access` and `https://cognitiveservices.azure.com/user_impersonation`),
 the same registration Mail and cloud storage sign in through. The sign-in
 creates an ordinary custody account (type `azure-openai`), saved and removed
-through Settings' shared account save and removal, and the provider profile
-names it (`Credential::Account`). The gateway asks
+through Settings' shared account save and removal and listed in Settings ›
+Accounts, and the provider profile names it (`Credential::Account`). Whether
+the provider is signed in is read from the account store, so removing the
+account anywhere signs the provider out. The gateway asks
 `Custodian::account_access_token` for a current access token before each
 call; custody refreshes and reseals the grant, and the refresh token never
 leaves it.

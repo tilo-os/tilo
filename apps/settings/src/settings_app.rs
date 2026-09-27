@@ -2242,15 +2242,15 @@ impl Widget for SettingsApp {
                 })?;
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                 if crate::accounts::AccountKind::from_type_id(account.type_id.as_str())
-                    .is_some_and(crate::accounts::AccountKind::is_cloud_storage)
+                    .is_some_and(crate::accounts::AccountKind::is_custodied)
                 {
-                    // A cloud grant is verified by asking the provider for a
-                    // fresh access token, which custody also hands off.
+                    // A custodied grant is verified by asking the provider
+                    // for a fresh credential.
                     let custodian = self.account_root.custodian();
                     std::thread::spawn(move || {
                         let _ = sender.send(
                             custodian
-                                .publish(&account_id, true)
+                                .verify(&account_id)
                                 .map(|()| "The provider accepted the saved sign-in".to_string())
                                 .map_err(|error| error.to_string()),
                         );
