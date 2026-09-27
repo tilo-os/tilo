@@ -11,7 +11,24 @@ Use native Windows Python, `fgj` authenticated to `code.tilo.so`, `zstd`,
 The three manifest files must contain the **raw OCI manifest bytes** of the
 exact pinned generic index, its ARM64 child, and the Lenovo child. Do not use
 formatted `podman manifest inspect` JSON: the digest checks require the raw
-registry bytes. The existing `cosign` helper may run in Fedora WSL; pass its
+registry bytes. Fetch them with `os/dev/fetch-windows-direct-manifests.py`
+after creating the output directory and pinning both image digests:
+
+```powershell
+python os/dev/fetch-windows-direct-manifests.py `
+  --generic-image 'registry.tilo.so/tilo/tilo@sha256:<signed index digest>' `
+  --lenovo-image 'code.tilo.so/tilo/tilo@sha256:<signed Lenovo child digest>' `
+  --generic-index-manifest C:\tilo\generic-index-manifest.json `
+  --generic-child-manifest C:\tilo\generic-arm64-manifest.json `
+  --lenovo-child-manifest C:\tilo\lenovo-arm64-manifest.json
+```
+
+The helper uses `skopeo inspect --raw` inside `FedoraLinux-42` WSL, accepts
+only official immutable digest refs, verifies each raw byte digest, and selects
+the unique Linux ARM64 child from the generic index. It downloads no layers.
+Pass `--wsl-distro` if Skopeo is in a different WSL distribution. It rechecks
+existing files on resume and never accepts registry credentials in arguments.
+The existing `cosign` helper may run in Fedora WSL; pass its
 JSON argv file and the exact WSL path of `keys/cosign.pub`.
 
 Create a new empty work directory and an input JSON file outside it:
