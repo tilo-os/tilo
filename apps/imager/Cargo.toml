@@ -25,6 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
 advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }

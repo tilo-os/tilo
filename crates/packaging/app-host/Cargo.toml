@@ -8,10 +8,6 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo app host — the privileged door to the device package store over a Cap'n Proto control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
 
-[package.metadata.cargo-machete]
-# Invoked by build.rs to compile the Cap'n Proto schema.
-ignored = ["capnpc"]
-
 [[bin]]
 name = "tilo-app-host"
 path = "src/main.rs"
@@ -59,9 +55,6 @@ tempfile.workspace = true
 # systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify.workspace = true
 workspace-hack = { version = "0.1" }
-
-[build-dependencies]
-capnpc.workspace = true
 
 [dev-dependencies]
 getrandom.workspace = true
