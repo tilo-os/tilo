@@ -7272,7 +7272,8 @@ impl ShellOverlayHost {
 
     /// Refreshes the palette's rows by fanning the query out to every
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
-    /// cache; first-boot latency comes from the tantivy walker's initial pass.
+    /// cache; the first open pays for the files provider's deferred home walk
+    /// and tantivy open (kept off the `OverlayHost` constructor on purpose).
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
