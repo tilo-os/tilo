@@ -30,6 +30,7 @@ live-media = [
 ]
 
 [dependencies]
+fnv.workspace = true
 hex.workspace = true
 emoji = { path = "../../crates/text/emoji" }
 tilo-clock = { path = "../../crates/system/tilo-clock" }

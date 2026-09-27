@@ -40,6 +40,7 @@ dev-session = []
 dev-overrides = []
 
 [dependencies]
+fnv.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -280,6 +281,8 @@ tar.workspace = true
 # writer, ICU tokenizer, and other extras we don't need for a
 # home-directory index.
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+# Tilo's search layer: the providers' retained indexes.
+tilo-search = { path = "../../sdk/search" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

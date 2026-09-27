@@ -5021,9 +5021,9 @@ fn read_block_id(state: &AutoCommit, map: &ObjId) -> Option<String> {
 
 fn deterministic_block_uuid(seed: &str) -> Uuid {
     fn fnv(seed: &[u8], initial: u64) -> u64 {
-        seed.iter().fold(initial, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
+        let mut hasher = fnv::FnvHasher::with_key(initial);
+        std::hash::Hasher::write(&mut hasher, seed);
+        std::hash::Hasher::finish(&hasher)
     }
     let hi = fnv(seed.as_bytes(), 0xcbf2_9ce4_8422_2325);
     let lo = fnv(seed.as_bytes(), 0x8422_2325_cbf2_9ce4);

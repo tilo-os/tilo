@@ -14,6 +14,10 @@
 //! ([`super::RecordOpenError::Retired`]). Copying is transfer alone: the
 //! source keeps going and the two histories diverge from here.
 //!
+//! An app that keeps one document for itself in a room ([`crate::persist`])
+//! transfers the same way ([`Origin::AppDocument`]): its document arrives
+//! as a record, and a moved one is retired where it was.
+//!
 //! Every function works on the durable store a room's app profile keeps,
 //! through the same keys, leases and validation the record owners use. A
 //! write needs the key's exclusive lease, so it fails with
@@ -24,13 +28,18 @@ use std::rc::Rc;
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc, ScalarValue, Value};
-use durable_store::{DurableStore, StorageKey, WriteOp};
+pub use durable_store::DurableStore;
+use durable_store::{StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{
-    FORMERLY, ObjectAt, RecordCheckout, RecordId, RecordOpenError, StringAt, identity, meta_obj,
-    meta_ro, object_at, room_scope, string_at, validate_identity,
+    FORMERLY, ObjectAt, RecordCheckout, RecordId, RecordKind, RecordOpenError, StringAt, identity,
+    meta_obj, meta_ro, object_at, string_at, validate_identity,
 };
+
+/// The kind an app's own document ([`Origin::AppDocument`]) takes when it
+/// arrives in another room as a record.
+pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 
 /// Key, in a record's meta map, marking a record that left its room.
 pub(super) const RETIRED: &str = "retired";
@@ -94,6 +103,48 @@ pub fn is_retired(doc: &AutoCommit) -> bool {
     retirement(doc).is_some()
 }
 
+/// What a transfer takes out of the source room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// One of the app's records.
+    Record(RecordCheckout),
+    /// The document an app keeps for itself in a room through
+    /// [`crate::persist`]. It has no record identity of its own there, and
+    /// arrives in the destination as a record of this kind.
+    AppDocument(RecordKind),
+}
+
+impl Origin {
+    fn key(&self, package: &str, room: &str) -> Result<StorageKey, TransferError> {
+        match self {
+            Self::Record(checkout) => key(package, room, &checkout.id),
+            Self::AppDocument(_) => {
+                app_state::validate_record_namespace(package, room)?;
+                Ok(StorageKey::package(package))
+            }
+        }
+    }
+
+    /// Refuse anything but this origin's live document in `room`.
+    fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
+        match self {
+            Self::Record(checkout) => Ok(validate_identity(doc, checkout, room)?),
+            Self::AppDocument(_) if is_retired(doc) => Err(RecordOpenError::Retired.into()),
+            Self::AppDocument(_) if identity(doc).is_some() => {
+                Err(RecordOpenError::IdentityMismatch.into())
+            }
+            Self::AppDocument(_) => Ok(()),
+        }
+    }
+
+    fn kind(&self) -> &RecordKind {
+        match self {
+            Self::Record(checkout) => &checkout.kind,
+            Self::AppDocument(kind) => kind,
+        }
+    }
+}
+
 fn key(package: &str, room: &str, id: &RecordId) -> Result<StorageKey, TransferError> {
     if id.is_package_primary() {
         return Err(TransferError::NotTransferable(
@@ -117,71 +168,84 @@ fn decode(store: &Rc<dyn DurableStore>, key: &StorageKey) -> Result<AutoCommit, 
     Ok(doc)
 }
 
-/// Read `checkout` as `package` last made it durable in `room`, without
+/// Read `origin` as `package` last made it durable in `room`, without
 /// taking its writer: the app showing it may still be running.
 ///
 /// # Errors
-/// A missing, retired, foreign-room or malformed record, or storage failure.
+/// A missing, retired, foreign-room or malformed document, or storage failure.
 pub fn read(
     store: &Rc<dyn DurableStore>,
     package: &str,
     room: &str,
-    checkout: &RecordCheckout,
+    origin: &Origin,
 ) -> Result<AutoCommit, TransferError> {
-    let doc = decode(store, &key(package, room, &checkout.id)?)?;
-    validate_identity(&doc, checkout, room)?;
+    let doc = decode(store, &origin.key(package, room)?)?;
+    origin.validate(&doc, room)?;
     Ok(doc)
 }
 
-/// The destination's copy of `source`: its whole history, one more change
-/// giving it `target`'s id and `to_room`'s scope, and the origin id kept
-/// as provenance. `source` is not changed.
+/// The destination's copy of `source`, read from `origin` in `from_room`:
+/// its whole history, one more change giving it `target`'s id and
+/// `to_room`'s scope, and a record's origin id kept as provenance. `source`
+/// is not changed.
 ///
 /// # Errors
-/// A source that is not `origin`'s live record, or a transfer into the room
-/// it is already in.
+/// A source that is not `origin`'s live document, or a transfer into the
+/// room it is already in.
 pub fn rehome(
     source: &AutoCommit,
-    origin: &RecordCheckout,
+    origin: &Origin,
+    from_room: &str,
     to_room: &str,
     target: &RecordId,
 ) -> Result<AutoCommit, TransferError> {
-    if origin.id.is_package_primary() || target.is_package_primary() {
+    if target.is_package_primary()
+        || matches!(origin, Origin::Record(checkout) if checkout.id.is_package_primary())
+    {
         return Err(TransferError::NotTransferable(
             "a room's own package document never leaves its room",
         ));
     }
-    if RecordId::parse(target.as_str()).as_ref() != Some(target) || target == &origin.id {
+    if RecordId::parse(target.as_str()).as_ref() != Some(target)
+        || matches!(origin, Origin::Record(checkout) if &checkout.id == target)
+    {
         return Err(RecordOpenError::IdentityMismatch.into());
     }
-    let from_room = room_scope(source).ok_or(RecordOpenError::IdentityMismatch)?;
-    validate_identity(source, origin, &from_room)?;
-    if from_room == to_room || to_room.is_empty() {
+    origin.validate(source, from_room)?;
+    if from_room == to_room || to_room.is_empty() || from_room.is_empty() {
         return Err(TransferError::NotTransferable(
             "the record is already in that room",
         ));
     }
+    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
     // A fork continues the same change graph under a writer of its own.
     let mut doc = source.clone().fork();
-    let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
-    let put = |doc: &mut AutoCommit, key: &str, value: &str| {
-        doc.put(&meta, key, value)
-            .map_err(|error| TransferError::Automerge(error.to_string()))
-    };
-    put(&mut doc, "id", target.as_str())?;
-    put(&mut doc, super::ROOM, to_room)?;
-    let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
-        ObjectAt::Object(list) => list,
-        ObjectAt::Missing => doc
-            .put_object(&meta, FORMERLY, ObjType::List)
-            .map_err(|error| TransferError::Automerge(error.to_string()))?,
-        ObjectAt::Invalid => return Err(RecordOpenError::IdentityMismatch.into()),
-    };
-    let len = doc.length(&formerly);
-    doc.insert(&formerly, len, origin.id.as_str())
-        .map_err(|error| TransferError::Automerge(error.to_string()))?;
+    match origin {
+        Origin::Record(checkout) => {
+            let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
+            doc.put(&meta, "id", target.as_str()).map_err(automerge)?;
+            doc.put(&meta, super::ROOM, to_room).map_err(automerge)?;
+            let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
+                ObjectAt::Object(list) => list,
+                ObjectAt::Missing => doc
+                    .put_object(&meta, FORMERLY, ObjType::List)
+                    .map_err(automerge)?,
+                ObjectAt::Invalid => return Err(RecordOpenError::IdentityMismatch.into()),
+            };
+            let len = doc.length(&formerly);
+            doc.insert(&formerly, len, checkout.id.as_str())
+                .map_err(automerge)?;
+        }
+        // The app's own document becomes a record the moment it leaves: it
+        // was minted in the source room and is now scoped to the destination.
+        Origin::AppDocument(kind) => {
+            if !super::init_scoped(&mut doc, target, kind, from_room, Some(to_room)) {
+                return Err(RecordOpenError::IdentityMismatch.into());
+            }
+        }
+    }
     doc.commit_with(CommitOptions::default().with_message("tilo.record.transfer".to_owned()));
-    let arrived = RecordCheckout::new(target.clone(), origin.kind.clone());
+    let arrived = RecordCheckout::new(target.clone(), origin.kind().clone());
     validate_identity(&doc, &arrived, to_room)?;
     Ok(doc)
 }
@@ -203,7 +267,7 @@ fn writer(
     })
 }
 
-/// Whether no app process holds `checkout`'s writer in `room` any more: the
+/// Whether no app process holds `origin`'s writer in `room` any more: the
 /// point after which nothing more can arrive from it.
 ///
 /// # Errors
@@ -212,9 +276,9 @@ pub fn writer_released(
     store: &Rc<dyn DurableStore>,
     package: &str,
     room: &str,
-    checkout: &RecordCheckout,
+    origin: &Origin,
 ) -> Result<bool, TransferError> {
-    match writer(store, &key(package, room, &checkout.id)?) {
+    match writer(store, &origin.key(package, room)?) {
         Ok(_) => Ok(true),
         Err(TransferError::Busy) => Ok(false),
         Err(error) => Err(error),
@@ -286,26 +350,26 @@ pub fn catch_up(
     Ok(arriving)
 }
 
-/// Stamp `checkout` in `room` as retired: one last change in its own
-/// history, after which it is never opened as a live record again.
+/// Stamp `origin` in `room` as retired: one last change in its own history,
+/// after which it is never opened as a live document again.
 ///
 /// # Errors
-/// [`TransferError::Busy`] while an app still holds the record, a missing
-/// or foreign record, or storage failure.
+/// [`TransferError::Busy`] while an app still holds the document, a missing
+/// or foreign document, or storage failure.
 pub fn retire(
     store: &Rc<dyn DurableStore>,
     package: &str,
     room: &str,
-    checkout: &RecordCheckout,
+    origin: &Origin,
     why: Retirement,
 ) -> Result<(), TransferError> {
-    let key = key(package, room, &checkout.id)?;
+    let key = origin.key(package, room)?;
     let _writer = writer(store, &key)?;
     let mut doc = decode(store, &key)?;
     if is_retired(&doc) {
         return Ok(());
     }
-    validate_identity(&doc, checkout, room)?;
+    origin.validate(&doc, room)?;
     let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
     doc.put(&meta, RETIRED, why.as_str())
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
@@ -338,6 +402,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::{RecordOwners, RecordStore, room_scope};
     use automerge::ROOT;
 
     const PACKAGE: &str = "so.tilo.transfer-test";
@@ -355,17 +420,18 @@ mod tests {
         }
     }
 
-    fn seeded(root: &std::path::Path) -> (RecordCheckout, super::super::RecordStore) {
+    fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
         let checkout = RecordCheckout::new(
             RecordId::derived("default", &RecordId::for_tab(0)),
-            super::super::RecordKind::new("transfer.test"),
+            RecordKind::new("transfer.test"),
         );
-        let mut owners = super::super::RecordOwners::new(root.to_path_buf());
-        let records = owners.open(PACKAGE, FROM).unwrap();
+        let records = RecordOwners::new(root.to_path_buf())
+            .open(PACKAGE, FROM)
+            .unwrap();
         records.create_record(&checkout).unwrap();
         records
             .with(&checkout.id, |doc| {
-                doc.put(ROOT, "body", "first draft").unwrap()
+                doc.put(ROOT, "body", "first draft").unwrap();
             })
             .unwrap();
         records.try_flush().unwrap();
@@ -376,16 +442,17 @@ mod tests {
     fn a_moved_record_keeps_its_history_and_later_edits_and_leaves_its_room() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
-        let (origin, old_writer) = seeded(temp.path());
+        let (checkout, old_writer) = seeded(temp.path());
+        let origin = Origin::Record(checkout.clone());
 
         // The old app still holds the record: reading it needs no writer.
         let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
         let known = snapshot.clone().get_heads();
         let target = RecordId::minted();
-        let mut arrived = rehome(&snapshot, &origin, TO, &target).unwrap();
+        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
         let installed = install(&store, PACKAGE, TO, &mut arrived).unwrap();
         assert_eq!(installed.id, target);
-        assert_eq!(provenance(&arrived), std::slice::from_ref(&origin.id));
+        assert_eq!(provenance(&arrived), std::slice::from_ref(&checkout.id));
         assert!(
             arrived.get_change_by_hash(&known[0]).is_some(),
             "the source history travels"
@@ -393,7 +460,7 @@ mod tests {
 
         // It edits once more after the read, then exits.
         old_writer
-            .with(&origin.id, |doc| {
+            .with(&checkout.id, |doc| {
                 doc.put(ROOT, "body", "first draft, last words").unwrap();
             })
             .unwrap();
@@ -410,7 +477,7 @@ mod tests {
         assert_eq!(catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(), 0);
         retire(&store, PACKAGE, FROM, &origin, Retirement::Moved).unwrap();
 
-        let destination = read(&store, PACKAGE, TO, &installed).unwrap();
+        let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
         assert_eq!(
             body(&destination).as_deref(),
             Some("first draft, last words")
@@ -420,13 +487,14 @@ mod tests {
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))
         ));
-        let mut owners = super::super::RecordOwners::new(temp.path().to_path_buf());
-        let source_room = owners.open(PACKAGE, FROM).unwrap();
+        let source_room = RecordOwners::new(temp.path().to_path_buf())
+            .open(PACKAGE, FROM)
+            .unwrap();
         assert!(matches!(
-            source_room.try_open_record(&origin),
+            source_room.try_open_record(&checkout),
             Err(RecordOpenError::Retired)
         ));
-        let retired = decode(&store, &key(PACKAGE, FROM, &origin.id).unwrap()).unwrap();
+        let retired = decode(&store, &key(PACKAGE, FROM, &checkout.id).unwrap()).unwrap();
         assert_eq!(retirement(&retired), Some(Retirement::Moved));
         assert_eq!(
             body(&retired).as_deref(),
@@ -439,25 +507,68 @@ mod tests {
     fn a_transfer_never_overwrites_or_crosses_into_its_own_room() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
-        let (origin, writer) = seeded(temp.path());
+        let (checkout, writer) = seeded(temp.path());
         drop(writer);
+        let origin = Origin::Record(checkout.clone());
         let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
         assert!(matches!(
-            rehome(&snapshot, &origin, FROM, &RecordId::minted()),
+            rehome(&snapshot, &origin, FROM, FROM, &RecordId::minted()),
             Err(TransferError::NotTransferable(_))
         ));
+        assert!(
+            rehome(&snapshot, &origin, TO, FROM, &RecordId::minted()).is_err(),
+            "a record is only read from the room it is scoped to"
+        );
         let target = RecordId::minted();
-        let mut first = rehome(&snapshot, &origin, TO, &target).unwrap();
+        let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
         install(&store, PACKAGE, TO, &mut first).unwrap();
-        let mut again = rehome(&snapshot, &origin, TO, &target).unwrap();
+        let mut again = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
         assert!(matches!(
             install(&store, PACKAGE, TO, &mut again),
             Err(TransferError::Open(RecordOpenError::AlreadyExists))
         ));
-        let foreign = RecordCheckout::new(target, origin.kind.clone());
+        let foreign = Origin::Record(RecordCheckout::new(target, checkout.kind.clone()));
         assert!(
             read(&store, PACKAGE, FROM, &foreign).is_err(),
             "a destination id means nothing in the source room"
         );
+    }
+
+    #[test]
+    fn an_app_document_arrives_as_a_record_and_its_room_keeps_a_retired_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        let mut app =
+            app_state::DocStore::shared(Rc::clone(&store), StorageKey::package(PACKAGE)).unwrap();
+        let mut doc = app.load_or_new();
+        doc.put(ROOT, "body", "kept in the app document").unwrap();
+        app.save(&mut doc).unwrap();
+
+        let origin = Origin::AppDocument(RecordKind::new("tilo.app-document"));
+        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+        let target = RecordId::minted();
+        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
+        let installed = install(&store, PACKAGE, TO, &mut arrived).unwrap();
+        assert_eq!(installed.kind.as_str(), "tilo.app-document");
+        let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
+        assert_eq!(
+            body(&destination).as_deref(),
+            Some("kept in the app document")
+        );
+        assert_eq!(crate::record::home(&destination).as_deref(), Some(FROM));
+
+        assert!(
+            matches!(
+                retire(&store, PACKAGE, FROM, &origin, Retirement::Moved),
+                Err(TransferError::Busy)
+            ),
+            "not while the app still writes it"
+        );
+        drop(app);
+        retire(&store, PACKAGE, FROM, &origin, Retirement::Moved).unwrap();
+        assert!(matches!(
+            read(&store, PACKAGE, FROM, &origin),
+            Err(TransferError::Open(RecordOpenError::Retired))
+        ));
     }
 }

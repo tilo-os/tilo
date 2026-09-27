@@ -512,16 +512,18 @@ fn a_notebook_carried_to_another_workspace_opens_there_and_its_old_room_starts_f
     // What the shell does when the window moves: the notebook and its
     // history cross under a fresh id, the presentation follows, and the
     // source is retired.
+    let origin = transfer::Origin::Record(checkout.clone());
     let snapshot = transfer::read(
         home.store(),
         notes::definition().app_id,
         home.workspace_id(),
-        &checkout,
+        &origin,
     )
     .unwrap();
     let mut arrived = transfer::rehome(
         &snapshot,
-        &checkout,
+        &origin,
+        home.workspace_id(),
         elsewhere.workspace_id(),
         &ui::record::RecordId::minted(),
     )
@@ -542,7 +544,7 @@ fn a_notebook_carried_to_another_workspace_opens_there_and_its_old_room_starts_f
         home.store(),
         notes::definition().app_id,
         home.workspace_id(),
-        &checkout,
+        &origin,
         transfer::Retirement::Moved,
     )
     .unwrap();

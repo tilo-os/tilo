@@ -92,6 +92,9 @@ def install_packaged_rootfs(image_root):
                                   'include /etc/ld.so.conf.d/*.conf\n')
     if normalized != original:
         config.write_text(normalized)
+    logging_config = image_root / 'etc/dracut.conf.d/99-tilo-build-logging.conf'
+    logging_config.parent.mkdir(parents=True, exist_ok=True)
+    logging_config.write_text('sysloglvl=0\n')
     modules = sorted(path.name for path in (image_root / 'usr/lib/modules').iterdir()
                      if path.is_dir())
     if len(modules) != 1:

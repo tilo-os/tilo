@@ -1908,14 +1908,10 @@ fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
     });
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].resource, "test.item:99999");
-    // The word posting yields the hit on the first call; one more
-    // bounded call starts looking for the needle inside longer words,
-    // which a word posting cannot rule out.
-    assert!(calls.load(std::sync::atomic::Ordering::Relaxed) <= 2);
-    assert!(
-        !page.exhausted,
-        "substrings inside longer words remain to check"
-    );
+    // One bounded call finds the only record holding the needle, and the
+    // index knows nothing else matches.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(page.exhausted);
     assert!(
         largest_budget.load(std::sync::atomic::Ordering::Relaxed) <= 8,
         "the adapter passed the caller's bounded work budget to the retained index"
