@@ -68,6 +68,7 @@ pub(crate) enum GenericColIter<'a> {
 }
 
 impl GenericColIter<'_> {
+    #[allow(dead_code)]
     fn try_next(&mut self) -> Result<Option<CellValue>, DecodeColumnError> {
         match self {
             Self::Simple(s) => s
