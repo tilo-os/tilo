@@ -61,7 +61,6 @@ use runtime::{
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
-include!("app/dev_library.rs");
 include!("app/actions.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
@@ -174,9 +173,6 @@ pub enum UserEvent {
     /// the route and caret, then leave the event loop so the next process can
     /// read them.
     DevSessionStop,
-    /// `tilo-app dev` rebuilt the app. Swap the contents of the windows this
-    /// process already has. Do not open or close any of them.
-    DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
@@ -2131,27 +2127,6 @@ impl App {
 
     /// Byte-for-byte the same path as a Ctrl+K palette selection
     /// ([`Self::action_palette_handle_key`]).
-
-    /// Replace the framework view inside the windows this process already has.
-    ///
-    /// Returns whether the running root accepted it. A root that is not the
-    /// framework host leaves the current view in place.
-    #[cfg(feature = "native")]
-    pub(crate) fn install_reloaded_view(
-        &mut self,
-        root: Box<dyn crate::widget::AppWidget>,
-    ) -> bool {
-        let Some(bound) = self
-            .root_widget
-            .as_any_mut()
-            .and_then(|widget| widget.downcast_mut::<crate::widget::BoundAppWidget>())
-        else {
-            return false;
-        };
-        bound.component.root = Some(root);
-        self.needs_sync = true;
-        true
-    }
 
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]

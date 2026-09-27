@@ -56,9 +56,6 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
-    /// Per-window state handed to the next in-place reload. Keyed by the
-    /// window id that stays for the life of the process.
-    dev_window_state: std::collections::HashMap<String, Vec<u8>>,
 }
 
 struct AudiencePresentationWindow {
@@ -2427,88 +2424,6 @@ impl AppHandler {
     }
 }
 
-impl AppHandler {
-    /// Rebuild into the windows this process already owns.
-    ///
-    /// The primary window, every live floating window, and an audience window
-    /// stay. Reload does not call `create_window`.
-    fn reload_open_windows_in_place(&mut self) {
-        let mut windows = Vec::new();
-        if let Some(window) = &self.window {
-            windows.push(("primary".to_owned(), window.clone()));
-        }
-        for surface in &self.floating_windows {
-            if !surface.suspended {
-                windows.push((surface.id.clone(), surface.window.clone()));
-            }
-        }
-        if self.audience_presentation.is_some() {
-            if let Some(audience) = &self.audience_presentation {
-                windows.push(("audience".to_owned(), audience.window.clone()));
-            }
-        }
-        let Some(session) = crate::host::environment().dev_session.clone() else {
-            return;
-        };
-        let library = std::fs::read_to_string(session.join("reload.path"))
-            .ok()
-            .map(|text| std::path::PathBuf::from(text.trim()))
-            .filter(|path| path.is_file());
-        let Some(library) = library else {
-            // A build that did not publish a library keeps the code already
-            // running. Catalogs on disk still replace the strings baked into
-            // this process.
-            super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
-            self.app.needs_sync = true;
-            for (_, window) in &windows {
-                window.request_redraw();
-            }
-            return;
-        };
-        let _ = super::write_dev_checkpoint(&self.app, &session);
-        let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
-        let slots = windows
-            .iter()
-            .map(|(id, _)| super::DevWindowSlot {
-                id: id.clone(),
-                state: self
-                    .dev_window_state
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| checkpoint.clone()),
-            })
-            .collect::<Vec<_>>();
-        let reloaded = match super::reload_from_library(&library, &slots) {
-            Ok(reloaded) => reloaded,
-            Err(error) => {
-                eprintln!("tilo: reload rejected; keeping the last good app\n{error}");
-                return;
-            }
-        };
-        if let Some(root) = reloaded.root {
-            if !self.app.install_reloaded_view(root) {
-                eprintln!(
-                    "tilo: the open windows could not take the new view; keeping the running one"
-                );
-                return;
-            }
-            self.app.init_layout();
-        }
-        self.dev_window_state = reloaded
-            .windows
-            .into_iter()
-            .map(|window| (window.id, window.state))
-            .collect();
-        super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
-        self.app.needs_sync = true;
-        let count = windows.len();
-        for (_, window) in &windows {
-            window.request_redraw();
-        }
-        eprintln!("tilo: reloaded {count} open window(s) in place");
-    }
-}
-
 impl ApplicationHandler<UserEvent> for AppHandler {
     // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
     // DeviceId is opaque and the dispatch chain never inspects it (same
@@ -2550,10 +2465,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::DevSessionStop => {
                 self.app.autosave_flush();
                 super::checkpoint_and_exit(&self.app, event_loop);
-                return;
-            }
-            UserEvent::DevSessionReload => {
-                self.reload_open_windows_in_place();
                 return;
             }
             other => other,
@@ -2668,8 +2579,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
-            | UserEvent::DevSessionStop
-            | UserEvent::DevSessionReload => {}
+            | UserEvent::DevSessionStop => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -3499,7 +3409,6 @@ impl App {
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
-            dev_window_state: std::collections::HashMap::new(),
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

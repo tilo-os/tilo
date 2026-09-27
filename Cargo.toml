@@ -42,7 +42,6 @@ members = [
     "crates/hosting/tilo-workspace-host",
     "crates/hosting/tilo-moq",
     "crates/hosting/tilo-cloud-host",
-    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
