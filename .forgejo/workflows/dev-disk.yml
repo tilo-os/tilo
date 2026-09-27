@@ -487,9 +487,11 @@ jobs:
           TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
           TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
+          TILO_QCOW2_COMPRESS: "1"
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          df -h "$TILO_OUTPUT" "${RUNNER_TEMP:-/var/tmp}"
           if [[ $ARCH == aarch64 ]]; then
             rm -rf -- "$TILO_OUTPUT/direct-boot"
             export TILO_DEV_DIRECT_BUNDLE_DIR="$TILO_OUTPUT/direct-boot"

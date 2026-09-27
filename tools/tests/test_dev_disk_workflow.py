@@ -156,6 +156,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
             build = job(self.source, "build")
             disk = step(build, "Install the dev image to a bootable disk")
             self.assertIn('TILO_SKIP_BUILD: "1"', disk)
+            self.assertIn('TILO_QCOW2_COMPRESS: "1"', disk)
             self.assertIn("./os/dev/build-image.sh", disk)
             self.assertIn(
                 "TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}",
@@ -250,6 +251,12 @@ class PublishScriptTests(unittest.TestCase):
             self.assertIn("-O vhdx -o subformat=dynamic", self.source)
             self.assertIn('package="$package_api/tilo-vm-disk/$DEV_TAG"', self.source)
             self.assertIn("*'.svc.cluster.local'*", self.source)
+        with self.subTest(phase='already-compressed CI disk is published without a second copy'):
+            self.assertIn('"compression-type" == "zstd"', self.source)
+            self.assertIn('ln -- "$SOURCE_DISK" "$out/$file"', self.source)
+            candidate = CANDIDATE.read_text(encoding="utf-8")
+            self.assertIn('sha256sum "$SOURCE_DISK"', candidate)
+            self.assertNotIn('qemu-img convert', candidate)
         with self.subTest(phase='disk manifest records separate tooling revision'):
             self.assertIn("DISK_TOOLING_REVISION", self.source)
             self.assertIn('[[ $DISK_TOOLING_REVISION =~ ^[0-9a-f]{40}$ ]]', self.source)
