@@ -125,6 +125,29 @@ pub enum ProvisionOutcome {
     Created { pubkey_hex: String },
 }
 
+/// Whether this device runs the Tilo OS desktop or a Tilo runtime on an
+/// operating system Tilo does not control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceClass {
+    Native,
+    Foreign,
+}
+
+impl DeviceClass {
+    fn capabilities(self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            foreign: self == Self::Foreign,
+            ..DeviceCapabilities::primary()
+        }
+    }
+
+    /// A foreign device never keeps a native certificate it finds on disk.
+    /// Native provisioning keeps whatever verified certificate exists.
+    fn must_reissue(self, cert: &DeviceCert) -> bool {
+        self == Self::Foreign && !cert.capabilities.foreign
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IdentityProvisioningContext {
     /// Native Tilo: the dedicated OOBE owns the identity and storage policy.
@@ -217,6 +240,29 @@ pub fn ensure_collaboration_identity(
         paths,
         IdentityProvisioningContext::NativeTilo,
         storage,
+        DeviceClass::Native,
+    )
+}
+
+/// [`ensure_collaboration_identity`] for a Tilo runtime on an operating system
+/// Tilo does not control. Its device certificates are marked foreign, so
+/// workspace policy caps its role; a native certificate left on disk by an
+/// earlier build is re-issued as foreign for the same device key.
+///
+/// # Errors
+///
+/// As [`ensure_collaboration_identity`].
+pub fn ensure_foreign_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    storage: IdentityStorage,
+) -> Result<ProvisionOutcome, io::Error> {
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::NativeTilo,
+        storage,
+        DeviceClass::Foreign,
     )
 }
 
@@ -243,6 +289,7 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
         paths,
         IdentityProvisioningContext::LegacyLinuxHost,
         storage,
+        DeviceClass::Native,
     )
 }
 
@@ -283,6 +330,7 @@ fn ensure_collaboration_identity_in_context(
     paths: &IdentityPaths,
     context: IdentityProvisioningContext,
     storage: IdentityStorage,
+    class: DeviceClass,
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
 
@@ -328,24 +376,23 @@ fn ensure_collaboration_identity_in_context(
                 "device certificate does not match the provisioned identity keys",
             ));
         }
+        if class.must_reissue(&cert) {
+            let cert = issue_device_certificate(
+                &signer,
+                cert.device_public_key,
+                &cert.device_label,
+                class,
+            )?;
+            persist::write_device_cert(&paths.device_cert, &cert)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+        }
     } else if device_owner {
-        let issued_at_ns = now_ns_u64();
-        let mut cert = DeviceCert {
-            user_public_key: root_public,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Primary device".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        cert.signature = signer
-            .sign(&digest)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        let cert = issue_device_certificate(
+            &signer,
+            device.verifying_key().to_bytes(),
+            "Primary device",
+            class,
+        )?;
         persist::write_device_cert(&paths.device_cert, &cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
     }
@@ -361,6 +408,7 @@ fn ensure_collaboration_identity_in_context(
         } else {
             "Shared device"
         },
+        class,
     )?;
 
     // Keep the legacy primary path working while making it the first entry in
@@ -486,13 +534,14 @@ pub fn ensure_device_certificate_for_record(
 ) -> Result<PathBuf, io::Error> {
     let identity = runtime_identity::load_from_path(record_path.to_path_buf())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    ensure_device_certificate_for_identity(&identity, paths, "This device")
+    ensure_device_certificate_for_identity(&identity, paths, "This device", DeviceClass::Native)
 }
 
 fn ensure_device_certificate_for_identity(
     identity: &runtime_identity::SigningIdentity,
     paths: &IdentityPaths,
     device_label: &str,
+    class: DeviceClass,
 ) -> Result<PathBuf, io::Error> {
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
@@ -511,16 +560,33 @@ fn ensure_device_certificate_for_identity(
                 "identity-specific device certificate does not match its keys",
             ));
         }
-        return Ok(cert_path);
+        if !class.must_reissue(&cert) {
+            return Ok(cert_path);
+        }
     }
 
-    let issued_at_ns = now_ns_u64();
+    let cert = issue_device_certificate(
+        identity,
+        device.verifying_key().to_bytes(),
+        device_label,
+        class,
+    )?;
+    persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(cert_path)
+}
+
+fn issue_device_certificate(
+    identity: &runtime_identity::SigningIdentity,
+    device_public_key: [u8; 32],
+    device_label: &str,
+    class: DeviceClass,
+) -> Result<DeviceCert, io::Error> {
     let mut cert = DeviceCert {
-        user_public_key,
-        device_public_key: device.verifying_key().to_bytes(),
+        user_public_key: identity.group_public_key(),
+        device_public_key,
         device_label: device_label.into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns,
+        capabilities: class.capabilities(),
+        issued_at_ns: now_ns_u64(),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -530,8 +596,7 @@ fn ensure_device_certificate_for_identity(
         .sign(&digest)
         .map_err(|e| io::Error::other(e.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
-    persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
-    Ok(cert_path)
+    Ok(cert)
 }
 
 /// Verify the complete personal-root/device chain without changing it.
@@ -857,6 +922,59 @@ mod tests {
             "resuming must never mint a replacement personal identity"
         );
         assert!(identity_root.join("device-private/keypair.bin").is_file());
+    }
+
+    fn device_certificates(paths: &IdentityPaths, personal: &Path) -> [(PathBuf, DeviceCert); 2] {
+        let root = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            .unwrap()
+            .group_public_key();
+        [paths.device_cert.clone(), paths.device_cert_for_user(&root)].map(|path| {
+            let cert = persist::read_device_cert(&path).unwrap();
+            tilo_user_identity::verify_device_cert(&cert).unwrap();
+            (path, cert)
+        })
+    }
+
+    #[test]
+    fn the_shell_issues_native_certificates_and_the_runtime_foreign_ones() {
+        let tmp = TmpDir::new("device-class");
+        let personal = tmp.path().join("config/tilo/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+        let native = device_certificates(&paths, &personal);
+        for (_, cert) in &native {
+            assert_eq!(cert.capabilities, DeviceCapabilities::primary());
+        }
+        let native_bytes = native.clone().map(|(path, _)| fs::read(path).unwrap());
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+        assert_eq!(
+            native.clone().map(|(path, _)| fs::read(path).unwrap()),
+            native_bytes
+        );
+
+        // A runtime profile left with native certificates is re-issued as
+        // foreign, keeping the device key and label.
+        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+        let foreign = device_certificates(&paths, &personal);
+        for ((_, before), (_, after)) in native.iter().zip(&foreign) {
+            assert!(after.capabilities.foreign);
+            assert_eq!(after.device_public_key, before.device_public_key);
+            assert_eq!(after.device_label, before.device_label);
+        }
+        let foreign_bytes = foreign.clone().map(|(path, _)| fs::read(path).unwrap());
+        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+        assert_eq!(
+            foreign.map(|(path, _)| fs::read(path).unwrap()),
+            foreign_bytes
+        );
+
+        let fresh = TmpDir::new("device-class-fresh");
+        let personal = fresh.path().join("config/tilo/identity");
+        let paths = IdentityPaths::under(fresh.path().join("system"));
+        super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
+        for (_, cert) in device_certificates(&paths, &personal) {
+            assert!(cert.capabilities.foreign);
+        }
     }
 
     #[test]
