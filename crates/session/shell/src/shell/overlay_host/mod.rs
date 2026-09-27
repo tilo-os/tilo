@@ -4020,11 +4020,22 @@ impl ShellOverlayHost {
     }
 
     /// Shell chrome on screen that holds a secret: the administrator
-    /// authentication and network-secrets sheets, and the quick-settings
-    /// pane while it asks for a Wi-Fi passphrase. A capture always draws
-    /// these as the placeholder — see [`crate::shell::capture_protection`].
+    /// authentication and network-secrets sheets, the quick-settings pane
+    /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
+    /// for an `AirPlay` PIN or password, and the setup steps that restore or
+    /// back up the identity (passphrases and a nearby device's pairing
+    /// code). A capture always draws these as the placeholder — see
+    /// [`crate::shell::capture_protection`].
     pub fn secret_prompt_rects(&self) -> Vec<Rect> {
         let mut rects = Vec::new();
+        let now = Instant::now();
+        if let Some(rect) = self
+            .onboarding
+            .as_ref()
+            .and_then(crate::onboarding_view::OnboardingView::secret_rect)
+        {
+            rects.push(rect);
+        }
         if self.portal_dialogs.view().is_some_and(|view| {
             matches!(
                 view,
@@ -4039,12 +4050,24 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().quick_settings.wifi_password.is_some());
-        if asks_passphrase && self.qs_transition.is_visible(Instant::now()) {
+        if asks_passphrase && self.qs_transition.is_visible(now) {
             // The dropdown's own paint clip: it covers the pane at every
             // point of its open/close scale.
             rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
         }
+        rects.extend(self.projection_overlay.secret_prompt_rect(now));
         rects
+    }
+
+    /// Serve administrator-authentication and network-secrets sheets (and
+    /// every other portal sheet) from `queue` instead of the session's.
+    /// Tests use a private queue so their sheets never reach another host.
+    #[doc(hidden)]
+    pub fn set_portal_dialog_queue(
+        &mut self,
+        queue: crate::shell::portal_dialog::PortalDialogQueue,
+    ) {
+        self.portal_dialogs = PortalDialogController::new(queue);
     }
 
     /// On-screen rect of the tile hosting foreign wayland surface
