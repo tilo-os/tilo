@@ -22,12 +22,10 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
-    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
+    BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
+    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_identity_bind,
+    resolve_service_binds_for_launch, to_service_binds,
 };
-
-const CLONE3_COMPAT_SECCOMP_CHILD_FD: RawFd = 16;
-const BASELINE_SECCOMP_CHILD_FD: RawFd = 17;
 
 struct SeccompFds {
     clone3_compat: OwnedFd,
@@ -71,12 +69,32 @@ mod seccomp_fd_tests {
             argv,
             [
                 "--add-seccomp-fd",
-                "16",
+                "40",
                 "--add-seccomp-fd",
-                "17",
+                "41",
                 "--unshare-all",
                 "/app/bin",
             ]
+        );
+    }
+
+    #[test]
+    fn no_handed_over_descriptor_can_replace_a_seccomp_program() {
+        use crate::services::RESERVED_CHILD_FDS;
+        // Declared services are numbered from 17 upwards around the reserved
+        // slots; a filter sharing a slot with one would make bwrap read its
+        // program from that service's socket and never start the app.
+        for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
+            assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
+            assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");
+        }
+        let mut unique = RESERVED_CHILD_FDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            RESERVED_CHILD_FDS.len(),
+            "reserved slots overlap"
         );
     }
 }
