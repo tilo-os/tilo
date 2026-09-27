@@ -58,3 +58,9 @@ esac
 # Remove the derived sidecars only after the last rpm process has exited so the
 # next container layer receives the verified main database and nothing else.
 rm -f -- "$db_dir/rpmdb.sqlite-wal" "$db_dir/rpmdb.sqlite-shm"
+
+# DNF's transaction history and log contain transaction diagnostics, including
+# timestamps and process-dependent details. They are diagnostic build
+# state, not package state, and must disappear in the same RUN as each DNF call:
+# removing them only at the end of the image cannot undo earlier OCI layers.
+/usr/libexec/tilo/clean-dnf-layer-state
