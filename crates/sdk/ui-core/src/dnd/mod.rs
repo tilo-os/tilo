@@ -105,14 +105,25 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 /// is left out.
 pub fn uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
-    for uri in paths
-        .iter()
-        .filter_map(|p| url::Url::from_file_path(p).ok())
-    {
+    for uri in paths.iter().filter_map(|p| file_uri(p)) {
         out.push_str(uri.as_str());
         out.push_str("\r\n");
     }
     out
+}
+
+/// A path's `file://` URI. `url` has none on a target without a file system
+/// (`wasm32-unknown-unknown`), where no path is a local file.
+fn file_uri(path: &Path) -> Option<url::Url> {
+    #[cfg(any(unix, windows, target_os = "wasi"))]
+    {
+        url::Url::from_file_path(path).ok()
+    }
+    #[cfg(not(any(unix, windows, target_os = "wasi")))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// The mime type to offer a file's bytes under, from its extension.
