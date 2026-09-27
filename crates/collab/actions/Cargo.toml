@@ -15,6 +15,7 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [dependencies]
+hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 web-time = { version = "1", features = ["serde"] }
