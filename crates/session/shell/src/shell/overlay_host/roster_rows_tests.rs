@@ -207,7 +207,7 @@ fn quick_settings_bounds_cover_shadows_and_hints_yield_to_modal_surfaces() {
         );
         host.palette_visible = false;
 
-        host.power_menu.open();
+        host.layers.power_menu.open();
         assert!(
             host.shortcut_help_button_is_suppressed(),
             "the hint cannot paint above a session-action sheet"
