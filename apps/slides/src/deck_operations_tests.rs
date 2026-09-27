@@ -64,7 +64,7 @@ impl Participant {
                 &resources,
                 &address,
                 args,
-                AGENT,
+                tilo_actions::door::InvocationProvenance::caller(AGENT),
                 &self.registry,
                 &mut transport,
             )
@@ -74,7 +74,7 @@ impl Participant {
                 &resources,
                 &address,
                 args,
-                AGENT,
+                tilo_actions::door::InvocationProvenance::caller(AGENT),
                 &self.registry,
                 &mut transport,
             )
