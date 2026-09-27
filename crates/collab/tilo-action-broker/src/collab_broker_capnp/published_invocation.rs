@@ -1,8 +1,8 @@
 //! Original invocation custody, minted only by dispatch and an actual private worker.
 use super::{
-    Actor, AdmittedJoinIdentity, Arc, CapDecision, CapnpBrokerState, CrdtRoute,
+    Actor, AdmittedJoinIdentity, Arc, BrokerActor, CapDecision, CapnpBrokerState, CrdtRoute,
     PrivateWorkerRegistration, PublishedAction, PublishedInput, ResourceRef, Verb,
-    VerifiedActionCaller, Weak, principal_id_for_root,
+    VerifiedActionCaller, Weak,
 };
 use ui::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
@@ -174,10 +174,6 @@ impl OriginalInvocation {
         }
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered custody, admission, caller and permission recheck with its timing marks"
-    )]
     fn check_lifecycle(&self) -> Result<(), String> {
         let began = std::time::Instant::now();
         self.check_custody()?;
@@ -242,10 +238,7 @@ impl OriginalInvocation {
                 .ok_or("original agent membership expired")?;
             Actor::agent(agent).in_room(self.data.route.cluster_id.clone())
         } else {
-            workspace.actor_for_person_at(
-                &principal_id_for_root(self.certificate()?.user_public_key),
-                seconds,
-            )
+            BrokerActor::for_certificate(self.certificate()?).policy_in(workspace, seconds)
         };
         let verb = match self.data.spec.contract.permission {
             tilo_actions::PermissionRequirement::None => None,
