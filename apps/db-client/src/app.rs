@@ -4465,6 +4465,7 @@ mod honesty_tests {
 #[cfg(test)]
 mod behavior_tests {
     use super::*;
+
     use automerge::ROOT;
     use tilo_actions::Action;
     use tilo_automerge::ApplyIncoming;

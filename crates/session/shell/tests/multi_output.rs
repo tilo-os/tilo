@@ -251,7 +251,7 @@ impl Harness {
         harness
     }
 
-    /// Run client and server until `done` holds, or fail after 3s.
+    /// Run client and server until `done` holds, or fail at the hang bound.
     pub fn pump(&mut self, label: &str, done: impl Fn(&Client) -> bool) {
         let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {

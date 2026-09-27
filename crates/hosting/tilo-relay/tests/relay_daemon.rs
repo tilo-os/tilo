@@ -28,6 +28,12 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
+/// Upper bound for a frame the relay owes a client. Live fan-out waits for the
+/// delta's durable commit (pending file plus directory fsyncs) and the relay's
+/// blocking-worker pool, so a disk-contended CI host can take seconds; this
+/// only bounds a hang.
+const HANG: Duration = Duration::from_secs(30);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -72,10 +78,19 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
             Some(tilo_relay::Inbound::Ready { pending: 0 })
         ));
+        let metrics = relay.handle().metrics;
         a_session
             .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // A and B use separate connections, so B's Subscribe can reach the
+        // relay before A's checkpoint does. Wait for the relay to commit it.
+        tokio::time::timeout(HANG, async {
+            while metrics.snapshot().deltas_received == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("relay committed A's checkpoint");
 
         // B was not a workspace member when A published, so no per-device
         // pending queue could have existed. Its first subscribe must use retained
@@ -305,31 +320,34 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 }
 
 /// Publish synthetic deltas from `a_client` until `pending_dir` shows a
-/// queued file (the relay noticed the closed session), or the retry budget
+/// queued file (the relay noticed the closed session), or the hang bound
 /// runs out — the caller's own `assert!` reports the timeout.
 async fn publish_until_queued(
     a_client: &RelayClient,
     a_key: [u8; 32],
     pending_dir: &std::path::Path,
 ) {
-    for authored_at_ns in 1..=80 {
-        a_client
-            .send(Envelope::Delta {
-                workspace_id: 9,
-                author_device_public_key: a_key,
-                authored_at_ns,
-                delta: b"offline-change".to_vec(),
-                signature: [0; 64],
-            })
-            .unwrap();
-        if pending_dir
-            .read_dir()
-            .is_ok_and(|mut files| files.next().is_some())
-        {
-            break;
+    let _ = tokio::time::timeout(HANG, async {
+        for authored_at_ns in 1.. {
+            a_client
+                .send(Envelope::Delta {
+                    workspace_id: 9,
+                    author_device_public_key: a_key,
+                    authored_at_ns,
+                    delta: b"offline-change".to_vec(),
+                    signature: [0; 64],
+                })
+                .unwrap();
+            if pending_dir
+                .read_dir()
+                .is_ok_and(|mut files| files.next().is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    })
+    .await;
 }
 
 /// Drain replayed `Delta`s until the `Ready` marker reports at least one

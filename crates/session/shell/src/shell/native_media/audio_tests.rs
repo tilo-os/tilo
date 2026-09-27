@@ -25,6 +25,9 @@ use tilo_moq::client::{self, CapturedOpus, Client, ClientAuthority, ConnectionSc
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
 const CALL: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 fn namespace(who: char) -> String {
     format!("{CALL}/{}", who.to_string().repeat(64))
 }
@@ -422,7 +425,8 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     command(Command::Leave);
     tick();
     assert!(!command(Command::Status).capture_active);
-    for _ in 0..50 {
+    let leave_started = std::time::Instant::now();
+    while leave_started.elapsed() < HANG_BOUND {
         if evidence.closes.load(Ordering::SeqCst) > 0 {
             break;
         }

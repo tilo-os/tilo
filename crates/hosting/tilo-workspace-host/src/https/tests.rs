@@ -1,4 +1,5 @@
 use super::*;
+use crate::HANG_BOUND;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode};
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
@@ -1217,11 +1218,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
     let client = fixture.raw("/tilo-peer/enrollment/challenge", &headers, &body);
     let actor = async {
-        let Some(command) = timeout(Duration::from_secs(2), requests.recv())
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(command) = timeout(HANG_BOUND, requests.recv()).await.ok().flatten() else {
             return;
         };
         let EnrollmentRequest::Challenge(request) = command.request else {

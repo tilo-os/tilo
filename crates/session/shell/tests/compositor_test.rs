@@ -144,7 +144,7 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     }
     let _ = child.kill();
     let _ = child.wait();
-    panic!("compositor never printed `tilo compositor listening on …` within 8s");
+    panic!("compositor never printed `tilo compositor listening on …`");
 }
 
 fn extract_socket_name(line: &str) -> Option<String> {

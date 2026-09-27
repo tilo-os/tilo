@@ -270,7 +270,8 @@ async fn publish_offline_coedit(
     a_session.publish_retained_delta([2; 32], delta).unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = retained_count(state_root, ws);
         if queued >= 1 {
             break;
