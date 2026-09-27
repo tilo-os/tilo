@@ -10237,6 +10237,7 @@ mod tests {
                     now,
                     false,
                     true,
+                    true,
                     frame,
                     [lock_animation_park_deadline(now, due)]
                 ),
@@ -10245,6 +10246,7 @@ mod tests {
             assert_eq!(
                 native_loop_park(
                     now,
+                    false,
                     false,
                     false,
                     frame,
@@ -10256,6 +10258,7 @@ mod tests {
             assert_eq!(
                 native_loop_park(
                     now,
+                    false,
                     false,
                     false,
                     frame,
