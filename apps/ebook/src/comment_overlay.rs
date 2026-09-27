@@ -50,9 +50,6 @@ pub(crate) struct CommentOverlay {
     views: HashMap<Uuid, RichTextView>,
 }
 
-/// The type size comments are set in.
-const COMMENT_PX: f32 = 13.0;
-
 impl CommentOverlay {
     pub(crate) fn accessibility_nodes(
         &self,
@@ -223,7 +220,7 @@ impl CommentOverlay {
                     return editor_h.map_or(76.0, |h| (h + 12.0).max(76.0));
                 }
                 let text_h = if a.note.trim().is_empty() {
-                    f64::from(tr.measure(&comment_display(a), COMMENT_PX, Some(text_w)).1)
+                    f64::from(tr.measure(&comment_display(a), 13.0, Some(text_w)).1)
                 } else {
                     let view = self.views.entry(a.id).or_insert_with(comment_view);
                     view.show(&a.blocks);
@@ -238,7 +235,7 @@ impl CommentOverlay {
 /// A read-only view of one comment, in comment type.
 fn comment_view() -> RichTextView {
     let mut view = RichTextView::new();
-    view.editor_mut().set_body_size(COMMENT_PX);
+    view.editor_mut().set_body_size(13.0);
     view
 }
 
@@ -265,7 +262,7 @@ impl CommentOverlay {
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
     pub(crate) fn begin_editing(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, COMMENT_PX, "Write a comment…"));
+        self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…"));
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -481,7 +478,7 @@ impl CommentOverlay {
                 tr.draw_text(
                     scene,
                     &comment_display(annotation),
-                    COMMENT_PX,
+                    13.0,
                     colors.text_dim,
                     t * Affine::translate((ix0 + 10.0, y + 8.0)),
                     Some(text_w),
