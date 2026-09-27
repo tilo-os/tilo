@@ -1087,7 +1087,7 @@ impl MouseKeyboardPane {
             ));
         }
         source_rows.push(caption(
-            "Input methods (Pinyin, Mozc, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
+            "Input methods (Pinyin, Anthy, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
         ));
         card("Input sources", rows(source_rows))
     }

@@ -1272,7 +1272,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Documents/Downloads/… folders host apps expect. `geoclue2` is the service
 # xdg-desktop-portal's Location portal asks; without it every request fails.
 # Fcitx5 is the composing input method the compositor starts when a Pinyin,
-# Mozc or Hangul input source is active; it reaches apps through
+# Anthy or Hangul input source is active; it reaches apps through
 # input-method-v2 on a private display, so neither its toolkit IM modules nor
 # its Qt configuration tool (the session writes its configuration) are wanted.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -1288,7 +1288,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     geoclue2 \
     fcitx5 \
     fcitx5-chinese-addons \
-    fcitx5-mozc \
+    fcitx5-anthy \
     fcitx5-hangul \
     && dnf clean all && ${FINALIZE_RPMDB}
 
