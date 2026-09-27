@@ -524,6 +524,12 @@ pub enum DisplayOperation {
         connector: String,
         enabled: bool,
     },
+    /// How bright SDR content is while `connector` runs in HDR, as a
+    /// fraction `0.0..=1.0` of the offered range.
+    SetSdrBrightness {
+        connector: String,
+        value: f64,
+    },
     SetVrr {
         connector: String,
         enabled: bool,
@@ -2772,6 +2778,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                 },
             ));
             if descriptor.hdr {
+                resource = resource.with_action(sdr_brightness_spec(connector.clone()));
                 let operation_connector = connector.clone();
                 resource = resource.with_action(local_bool_spec(
                     "hdr",
@@ -3170,6 +3177,37 @@ fn output_brightness_spec(connector: String) -> ActionSpec {
             )
         },
     )
+}
+
+fn sdr_brightness_spec(connector: String) -> ActionSpec {
+    local_number_spec(
+        "sdr-brightness",
+        "Set SDR content brightness in HDR",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "live-output"],
+        move |value| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetSdrBrightness {
+                    connector: connector.clone(),
+                    value,
+                },
+            )
+        },
+    )
+}
+
+/// The SDR content brightness slider of an HDR-capable monitor's card.
+pub fn display_output_sdr_brightness_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource =
+        display_output_control_resource(&connector, sdr_brightness_spec(connector.clone()));
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
 }
 
 /// The brightness slider of one monitor's card.

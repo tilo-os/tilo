@@ -43,8 +43,9 @@ use vello::wgpu::hal::Device as _;
 use vello::wgpu::hal::vulkan;
 
 use media::dmabuf::{
-    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID,
-    DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DRM_FORMAT_P010, DRM_FORMAT_XBGR8888,
+    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR16161616F,
+    DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12,
+    DRM_FORMAT_P010, DRM_FORMAT_XBGR8888, DRM_FORMAT_XBGR2101010, DRM_FORMAT_XBGR16161616F,
     DRM_FORMAT_XRGB8888, DRM_FORMAT_YUYV, fourcc_str,
 };
 
@@ -208,7 +209,7 @@ pub struct ImportedPlanes {
     pub height: u32,
 }
 
-/// One compositor-owned XRGB dma-buf imported as a writable render target.
+/// One compositor-owned scanout dma-buf imported as a writable render target.
 ///
 /// This is intentionally separate from [`ImportedPlanes`].  Video and WebView
 /// imports are sampled by the compositor; this texture is the final GPU
@@ -218,13 +219,45 @@ pub struct ImportedPlanes {
 pub struct ImportedRenderTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    /// `Bgra8Unorm` for an SDR `XRGB8888` target; `Rgb10a2Unorm` or
+    /// `Rgba16Float` for an HDR one.
+    pub format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
     pub stride: u32,
 }
 
-/// Import the one linear XRGB plane of a compositor-owned scanout buffer as a
-/// BGRA render attachment on `device`.
+/// The scanout formats the compositor renders into, with the Vulkan and wgpu
+/// formats that describe the same bytes and the bytes per pixel.
+///
+/// DRM names formats by little-endian word order: `XR24` is B,G,R,X in
+/// memory (Vulkan `B8G8R8A8`), `XB30` packs red into the low ten bits of a
+/// word (Vulkan `A2B10G10R10_PACK32`, wgpu `Rgb10a2Unorm`), and `AB4H` stores
+/// half-float red first (Vulkan `R16G16B16A16_SFLOAT`).
+pub fn render_target_format(fourcc: u32) -> Option<(vk::Format, wgpu::TextureFormat, u32)> {
+    match fourcc {
+        DRM_FORMAT_XRGB8888 => Some((
+            vk::Format::B8G8R8A8_UNORM,
+            wgpu::TextureFormat::Bgra8Unorm,
+            4,
+        )),
+        DRM_FORMAT_XBGR2101010 => Some((
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            wgpu::TextureFormat::Rgb10a2Unorm,
+            4,
+        )),
+        DRM_FORMAT_ABGR16161616F => Some((
+            vk::Format::R16G16B16A16_SFLOAT,
+            wgpu::TextureFormat::Rgba16Float,
+            8,
+        )),
+        _ => None,
+    }
+}
+
+/// Import the one linear plane of a compositor-owned scanout buffer
+/// (`XRGB8888`, `XBGR2101010` or `ABGR16161616F`) as a render attachment on
+/// `device`.
 ///
 /// The allocation remains owned by the caller (normally a GBM buffer object).
 /// The returned Vulkan image and memory import are aliases and must be dropped
@@ -233,22 +266,22 @@ pub struct ImportedRenderTarget {
 /// # Errors
 ///
 /// Fails closed for every layout which cannot be described exactly without
-/// `VK_EXT_image_drm_format_modifier`: non-XRGB formats, more than one plane,
+/// `VK_EXT_image_drm_format_modifier`: other formats, more than one plane,
 /// non-zero plane offsets, tiled/compressed modifiers, or a driver-selected
 /// row pitch that differs from the producer's stride.
 pub fn import_render_target(
     device: &wgpu::Device,
     image: &DmabufRef<'_>,
 ) -> Result<ImportedRenderTarget, ImportError> {
-    validate_render_target(image)?;
+    let (format, wgpu_format, texel_bytes) = validate_render_target(image)?;
 
     let plane = image.planes[0];
     let spec = PlaneSpec {
-        format: vk::Format::B8G8R8A8_UNORM,
-        wgpu_format: wgpu::TextureFormat::Bgra8Unorm,
+        format,
+        wgpu_format,
         width: image.width,
         height: image.height,
-        texel_bytes: 4,
+        texel_bytes,
     };
     let hal = {
         // Safety: the guard only lends this device's Vulkan handles.  The raw
@@ -285,7 +318,7 @@ pub fn import_render_target(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
+        format: wgpu_format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
@@ -296,18 +329,21 @@ pub fn import_render_target(
     Ok(ImportedRenderTarget {
         texture,
         view,
+        format: wgpu_format,
         width: image.width,
         height: image.height,
         stride: plane.stride,
     })
 }
 
-fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
-    if image.fourcc != DRM_FORMAT_XRGB8888 {
+fn validate_render_target(
+    image: &DmabufRef<'_>,
+) -> Result<(vk::Format, wgpu::TextureFormat, u32), ImportError> {
+    let Some((format, wgpu_format, texel_bytes)) = render_target_format(image.fourcc) else {
         return Err(ImportError::UnsupportedFormat {
             fourcc: image.fourcc,
         });
-    }
+    };
     if !is_linear(image.modifier) {
         return Err(ImportError::UnsupportedModifier {
             modifier: image.modifier,
@@ -335,7 +371,7 @@ fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
     }
     let minimum_stride = image
         .width
-        .checked_mul(4)
+        .checked_mul(texel_bytes)
         .ok_or_else(|| ImportError::Vulkan("scanout row size overflows u32".to_owned()))?;
     if plane.stride < minimum_stride {
         return Err(ImportError::StrideMismatch {
@@ -345,7 +381,7 @@ fn validate_render_target(image: &DmabufRef<'_>) -> Result<(), ImportError> {
         });
     }
 
-    Ok(())
+    Ok((format, wgpu_format, texel_bytes))
 }
 
 /// The Vulkan format and extent one plane of `fourcc` is imported as.
@@ -439,6 +475,27 @@ fn plane_specs(fourcc: u32, width: u32, height: u32) -> Option<(PlaneLayout, Vec
                 width,
                 height,
                 texel_bytes: 4,
+            }],
+        )),
+        // 10-bit RGB, red in the low bits of a little-endian word.
+        DRM_FORMAT_ABGR2101010 | DRM_FORMAT_XBGR2101010 => Some((
+            PlaneLayout::Packed,
+            vec![PlaneSpec {
+                format: vk::Format::A2B10G10R10_UNORM_PACK32,
+                wgpu_format: wgpu::TextureFormat::Rgb10a2Unorm,
+                width,
+                height,
+                texel_bytes: 4,
+            }],
+        )),
+        DRM_FORMAT_ABGR16161616F | DRM_FORMAT_XBGR16161616F => Some((
+            PlaneLayout::Packed,
+            vec![PlaneSpec {
+                format: vk::Format::R16G16B16A16_SFLOAT,
+                wgpu_format: wgpu::TextureFormat::Rgba16Float,
+                width,
+                height,
+                texel_bytes: 8,
             }],
         )),
         _ => None,
@@ -799,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn render_target_contract_accepts_only_exact_linear_xrgb() {
+    fn render_target_contract_accepts_only_exact_linear_scanout_formats() {
         // Case `a_tiled_modifier_is_refused_rather_than_sampled_as_pixels`.
         {
             // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
@@ -824,7 +881,14 @@ mod tests {
                 height: 32,
                 colorimetry: Colorimetry::default(),
             };
-            assert_eq!(validate_render_target(&valid), Ok(()));
+            assert_eq!(
+                validate_render_target(&valid),
+                Ok((
+                    vk::Format::B8G8R8A8_UNORM,
+                    wgpu::TextureFormat::Bgra8Unorm,
+                    4
+                ))
+            );
 
             let wrong_format = DmabufRef {
                 fourcc: DRM_FORMAT_XBGR8888,
@@ -845,6 +909,55 @@ mod tests {
                 validate_render_target(&tiled),
                 Err(ImportError::UnsupportedModifier { .. })
             ));
+        }
+
+        // Case `hdr_scanout_formats_map_to_their_ten_bit_and_half_float_views`.
+        {
+            let file = tempfile::tempfile().expect("temporary descriptor");
+            let planes = one_plane(&file, 0, 256);
+            let ten_bit = DmabufRef {
+                planes: &planes,
+                fourcc: DRM_FORMAT_XBGR2101010,
+                modifier: DRM_FORMAT_MOD_LINEAR,
+                width: 64,
+                height: 32,
+                colorimetry: Colorimetry::default(),
+            };
+            assert_eq!(
+                validate_render_target(&ten_bit),
+                Ok((
+                    vk::Format::A2B10G10R10_UNORM_PACK32,
+                    wgpu::TextureFormat::Rgb10a2Unorm,
+                    4
+                ))
+            );
+            // Half float needs eight bytes a pixel: 64 wide is 512 bytes.
+            let half_float = DmabufRef {
+                fourcc: DRM_FORMAT_ABGR16161616F,
+                ..ten_bit
+            };
+            assert_eq!(
+                validate_render_target(&half_float),
+                Err(ImportError::StrideMismatch {
+                    plane: 0,
+                    producer: 256,
+                    driver: 512,
+                })
+            );
+            let wide_planes = one_plane(&file, 0, 512);
+            let half_float = DmabufRef {
+                planes: &wide_planes,
+                fourcc: DRM_FORMAT_ABGR16161616F,
+                ..ten_bit
+            };
+            assert_eq!(
+                validate_render_target(&half_float),
+                Ok((
+                    vk::Format::R16G16B16A16_SFLOAT,
+                    wgpu::TextureFormat::Rgba16Float,
+                    8
+                ))
+            );
         }
 
         // Case `scanout_target_contract_rejects_offset_and_short_stride`.
@@ -944,6 +1057,14 @@ mod tests {
             // The X variants share the layout; alpha is simply ignored.
             let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
             assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
+
+            // Ten-bit and half-float client buffers keep their precision.
+            let (_, ten) = plane_specs(DRM_FORMAT_XBGR2101010, 64, 64).unwrap();
+            assert_eq!(ten[0].wgpu_format, wgpu::TextureFormat::Rgb10a2Unorm);
+            assert_eq!(ten[0].format, vk::Format::A2B10G10R10_UNORM_PACK32);
+            let (_, half) = plane_specs(DRM_FORMAT_ABGR16161616F, 64, 64).unwrap();
+            assert_eq!(half[0].wgpu_format, wgpu::TextureFormat::Rgba16Float);
+            assert_eq!(half[0].texel_bytes, 8);
         }
 
         // Case `an_unknown_fourcc_is_rejected_rather_than_guessed_at`.
