@@ -18,8 +18,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
 };
+use tilo_runtime::RuntimeServices;
 use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
-pub use tilo_runtime::{RuntimeServices, daemon, mcp, mcp_process};
 
 /// A single-user service session. Drop applications before dropping the session.
 /// Identity discovery uses the same environment as Tilo; configure it before
