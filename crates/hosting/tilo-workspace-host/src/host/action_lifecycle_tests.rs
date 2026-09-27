@@ -80,17 +80,26 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     assert!(!old_time.same_origin(&recovered_time));
     // The existing subscription is already Ready: no new Ready event or app
     // restart is needed for the normal owner-loop boundary to recreate workers.
+    // That boundary runs every owner turn and skips a turn whose committed view
+    // another reader holds at that moment (`CommittedAuthority::observe`).
     assert!(session.as_ref().unwrap().is_ready());
-    refresh_actions(
-        &mut owner,
-        &mut runtime,
-        &mut session,
-        None,
-        &mut action_error,
-        None,
-        &mut cadence,
-    )
+    tilo_test_env::within("the owner loop to replace the retired runtime", async {
+        while runtime.retired && action_error.is_none() {
+            refresh_actions(
+                &mut owner,
+                &mut runtime,
+                &mut session,
+                None,
+                &mut action_error,
+                None,
+                &mut cadence,
+            )
+            .await;
+            tokio::task::yield_now().await;
+        }
+    })
     .await;
+    assert!(action_error.is_none(), "{action_error:?}");
 
     let new_signer = runtime
         .signing
@@ -143,10 +152,9 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
             .unwrap()
             .is_err()
     );
-    assert!(
-        fresh_result.expect("fresh owner queue progressed").is_ok(),
-        "fresh runtime retained the retired source"
-    );
+    if let Err(error) = fresh_result.expect("fresh owner queue progressed") {
+        panic!("fresh runtime retained the retired source: {error}");
+    }
     cleanup.unwrap();
     let document = AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
     use ui::automerge::ReadDoc;

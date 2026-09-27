@@ -33,7 +33,11 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }
+# The draft body is rich text, edited in the SDK rich-text editor and sent as
+# its HTML part.
+qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["html"] }
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true

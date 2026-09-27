@@ -31,7 +31,17 @@ use crate::hw::realtime::{
 /// How long an encoder or decoder may take to produce its first output after
 /// construction. Hardware initialisation (opening the render node, creating
 /// the context) happens here.
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(any(test, feature = "test-support")))]
+fn startup_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+/// How long an encoder or decoder may take to produce its first output after
+/// construction: in test builds, which share a loaded runner, the shared test
+/// hang bound.
+#[cfg(any(test, feature = "test-support"))]
+fn startup_timeout() -> Duration {
+    tilo_test_env::hang_bound()
+}
 /// How long one frame may take once the pipeline is running. Every element is
 /// configured for one-in-one-out operation; a frame that takes longer than
 /// this is treated as lost rather than blocking the caller's frame loop.
@@ -663,9 +673,9 @@ impl RealtimeEncoder {
         };
         let buffer = gst_buffer(vec![fill; len], Duration::ZERO);
         self.running.push(buffer)?;
-        match self.running.next_sample(STARTUP_TIMEOUT)? {
+        match self.running.next_sample(startup_timeout())? {
             Some(_) => {}
-            None => return Err(format!("no output within {STARTUP_TIMEOUT:?}")),
+            None => return Err(format!("no output within {:?}", startup_timeout())),
         }
         // Discard any trailing output of the probe, and make the first real
         // frame a keyframe: the probe consumed the stream's first one.
@@ -813,7 +823,7 @@ impl RealtimeEncoder {
         let timeout = if self.first_output_seen {
             FRAME_TIMEOUT
         } else {
-            STARTUP_TIMEOUT
+            startup_timeout()
         };
         let mut samples = Vec::new();
         if let Some(s) = self
@@ -1367,7 +1377,7 @@ impl RealtimeDecoder {
         let timeout = if self.first_output_seen {
             DECODE_WAIT
         } else {
-            STARTUP_TIMEOUT
+            startup_timeout()
         };
         let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
         let mut newest = None;

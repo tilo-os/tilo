@@ -150,6 +150,10 @@ impl TypedBroker {
     }
 
     pub fn connect(&self, user_id: &str) -> RawFd {
+        self.connect_peer(user_id).1
+    }
+
+    fn connect_peer(&self, user_id: &str) -> (u64, RawFd) {
         let peer = self.hub.next_peer.fetch_add(1, Ordering::Relaxed);
         let service = Service {
             hub: self.hub.clone(),
@@ -180,19 +184,67 @@ impl TypedBroker {
                 });
             })
             .unwrap();
-        client.into_raw_fd()
+        (peer, client.into_raw_fd())
     }
 
     /// Connect a production `CollaborationManager` to the shared test room.
+    ///
+    /// Returns once the manager's route is admitted and this service holds
+    /// its document and presence subscriptions, so traffic sent from then on
+    /// reaches it without any settling time.
     pub fn manager(&self, user_id: &str) -> CollaborationManager {
-        CollaborationManager::for_route_fd(
-            self.connect(user_id),
+        let (peer, fd) = self.connect_peer(user_id);
+        let manager = CollaborationManager::for_route_fd(
+            fd,
             TEST_APP_ID,
             Uuid::nil(),
             None,
             Some(user_id.to_owned()),
         )
-        .expect("typed test endpoint connects")
+        .expect("typed test endpoint connects");
+        assert!(
+            manager.is_connected(),
+            "{user_id} must connect to the typed broker"
+        );
+        self.wait_subscribed(TEST_APP_ID, peer, user_id);
+        manager
+    }
+
+    /// Wait until `peer` holds document and presence subscriptions on the
+    /// `app_id` room.
+    fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
+        let channel =
+            tilo_ui::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
+        tilo_test_env::wait_until(
+            format!("{user_id}'s document and presence subscriptions on {channel}"),
+            || {
+                self.hub
+                    .channels
+                    .lock()
+                    .unwrap()
+                    .get(&channel)
+                    .is_some_and(|room| {
+                        room.ops.iter().any(|sub| sub.peer == peer)
+                            && room.presence.iter().any(|sub| sub.peer == peer)
+                    })
+            },
+        );
+    }
+
+    /// Connect a production `CollaborationManager` to its own `app_id` room,
+    /// returning once this service holds its subscriptions there.
+    pub fn route_manager(&self, user_id: &str, app_id: &str) -> CollaborationManager {
+        let (peer, fd) = self.connect_peer(user_id);
+        let manager = CollaborationManager::for_route_fd(
+            fd,
+            app_id,
+            Uuid::nil(),
+            None,
+            Some(user_id.to_owned()),
+        )
+        .expect("typed test endpoint connects");
+        self.wait_subscribed(app_id, peer, user_id);
+        manager
     }
 
     /// Publish an action as an external room participant. This drives the

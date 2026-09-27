@@ -137,8 +137,10 @@ impl ManagedConfig {
     /// Only proves current local Plan configuration, never model execution or reachability.
     #[cfg(test)]
     pub(crate) async fn configured_for_plan(&self) -> Result<(), String> {
-        self.configured_for_plan_until(tokio::time::Instant::now() + Duration::from_secs(5))
-            .await
+        self.configured_for_plan_until(tokio::time::Instant::from_std(
+            tilo_test_env::hang_deadline(),
+        ))
+        .await
     }
     #[cfg(test)]
     async fn configured_for_plan_until(
@@ -454,7 +456,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let _: serde_json::Value = tilo_model_gateway::read_frame(&mut stream).unwrap();
             let _: tilo_model_gateway::Frame<tilo_model_gateway::Request> =
@@ -475,7 +477,7 @@ mod tests {
         runtime().block_on(async {
             let config = configuration(&path);
             let task = tokio::spawn(async move { config.configured_for_plan().await });
-            tokio::time::timeout(Duration::from_secs(1), pending)
+            tokio::time::timeout(tilo_test_env::hang_bound(), pending)
                 .await
                 .unwrap()
                 .unwrap();
