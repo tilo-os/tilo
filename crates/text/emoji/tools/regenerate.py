@@ -79,6 +79,11 @@ LOCALE_SOURCES = {
         "01d48d98a8612f779c17707db51f2ba2c55292d6c690f8a0828dd748c042206a",
         "bc40d32d5f602bae6b5e4ab58f4983a533f3a28c14c4642afca57b095d067862",
     ),
+    "zh_Hant": (
+        "2d7ee90b147b127b1e42214784892cc98cdd4a7a294ebb1f37bdf00489c4ba6b",
+        "406b93a2b61d4161fc356931a1321f3301fcc07aecda9ad4221cb4137ffb2caa",
+        "e846d2247b1fb0d5aaa86e3633f2cf2784fe3266a176ab7eb0b61884c1d12e0d",
+    ),
 }
 
 SOURCES = {

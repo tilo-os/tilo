@@ -32,7 +32,7 @@ async fn status(origin: &str, deadline: Instant) -> serde_json::Value {
         serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
     })
     .await
-    .expect("status exchange exceeded its polling deadline")
+    .expect("the /status exchange did not finish within the hang bound")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -59,7 +59,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
         "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let metadata: serde_json::Value = loop {
         if let Ok(bytes) = fs::read(&ready) {
             break serde_json::from_slice(&bytes).unwrap();
@@ -101,7 +101,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
         .unwrap()
         .write_all(b"reconnect\nqualification release\n")
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let current = status(origin, deadline).await;
         assert!(
@@ -125,7 +125,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let exit = loop {
         if let Some(exit) = host.0.try_wait().unwrap() {
             break exit;
@@ -169,7 +169,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let metadata: serde_json::Value = loop {
         if let Ok(bytes) = fs::read(&ready) {
             break serde_json::from_slice(&bytes).unwrap();
@@ -199,7 +199,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
     fs::rename(state.join("session.bin"), &saved).unwrap();
     fs::create_dir(state.join("session.bin")).unwrap();
     writeln!(host.0.stdin.as_mut().unwrap(), "flush").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let terminal = loop {
         let current = status(origin, deadline).await;
         if current["actions"] == "unavailable" && current["native_peer"] == "disconnected" {
@@ -218,7 +218,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
     fs::rename(&saved, state.join("session.bin")).unwrap();
     let retained = fs::read(state.join("session.bin")).unwrap();
     let export = temp.path().join("must-not-export");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     writeln!(
         host.0.stdin.as_mut().unwrap(),
         "reconnect\nflush\nexport {}\nstatus",
@@ -237,7 +237,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
         }),
     )
     .await
-    .expect("terminal controls did not finish")
+    .expect("the terminal owner never answered its queued controls within the hang bound")
     .unwrap();
     let console: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(console["generation"], before["generation"]);

@@ -5,7 +5,7 @@ use std::{
     fs,
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
@@ -35,10 +35,12 @@ async fn request(
     };
     socket.write_all(wire.as_bytes()).await.unwrap();
     let mut bytes = vec![];
-    tokio::time::timeout(Duration::from_secs(15), socket.read_to_end(&mut bytes))
-        .await
-        .unwrap()
-        .unwrap();
+    tilo_test_env::within(
+        format!("the host's response to {route}"),
+        socket.read_to_end(&mut bytes),
+    )
+    .await
+    .unwrap();
     let response = String::from_utf8(bytes).unwrap();
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
     (
@@ -58,37 +60,37 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         .unwrap();
     let pid = child.id();
     let host = Host(child);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let metadata = loop {
-        assert!(
-            Instant::now() < deadline,
-            "isolated native host did not become ready"
-        );
-        if let Ok(bytes) = fs::read(ready)
-            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && value["pid"].as_u64() == Some(u64::from(pid))
-        {
-            break value;
+    let metadata = tilo_test_env::within("the isolated native host's ready metadata", async {
+        loop {
+            if let Ok(bytes) = fs::read(ready)
+                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                && value["pid"].as_u64() == Some(u64::from(pid))
+            {
+                break value;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    })
+    .await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    wait_subscribed(origin, deadline).await;
+    wait_subscribed(origin).await;
     let capability = fs::read_to_string(state.join("enrollment-capability")).unwrap();
     assert_eq!(metadata["version"], 2);
     assert_eq!(metadata["enrollment_version"], 2);
     assert!(!metadata.to_string().contains(&capability));
     (host, metadata, capability)
 }
-async fn wait_subscribed(origin: &str, deadline: Instant) {
-    loop {
-        assert!(Instant::now() < deadline, "native peer never subscribed");
-        let (code, status) = request(origin, "/status", None, None).await;
-        if code == 200 && status["native_peer"] == "subscribed" {
-            break;
+async fn wait_subscribed(origin: &str) {
+    tilo_test_env::within("the native peer to report itself subscribed", async {
+        loop {
+            let (code, status) = request(origin, "/status", None, None).await;
+            if code == 200 && status["native_peer"] == "subscribed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    })
+    .await;
 }
 /// The host answers enrollment with a retryable 503 while its own native
 /// subscription reconnects (its relay drops a subscriber that falls behind,
@@ -101,14 +103,16 @@ fn reconnecting(code: u16, body: &serde_json::Value) -> bool {
             .is_some_and(|error| error.starts_with("native peer is reconnecting"))
 }
 async fn enroll(origin: &str, route: &str, body: String, cap: &str) -> (u16, serde_json::Value) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let (code, response) = request(origin, route, Some(body.clone()), Some(cap)).await;
-        if !reconnecting(code, &response) {
-            return (code, response);
+    tilo_test_env::within(format!("{route} to answer without reconnecting"), async {
+        loop {
+            let (code, response) = request(origin, route, Some(body.clone()), Some(cap)).await;
+            if !reconnecting(code, &response) {
+                return (code, response);
+            }
+            wait_subscribed(origin).await;
         }
-        wait_subscribed(origin, deadline).await;
-    }
+    })
+    .await
 }
 async fn proof(origin: &str, cap: &str, key: &SigningKey, id: u8) -> enrollment::CompleteRequest {
     let request_body = serde_json::to_string(&ChallengeRequest {
@@ -174,8 +178,12 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     // Break membership only while the peer is subscribed, so the completion
     // reaches reconciliation. A reconnect that is still settling from the
     // burst above answers before any commit; repair, resubscribe and retry.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let (code, body) = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the native peer kept reconnecting before a completion reached reconciliation"
+        );
         let complete = proof(&origin, &cap, &key, 91).await;
         fs::rename(&membership, &saved).unwrap();
         fs::create_dir(&membership).unwrap();
@@ -191,7 +199,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
         }
         fs::remove_dir(&membership).unwrap();
         fs::rename(&saved, &membership).unwrap();
-        wait_subscribed(&origin, deadline).await;
+        wait_subscribed(&origin).await;
     };
     assert_eq!(code, 503, "{body}");
     assert!(
@@ -206,7 +214,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     fs::rename(saved, &membership).unwrap();
     // Invalid membership can correctly disconnect the native subscription. File
     // repair is not Ready: wait for the same observed readiness as initial start.
-    wait_subscribed(&origin, Instant::now() + Duration::from_secs(30)).await;
+    wait_subscribed(&origin).await;
     let fresh = proof(&origin, &cap, &key, 91).await;
     let (code, recovered) = enroll(
         &origin,

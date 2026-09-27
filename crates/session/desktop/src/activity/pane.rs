@@ -6621,8 +6621,8 @@ fn task_assignee_label(task: &WorkspaceTask) -> String {
         |agent| {
             // The card already owns the prominent AGENT badge, so reuse the
             // shared presentation while avoiding a redundant second suffix.
-            let label = participant_display_label(agent);
-            let name = label.strip_suffix(" · Agent").unwrap_or(&label);
+            let name = ui::history_source::agent_principal_name(agent)
+                .unwrap_or_else(|| agent.trim().to_string());
             t_args("activity-task-agent-badge", &[("name", name.into())])
         },
     )

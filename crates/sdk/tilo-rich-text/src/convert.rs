@@ -80,9 +80,16 @@ pub(crate) fn kind_of(view: &BlockView) -> BlockKind {
         _ if bool_attr(view, "code") == Some(true) => BlockKind::CodeBlock {
             lang: str_attr(view, "lang").map(str::to_owned),
         },
-        _ => BlockKind::Paragraph,
+        _ => match bool_attr(view, TABLE_SOURCE) {
+            Some(visual) => BlockKind::Table { visual },
+            None => BlockKind::Paragraph,
+        },
     }
 }
+
+/// A table the editor keeps as its Markdown source is a paragraph of that
+/// source with this attribute, `true` while it shows as a grid.
+pub(crate) const TABLE_SOURCE: &str = "table_source";
 
 /// An internal link to another page is a `link` to this fragment prefix and
 /// the page's id, which the document's link validation accepts.
@@ -198,6 +205,10 @@ impl KindSpec {
             BlockKind::Checklist { done, .. } => Some(ActionAttr::Bool(done)),
             _ => None,
         };
+        let table = match content.kind {
+            BlockKind::Table { visual } => Some(ActionAttr::Bool(visual)),
+            _ => None,
+        };
         let (code, lang, group) = match &content.kind {
             BlockKind::CodeBlock { lang } => (
                 Some(ActionAttr::Bool(true)),
@@ -218,6 +229,7 @@ impl KindSpec {
                 ("lang", lang),
                 ("code_group", group),
                 ("nesting", nesting),
+                (TABLE_SOURCE, table),
             ],
         }
     }

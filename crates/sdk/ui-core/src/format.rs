@@ -134,10 +134,11 @@ const WEEK: i64 = 7 * DAY;
 const MONTH: i64 = 30 * DAY;
 const YEAR: i64 = 365 * DAY;
 
-/// Format a past interval (in seconds) as a coarse relative label: `just now`,
-/// `3 min ago`, `2 hr ago`, `yesterday`, `4 days ago`, `2 weeks ago`,
-/// `3 months ago`, `1 year ago`. Zero and negative deltas (clock skew) read
-/// `just now`.
+/// Format a past interval (in seconds) as a coarse relative label in the
+/// host's language: `just now`, `3 min ago`, `2 hr ago`, `yesterday`,
+/// `4 days ago`, `2 weeks ago`, `3 months ago`, `1 year ago`. Zero and
+/// negative deltas (clock skew) read `just now`. Counts go through Fluent
+/// plurals, so each language words its own singular and plural forms.
 ///
 /// ```
 /// use tilo_ui::format::relative;
@@ -148,33 +149,35 @@ const YEAR: i64 = 365 * DAY;
 /// ```
 #[must_use]
 pub fn relative(secs_ago: i64) -> String {
-    if secs_ago < 45 {
-        "just now".to_string()
+    use crate::i18n::widget_format;
+    let (key, count) = if secs_ago < 45 {
+        return widget_format("relative-ago-just-now", &[]);
     } else if secs_ago < 90 {
-        "1 min ago".to_string()
+        ("relative-ago-minutes", 1)
     } else if secs_ago < HOUR {
-        format!("{} min ago", secs_ago / MINUTE)
+        ("relative-ago-minutes", secs_ago / MINUTE)
     } else if secs_ago < 90 * MINUTE {
-        "1 hr ago".to_string()
+        ("relative-ago-hours", 1)
     } else if secs_ago < DAY {
-        format!("{} hr ago", secs_ago / HOUR)
+        ("relative-ago-hours", secs_ago / HOUR)
     } else if secs_ago < 2 * DAY {
-        "yesterday".to_string()
+        return widget_format("relative-ago-yesterday", &[]);
     } else if secs_ago < WEEK {
-        format!("{} days ago", secs_ago / DAY)
+        ("relative-ago-days", secs_ago / DAY)
     } else if secs_ago < 2 * WEEK {
-        "1 week ago".to_string()
+        ("relative-ago-weeks", 1)
     } else if secs_ago < MONTH {
-        format!("{} weeks ago", secs_ago / WEEK)
+        ("relative-ago-weeks", secs_ago / WEEK)
     } else if secs_ago < 2 * MONTH {
-        "1 month ago".to_string()
+        ("relative-ago-months", 1)
     } else if secs_ago < YEAR {
-        format!("{} months ago", secs_ago / MONTH)
+        ("relative-ago-months", secs_ago / MONTH)
     } else if secs_ago < 2 * YEAR {
-        "1 year ago".to_string()
+        ("relative-ago-years", 1)
     } else {
-        format!("{} years ago", secs_ago / YEAR)
-    }
+        ("relative-ago-years", secs_ago / YEAR)
+    };
+    widget_format(key, &[("count", count.into())])
 }
 
 /// Format a past interval (in seconds) as a narrow column label: `now`,
