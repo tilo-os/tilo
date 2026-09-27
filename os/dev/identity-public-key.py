@@ -31,6 +31,9 @@ def public_key(identity: bytes) -> str:
 if __name__ == "__main__":
     try:
         print(public_key(sys.stdin.buffer.read()))
+    except FileNotFoundError:
+        print("OpenSSL is required on the CI build host to check signing identities", file=sys.stderr)
+        raise SystemExit(1) from None
     except (ValueError, KeyError, subprocess.CalledProcessError):
         print("invalid signing identity", file=sys.stderr)
         raise SystemExit(1) from None
