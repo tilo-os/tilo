@@ -510,6 +510,15 @@ pub struct Sandbox {
     /// `[sandbox.services]` table — required/optional services, values parsed as `"required@N"`/`"optional@N"`.
     #[serde(default)]
     pub services: std::collections::BTreeMap<String, ServiceReq>,
+    /// `manages-machine = true` — a system app that changes the machine
+    /// itself asks to be told whether the session owns it. The image decides
+    /// whether it is (`tilo-launcher`'s `system_surfaces` policy).
+    #[serde(
+        default,
+        rename = "manages-machine",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub manages_machine: bool,
 }
 
 /// A path pattern in the retired [sandbox.fs] block — stored raw, never expanded, only quoted back in the refusal.

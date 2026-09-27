@@ -115,6 +115,10 @@ fn parent_env(vars: &[(&str, &str)]) -> ScopedEnv {
 }
 
 fn run(argv: &[&str]) -> String {
+    run_manifest(&manifest(), argv)
+}
+
+fn run_manifest(manifest: &MinimalManifest, argv: &[&str]) -> String {
     let data = tempfile::tempdir().unwrap();
     let opts = RunOptions {
         no_services: true,
@@ -126,7 +130,7 @@ fn run(argv: &[&str]) -> String {
         },
         ..isolated_options(data.path())
     };
-    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
+    let (status, out) = run_with_captured(manifest, roomtest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -354,4 +358,66 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
         );
         assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
     }
+}
+
+/// What `TILO_SYSTEM_SURFACES` reads inside a launch of `package_id`, with
+/// the session's own answer set to `session` (unset for `None`).
+fn system_surfaces_inside(
+    package_id: &str,
+    manages_machine: bool,
+    session: Option<&str>,
+) -> String {
+    let policy = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(policy.path(), "so.tilo.settings\nso.tilo.vpn\n").unwrap();
+    let mut env = ScopedEnv::new();
+    env.set(
+        launcher::system_surfaces::POLICY_PATH_ENV,
+        policy.path().as_os_str(),
+    );
+    match session {
+        Some(value) => env.set(launcher::system_surfaces::SYSTEM_SURFACES_ENV, value),
+        None => env.remove(launcher::system_surfaces::SYSTEM_SURFACES_ENV),
+    };
+    let mut manifest = manifest();
+    manifest.package_id = package_id.to_string();
+    manifest.sandbox.manages_machine = manages_machine;
+    let line = run_manifest(
+        &manifest,
+        &["env", launcher::system_surfaces::SYSTEM_SURFACES_ENV],
+    );
+    line.strip_prefix(&format!(
+        "ENV {}=",
+        launcher::system_surfaces::SYSTEM_SURFACES_ENV
+    ))
+    .unwrap_or_else(|| panic!("fixture did not answer env: {line:?}"))
+    .to_string()
+}
+
+#[test]
+fn only_a_system_app_that_manages_the_machine_learns_whether_the_session_owns_it() {
+    // Settings, launched by the compositor that owns the machine, acts on it.
+    assert_eq!(
+        system_surfaces_inside("so.tilo.settings", true, Some("owned")),
+        "owned"
+    );
+    // The same app in a nested, headless or hosted session is told so.
+    assert_eq!(
+        system_surfaces_inside("so.tilo.settings", true, Some("hosted")),
+        "hosted"
+    );
+    assert_eq!(
+        system_surfaces_inside("so.tilo.settings", true, None),
+        "hosted"
+    );
+    // An ordinary app never receives the answer, even from an owning session.
+    assert_eq!(
+        system_surfaces_inside(PACKAGE, false, Some("owned")),
+        "<unset>"
+    );
+    // A package declaring it manages the machine is only asking: the image
+    // did not list it, so it starts hosted.
+    assert_eq!(
+        system_surfaces_inside(PACKAGE, true, Some("owned")),
+        "hosted"
+    );
 }

@@ -346,6 +346,12 @@ pub struct Sandbox {
     /// `DBUS_SESSION_BUS_ADDRESS`; absent/empty means the bus is NOT exposed.
     #[serde(default)]
     pub portals: BTreeMap<String, PortalPolicy>,
+    /// `[sandbox] manages-machine = true` — this system app changes the
+    /// machine itself (network, audio, displays, power, …), so it asks to be
+    /// told whether the session owns the machine. A request the image
+    /// decides; see [`crate::system_surfaces`].
+    #[serde(default, rename = "manages-machine")]
+    pub manages_machine: bool,
 }
 
 fn default_seccomp_profile() -> String {
@@ -364,6 +370,7 @@ impl Default for Sandbox {
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
+            manages_machine: false,
         }
     }
 }

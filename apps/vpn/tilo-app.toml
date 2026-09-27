@@ -40,6 +40,9 @@ namespaces = [
 seccomp    = "tilo-default"
 landlock   = "strict"
 
+# Changes the machine itself, so it is told whether this session owns it.
+manages-machine = true
+
 [sandbox.net]
 mode = "off"
 

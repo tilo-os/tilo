@@ -85,11 +85,18 @@ installer runs under `cage` with `TILO_SYSTEM_SURFACES=owned`.
 This is a guard against acting on the wrong machine by accident, **not a
 security boundary**: any process can set its own environment. Authority stays
 where it already lives (polkit, logind, file permissions and the sandbox).
-Sandboxed apps start from a cleared environment and never receive `owned`.
-The sandbox gives them no system bus either. When a system app such as
-Settings or VPN is granted real system access, the launcher sets `owned`
-beside that grant, as it does for every other capability it passes into a
-sandbox.
+Sandboxed apps start from a cleared environment. The launcher passes the
+session's answer (`owned` or `hosted`) into a sandbox only when two things
+agree:
+
+- the manifest declares `[sandbox] manages-machine = true`, and
+- the image lists the package in `/usr/lib/tilo/manages-machine.conf`
+  (compiled-in fallback: Settings and VPN).
+
+A package's own manifest only asks, by the same rule as the seccomp and
+hardening policies (`launcher::system_surfaces`). Every other app starts
+without the variable and reads as hosted. The installer is not launched
+this way: it runs under its own kiosk compositor and is told directly.
 
 **The hosted product.** The cloud product runs the shell on a non-owning
 backend, on a server that belongs to its operator. No system action there

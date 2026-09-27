@@ -573,6 +573,9 @@ pub fn build_bwrap_argv_for_entry(
     if capabilities.participation == Participation::ReadOnly {
         push_record_scope(&mut argv);
     }
+    // A system app that manages the machine learns whether this session
+    // owns it; every other app starts without the answer, which is hosted.
+    crate::system_surfaces::push_system_surfaces(&mut argv, manifest);
 
     // User identity: the path is a host-side presence marker only. Private
     // material is never mounted. run.rs puts one connected broker socket on

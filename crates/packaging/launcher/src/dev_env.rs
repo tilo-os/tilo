@@ -48,6 +48,7 @@ pub const DEV_OVERRIDE_VARS: &[&str] = &[
     runtime_bundle::RUNTIME_DIR_ENV,
     TRUSTED_PUBLISHERS_FILE_ENV,
     crate::seccomp::JIT_POLICY_PATH_ENV,
+    crate::system_surfaces::POLICY_PATH_ENV,
     crate::hardening::POLICY_PATH_ENV,
     NET_GATE_ENV,
     DBUS_PROXY_BIN_ENV,
