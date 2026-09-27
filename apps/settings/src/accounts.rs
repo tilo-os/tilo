@@ -10,8 +10,9 @@
 //! there. Google Drive, `OneDrive` and Dropbox sign in through the browser
 //! (`OAuth`), Nextcloud through its Login Flow v2, and `iCloud` Drive with an
 //! Apple ID and verification code; `account_custody` keeps those grants and
-//! hands the storage daemon only short-lived credentials. Mail's own `OAuth`
-//! sign-in for Gmail and Outlook remains in Mail.
+//! hands the storage daemon only short-lived credentials. Mail's Gmail and
+//! Outlook sign-in runs in Mail, through the same client registrations and
+//! the same custody.
 //!
 //! # Where email + `CalDAV` live: the shared `accounts` crate
 //!

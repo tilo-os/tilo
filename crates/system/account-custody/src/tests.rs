@@ -503,3 +503,86 @@ fn a_new_account_resolves_its_storage_once() {
         Err(CustodyError::NeedsAuthentication)
     );
 }
+
+const GMAIL: crate::OAuthUse = crate::OAuthUse::mail(crate::OAuthIssuer::Google);
+
+#[test]
+fn a_bare_token_grant_is_resealed_in_the_custody_format_on_first_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let id = AccountId::from("ada@gmail.com");
+    let now = tilo_clock::unix_now();
+    // The shape Mail sealed before its grants moved into custody.
+    let bare = format!(
+        r#"{{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"obtained_at":{now}}}"#
+    );
+    let mut vault = SecretVault::open_in(&root);
+    vault.put(
+        &id,
+        &Secret {
+            password: String::new(),
+            token: Some(bare),
+        },
+    );
+    vault.try_save().unwrap();
+
+    // Fresh, so no provider is asked (none is configured here).
+    let custodian =
+        Custodian::for_root(Some(root.clone())).with_client_table(crate::ClientTable::default());
+    assert_eq!(
+        *custodian.oauth_access_token(&id, GMAIL, false).unwrap(),
+        "at-1"
+    );
+    let secret = SecretVault::open_in(&root).get(&id).unwrap();
+    let grant: serde_json::Value = serde_json::from_str(secret.token.as_deref().unwrap()).unwrap();
+    assert_eq!(grant["kind"], "oauth2");
+    assert_eq!(grant["tokens"]["refresh_token"], "rt-1");
+    assert_eq!(grant["tokens"]["obtained_at"], now);
+}
+
+#[test]
+fn mail_and_drive_share_the_google_registration_with_their_own_scopes() {
+    if option_env!("TILO_OAUTH_GOOGLE_CLIENT_ID").is_some()
+        || option_env!("TILO_OAUTH_GOOGLE_CLIENT_SECRET").is_some()
+    {
+        return;
+    }
+    let table = crate::ClientTable::parse(
+        r#"
+        [google]
+        client_id = "shared.apps.googleusercontent.com"
+        client_secret = "desktop-secret"
+        [google.scopes]
+        files = ["drive"]
+        mail = ["mail"]
+        "#,
+    )
+    .unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_OAUTH_GOOGLE_CLIENT_ID")
+        .remove("TILO_OAUTH_GOOGLE_CLIENT_SECRET")
+        .remove("TILO_OAUTH_MICROSOFT_CLIENT_ID");
+    let server = FakeAuthorizationServer::start();
+    let custodian = Custodian::for_root(None)
+        .with_client_table(table)
+        .with_issuer_endpoints(crate::OAuthIssuer::Google, server.provider());
+    let (mail, mail_client) = custodian.use_config(GMAIL).unwrap();
+    let (drive, drive_client) = custodian
+        .use_config(OAuthCloud::GoogleDrive.oauth_use())
+        .unwrap();
+    assert_eq!(mail.scopes, ["mail"]);
+    assert_eq!(drive.scopes, ["drive"]);
+    assert_eq!(mail.token_endpoint, format!("{}/token", server.url()));
+    assert_eq!(mail_client, drive_client);
+    assert_eq!(mail_client.secret(), Some("desktop-secret"));
+    if option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID").is_none() {
+        assert!(!custodian.is_configured(crate::OAuthUse::mail(crate::OAuthIssuer::Microsoft)));
+    }
+    assert!(matches!(
+        custodian.begin_sign_in_for(crate::OAuthUse::mail(crate::OAuthIssuer::Dropbox), None),
+        Err(CustodyError::NotConfigured {
+            provider: "Dropbox mail",
+            ..
+        })
+    ));
+}

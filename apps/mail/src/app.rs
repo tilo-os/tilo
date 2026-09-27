@@ -2111,7 +2111,7 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        if provider.client_id().is_none() {
+        if !provider.is_configured() {
             self.setup_error = Some(format!(
                 "{} sign-in isn’t available here yet. Choose Password to continue with an app password.",
                 provider.label()
@@ -3349,8 +3349,7 @@ impl MailApp {
             // in user language and leave the Password choice directly above.
             let has_client = self
                 .setup_provider
-                .and_then(super::oauth::OAuthProvider::client_id)
-                .is_some();
+                .is_some_and(super::oauth::OAuthProvider::is_configured);
             let note = if has_client {
                 crate::i18n::t("mail-setup-oauth-note-available")
             } else {
