@@ -5,6 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 description = "Developer workflow for creating Tilo applications"
+autotests = false
 
 [lib]
 name = "tilo_app_cli"
@@ -12,6 +13,10 @@ name = "tilo_app_cli"
 [[bin]]
 name = "tilo-app"
 path = "src/main.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [dependencies]
 anyhow.workspace = true

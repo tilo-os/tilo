@@ -112,6 +112,8 @@ thiserror.workspace = true
 # File URIs and percent-encoded URI parts.
 url.workspace = true
 percent-encoding.workspace = true
+# XML escaping for the recent-files bookmarks.
+quick-xml.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
@@ -220,9 +222,8 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The shared runtime daemon; `runtime_host::Session` supplies its services.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
-# The compositor-free runtime host serves its apps' document media from the
-# same content store and capability implementation as the filesystem daemon.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+# The app identity service: broker, registry, device fleet, provisioning.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
