@@ -130,6 +130,23 @@ impl<S: RichTextSource> RichTextSurface<S> {
         }
     }
 
+    /// Put `text` at the caret as the person typing would (an emoji picked
+    /// from a menu), through the source's edits.
+    pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
+        if self.editor.insert_text(text) {
+            self.commit(doc);
+        }
+    }
+
+    /// Put a mention of the participant `id`, shown as `label`, at the caret
+    /// (replacing a selection, such as the typed query the person picked it
+    /// from), through the source's edits.
+    pub fn insert_mention(&mut self, doc: &mut AutoCommit, id: &str, label: &str) {
+        if self.editor.insert_mention(id, label) {
+            self.commit(doc);
+        }
+    }
+
     /// Whether the person sent or cancelled since the last call.
     pub fn take_outcome(&mut self) -> Option<FieldOutcome> {
         self.outcome.take()
