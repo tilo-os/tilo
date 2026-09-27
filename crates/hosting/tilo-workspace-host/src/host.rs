@@ -705,6 +705,12 @@ impl LocalHost {
             cancel: Some(cancel),
         })
     }
+    /// The relay mode a peer of this host dials: its HTTP-only packet relay,
+    /// without the QAD listener a bare URL would advertise (and a peer's
+    /// `online()` would wait out).
+    pub fn relay_mode(&self) -> RelayMode {
+        self.mode.clone()
+    }
     pub async fn connect(&self, owner: &SessionOwner) -> Result<NativeSubscription> {
         let mut reconnect = self.begin_connection(owner, Duration::ZERO)?;
         (&mut reconnect.task)

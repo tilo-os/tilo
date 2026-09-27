@@ -208,14 +208,17 @@ async fn local_owner_reenrollment_with_small_history_stays_inline() {
 }
 
 #[tokio::test]
-async fn local_owner_reenrollment_after_hundreds_of_publications_uses_chunked_handoff() {
+async fn local_owner_reenrollment_after_a_large_history_uses_chunked_handoff() {
     use tilo_peer_state::{StatePeer, TransportOrigin};
     let mut h = Harness::start().await;
     let host = crate::host::LocalHost::start(&h.f.owner).await.unwrap();
     h.ingress
         .install_onboarding(crate::collaboration::CollaborationService::new(vec![]))
         .unwrap();
-    publish_edits(&mut h, 128, 3072);
+    // The inline reply and handoff range bounds are byte bounds: a few large
+    // edits cross them like hundreds of small ones, at a fraction of the
+    // owner commits.
+    publish_edits(&mut h, 24, 16384);
     let outgoing = h.f.owner.outgoing();
     let (count, total) = (
         outgoing.len(),
