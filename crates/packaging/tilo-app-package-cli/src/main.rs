@@ -145,12 +145,13 @@ enum Command {
         /// Canonical wasm isa, for a module without a `target_features` section.
         #[arg(long)]
         wasm_isa: Option<String>,
-        /// Toolkit-core ABI id, for a module without a `tilo.runtime_abi`
-        /// section; must match the section when both exist.
+        /// Toolkit-core ABI id, `tilo-runtime/<version>+wasm.<32 hex>`, for a
+        /// module without a `tilo.runtime_abi` section; must match the
+        /// section when both exist.
         #[arg(long)]
         runtime_abi: Option<String>,
-        /// For `kind = "runtime"`: the release this core provides,
-        /// `tilo-runtime/<version>`.
+        /// For `kind = "runtime"`: the release this core must provide,
+        /// `tilo-runtime/<version>`; checked against the ABI id.
         #[arg(long)]
         provides: Option<String>,
         /// Write the thin form (metadata only).

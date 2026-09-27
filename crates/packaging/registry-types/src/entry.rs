@@ -166,7 +166,7 @@ pub struct RegistryTarget {
     /// `wasm32-mvp+bulk-memory+sign-ext`.
     pub isa: String,
     /// Runtime ABI required by the package: optional for `tilo-os`,
-    /// `tilo-runtime/<version>+abi.<id>` for `web`.
+    /// `tilo-runtime/<version>+wasm.<32 hex>` for `web`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
 }
@@ -651,7 +651,7 @@ mod tests {
             platform: WEB_PLATFORM.into(),
             architecture: WASM32_ARCHITECTURE.into(),
             isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
-            runtime: Some("tilo-runtime/2026.07+abi.00112233445566778899aabbccddeeff".into()),
+            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
         };
         entry.versions.push(web);
         assert_eq!(entry.validate(), Ok(()));

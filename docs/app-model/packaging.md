@@ -200,15 +200,16 @@ the author's manifest, signed like any other package.
 platform = "web"
 architecture = "wasm32"
 isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
-runtime = "tilo-runtime/2026.07+abi.0123456789abcdef"
+runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
 module = "books.wasm"
 ```
 
 The first four fields are exactly the registry's signed target (see
-[registry.md](../registry.md#5-publisher-workflow) for the spellings). For an
-app, `runtime` is the toolkit core it links against and must extend the
-authored `package.runtime`; for `kind = "runtime"` (the toolkit core itself)
-it is the core the package provides.
+[registry.md](../registry.md#5-publisher-workflow) for the spellings).
+`runtime` is the module's `tilo.runtime_abi` section verbatim. For an app it
+is the toolkit core it links against, and its release must equal the authored
+`package.runtime`; for `kind = "runtime"` (the toolkit core itself) it is the
+core the package provides.
 
 ### Validation
 
