@@ -122,10 +122,9 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
 /// What a fill writes with: the field's containers, the id of the empty
 /// paragraph the new blocks replace, and ids unique to this field and this
 /// content (the same on a replica replaying the write, clear of every id
-/// elsewhere). `None` when there is nothing to
-/// write.
+/// elsewhere). `None` when there is nothing to write.
 fn prepare_fill(
-    doc: &mut Doc,
+    doc: &Doc,
     root: &ObjId,
     texts: &[&str],
 ) -> Result<Option<(qdoc::model::Containers, String, qdoc::model::IdGen)>, ActionError> {
