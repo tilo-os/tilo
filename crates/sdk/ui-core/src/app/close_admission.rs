@@ -444,7 +444,7 @@ impl App {
             },
         );
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
-            dialog.apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
+            dialog.apply_layout(&self.layout.taffy, root, self.layout.content_origin);
         }
         self.update_focusable_order();
         self.layout.structure_dirty = false;

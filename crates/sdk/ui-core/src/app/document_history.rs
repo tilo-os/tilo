@@ -543,7 +543,7 @@ impl App {
                 self.root_widget.as_mut(),
                 &self.layout.taffy,
                 root,
-                vello::kurbo::Point::ORIGIN,
+                self.layout.content_origin,
             );
             return;
         }
@@ -551,7 +551,7 @@ impl App {
             let origin = self.document_history.apply_layout(
                 layout,
                 &self.layout.taffy,
-                vello::kurbo::Point::ORIGIN,
+                self.layout.content_origin,
             );
             if layout.app_visible {
                 self.root_widget
@@ -559,7 +559,7 @@ impl App {
             }
         } else {
             self.root_widget
-                .apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
+                .apply_layout(&self.layout.taffy, root, self.layout.content_origin);
         }
     }
 
