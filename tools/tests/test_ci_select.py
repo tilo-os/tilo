@@ -225,6 +225,35 @@ class SelectorTests(unittest.TestCase):
              "android_required=false", "android_packages="],
         )
 
+    def test_wasm_lane_follows_selected_browser_crates(self):
+        self.setUp()
+        for package in self.metadata["packages"]:
+            if package["name"] == "leaf":
+                package["dependencies"] = [*package.get("dependencies", []),
+                                           {"name": "wasm-bindgen", "kind": None}]
+            if package["name"] == "qdoc":
+                # A dev-dependency on wasm-bindgen does not make a browser crate.
+                package["dependencies"] = [*package.get("dependencies", []),
+                                           {"name": "wasm-bindgen", "kind": "dev"}]
+        def plan(changes):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2)
+        reached = plan(["base/src/lib.rs"])
+        self.assertTrue(reached["wasm_required"])
+        self.assertEqual(reached["wasm"], ["leaf"])
+        unrelated = plan(["qdoc/src/lib.rs"])
+        self.assertFalse(unrelated["wasm_required"])
+        self.assertEqual(unrelated["wasm"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(reached, output)
+            ci_select.emit_github(unrelated, output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("wasm_")],
+            ["wasm_required=true", "wasm_packages=-p leaf",
+             "wasm_required=false", "wasm_packages="],
+        )
+
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()

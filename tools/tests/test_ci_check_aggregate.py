@@ -53,6 +53,7 @@ class CheckAggregateTests(unittest.TestCase):
                   suites_required="false", suites="skipped",
                   pins_required="false", pins="skipped",
                   android_required="false", android="skipped",
+                  wasm_required="false", wasm="skipped",
                   test=None, check=None, clippy=None, check_required=None):
         if check_required is None:
             check_required = "true" if required == "true" else "false"
@@ -71,6 +72,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
                      "PINS_REQUIRED": pins_required, "PINS_RESULT": pins,
                      "ANDROID_REQUIRED": android_required, "ANDROID_RESULT": android,
+                     "WASM_REQUIRED": wasm_required, "WASM_RESULT": wasm,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -110,6 +112,18 @@ class CheckAggregateTests(unittest.TestCase):
                 with self.subTest(android_required=android_required, android=android):
                     self.assertNotEqual(self.aggregate(android_required=android_required,
                                                        android=android)[0], 0)
+        with self.subTest(phase='the wasm lane runs exactly when the selector requires it'):
+            self.doCleanups()
+            self.setUp()
+            self.assertEqual(self.aggregate(wasm_required="true", wasm="success")[0], 0)
+            for wasm_required, wasm in (
+                ("true", "failure"), ("true", "cancelled"), ("true", "skipped"),
+                ("false", "success"), ("false", "failure"),
+                ("", "skipped"), ("", "success"),
+            ):
+                with self.subTest(wasm_required=wasm_required, wasm=wasm):
+                    self.assertNotEqual(self.aggregate(wasm_required=wasm_required,
+                                                       wasm=wasm)[0], 0)
         with self.subTest(phase='successful rust checks pass'):
             self.doCleanups()
             self.setUp()
@@ -276,8 +290,9 @@ class CheckAggregateTests(unittest.TestCase):
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
-                "needs: [builder, select, security, test, check, clippy, android, suites, pins]", checks)
-            for name in ("test", "check", "clippy", "android"):
+                "needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]",
+                checks)
+            for name in ("test", "check", "clippy", "android", "wasm"):
                 self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
             self.assertIn("CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}", checks)
             select_job = section(self.workflow, "select", 2)
@@ -295,6 +310,14 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertIn(target, android)
             self.assertIn("--features android --target \"$target\"", android)
             self.assertIn("-- -D warnings", android)
+            self.assertIn("WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}", checks)
+            self.assertIn("wasm_packages: ${{ steps.plan.outputs.wasm_packages }}", select_job)
+            wasm = section(self.workflow, "wasm", 2)
+            self.assertIn("if: needs.select.outputs.wasm_required == 'true'\n", wasm)
+            self.assertIn("image: ${{ needs.builder.outputs.image }}", wasm)
+            self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
+            self.assertIn("--target wasm32-unknown-unknown", wasm)
+            self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)

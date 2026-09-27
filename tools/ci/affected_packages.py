@@ -586,6 +586,15 @@ def android_apps(packages: dict[str, dict]) -> set[str]:
     }
 
 
+def browser_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates that build for the browser: they depend on `wasm-bindgen`."""
+    return {
+        name for name, package in packages.items()
+        if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
+               for dependency in package.get("dependencies", ()))
+    }
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -772,6 +781,7 @@ def make_plan(
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
     android = sorted(android_apps(packages) & selected)
+    wasm = sorted(browser_crates(packages) & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -784,6 +794,10 @@ def make_plan(
         # job type-checks them for the Android targets.
         "android_required": bool(android),
         "android": android,
+        # Selected browser crates; check.yml's `wasm` job type-checks them for
+        # wasm32-unknown-unknown, a target no other job builds.
+        "wasm_required": bool(wasm),
+        "wasm": wasm,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -831,6 +845,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
         handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
+        handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
+        handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
