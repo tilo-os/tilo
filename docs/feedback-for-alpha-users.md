@@ -142,12 +142,16 @@ workspace.
   are in it or not, you can choose the private destination for everything
   you send.
 
-## What replay means for your privacy
+## What Replay recording means for your privacy
 
-The people who receive your report can **replay** your recording. Replay
-reopens the recorded app on their computer and plays back what you did, step
-by step, as you saw it, in a temporary room that is removed when they close
-it. They can pick items in the replay, just as you did.
+The people who receive your report can press **Replay recording** on it (or
+find "Replay recording" with Ctrl+K). This reopens the recorded app on their
+computer and plays back what you did, step by step, as you saw it, in a
+temporary room that is removed when they close it. They can pick items in the
+replay, just as you did.
+
+This is not the same as **Save recent replay** (Super+Shift+R), which saves
+a short screen capture on your own computer and is not part of feedback.
 
 What they replay is the reviewed copy, not your original document. Everything
 you or review hid stays hidden, cut steps are gone, and protected apps are
