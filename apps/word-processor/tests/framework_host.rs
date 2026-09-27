@@ -108,6 +108,54 @@ fn the_document_survives_a_relaunch() {
     );
 }
 
+#[test]
+fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
+    use qdoc_rich_text::action::insert_filled_table_action;
+    let mut app = open();
+    app.harness().type_text("These are the people");
+    app.flush().unwrap();
+    let after = app.read_document(|doc| {
+        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
+        qdoc::model::blocks_in_order(doc, &c).remove(0)
+    });
+    let cells: Vec<Vec<String>> = [["Name", "Role"], ["Priya Natarajan", "Product lead"]]
+        .iter()
+        .map(|row| row.iter().map(|&text| text.to_owned()).collect())
+        .collect();
+    let versions = app.versions().len();
+    app.invoke_confirmed(
+        ui::tilo_resource::Invoke::<RichText>::apply(&insert_filled_table_action(&after, cells))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(app.versions().len(), versions + 1, "one change");
+    assert_eq!(
+        paragraphs(&app),
+        [
+            "These are the people",
+            "Name",
+            "Role",
+            "Priya Natarajan",
+            "Product lead"
+        ]
+    );
+    let kinds = app.read_document(|doc| {
+        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
+        qdoc::model::materialize(doc, &c)
+            .blocks
+            .into_iter()
+            .map(|block| block.kind)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(kinds, ["paragraph", "cell", "cell", "cell", "cell"]);
+
+    // One step: the whole table, cells and text, goes with one undo.
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["These are the people"]);
+    assert!(app.redo());
+    assert_eq!(paragraphs(&app).len(), 5);
+}
+
 /// A record holding `paragraphs` paragraphs, pasted through the editor's own
 /// paste action.
 fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {

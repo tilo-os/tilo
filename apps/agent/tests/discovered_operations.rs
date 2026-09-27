@@ -122,7 +122,12 @@ fn run(
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
     within: Duration,
-) -> (AutoCommit, bool, Option<String>) {
+) -> (
+    AutoCommit,
+    bool,
+    Option<String>,
+    Option<tilo_actions::ActionContext>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, agent_actions);
@@ -177,6 +182,7 @@ fn run(
         .expect("test duration does not overflow Instant");
     let mut done = false;
     let mut invocation_actor = None;
+    let mut invocation_context = None;
     while Instant::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
             continue;
@@ -197,7 +203,7 @@ fn run(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 let resources = word_processor_resources(&replica, &content);
                 let update = typed_peer::service_document_invocation(
@@ -210,9 +216,11 @@ fn run(
                     action,
                     argument.as_deref(),
                     &actor,
+                    context.as_deref(),
                 );
                 send(&mut peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
                 invocation_actor = Some(actor);
+                invocation_context = context.map(|context| *context);
                 done = poll(&replica);
             }
             event @ CollabEvent::Document { .. } => {
@@ -228,7 +236,7 @@ fn run(
         }
     }
     let acted = agent.join().unwrap();
-    (replica, acted, invocation_actor)
+    (replica, acted, invocation_actor, invocation_context)
 }
 
 /// Each case takes `TEST_LOCK` and runs against its own fresh broker and replica.
@@ -250,7 +258,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
         let replica = seed_document_with_image(
             "Scribe: delete the image, then give this a title, then delete the image again",
         );
-        let (mut replica, acted, invocation_actor) = run(
+        let (mut replica, acted, invocation_actor, _) = run(
             &[("so.tilo.word-processor", "delete")],
             |sock, room| Config {
                 endpoint: Some(sock),
@@ -329,7 +337,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let replica = seed_document_with_image("Scribe: delete the image");
-        let (replica, acted, invocation_actor) = run(
+        let (replica, acted, invocation_actor, _) = run(
             &[],
             |sock, room| Config {
                 endpoint: Some(sock),
@@ -401,7 +409,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
-        let (mut replica, acted, invocation_actor) = run(
+        let (mut replica, acted, invocation_actor, invocation_context) = run(
             &[("so.tilo.word-processor", "insert-table")],
             |sock, room| Config {
                 endpoint: Some(sock),
@@ -463,6 +471,23 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             actors.contains(&hex::encode(&invocation_actor)),
             "the discovered operation must carry the broker-authenticated agent actor \
              {invocation_actor}: {actors:?}"
+        );
+
+        // The brokered invocation carries the run it belongs to, so the app
+        // records the operation within the agent's intent group.
+        let group = invocation_context
+            .and_then(|context| context.group)
+            .expect("the brokered invocation carries the agent run's context");
+        assert_eq!(group.kind, "agent-run");
+        assert!(group.id.starts_with("agent-run:"), "{}", group.id);
+        let recorded = tilo_resource::history::versions(&mut replica)
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter_map(|context| context.group)
+            .any(|recorded| recorded.id == group.id);
+        assert!(
+            recorded,
+            "the operation's change is recorded within the agent run's group"
         );
     }
 
@@ -715,7 +740,7 @@ fn drive_photo_peer(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 let resources = photos_resources(&photo_replica);
                 let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
@@ -777,6 +802,7 @@ fn drive_photo_peer(
                         action,
                         argument.as_deref(),
                         &actor,
+                        context.as_deref(),
                     )
                 };
                 send(
@@ -857,7 +883,7 @@ fn drive_word_processor_peer(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 let resources = word_processor_resources(&wp_replica, content);
                 let update = typed_peer::service_document_invocation(
@@ -870,6 +896,7 @@ fn drive_word_processor_peer(
                     action,
                     argument.as_deref(),
                     &actor,
+                    context.as_deref(),
                 );
                 send(
                     &mut wp_peer,

@@ -261,6 +261,18 @@ pub enum RichTextAction {
         rows: usize,
         cols: usize,
     },
+    /// Insert a table after `after` already holding its contents: `cells` is
+    /// its rows top to bottom, each row's cell texts left to right, and every
+    /// row has the same number of cells. The first row is the header row
+    /// (qdoc has no separate header marker: the editor shades row 0 and the
+    /// exporters write it as the table's head). Laid out exactly as
+    /// [`InsertTable`](Self::InsertTable) lays out an empty table, with the
+    /// table and cell ids minted inside `apply`, so the table and its text
+    /// are one edit and one undo step.
+    InsertFilledTable {
+        after: String,
+        cells: Vec<Vec<String>>,
+    },
     /// Mutate one stable table id using an absolute row/column boundary.
     EditTable { table: String, edit: TableEdit },
     /// Insert an image at `(block, at)`: the caret block is split so the tail follows the image in
@@ -393,7 +405,9 @@ impl RichTextAction {
             | Self::SetImageSize { .. }
             | Self::SetImagePlacement { .. }
             | Self::InsertImage { .. } => ActionDomain::Media,
-            Self::InsertTable { .. } | Self::EditTable { .. } => ActionDomain::Table,
+            Self::InsertTable { .. } | Self::InsertFilledTable { .. } | Self::EditTable { .. } => {
+                ActionDomain::Table
+            }
             Self::InsertPageBreak { .. }
             | Self::SplitBlock { .. }
             | Self::InsertField { .. }
@@ -842,6 +856,28 @@ impl<'a> ActionValidator<'a> {
                     && *cols <= MAX_TABLE_DIMENSION
                     && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
             }
+            RichTextAction::InsertFilledTable { after, cells } => {
+                let rows = cells.len();
+                let cols = cells.first().map_or(0, Vec::len);
+                self.block_len(RegionKind::Body, after).is_some()
+                    && rows > 0
+                    && cols > 0
+                    && rows <= MAX_TABLE_DIMENSION
+                    && cols <= MAX_TABLE_DIMENSION
+                    && rows.saturating_mul(cols) <= MAX_TABLE_CELLS
+                    && cells.iter().all(|row| row.len() == cols)
+                    // The whole table's text is held to what one text action
+                    // may carry, counted without overflowing and stopping at
+                    // the first cell past the limit.
+                    && cells
+                        .iter()
+                        .flatten()
+                        .try_fold(0_usize, |total, text| {
+                            let total = total.saturating_add(text.chars().count());
+                            (total <= MAX_ACTION_TEXT_CHARS).then_some(total)
+                        })
+                        .is_some()
+            }
             RichTextAction::EditTable { table, edit } => {
                 let cells: Vec<_> = self
                     .snapshot()
@@ -1220,7 +1256,16 @@ fn apply_set_block_attr(
     }
 }
 
-fn apply_insert_table(dm: &mut DocMut, after: &str, rows: usize, cols: usize) {
+/// Lay out a `rows`×`cols` table after `after`, row by row, writing
+/// `text(row, col)` into each cell that has any. An empty table writes no
+/// text, so it emits exactly the ops it always has.
+fn apply_insert_table<'t>(
+    dm: &mut DocMut,
+    after: &str,
+    rows: usize,
+    cols: usize,
+    text: impl Fn(usize, usize) -> Option<&'t str>,
+) {
     let table_id = dm.ids.mint(); // one id shared by every cell
     let mut prev = Some(after.to_string());
     for row in 0..rows {
@@ -1229,6 +1274,9 @@ fn apply_insert_table(dm: &mut DocMut, after: &str, rows: usize, cols: usize) {
             dm.set_attr(&id, "table", table_id.as_str());
             dm.set_attr(&id, "row", num::i64_of_usize(row));
             dm.set_attr(&id, "col", num::i64_of_usize(col));
+            if let Some(text) = text(row, col).filter(|text| !text.is_empty()) {
+                dm.splice_text(&id, 0, 0, text);
+            }
             prev = Some(id);
         }
     }
@@ -1881,7 +1929,13 @@ fn apply_media_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
 fn apply_table_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
     match action {
         RichTextAction::InsertTable { after, rows, cols } => {
-            apply_insert_table(dm, after, *rows, *cols);
+            apply_insert_table(dm, after, *rows, *cols, |_, _| None);
+        }
+        RichTextAction::InsertFilledTable { after, cells } => {
+            let cols = cells.first().map_or(0, Vec::len);
+            apply_insert_table(dm, after, cells.len(), cols, |row, col| {
+                cells.get(row)?.get(col).map(String::as_str)
+            });
         }
         RichTextAction::EditTable { table, edit } => apply_table_edit(dm, table, *edit),
         _ => {}
@@ -2209,6 +2263,15 @@ pub fn insert_table_action(after: &str, rows: usize, cols: usize) -> RichTextAct
         after: after.to_string(),
         rows,
         cols,
+    }
+}
+
+/// Insert a table after `after` holding `cells`, row by row; the first row
+/// is the header row.
+pub fn insert_filled_table_action(after: &str, cells: Vec<Vec<String>>) -> RichTextAction {
+    RichTextAction::InsertFilledTable {
+        after: after.into(),
+        cells,
     }
 }
 
