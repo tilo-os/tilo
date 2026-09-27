@@ -30,6 +30,10 @@ use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
 
+use super::output_signal::{
+    AdaptiveSync, OutputSignalStatus, adaptive_sync_capability, device_has_adaptive_sync,
+    find_property,
+};
 use super::outputs::DrmOutputKey;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
@@ -832,16 +836,19 @@ impl CardHandle {
 
     /// Describe every physically connected sink using the live KMS mode
     /// table. The result is published to Settings; it intentionally reports
-    /// HDR/VRR as unavailable until this XRGB8888 scanout path can set the
-    /// corresponding DRM properties. EDID support alone is not an applicable
-    /// compositor capability.
+    /// HDR as unavailable until this XRGB8888 scanout path can set the
+    /// corresponding DRM properties. Sink support alone is not an applicable
+    /// compositor capability: adaptive sync also needs the driver's CRTC
+    /// property, and one the driver refused at runtime is reported so.
     pub fn display_capabilities(
         &self,
         connectors: &[ConnectorSnapshot],
         profiles: &BTreeMap<String, String>,
+        signal_status: &BTreeMap<String, OutputSignalStatus>,
     ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
         use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
 
+        let driver_adaptive_sync = device_has_adaptive_sync(&self.card);
         let mut outputs = Vec::new();
         for snapshot in connectors {
             let connector = &snapshot.connector_name;
@@ -873,9 +880,13 @@ impl CardHandle {
             // `vrr_capable` is a standard DRM connector property exported by
             // modern amdgpu/i915 kernels. Absence is unknown/not usable, never
             // interpreted as support.
-            let sink_vrr = std::fs::read_to_string(sysfs.join("vrr_capable"))
-                .ok()
-                .is_some_and(|value| value.trim() == "1");
+            let sink_vrr = find_property(&self.card, snapshot.handle, "vrr_capable")
+                .is_some_and(|(_, value, _)| value == 1);
+            let (vrr, vrr_unavailable_reason) = adaptive_sync_capability(
+                sink_vrr,
+                driver_adaptive_sync,
+                signal_status.get(&snapshot.config_key),
+            );
             let builtin = is_builtin_connector(connector);
             outputs.push(DisplayOutputSnapshot {
                 descriptor: OutputDescriptor {
@@ -888,8 +899,7 @@ impl CardHandle {
                     // This backend currently presents XRGB8888 dumb buffers
                     // and does not set HDR_OUTPUT_METADATA / Colorspace.
                     hdr: false,
-                    // Likewise it does not set the CRTC VRR_ENABLED property.
-                    vrr: false,
+                    vrr,
                     color_profiles: profiles.keys().cloned().collect(),
                     monitor: snapshot.monitor.clone(),
                 },
@@ -901,10 +911,7 @@ impl CardHandle {
                         .into()
                 }),
                 sink_vrr,
-                vrr_unavailable_reason: sink_vrr.then(|| {
-                    "Display supports adaptive sync, but the active scanout path cannot enable the CRTC VRR property"
-                        .into()
-                }),
+                vrr_unavailable_reason,
                 color_profile_labels: profiles.clone(),
             });
         }
@@ -1344,6 +1351,8 @@ pub struct DrmScanout {
     xrgb_scanout_epoch: Option<u64>,
     xrgb_software_cursor: [Option<FineDamageRect>; 2],
     xrgb_damage_requested: bool,
+    /// The CRTC's adaptive-sync property and what was last written to it.
+    adaptive_sync: AdaptiveSync,
 }
 
 impl DrmScanout {
@@ -1500,6 +1509,8 @@ impl DrmScanout {
             mode_refresh_mhz(&mode),
         );
 
+        let adaptive_sync = AdaptiveSync::probe(&card, crtc, connector);
+
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
             super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
@@ -1549,6 +1560,7 @@ impl DrmScanout {
             xrgb_software_cursor: [None, None],
             xrgb_damage_requested: std::env::var("TILO_DRM_XRGB_DAMAGE")
                 .is_ok_and(|value| value == "1"),
+            adaptive_sync,
         })
     }
 
@@ -1678,6 +1690,53 @@ impl DrmScanout {
         GbmScanoutBuffers::new(self.card.try_clone()?, self.width, self.height)
     }
 
+    /// Sink and driver both support adaptive sync on this output.
+    pub fn adaptive_sync_supported(&self) -> bool {
+        self.adaptive_sync.supported()
+    }
+
+    /// Adaptive sync is enabled on the CRTC right now.
+    pub fn adaptive_sync_active(&self) -> bool {
+        self.adaptive_sync.active()
+    }
+
+    /// The driver refused to enable adaptive sync.
+    pub fn adaptive_sync_rejected(&self) -> bool {
+        self.adaptive_sync.rejected()
+    }
+
+    /// Ask for adaptive sync on or off. The property is written between
+    /// flips: now when none is queued, otherwise just before the next one.
+    pub fn set_adaptive_sync(&mut self, on: bool) {
+        self.adaptive_sync.want(on);
+        if !self.flip_pending {
+            self.apply_adaptive_sync();
+        }
+    }
+
+    fn apply_adaptive_sync(&mut self) {
+        let (Some(value), Some(property)) = (
+            self.adaptive_sync.pending_write(),
+            self.adaptive_sync.property(),
+        ) else {
+            return;
+        };
+        let result = self
+            .card
+            .set_property(self.crtc, property, u64::from(value));
+        if let Err(error) = &result {
+            tracing::warn!(%error, crtc = ?self.crtc, value, "DRM scanout: VRR_ENABLED write refused");
+        }
+        // Durable and machine-readable, like the modeset line: a hardware
+        // check must tell a refused property from one never requested.
+        eprintln!(
+            "tilo compositor: DRM adaptive sync crtc={} enabled={value} accepted={}",
+            u32::from(self.crtc),
+            result.is_ok(),
+        );
+        self.adaptive_sync.record_write(value, result.is_ok());
+    }
+
     /// The crtc this scanout drives, so hotplug can pick one still free.
     pub fn crtc(&self) -> crtc::Handle {
         self.crtc
@@ -1712,6 +1771,9 @@ impl DrmScanout {
                 "DRM scanout: front buffer index out of range on resume; skipping re-modeset"
             );
         }
+        // Another DRM master may have left adaptive sync either way.
+        self.adaptive_sync.forget_applied();
+        self.apply_adaptive_sync();
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
         if self.hw_cursor_active
             && let Some(buf) = self.cursor_buffer.as_ref()
@@ -2028,6 +2090,7 @@ impl DrmScanout {
 
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
+        self.apply_adaptive_sync();
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
@@ -2074,6 +2137,7 @@ impl DrmScanout {
 
     /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
     fn flush_dirty(&mut self, idx: usize) -> bool {
+        self.apply_adaptive_sync();
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
             return false;
@@ -2199,6 +2263,7 @@ impl DrmScanout {
         if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
             return DirectSubmit::Busy;
         }
+        self.apply_adaptive_sync();
         let Some(framebuffer) = targets.framebuffer(index) else {
             return DirectSubmit::Failed(format!(
                 "direct scanout slot {index} has no KMS framebuffer"
