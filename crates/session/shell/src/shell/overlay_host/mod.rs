@@ -14,7 +14,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId};
 use settings_store::magnifier::MagnifierStep;
 use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
@@ -89,11 +89,6 @@ use crate::shell::capture_surface::{
     capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, SearchScopeText as _, WsTab};
-use crate::shell::collaborators_overlay::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
-    collaborator_roster_rows_with_local_user,
-};
-pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::i18n::{t, t_args};
@@ -115,17 +110,19 @@ use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
-use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
-pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
-use crate::shell::workspace_settings_overlay::{
-    EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
-};
 use crate::shell::{TabMenuAction, build_tab_context_menu};
+pub use tilo_desktop::collaborators::RosterRow;
+use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
     CenterLayout, CenterOutcome, NotificationCenter, NotificationStack,
 };
+pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
+use tilo_desktop::workspace_settings::overlay::{
+    EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
+};
+use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -1164,7 +1161,7 @@ const _: () = assert!(
 /// rail and the wallpaper/shadow gutter that separates it from app content.
 /// Widgets that paint against the full desktop rect use this instead of
 /// duplicating a rail width.
-pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
+pub fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
     f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
 }
 
@@ -6602,7 +6599,7 @@ impl ShellOverlayHost {
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
         let local_user = state.active_local_user();
-        collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
+        tilo_desktop::collaborators::collaborator_roster_rows(&state.tree().desktop, &local_user)
             .into_iter()
             .find(|row| row.id == peer_id && row.followable)
     }
@@ -6806,18 +6803,11 @@ impl ShellOverlayHost {
     /// available-but-not-yet-installed app follows the same acquisition path
     /// as the command palette. Chrome cards use their existing overlays.
     fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        use crate::shell::collaboration_launchpad::LaunchpadAction;
+        use tilo_desktop::launchpad::LaunchpadAction;
 
-        let Some(action) = LaunchpadAction::ALL.into_iter().find(|action| {
-            matches!(
-                doc.get(root, action.path()),
-                Ok(Some((Value::Scalar(value), _)))
-                    if matches!(value.as_ref(), ScalarValue::Boolean(true))
-            )
-        }) else {
+        let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
-        let _ = doc.put(root, action.path(), false);
         if let Some((app_id, display_name)) = action.app_target() {
             self.open_launchpad_app(doc, root, app_id, display_name);
             return true;
@@ -12553,7 +12543,11 @@ impl ShellOverlayHost {
                 .map(|chrome| {
                     let state = chrome.borrow();
                     let local_user = state.active_local_user();
-                    collaborator_roster_rows_with_local_user(&state.tree(), &local_user).len()
+                    tilo_desktop::collaborators::collaborator_roster_rows(
+                        &state.tree().desktop,
+                        &local_user,
+                    )
+                    .len()
                 })
                 .unwrap_or_default();
             self.collaborators_overlay
@@ -12565,10 +12559,13 @@ impl ShellOverlayHost {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
                 let local_user = state.active_local_user();
-                collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
-                    .get(index)
-                    .filter(|row| row.followable)
-                    .cloned()
+                tilo_desktop::collaborators::collaborator_roster_rows(
+                    &state.tree().desktop,
+                    &local_user,
+                )
+                .get(index)
+                .filter(|row| row.followable)
+                .cloned()
             });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
@@ -14415,7 +14412,7 @@ impl ShellOverlayHost {
                 // the active workspace's app grants and enforced access.
                 let mut st = chrome.borrow_mut();
                 st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 st.bump();
             }
             RootAction::OpenPowerMenu => {
@@ -14681,7 +14678,7 @@ impl ShellOverlayHost {
                     && let Some(chrome) = self.chrome.clone()
                 {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        crate::shell::workspace_settings::set_member_role(ws, actor, &user, role)
+                        tilo_desktop::workspace_settings::set_member_role(ws, actor, &user, role)
                     });
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
@@ -14689,7 +14686,7 @@ impl ShellOverlayHost {
             WorkspaceSettingsOutcome::ConfirmRemoveMember(user) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        crate::shell::workspace_settings::remove_member(ws, actor, &user)
+                        tilo_desktop::workspace_settings::remove_member(ws, actor, &user)
                     });
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
@@ -14709,10 +14706,10 @@ impl ShellOverlayHost {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     let subject_index = st.tree().desktop.active_workspace().and_then(|ws| {
-                        crate::shell::workspace_settings::grant_subjects(ws)
+                        tilo_desktop::workspace_settings::grant_subjects(ws)
                             .iter()
                             .position(|subject| {
-                                subject.kind == crate::shell::workspace_settings::SubjectKind::Agent
+                                subject.kind == tilo_desktop::workspace_settings::SubjectKind::Agent
                                     && subject.id == agent
                             })
                     });
@@ -14726,14 +14723,14 @@ impl ShellOverlayHost {
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        crate::shell::workspace_settings::remove_agent(ws, actor, &agent)
+                        tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
                     });
                 }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        crate::shell::workspace_settings::apply_revoke(ws, actor, &cap_id)
+                        tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
                     });
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
@@ -14817,14 +14814,14 @@ impl ShellOverlayHost {
         let mut tree = state.tree_mut();
         if let Some(workspace) = tree.desktop.active_workspace_mut() {
             if workspace_choice && is_owner {
-                let next = crate::shell::workspace_settings::next_workspace_default(
+                let next = tilo_desktop::workspace_settings::next_workspace_default(
                     workspace.default_apps.policy.get(&resource),
                     &resource,
                     &candidates,
                 );
                 let _ = workspace.set_default_app_policy_as(&actor, resource, next, &resolver);
             } else if !workspace_choice {
-                let next = crate::shell::workspace_settings::next_user_default(
+                let next = tilo_desktop::workspace_settings::next_user_default(
                     workspace
                         .default_apps
                         .user_choices
@@ -18624,7 +18621,7 @@ where
 
 /// Route a click on a grant-composer control. The pickers only move the
 /// draft; `Submit` is the one that writes, and it writes through
-/// [`crate::shell::workspace_settings::apply_grant_draft`] so the
+/// [`tilo_desktop::workspace_settings::apply_grant_draft`] so the
 /// authority check runs on the production path.
 fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     // A flat match over every variant, rather than peeling `Submit` off
@@ -18636,13 +18633,13 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
             edit_active_workspace_caps(chrome, move |ws, actor| {
-                crate::shell::workspace_settings::apply_grant_draft(ws, actor, &draft)
+                tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
             });
         }
         ComposerHit::Subject => {
             let mut st = chrome.borrow_mut();
             let subject_count = st.tree().desktop.active_workspace().map_or(0, |ws| {
-                crate::shell::workspace_settings::grant_subjects(ws).len()
+                tilo_desktop::workspace_settings::grant_subjects(ws).len()
             });
             st.ws_grant_draft.cycle_subject(subject_count);
             st.bump();
@@ -18823,21 +18820,6 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     let mut themed = theme.clone();
     themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
     themed
-}
-
-/// `(alpha, dy, scale)` for a modal driven by a [`ui::Transition`],
-/// covering BOTH the enter (openness 0→1) and the exit (openness 1→0).
-/// The panel starts 20 px low at `start_scale` and rises to rest on the
-/// enter; the exit plays the same curve in reverse instead of the panel
-/// vanishing.
-pub(crate) fn modal_transition_curve(
-    t: &ui::Transition,
-    now: Instant,
-    start_scale: f64,
-) -> (f32, f64, f64) {
-    let o = t.value(now);
-    let scale = start_scale + (1.0 - start_scale) * f64::from(o);
-    (o, 20.0 * f64::from(1.0 - o), scale)
 }
 
 impl ShellOverlayHost {
@@ -19104,12 +19086,37 @@ impl ShellOverlayHost {
             return;
         };
         if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let acting_user = state.active_local_user();
+            let governs_active_room = tree
+                .desktop
+                .active_workspace()
+                .is_some_and(|workspace| tree.governs_room(workspace.room));
+            let owner_controls = state.test_only_owner_override.unwrap_or_else(|| {
+                governs_active_room
+                    && tree
+                        .desktop
+                        .active_workspace()
+                        .is_some_and(|workspace| workspace.may_administer(&acting_user))
+            });
             self.workspace_settings_overlay.draw_contents(
                 scene,
                 plan.transform,
                 text_renderer,
                 theme,
-                chrome,
+                &tilo_desktop::workspace_settings::overlay::WorkspaceSettingsModel {
+                    desktop: &tree.desktop,
+                    tab: state.ws_settings_tab,
+                    grant_draft: state.ws_grant_draft,
+                    local_user: &state.local_user_id,
+                    acting_user: &acting_user,
+                    editing_name: state.editing_workspace_name.as_deref(),
+                    name_selection: state.editing_workspace_name_selection,
+                    governs_active_room,
+                    owner_controls,
+                    apps: &crate::shell::launcher::ShellApps,
+                },
             );
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
@@ -19247,7 +19254,10 @@ impl ShellOverlayHost {
                     let state = chrome.borrow();
                     let local_user = state.active_local_user();
                     (
-                        collaborator_roster_rows_with_local_user(&state.tree(), &local_user),
+                        tilo_desktop::collaborators::collaborator_roster_rows(
+                            &state.tree().desktop,
+                            &local_user,
+                        ),
                         state.collab_unavailable.clone(),
                         collaborators_screen_exposure(&state),
                     )
@@ -19267,7 +19277,7 @@ impl ShellOverlayHost {
                     });
                 if let Some(id) = presence_id {
                     row.status = presence.status_for(&id, now).map(|status| {
-                        crate::shell::collaborators_overlay::RosterStatus {
+                        tilo_desktop::collaborators::RosterStatus {
                             text: status.text.clone(),
                             automatic: matches!(status.origin, ui::StatusOrigin::Inferred { .. }),
                         }
@@ -20476,8 +20486,7 @@ impl ShellOverlayHost {
         if self.palette_transition.is_visible(palette_now) {
             let openness = self.palette_transition.value(palette_now);
             draw_scrim_at(scene, transform, self.rect, openness, theme);
-            let (alpha, dy, scale) =
-                modal_transition_curve(&self.palette_transition, palette_now, 0.96);
+            let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
@@ -22238,7 +22247,8 @@ impl ShellOverlayHost {
         let key = PresenceKey::Workspace {
             id: workspace.room.to_string(),
         };
-        let rows = collaborator_roster_rows_with_local_user(&tree, &local_user);
+        let rows =
+            tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local_user);
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };

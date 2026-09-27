@@ -262,7 +262,7 @@ fn room_people_with_local_user(ws: &Workspace, tree: &WorkspaceTree, me: &str) -
 /// Grouped by what is shared (scope, not capability): two grants on
 /// the same folder to two people are one share with two holders.
 pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
-    use crate::shell::workspace_settings::scope_label;
+    use tilo_desktop::workspace_settings::scope_label;
     let now = Some(tilo_clock::unix_now());
     let mut out: Vec<RoomShare> = Vec::new();
     for cap in &ws.capabilities {
@@ -283,7 +283,7 @@ pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
             _ => continue,
         };
         let holder = display_name(&holder, ws, tree);
-        let what = scope_label(&cap.scope);
+        let what = scope_label(&cap.scope, &crate::shell::launcher::ShellApps);
         let writable = cap.verb.implies(crate::shell::state::Verb::Write);
         match out.iter_mut().find(|s| s.what == what) {
             Some(existing) => {

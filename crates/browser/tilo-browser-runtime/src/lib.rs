@@ -104,6 +104,8 @@ mod desktop_navigation;
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_notifications;
 #[cfg(any(target_arch = "wasm32", test))]
+mod desktop_overlays;
+#[cfg(any(target_arch = "wasm32", test))]
 mod live_view;
 #[cfg(any(target_arch = "wasm32", test))]
 mod system_search;
