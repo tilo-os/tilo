@@ -6,7 +6,7 @@
 //! and under its path, and when no segment decodes to something that would
 //! change the path's meaning (`/`, `.`, `..`, controls).
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use cloud_source::ItemId;
 use tilo_dav::Url;
@@ -104,114 +104,19 @@ pub fn percent_decode(raw: &str) -> Option<String> {
         .map(std::borrow::Cow::into_owned)
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 /// Parse an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), the format
 /// `getlastmodified` uses.
 pub fn parse_http_date(value: &str) -> Option<SystemTime> {
-    let rest = value.trim().split_once(", ")?.1;
-    let mut parts = rest.split_whitespace();
-    let day: u32 = parts.next()?.parse().ok()?;
-    let month_name = parts.next()?;
-    let month = u32::try_from(MONTHS.iter().position(|m| *m == month_name)?)
-        .ok()?
-        .checked_add(1)?;
-    let year: i64 = parts.next()?.parse().ok()?;
-    let mut clock = parts.next()?.split(':');
-    let hour: u64 = clock.next()?.parse().ok()?;
-    let minute: u64 = clock.next()?.parse().ok()?;
-    let second: u64 = clock.next()?.parse().ok()?;
-    if parts.next()? != "GMT" || hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    let days = u64::try_from(days_from_civil(year, month, day)?).ok()?;
-    let secs = days
-        .checked_mul(86_400)?
-        .checked_add(hour.checked_mul(3_600)?)?
-        .checked_add(minute.checked_mul(60)?)?
-        .checked_add(second)?;
-    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+    chrono::DateTime::parse_from_rfc2822(value.trim())
+        .ok()
+        .map(SystemTime::from)
 }
 
 /// Format a time as an IMF-fixdate.
 pub fn format_http_date(time: SystemTime) -> String {
-    let secs = time
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let days = secs.checked_div(86_400).unwrap_or(0);
-    let rem = secs.checked_rem(86_400).unwrap_or(0);
-    let (year, month, day) = civil_from_days(i64::try_from(days).unwrap_or(0));
-    let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"]
-        .get(usize::try_from(days.checked_rem(7).unwrap_or(0)).unwrap_or(0))
-        .copied()
-        .unwrap_or("Thu");
-    let month_name = MONTHS
-        .get(usize::try_from(month.saturating_sub(1)).unwrap_or(0))
-        .copied()
-        .unwrap_or("Jan");
-    format!(
-        "{weekday}, {day:02} {month_name} {year} {:02}:{:02}:{:02} GMT",
-        rem.checked_div(3_600).unwrap_or(0),
-        rem.checked_rem(3_600)
-            .and_then(|r| r.checked_div(60))
-            .unwrap_or(0),
-        rem.checked_rem(60).unwrap_or(0)
-    )
-}
-
-/// Days since 1970-01-01 (Howard Hinnant's algorithm).
-fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let y = if month <= 2 {
-        year.checked_sub(1)?
-    } else {
-        year
-    };
-    let era = y
-        .checked_sub(if y >= 0 { 0 } else { 399 })?
-        .checked_div(400)?;
-    let yoe = y.checked_sub(era.checked_mul(400)?)?;
-    let m = i64::from(month);
-    let mp = if m > 2 {
-        m.checked_sub(3)?
-    } else {
-        m.checked_add(9)?
-    };
-    let doy = mp
-        .checked_mul(153)?
-        .checked_add(2)?
-        .checked_div(5)?
-        .checked_add(i64::from(day))?
-        .checked_sub(1)?;
-    let doe = yoe
-        .checked_mul(365)?
-        .checked_add(yoe.checked_div(4)?)?
-        .checked_sub(yoe.checked_div(100)?)?
-        .checked_add(doy)?;
-    era.checked_mul(146_097)?
-        .checked_add(doe)?
-        .checked_sub(719_468)
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "bounded calendar arithmetic on a day count from a u64 of seconds"
-)]
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
-    let month = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
+    chrono::DateTime::<chrono::Utc>::from(time)
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
 }
 
 #[cfg(test)]
