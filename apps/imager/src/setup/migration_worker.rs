@@ -361,10 +361,12 @@ mod tests {
             fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
         }
         let mut worker = MigrationWorker::start(job).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // Eighty durable copies can take tens of seconds on a loaded disk;
+        // this bound only catches a worker that never finishes.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while worker.phase.load(Ordering::Acquire) != FINISHED {
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
+            assert!(Instant::now() < deadline, "worker did not finish");
+            std::thread::sleep(Duration::from_millis(1));
         }
         let mut updates = 0;
         loop {

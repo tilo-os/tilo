@@ -61,6 +61,30 @@ pub mod content_purpose {
     pub const TERMINAL: u32 = 13;
 }
 
+/// Wire bits of `zwp_text_input_v3.content_hint`.
+pub mod content_hint {
+    pub const NONE: u32 = 0;
+    pub const COMPLETION: u32 = 0x1;
+    pub const SPELLCHECK: u32 = 0x2;
+    pub const AUTO_CAPITALIZATION: u32 = 0x4;
+    pub const LOWERCASE: u32 = 0x8;
+    pub const UPPERCASE: u32 = 0x10;
+    pub const TITLECASE: u32 = 0x20;
+    pub const HIDDEN_TEXT: u32 = 0x40;
+    pub const SENSITIVE_DATA: u32 = 0x80;
+    pub const LATIN: u32 = 0x100;
+    pub const MULTILINE: u32 = 0x200;
+}
+
+/// Whether text typed into a field with this purpose and these content hints
+/// may be remembered, suggested or shown as preedit. Secrets — passwords, PINs,
+/// and any field marking its text hidden or sensitive — never are: nothing
+/// typed there is learned, predicted from, or echoed outside the field.
+pub fn may_learn(purpose: InputPurpose, hints: u32) -> bool {
+    !matches!(purpose, InputPurpose::Password | InputPurpose::Pin)
+        && hints & (content_hint::HIDDEN_TEXT | content_hint::SENSITIVE_DATA) == 0
+}
+
 /// Map a Wayland `content_purpose` wire value to the OSK's own [`InputPurpose`].
 ///
 /// `digits` is a numeric secret-ish field with no separators — closest to a PIN
@@ -101,9 +125,9 @@ pub enum ImEvent {
     Activate,
     /// Text focus left: the keyboard should hide.
     Deactivate,
-    /// The focused field's content purpose (raw wire value). Pending until the
-    /// next [`Done`](ImEvent::Done).
-    ContentType(u32),
+    /// The focused field's content hints and purpose (raw wire values).
+    /// Pending until the next [`Done`](ImEvent::Done).
+    ContentType { hint: u32, purpose: u32 },
     /// Apply all state buffered since the last `Done` (the protocol commit point).
     Done,
 }
@@ -120,8 +144,10 @@ pub struct ImState {
     visible: bool,
     /// The applied purpose (what the visible layout reflects).
     purpose: InputPurpose,
+    /// The applied content hints ([`content_hint`] bits).
+    hints: u32,
     /// A content type received but not yet applied by a `done`.
-    pending_purpose: Option<InputPurpose>,
+    pending: Option<(InputPurpose, u32)>,
 }
 
 impl Default for ImState {
@@ -129,7 +155,8 @@ impl Default for ImState {
         Self {
             visible: false,
             purpose: InputPurpose::Text,
-            pending_purpose: None,
+            hints: content_hint::NONE,
+            pending: None,
         }
     }
 }
@@ -142,6 +169,8 @@ pub struct ImTransition {
     pub visibility_changed: Option<bool>,
     /// `Some(p)` → the active purpose changed to `p`.
     pub purpose_changed: Option<InputPurpose>,
+    /// `Some(h)` → the active content hints changed to `h`.
+    pub hints_changed: Option<u32>,
     /// A text field gained or lost focus, so any composition in progress
     /// belonged to the previous field.
     pub field_changed: bool,
@@ -162,37 +191,45 @@ impl ImState {
         self.purpose
     }
 
+    /// The currently applied content hints.
+    pub fn hints(&self) -> u32 {
+        self.hints
+    }
+
     /// Fold one [`ImEvent`] into the state, returning what the app must change.
     ///
     /// * `Activate` → visible; clears pending content type. Resets purpose to the
     ///   default so a stale layout from a previous field never lingers before the
     ///   new field's `content_type` arrives.
     /// * `Deactivate` → hidden; pending content type dropped.
-    /// * `ContentType(wire)` → stage the mapped purpose (not applied yet).
-    /// * `Done` → apply any staged purpose.
+    /// * `ContentType` → stage the mapped purpose and hints (not applied yet).
+    /// * `Done` → apply any staged purpose and hints.
     pub fn reduce(&mut self, event: ImEvent) -> ImTransition {
         let was_visible = self.visible;
         let prev_purpose = self.purpose;
+        let prev_hints = self.hints;
         let field_changed = matches!(event, ImEvent::Activate | ImEvent::Deactivate);
 
         match event {
             ImEvent::Activate => {
                 self.visible = true;
                 // `activate` resets prior content_type state; until the field's
-                // own content_type arrives, assume free text.
-                self.pending_purpose = None;
+                // own content_type arrives, assume free text without hints.
+                self.pending = None;
                 self.purpose = InputPurpose::Text;
+                self.hints = content_hint::NONE;
             }
             ImEvent::Deactivate => {
                 self.visible = false;
-                self.pending_purpose = None;
+                self.pending = None;
             }
-            ImEvent::ContentType(wire) => {
-                self.pending_purpose = Some(purpose_from_wire(wire));
+            ImEvent::ContentType { hint, purpose } => {
+                self.pending = Some((purpose_from_wire(purpose), hint));
             }
             ImEvent::Done => {
-                if let Some(p) = self.pending_purpose.take() {
-                    self.purpose = p;
+                if let Some((purpose, hints)) = self.pending.take() {
+                    self.purpose = purpose;
+                    self.hints = hints;
                 }
             }
         }
@@ -200,6 +237,7 @@ impl ImState {
         ImTransition {
             visibility_changed: (self.visible != was_visible).then_some(self.visible),
             purpose_changed: (self.purpose != prev_purpose).then_some(self.purpose),
+            hints_changed: (self.hints != prev_hints).then_some(self.hints),
             field_changed,
         }
     }
@@ -306,10 +344,13 @@ mod wayland {
             let decoded = match event {
                 Event::Activate => Some(ImEvent::Activate),
                 Event::Deactivate => Some(ImEvent::Deactivate),
-                Event::ContentType { purpose, .. } => {
-                    // `purpose` is a WEnum<ContentPurpose>; the wire value is what
-                    // our purpose mapping understands (and tolerates if unknown).
-                    Some(ImEvent::ContentType(u32::from(purpose)))
+                Event::ContentType { hint, purpose } => {
+                    // Both are WEnums; the wire values are what our mappings
+                    // understand (and tolerate if unknown).
+                    Some(ImEvent::ContentType {
+                        hint: u32::from(hint),
+                        purpose: u32::from(purpose),
+                    })
                 }
                 Event::Done => {
                     // The serial `commit` must echo is the count of `done`s seen.
@@ -443,6 +484,53 @@ mod wayland {
 mod tests {
     use super::*;
 
+    fn purpose_only(purpose: u32) -> ImEvent {
+        ImEvent::ContentType {
+            hint: content_hint::NONE,
+            purpose,
+        }
+    }
+
+    #[test]
+    fn may_learn_refuses_every_secret_field() {
+        use content_hint as h;
+        let cases = [
+            (InputPurpose::Text, h::NONE, true),
+            (
+                InputPurpose::Text,
+                h::SPELLCHECK | h::AUTO_CAPITALIZATION,
+                true,
+            ),
+            (InputPurpose::Email, h::NONE, true),
+            (InputPurpose::Url, h::COMPLETION, true),
+            (InputPurpose::Number, h::NONE, true),
+            (InputPurpose::Password, h::NONE, false),
+            (InputPurpose::Pin, h::NONE, false),
+            (InputPurpose::Text, h::SENSITIVE_DATA, false),
+            (InputPurpose::Text, h::HIDDEN_TEXT, false),
+            (InputPurpose::Email, h::SENSITIVE_DATA | h::LOWERCASE, false),
+        ];
+        for (purpose, hints, want) in cases {
+            assert_eq!(may_learn(purpose, hints), want, "{purpose:?} {hints:#x}");
+        }
+    }
+
+    #[test]
+    fn hints_apply_on_done_and_reset_on_activate() {
+        let mut s = ImState::new();
+        s.reduce(ImEvent::Activate);
+        let t = s.reduce(ImEvent::ContentType {
+            hint: content_hint::SENSITIVE_DATA,
+            purpose: content_purpose::NORMAL,
+        });
+        assert_eq!(t.hints_changed, None);
+        let t = s.reduce(ImEvent::Done);
+        assert_eq!(t.hints_changed, Some(content_hint::SENSITIVE_DATA));
+        assert_eq!(s.hints(), content_hint::SENSITIVE_DATA);
+        let t = s.reduce(ImEvent::Activate);
+        assert_eq!(t.hints_changed, Some(content_hint::NONE));
+    }
+
     #[test]
     fn purpose_from_wire_maps_every_known_value() {
         use content_purpose as cp;
@@ -502,7 +590,7 @@ mod tests {
         let mut s = ImState::new();
         s.reduce(ImEvent::Activate);
         // content_type alone does NOT change the applied purpose...
-        let t = s.reduce(ImEvent::ContentType(content_purpose::NUMBER));
+        let t = s.reduce(purpose_only(content_purpose::NUMBER));
         assert_eq!(s.purpose(), InputPurpose::Text);
         assert_eq!(t.purpose_changed, None);
         // ...the following `done` applies it.
@@ -529,7 +617,7 @@ mod tests {
         let t = s.reduce(ImEvent::Activate);
         assert_eq!(t.visibility_changed, Some(true));
 
-        s.reduce(ImEvent::ContentType(content_purpose::NUMBER));
+        s.reduce(purpose_only(content_purpose::NUMBER));
         let t = s.reduce(ImEvent::Done);
         assert!(s.visible());
         assert_eq!(s.purpose(), InputPurpose::Number);
@@ -547,7 +635,7 @@ mod tests {
         // field's content_type (if any) arrives.
         let mut s = ImState::new();
         s.reduce(ImEvent::Activate);
-        s.reduce(ImEvent::ContentType(content_purpose::EMAIL));
+        s.reduce(purpose_only(content_purpose::EMAIL));
         s.reduce(ImEvent::Done);
         assert_eq!(s.purpose(), InputPurpose::Email);
 
@@ -572,11 +660,11 @@ mod tests {
     fn switching_purpose_while_visible_reports_only_purpose() {
         let mut s = ImState::new();
         s.reduce(ImEvent::Activate);
-        s.reduce(ImEvent::ContentType(content_purpose::NUMBER));
+        s.reduce(purpose_only(content_purpose::NUMBER));
         s.reduce(ImEvent::Done);
 
         // Field re-reports a different purpose without a re-activate.
-        s.reduce(ImEvent::ContentType(content_purpose::EMAIL));
+        s.reduce(purpose_only(content_purpose::EMAIL));
         let t = s.reduce(ImEvent::Done);
         assert_eq!(t.visibility_changed, None);
         assert_eq!(t.purpose_changed, Some(InputPurpose::Email));

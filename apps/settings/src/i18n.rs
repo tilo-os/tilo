@@ -1,16 +1,17 @@
 //! Settings' Fluent catalogue.
 //!
-//! User-facing strings are keys resolved through the toolkit's [`ui::i18n`]
+//! User-facing strings resolve by key through the toolkit's [`mod@ui::i18n`]
 //! manager. The catalogue is embedded with `include_str!`, so a `--shots`
-//! render, a unit test and a live session resolve the same strings. Panes
-//! move onto it as they are rewritten; the AI pane is fully on it.
+//! render, a unit test and a live session resolve the same copy. Panes move
+//! onto it as they are rewritten.
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
+/// Loaded per thread on first use; a host's manager is joined, never replaced.
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "ai-pane-title",
+    "display-arrangement-title",
 );
 
 /// Resolve a Settings string key.
@@ -34,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_ai_key_resolves_to_a_real_string() {
+    fn every_catalogue_entry_resolves_to_a_real_string() {
         let catalogue = include_str!("../locales/en-US.ftl");
         let mut keys = Vec::new();
         for line in catalogue.lines() {
@@ -50,6 +51,7 @@ mod tests {
         for key in keys {
             let value = t(&key);
             assert_ne!(value, key, "{key} has no catalogue entry");
+            assert!(!value.trim().is_empty(), "{key} resolves to nothing");
         }
         // Every key the AI pane names in code resolves too.
         for source in [

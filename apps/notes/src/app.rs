@@ -4199,7 +4199,7 @@ impl Widget for NotesApp {
 
     /// Hand the host the heads captured before a sidebar affordance dispatched
     /// its page-tree action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

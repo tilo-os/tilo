@@ -16,7 +16,9 @@ use taffy::{Dimension, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::Color;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::collection_transition::{KeyedRowSnapshot, KeyedTransitionSet, RowGeometry};
@@ -28,7 +30,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::EventCtx;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
@@ -920,7 +922,6 @@ const ROW_HEIGHT: f64 = 22.0;
 const DEFAULT_ROW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Label size before a first draw resolves the theme's `sm` step.
 const DEFAULT_LABEL_SIZE: f32 = crate::tokens::TypeScale::BASE.sm;
-const WHEEL_LINE_PX: f64 = 60.0;
 const MAX_TRANSITION_ROWS: usize = 512;
 
 fn idx_to_f64(index: usize) -> f64 {
@@ -2300,31 +2301,22 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.index.row_at(&self.model, index).map(|(key, _)| key)
     }
 
-    fn on_wheel(&mut self, delta: &MouseScrollDelta) -> bool {
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, phase: TouchPhase) -> bool {
         if self.viewport.viewport() <= 0.0 {
             return false;
         }
-        let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
-                self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
-            }
-            MouseScrollDelta::LineDelta(_, y) => {
-                self.momentum.stop();
-                f64::from(*y) * -WHEEL_LINE_PX
-            }
-            MouseScrollDelta::PixelDelta(position) => {
-                self.momentum.stop();
-                -position.y
-            }
-        };
         self.last_tick = Some(crate::time::now());
-        let before = self.viewport.offset();
-        self.set_scroll_offset(before + dy);
-        let moved = self.viewport.offset().to_bits() != before.to_bits();
-        if !moved {
-            self.momentum.stop();
+        match self.momentum.wheel(delta, phase, self.reduce_motion) {
+            WheelStep::Scroll(dy) => {
+                let before = self.viewport.offset();
+                self.set_scroll_offset(before + dy);
+                let moved = self.viewport.offset().to_bits() != before.to_bits();
+                self.momentum.wheel_applied(dy, moved);
+                moved
+            }
+            WheelStep::Fling => true,
+            WheelStep::Ignored => false,
         }
-        moved
     }
 
     fn focus_at(&mut self, index: usize) -> bool {
@@ -3548,13 +3540,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
                     .is_some_and(|point| self.rect.contains(point)) =>
             {
                 self.drag_scroll.cancel();
-                *handled = self.on_wheel(delta);
+                *handled = self.on_wheel(delta, *phase);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5158,7 +5150,7 @@ mod tests {
         assert!(view.on_key_with_modifiers(&Key::Named(NamedKey::PageUp), false, false,));
         assert_eq!(view.scroll_y(), 0.0);
 
-        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0)));
+        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
         let immediate = view.scroll_y();
         assert_eq!(immediate, 60.0);
         assert!(view.needs_animation_frame());
@@ -5889,7 +5881,7 @@ mod tests {
         view.set_viewport(100.0, 22.0);
         view.reduce_motion = true;
 
-        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0)));
+        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
         assert_eq!(view.scroll_y(), 60.0_f32);
         assert!(!view.momentum.is_active());
 

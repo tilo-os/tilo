@@ -20,7 +20,7 @@ impl Mode {
             Mode::Graph3d => "Graph 3D",
         }
     }
-    /// Condensed label for a narrow topbar where the full [`label`] won't fit.
+    /// Condensed label for a narrow topbar where the full `label` won't fit.
     pub fn short_label(self) -> &'static str {
         match self {
             Mode::Calc => "Calc",
@@ -114,8 +114,8 @@ pub struct CalcModel {
     /// mirroring how `funcs` holds the 2D `y = f(x)` curves. Multiple surfaces
     /// render as separate, per-function-coloured sheets (visibility-toggleable).
     pub surfaces: Vec<PlotFn>,
-    /// Active surface row in [`surfaces`] (the one the editor edits) — the 3D
-    /// analogue of [`active_fn`].
+    /// Active surface row in `surfaces` (the one the editor edits) — the 3D
+    /// analogue of `active_fn`.
     pub active_surface: usize,
     pub view2d: View2d,
     pub view3d: View3d,

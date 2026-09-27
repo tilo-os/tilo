@@ -7,6 +7,10 @@
 
 use std::rc::Rc;
 
+use ui::search::{FieldWeight, RankField};
+
+use super::actions::ACTION_ID_WEIGHT;
+
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
 use crate::shell::device_fabric_runtime::{
     BluetoothHandoffPhaseView, DisplayMirrorPhase, MediaHandoffPhase,
@@ -50,25 +54,39 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
+/// The semantic id of "play this local media session on `target`". Other
+/// chrome names a handoff destination by this id, never by the device or
+/// session identity behind it.
+pub(crate) fn media_handoff_action_id(
+    session_id: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> String {
+    format!(
+        "media.handoff.{}.{}",
+        opaque("so.tilo.continuity.media-session.v1", session_id.as_bytes()),
+        opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
+    )
+}
+
+/// The semantic id of "route local playback to this output". The `PipeWire`
+/// node id stays behind the digest.
+pub(crate) fn audio_route_action_id(node_id: u32) -> String {
+    format!(
+        "audio.route.{}",
+        opaque("so.tilo.continuity.audio-node.v1", &node_id.to_le_bytes())
+    )
+}
+
+/// The shared ranker over an action's title, identity and description.
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
-    let needle = needle.trim().to_ascii_lowercase();
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let title = title.to_ascii_lowercase();
-    let subtitle = subtitle.to_ascii_lowercase();
-    let id = id.to_ascii_lowercase();
-    if title.starts_with(&needle) {
-        Some(100)
-    } else if id == needle {
-        Some(90)
-    } else if title.contains(&needle) {
-        Some(50)
-    } else if subtitle.contains(&needle) || id.contains(&needle) {
-        Some(25)
-    } else {
-        None
-    }
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(title, FieldWeight::TITLE),
+            RankField::new(id, ACTION_ID_WEIGHT),
+            RankField::new(subtitle, FieldWeight::SUBTITLE),
+        ],
+    )
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
@@ -152,14 +170,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         for target in &media.targets {
             let label = label_for(target);
             actions.push(DeviceAction {
-                id: format!(
-                    "media.handoff.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.media-session.v1",
-                        media.session_id.as_bytes()
-                    ),
-                    opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
-                ),
+                id: media_handoff_action_id(&media.session_id, target),
                 title: format!("Play {} on {label}", media.title),
                 subtitle: "Move this live media session to an exact certified device".into(),
                 action: DeviceFabricUiAction::HandoffMedia {
@@ -266,13 +277,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         .filter(|output| !output.is_default)
     {
         actions.push(DeviceAction {
-            id: format!(
-                "audio.route.{}",
-                opaque(
-                    "so.tilo.continuity.audio-node.v1",
-                    &output.node_id.to_le_bytes()
-                )
-            ),
+            id: audio_route_action_id(output.node_id),
             title: format!("Route audio to {}", output.label),
             subtitle: "Choose an exact currently enumerated local audio output".into(),
             action: DeviceFabricUiAction::RouteLocalAudio {
@@ -280,6 +285,39 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             },
             confirm: false,
         });
+    }
+    for input in &view.local_inputs {
+        let token = opaque(
+            "so.tilo.continuity.audio-input.v1",
+            &input.node_id.to_le_bytes(),
+        );
+        if input.is_default {
+            for (raise, verb) in [(true, "Raise"), (false, "Lower")] {
+                actions.push(DeviceAction {
+                    id: format!(
+                        "audio.input-level.{}.{token}",
+                        if raise { "raise" } else { "lower" }
+                    ),
+                    title: format!("{verb} the input level of {}", input.label),
+                    subtitle: "Change the current microphone's level by one step".into(),
+                    action: DeviceFabricUiAction::StepInputLevel {
+                        node_id: input.node_id,
+                        raise,
+                    },
+                    confirm: false,
+                });
+            }
+        } else {
+            actions.push(DeviceAction {
+                id: format!("audio.input.{token}"),
+                title: format!("Use {} as the microphone", input.label),
+                subtitle: "Record from this local input from now on".into(),
+                action: DeviceFabricUiAction::SelectLocalInput {
+                    node_id: input.node_id,
+                },
+                confirm: false,
+            });
+        }
     }
     for source in &view.remote_audio.sources {
         for target in eligible
@@ -337,6 +375,104 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             subtitle: "Close and neutralize this exact live-audio route".into(),
             action: DeviceFabricUiAction::StopRemoteAudio {
                 session_id: route.session_id,
+            },
+            confirm: false,
+        });
+    }
+
+    let speaker_id = |group: crate::shell::speaker_group::SpeakerGroupId| {
+        opaque("so.tilo.continuity.speaker-group.v1", &group.0)
+    };
+    for consent in &view.speaker_groups.consents {
+        for (approved, verb) in [(true, "Join"), (false, "Decline to join")] {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.consent.{}.{}",
+                    if approved { "allow" } else { "decline" },
+                    speaker_id(consent.group)
+                ),
+                title: format!("{verb} {} as the {}", consent.name, consent.role.describe()),
+                subtitle: format!(
+                    "{} asked this device to play in a speaker group",
+                    consent.leader_label
+                ),
+                action: DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                    group: consent.group,
+                    approved,
+                },
+                confirm: approved,
+            });
+        }
+    }
+    for membership in &view.speaker_groups.memberships {
+        actions.push(DeviceAction {
+            id: format!("speakers.leave.{}", speaker_id(membership.group)),
+            title: format!("Leave {}", membership.name),
+            subtitle: format!(
+                "Stop playing as the {} in this speaker group",
+                membership.role.describe()
+            ),
+            action: DeviceFabricUiAction::LeaveSpeakerGroup {
+                group: membership.group,
+            },
+            confirm: false,
+        });
+    }
+    for group in view
+        .speaker_groups
+        .groups
+        .iter()
+        .filter(|group| group.ready_members() > 0)
+    {
+        for source in &view.remote_audio.sources {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.play.{}.{}",
+                    opaque(
+                        "so.tilo.continuity.audio-source.v1",
+                        &source.token.to_le_bytes()
+                    ),
+                    speaker_id(group.id)
+                ),
+                title: format!("Play {} on {}", source.label, group.name),
+                subtitle: "Play through every ready speaker of this group".into(),
+                action: DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token: source.token,
+                    group: group.id,
+                },
+                confirm: true,
+            });
+        }
+        for media in &view.local_media {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.media.{}.{}",
+                    opaque(
+                        "so.tilo.continuity.media-session.v1",
+                        media.session_id.as_bytes()
+                    ),
+                    speaker_id(group.id)
+                ),
+                title: format!("Play {} on {}", media.title, group.name),
+                subtitle: "Keep playing here and send the sound to this speaker group".into(),
+                action: DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                    session_id: media.session_id.clone(),
+                    group: group.id,
+                },
+                confirm: true,
+            });
+        }
+    }
+    for session in &view.speaker_groups.sessions {
+        actions.push(DeviceAction {
+            id: format!(
+                "speakers.stop.{}",
+                opaque("so.tilo.continuity.speaker-session.v1", &session.session_id)
+            ),
+            title: format!("Stop playing on {}", session.name),
+            subtitle: "End this speaker group playback on every speaker".into(),
+            action: DeviceFabricUiAction::StopSpeakerGroupSession {
+                session_id: session.session_id,
             },
             confirm: false,
         });
@@ -1132,6 +1268,134 @@ impl SearchProvider for CallContinuityActionsProvider {
     }
 }
 
+pub const CONTINUE_PROVIDER_ID: &str = "continuity.continue";
+const CONTINUE_ID: &str = "continuity.continue";
+const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
+
+/// The palette's door to the top bar's "Continue <app> from <device>"
+/// offer: accept it (focus that tab here) or dismiss it.
+pub struct ContinueFromDeviceProvider;
+
+impl ContinueFromDeviceProvider {
+    fn row(
+        id: &'static str,
+        title: String,
+        subtitle: String,
+        score: i32,
+        expected: &crate::shell::continuity_suggestion::ContinuitySuggestion,
+    ) -> SearchResult {
+        let expected = expected.clone();
+        SearchResult {
+            kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::View,
+            provider_id: CONTINUE_PROVIDER_ID.into(),
+            id: id.into(),
+            title,
+            subtitle: Some(subtitle),
+            badge: Some(expected.device_label.clone()),
+            score,
+            params: Vec::new(),
+            contract: Some(tilo_actions::ActionContract::view()),
+            on_open: Rc::new(
+                move |_doc,
+                      _root,
+                      chrome: &crate::shell::chrome_state::Chrome,
+                      _args: &ActionArgs| {
+                    let mut state = chrome.borrow_mut();
+                    let now = std::time::Instant::now();
+                    // Re-read at dispatch: a stale row must not focus a tab
+                    // the person has since moved away from elsewhere.
+                    if state.continuity_suggestion(now).as_ref() != Some(&expected) {
+                        return Err(ActionError::Refused(
+                            "that device has moved on; nothing to continue".into(),
+                        ));
+                    }
+                    let done = if id == CONTINUE_ID {
+                        state.accept_continuity_suggestion(now)
+                    } else {
+                        state.dismiss_continuity_suggestion(now)
+                    };
+                    drop(state);
+                    done.map(|_| ()).ok_or_else(|| {
+                        ActionError::Refused("nothing to continue from another device".into())
+                    })
+                },
+            ),
+            on_invoke: None,
+            on_begin_invoke: None,
+        }
+    }
+}
+
+impl SearchProvider for ContinueFromDeviceProvider {
+    fn id(&self) -> &str {
+        CONTINUE_PROVIDER_ID
+    }
+    fn name(&self) -> &'static str {
+        "Continue from another device"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+    fn available_in_active_app_scope(&self) -> bool {
+        true
+    }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        ctx.chrome
+            .continuity_suggestion(std::time::Instant::now())
+            .map_or_else(
+                || "continuity-continue:none".into(),
+                |offer| {
+                    format!(
+                        "continuity-continue:{}:{}:{}",
+                        offer.device.as_str(),
+                        offer.revision,
+                        offer.tab
+                    )
+                },
+            )
+    }
+
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let Some(offer) = ctx.chrome.continuity_suggestion(std::time::Instant::now()) else {
+            return Vec::new();
+        };
+        let device = offer.device_label.as_str();
+        let app = offer.app_label.as_str();
+        let rows = [
+            (
+                CONTINUE_ID,
+                crate::shell::continuity_suggestion::continue_label(&offer),
+                crate::shell::i18n::t_args(
+                    "continuity-continue-subtitle",
+                    &[("device", device.into())],
+                ),
+            ),
+            (
+                CONTINUE_DISMISS_ID,
+                crate::shell::i18n::t_args(
+                    "continuity-dismiss-title",
+                    &[("app", app.into()), ("device", device.into())],
+                ),
+                crate::shell::i18n::t_args(
+                    "continuity-dismiss-subtitle",
+                    &[("device", device.into())],
+                ),
+            ),
+        ];
+        rows.into_iter()
+            .filter_map(|(id, title, subtitle)| {
+                let score = matches(ctx.needle, &title, &subtitle, id)?;
+                Some(Self::row(id, title, subtitle, score, &offer))
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::shell::state::FreshId as _;
@@ -1290,6 +1554,91 @@ mod tests {
     }
 
     #[test]
+    fn speaker_groups_project_consent_play_and_leave_without_disclosing_ids() {
+        use crate::shell::speaker_group::{
+            EndpointSelector, SpeakerGroupId, SpeakerMemberState, SpeakerRole, SpeakerTrim,
+            StereoSide,
+        };
+        use crate::shell::speaker_group_runtime::{
+            SpeakerConsentView, SpeakerGroupView, SpeakerMemberView, SpeakerMembershipView,
+        };
+        let mut view = fixture();
+        let group = SpeakerGroupId([0x51; 16]);
+        let right = SpeakerRole::Stereo(StereoSide::Right);
+        view.remote_audio
+            .sources
+            .push(crate::shell::remote_audio::RemoteAudioSourceView {
+                token: 77,
+                label: "All system audio".into(),
+                application: false,
+            });
+        view.speaker_groups.consents.push(SpeakerConsentView {
+            group,
+            name: "Living room".into(),
+            leader: device("desk"),
+            leader_label: "Desk".into(),
+            role: right,
+            output_label: Some("Speakers".into()),
+        });
+        view.speaker_groups.memberships.push(SpeakerMembershipView {
+            group,
+            name: "Living room".into(),
+            leader_label: "Desk".into(),
+            role: right,
+        });
+        view.speaker_groups.groups.push(SpeakerGroupView {
+            id: group,
+            name: "Living room".into(),
+            leader: device("desk"),
+            leader_label: "Desk".into(),
+            led_locally: false,
+            members: vec![SpeakerMemberView {
+                device: device("desk"),
+                device_label: "Desk".into(),
+                output: EndpointSelector([0x52; 16]),
+                output_label: None,
+                role: SpeakerRole::Stereo(StereoSide::Left),
+                trim: SpeakerTrim::default(),
+                state: SpeakerMemberState::Ready,
+            }],
+        });
+        let actions = device_actions(&view);
+        let join = actions
+            .iter()
+            .find(|action| {
+                action.action
+                    == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                        group,
+                        approved: true,
+                    }
+            })
+            .unwrap();
+        assert!(join.confirm, "joining needs explicit confirmation");
+        assert_eq!(join.title, "Join Living room as the right speaker");
+        assert!(actions.iter().any(|action| {
+            action.action == DeviceFabricUiAction::LeaveSpeakerGroup { group } && !action.confirm
+        }));
+        assert!(actions.iter().any(|action| {
+            action.action
+                == DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token: 77,
+                    group,
+                }
+                && action.confirm
+        }));
+        assert!(actions.iter().any(|action| {
+            matches!(
+                &action.action,
+                DeviceFabricUiAction::PlayMediaOnSpeakerGroup { group: target, .. }
+                    if *target == group
+            )
+        }));
+        for action in &actions {
+            assert!(!action.id.contains("51515151"), "{}", action.id);
+        }
+    }
+
+    #[test]
     fn dispatch_requires_confirmation_and_fresh_full_action_match() {
         let view = Rc::new(RefCell::new(fixture()));
         let dispatched = Rc::new(RefCell::new(Vec::new()));
@@ -1404,5 +1753,109 @@ mod tests {
         live.borrow_mut().local_media.clear();
         assert_ne!(before, provider.search_revision(&context("Now playing")));
         assert!(provider.query(context("Now playing")).is_empty());
+    }
+
+    #[test]
+    fn palette_continue_focuses_the_offered_tab_and_then_retires() {
+        use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
+        use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use crate::shell::search::{SearchRegistry, SearchScope};
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let workspace = tree.desktop.workspaces[0].id;
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        let tab = |id: u64, title: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: title.into(),
+                note: String::new(),
+            },
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![
+            WindowGroup {
+                id: 1,
+                tabs: vec![tab(11, "Terminal")],
+                active_tab: 11,
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+            WindowGroup {
+                id: 2,
+                tabs: vec![tab(22, "Notes")],
+                active_tab: 22,
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+        ];
+        tree.desktop.active = workspace;
+        tree.desktop.active_strip.insert(workspace, strip);
+        tree.desktop.set_active_group(strip, 1);
+        let chrome = ChromeState::new(tree);
+        let laptop = device("laptop");
+        chrome.borrow_mut().set_continuity_feed(ContinuityFeed {
+            local_device: None,
+            observations: vec![FocusObservation {
+                device: laptop.clone(),
+                room,
+                app: AppInstanceId(22),
+                stamp: ContinuityStamp {
+                    counter: 4,
+                    device: laptop.clone(),
+                },
+                observed_at: Some(std::time::Instant::now()),
+                revision: 1,
+                withdrawn: false,
+            }],
+            devices: std::collections::BTreeMap::from([(laptop, "Laptop".to_string())]),
+        });
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(ContinueFromDeviceProvider));
+        let mut doc = AutoCommit::new();
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build(
+                &registry,
+                "",
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+        };
+        let titles = catalog
+            .enumerate()
+            .into_iter()
+            .map(|action| action.title)
+            .collect::<Vec<_>>();
+        assert!(
+            titles.contains(&"Continue Notes from Laptop".to_string()),
+            "{titles:?}"
+        );
+        catalog
+            .select(&ResourceRef::new(CONTINUE_PROVIDER_ID, CONTINUE_ID))
+            .expect("continue row")
+            .invoke(&mut doc, &automerge::ROOT, &chrome, [])
+            .expect("accepted");
+        let focused_group = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_group
+            .get(&strip)
+            .copied();
+        assert_eq!(focused_group, Some(2));
+        assert!(
+            chrome
+                .borrow()
+                .continuity_suggestion(std::time::Instant::now())
+                .is_none()
+        );
     }
 }

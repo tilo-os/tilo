@@ -201,6 +201,20 @@ impl SearchField {
         None
     }
 
+    /// Place the field at `rect` for a host that lays out by hand instead of
+    /// through the taffy tree. The text sits between the magnifier and clear
+    /// gutters, exactly as `apply_layout` would put it.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+        let text_x1 = (rect.x1 - CLEAR_GUTTER).max(rect.x0 + ICON_GUTTER);
+        self.input.apply_layout_external(Rect::new(
+            rect.x0 + ICON_GUTTER,
+            rect.y0,
+            text_x1,
+            rect.y1,
+        ));
+    }
+
     /// Empty until laid out + drawn.
     pub fn clear_rect(&self) -> Rect {
         self.clear_rect
@@ -455,19 +469,25 @@ impl Widget for SearchField {
             *handled = true;
             return;
         }
-        if let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first() {
-            self.input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-        }
+        // A field placed by `apply_layout_external` has no child node; the
+        // input only uses the node to report a focus target.
+        let child_node = taffy
+            .children(node_id)
+            .unwrap_or_default()
+            .first()
+            .copied()
+            .unwrap_or(node_id);
+        self.input.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            child_node,
+            taffy,
+        );
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

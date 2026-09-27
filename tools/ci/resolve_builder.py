@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Resolve the Forgejo builder tag to its immutable package manifest digest."""
+"""Resolve the published builder tag to its immutable index digest."""
 import errno
+import hashlib
 import http.client
 import json
 import os
@@ -11,10 +12,21 @@ import ssl
 import sys
 import time
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-IMAGE = "code.podesta.ai/qos/tilo-builder"
-FILES_URL = "https://code.podesta.ai/api/v1/packages/qos/container/tilo-builder/latest/files"
+IMAGE = "registry.tilo.so/tilo/tilo-builder"
+MANIFEST_URL = "https://registry.tilo.so/v2/tilo/tilo-builder/manifests/latest"
+# The builder is always a multi-architecture index; asking for index types
+# only means a registry can never answer with one platform's manifest.
+INDEX_TYPES = ("application/vnd.oci.image.index.v1+json",
+               "application/vnd.docker.distribution.manifest.list.v2+json")
+# The in-region write endpoint answers every request with a token challenge
+# and grants anonymous callers pull; the public endpoint needs no token.
+TOKEN_REALM = "https://registry.tilo.so/token"
+PULL_SCOPE = "repository:tilo/tilo-builder:pull"
+AUTH_CHALLENGE = re.compile(r'Bearer realm="(?P<realm>[^"]+)",service="(?P<service>[^"]+)"'
+                            r'(?:,scope="(?P<scope>[^"]+)")?')
 MAX_RESPONSE = 1024 * 1024
 ATTEMPTS = 3
 # errno.errorcode can prefer Winsock aliases on Windows. Keep supported
@@ -61,19 +73,51 @@ def failure(error):
     return "UnexpectedError", False
 
 
-def fetch_files(token):
-    if not token:
-        raise ValueError("REGISTRY_TOKEN is required to resolve the current builder")
-    request = Request(FILES_URL, headers={"Authorization": "token " + token,
-                                         "Accept": "application/json"})
+def bounded(response):
+    payload = response.read(MAX_RESPONSE + 1)
+    if len(payload) > MAX_RESPONSE:
+        raise ValueError("builder metadata exceeds response bound")
+    return payload
+
+
+def anonymous_bearer(opener, challenge):
+    """Follow the token challenge anonymously: pulls need no identity."""
+    match = AUTH_CHALLENGE.fullmatch(challenge or "")
+    if not match or match["realm"] != TOKEN_REALM or match["scope"] not in (None, PULL_SCOPE):
+        raise ValueError("unexpected registry authentication challenge")
+    query = urlencode({"service": match["service"], "scope": PULL_SCOPE})
+    with opener.open(Request(TOKEN_REALM + "?" + query), timeout=30) as response:
+        document = json.loads(bounded(response))
+    token = (document.get("token") or document.get("access_token")) if isinstance(document, dict) else None
+    if not isinstance(token, str) or not token:
+        raise ValueError("registry returned no pull token")
+    return token
+
+
+def read_manifest(opener):
+    headers = {"Accept": ", ".join(INDEX_TYPES)}
+    try:
+        with opener.open(Request(MANIFEST_URL, headers=headers), timeout=30) as response:
+            return bounded(response)
+    except HTTPError as error:
+        if error.code != 401:
+            raise
+        challenge = error.headers.get("WWW-Authenticate") if error.headers else None
+        error.close()
+    bearer = anonymous_bearer(opener, challenge)
+    authorized = Request(MANIFEST_URL, headers={**headers, "Authorization": "Bearer " + bearer})
+    with opener.open(authorized, timeout=30) as response:
+        return bounded(response)
+
+
+def fetch_manifest():
+    # No credential ever reaches these requests.
     opener = build_opener(NoRedirect())
-    # Only this fixed-origin metadata GET is retried. Each attempt retains the
+    # Only this fixed-origin metadata read is retried. Each attempt retains the
     # 30-second socket timeout and 1 MiB response bound; backoff is 1s then 2s.
     for attempt in range(ATTEMPTS):
         try:
-            with opener.open(request, timeout=30) as response:
-                payload = response.read(MAX_RESPONSE + 1)
-            break
+            return read_manifest(opener)
         except Exception as error:
             category, transient = failure(error)
             if isinstance(error, HTTPError):
@@ -82,39 +126,34 @@ def fetch_files(token):
                 raise
             print(f"Builder metadata retry {attempt + 1}/{ATTEMPTS - 1} ({category})", file=sys.stderr)
             time.sleep(attempt + 1)
-    if len(payload) > MAX_RESPONSE:
-        raise ValueError("builder metadata exceeds response bound")
-    return json.loads(payload)
 
 
-def resolve(requested="", token="", fetch=fetch_files):
+def resolve(requested="", fetch=fetch_manifest):
     if requested:
         if not re.fullmatch(re.escape(IMAGE) + r"@sha256:[0-9a-f]{64}", requested):
             raise ValueError("builder_image must be an immutable tilo-builder SHA-256 reference")
         return requested
-    rows = fetch(token)
-    # This Forgejo container-package endpoint returns the manifest/index as
-    # manifest.json; its SHA-256 is the registry's content-addressed reference.
-    # Reject ambiguous or changed API contracts instead of silently using latest.
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise ValueError("expected exactly one builder manifest file")
-    row = rows[0]
-    if row.get("name") != "manifest.json" or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256", ""))):
-        raise ValueError("builder manifest name or SHA-256 is invalid")
-    if type(row.get("Size")) is not int or row["Size"] <= 0:
-        raise ValueError("builder manifest size is invalid")
-    return IMAGE + "@sha256:" + row["sha256"]
+    payload = fetch()
+    # The digest of the exact bytes served is the registry's content address.
+    # Reject anything but a non-empty index instead of silently using latest.
+    if not isinstance(payload, bytes):
+        raise ValueError("builder manifest is not raw bytes")
+    document = json.loads(payload)
+    if (not isinstance(document, dict) or document.get("mediaType") not in INDEX_TYPES
+            or not isinstance(document.get("manifests"), list) or not document["manifests"]):
+        raise ValueError("expected the builder's multi-architecture index")
+    return IMAGE + "@sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def main():
     try:
-        image = resolve(os.environ.get("REQUESTED_BUILDER", ""), os.environ.get("REGISTRY_TOKEN", ""))
+        image = resolve(os.environ.get("REQUESTED_BUILDER", ""))
         output = os.environ["GITHUB_OUTPUT"]
         with Path(output).open("a", encoding="utf-8") as stream:
             stream.write("image=" + image + "\n")
         print("Resolved CI builder: " + image)
     except Exception as error:
-        # HTTP errors must never echo credentials or authentication responses.
+        # HTTP errors must never echo URLs or response bodies.
         print("::error::CI builder resolution failed (" + failure(error)[0] + ")", file=sys.stderr)
         return 1
     return 0

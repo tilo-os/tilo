@@ -29,7 +29,7 @@ def validate_run(api, intent, run):
     payload = channel.read_json((run.get('event_payload') or '{}').encode())
     channel.require(api.policy_sha == desired['policy_sha256'] and run.get('status') == 'success'
                     and run.get('repository', {}).get('id') == 23
-                    and run.get('repository', {}).get('full_name') == 'qos/qos'
+                    and run.get('repository', {}).get('full_name') == 'tilo/tilo'
                     and run.get('workflow_id') == 'release-apps.yml'
                     and run.get('trigger_event') == 'workflow_dispatch'
                     and run.get('commit_sha') == desired['source_sha']
@@ -104,12 +104,12 @@ class FinalArtifactAcceptance:
         validate_run(self.api, intent, run)
         channel.require(all(run.get(k) == matched_run.get(k) for k in RUN_KEYS), 'matched run changed before verification')
         run_id = run['id']
-        jobs_path = f'repos/qos/qos/actions/runs/{run_id}/jobs'
+        jobs_path = f'repos/tilo/tilo/actions/runs/{run_id}/jobs'
         jobs = self.api.call(jobs_path)
         job = qualifier(jobs, run_id)
-        log = self.api.raw_api(f'repos/qos/qos/actions/jobs/{job["id"]}/logs', 8 * 1024**2)
+        log = self.api.raw_api(f'repos/tilo/tilo/actions/jobs/{job["id"]}/logs', 8 * 1024**2)
         bound = markers(log, intent['id'], job['attempt'], intent['desired']['architectures'])
-        artifacts_path = f'repos/qos/qos/actions/runs/{run_id}/artifacts?page=1&limit=50'
+        artifacts_path = f'repos/tilo/tilo/actions/runs/{run_id}/artifacts?page=1&limit=50'
         artifacts = self.api.call(artifacts_path)
         channel.require(isinstance(artifacts, list) and len(artifacts) < 50, 'incomplete artifact listing')
         root_policy = channel.pinned_json(self.policy_path.read_bytes(), self.policy_sha)

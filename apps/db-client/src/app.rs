@@ -1,5 +1,5 @@
 //! Root widget for the database client. Owns the [`Session`] (connections,
-//! engine, schema, results) and the shared [`ui::CodeEditor`] (CRDT-backed
+//! engine, schema, results) and the shared `ui::CodeEditor` (CRDT-backed
 //! SQL buffer), lays
 //! out the two regions (connections+schema sidebar, main panel) itself, and
 //! draws everything directly into the Vello scene. Status is surfaced as a
@@ -12,7 +12,7 @@
 //!
 //! The connections + schema sidebar is responsive. On a wide window it stays
 //! docked beside the main panel (the desktop layout above). When the window
-//! is narrower than [`BREAKPOINT`] the sidebar collapses into an overlay flap
+//! is narrower than `BREAKPOINT` the sidebar collapses into an overlay flap
 //! that slides over the main panel behind a dimming scrim — closed by default
 //! and summoned with the hamburger toggle in the tab bar. The eased slide and
 //! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.

@@ -178,6 +178,22 @@ impl SecretServiceMlsVault {
         self.root.join("authority")
     }
 
+    /// Where this device keeps its sealed channel group and member state.
+    #[cfg(not(test))]
+    pub(crate) fn channel_state_root(&self) -> PathBuf {
+        self.root.join("channels")
+    }
+
+    /// Key sealing this device's channel state, derived from the Secret
+    /// Service master key under its own domain so it seals nothing else.
+    #[cfg(not(test))]
+    pub(crate) fn channel_state_key(&self) -> VaultKey {
+        let mut hash = Sha256::new();
+        hash.update(b"tilo.channel-state-key.v1");
+        hash.update(self.master_key.as_ref());
+        VaultKey::new(hash.finalize().into())
+    }
+
     /// Open the provider, creating its master key in Secret Service if this is
     /// the first use. There is intentionally no file-key fallback.
     ///

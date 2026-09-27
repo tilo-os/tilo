@@ -593,6 +593,8 @@ pub struct BrokerHandle {
             >,
         >,
     >,
+    /// End-to-end encryption of this device's collaboration channels.
+    channel_encryption: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
     peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
 }
 
@@ -668,6 +670,21 @@ impl AppActionBroker {
     }
 
     /// The broker state behind this facade, for the action host.
+    /// Read what each application declared on the action door from
+    /// `resolver` instead of the installed manifests.
+    pub fn set_app_action_access(&self, resolver: crate::shell::app_action_access::AccessResolver) {
+        self.state.set_app_action_access(resolver);
+    }
+
+    /// Ask `prompter` before an application uses another application's
+    /// action it holds no grant for. Without one, such a request is refused.
+    pub fn set_app_action_consent(
+        &self,
+        prompter: Arc<dyn crate::shell::app_action_consent::AppActionConsentPrompter>,
+    ) {
+        self.state.set_app_action_consent(prompter);
+    }
+
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
     }
@@ -689,6 +706,36 @@ impl AppActionBroker {
     ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
     {
         self.state.capture_invocations_for_test(peer_id)
+    }
+
+    /// Shortcut runs finished since the last call, oldest first, for the
+    /// history recorder to record against the documents they changed.
+    pub fn take_finished_shortcut_runs(
+        &self,
+    ) -> Vec<crate::shell::automation_host::FinishedShortcutRun> {
+        self.state.take_finished_shortcut_runs()
+    }
+
+    /// Start saved shortcut `shortcut` in `room` because its `trigger`
+    /// fired, on behalf of `caller`, the person who saved it. Answers with
+    /// the broker job the run reports on.
+    ///
+    /// # Errors
+    ///
+    /// Why the trigger may not start it: the shortcut is gone or lost the
+    /// trigger, `caller` did not save it, or it now reaches past what
+    /// `caller` may do.
+    pub fn start_triggered_shortcut_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        shortcut: &str,
+        trigger: &tilo_automation::TriggerSpec,
+        run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+        self.state
+            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
     }
 
     pub fn statuses_generation(&self) -> u64 {
@@ -836,6 +883,12 @@ impl BrokerHandle {
                 )
             })?
             .apply(transaction)
+    }
+
+    /// This device's channel encryption service, for the identity service
+    /// that hands application endpoints their content keys.
+    pub fn channel_encryption(&self) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
+        self.channel_encryption.clone()
     }
 
     /// Cloneable handle for the live resource/action search provider.
@@ -1046,6 +1099,9 @@ struct DrainQueues {
     channels: Arc<Mutex<BrokerChannels>>,
     net: Arc<ShellNetwork>,
     pending: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
+    /// This device's channel encryption service, pumped before documents
+    /// drain so a channel's gate is in place before its first op.
+    channel_encryption: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
 }
 
 impl DrainQueues {
@@ -1061,6 +1117,9 @@ impl DrainQueues {
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) -> bool {
+        if let Some(service) = &self.channel_encryption {
+            service.pump(&*self.net);
+        }
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
             && self.drain_scrollback_requests()
@@ -1412,45 +1471,7 @@ fn spawn_inner(
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
-
-    #[cfg(not(test))]
-    let mut mls_authority = None;
-    #[cfg(test)]
-    let mls_authority = None;
-    #[cfg(not(test))]
-    match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
-        Ok(history) => {
-            if let Ok(mut state) = channels.lock() {
-                state.history = Some(history);
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
-        }
-    }
-    #[cfg(not(test))]
-    match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
-        Ok(vault) => {
-            let vault = Arc::new(vault);
-            if let Ok(mut state) = channels.lock() {
-                state.install_mls_vault(Arc::clone(&vault));
-            }
-            if let Some(workspaces) = membership.clone() {
-                match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
-                    vault.authority_root(),
-                    vault,
-                    workspaces,
-                    Arc::clone(&channels),
-                ) {
-                    Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
-                    Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
-                }
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
-        }
-    }
+    let (mls_authority, channel_encryption) = open_session_services(membership.as_ref(), &channels);
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -1475,6 +1496,7 @@ fn spawn_inner(
             channels: Arc::clone(&channels),
             net: Arc::clone(net),
             pending: Arc::clone(&pending_scrollback),
+            channel_encryption: channel_encryption.clone(),
         };
         let quit = Arc::clone(&drain_quit);
         std::thread::Builder::new()
@@ -1520,8 +1542,119 @@ fn spawn_inner(
         fanout: table,
         channels,
         mls_authority,
+        channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
+}
+
+/// The broker's session services: the durable history store, the MLS
+/// lifecycle authority and the channel encryption service. Tests run with
+/// none of them, since each needs the session's state root and vault.
+type SessionServices = (
+    Option<
+        Arc<
+            Mutex<
+                crate::shell::collab_mls_authority::MlsAuthorityCoordinator<
+                    crate::shell::collab_mls_authority::SecretServiceMlsVault,
+                >,
+            >,
+        >,
+    >,
+    Option<crate::shell::channel_encryption::ChannelKeyAccess>,
+);
+
+#[cfg(test)]
+fn open_session_services(
+    _: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    _: &Arc<Mutex<BrokerChannels>>,
+) -> SessionServices {
+    (None, None)
+}
+
+#[cfg(not(test))]
+fn open_session_services(
+    membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    channels: &Arc<Mutex<BrokerChannels>>,
+) -> SessionServices {
+    let mut mls_authority = None;
+    let mut channel_encryption = None;
+    match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
+        Ok(history) => {
+            if let Ok(mut state) = channels.lock() {
+                state.history = Some(history);
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
+        }
+    }
+    match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
+        Ok(vault) => {
+            let vault = Arc::new(vault);
+            if let Ok(mut state) = channels.lock() {
+                state.install_mls_vault(Arc::clone(&vault));
+            }
+            if let Some(workspaces) = membership.cloned() {
+                channel_encryption =
+                    open_channel_encryption(&vault, workspaces, Arc::clone(channels));
+            }
+            if let Some(workspaces) = membership.cloned() {
+                match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
+                    vault.authority_root(),
+                    vault,
+                    workspaces,
+                    Arc::clone(channels),
+                ) {
+                    Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
+                    Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
+        }
+    }
+    (mls_authority, channel_encryption)
+}
+
+/// Start this device's channel encryption service over the session's
+/// Secret Service vault and certified device key. Without either, channels
+/// stay closed to this device rather than falling back to plaintext.
+#[cfg(not(test))]
+fn open_channel_encryption(
+    vault: &crate::shell::collab_mls_authority::SecretServiceMlsVault,
+    workspaces: crate::shell::state::WorkspaceTreeHandle,
+    channels: Arc<Mutex<BrokerChannels>>,
+) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let device_key = match tilo_user_identity::persist::read_device_key(&paths.device_privkey) {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(%error, "channel encryption unavailable: no certified device key");
+            return None;
+        }
+    };
+    let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
+        workspaces,
+        crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet(),
+    );
+    match crate::shell::channel_encryption::ChannelEncryption::open(
+        crate::shell::channel_encryption::ChannelEncryptionConfig {
+            root: vault.channel_state_root(),
+            vault: vault.channel_state_key(),
+            device_key,
+        },
+        Box::new(directory),
+        channels,
+    ) {
+        Ok(service) => Some(crate::shell::channel_encryption::ChannelKeyAccess::new(
+            service,
+        )),
+        Err(error) => {
+            tracing::warn!(%error, "channel encryption state could not be opened");
+            None
+        }
+    }
 }
 
 /// Answer each request through `host` and send the answer back to the

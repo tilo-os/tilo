@@ -30,8 +30,7 @@ recovery or inspection.
 
 The repository `.codex/hooks.json` only covers sessions loading this repository's
 hook configuration. It cannot make promises for infra or another checkout.
-In particular, the observed Windows user's global hooks configuration was empty;
-the infra push had no local hook. No global hook has been enabled by this change.
+No global hook has been enabled by this change.
 
 For cross-repository coverage, install a reviewed, fixed copy of `watch_ci.py`
 and its `push_event.py` and `watch_receipt.py` modules outside mutable checkouts,
@@ -45,10 +44,8 @@ repository hooks share the same deduplication receipts with that global copy.
 Before describing installation as working, inspect one real hook invocation:
 verify its input envelope, target session/worktree/commit, and receipt, then the
 single queued completion message. Do not create a second watcher to test it.
-`test_push_event.py` preserves the actual PR157 push code and child identity from
-the local execution transcript, but reconstructs the hook envelope because no
-raw PostToolUse input was retained. Its integration fixture mocks Forgejo and
-delivery; passing it is not proof of a deployed hook.
+`test_push_event.py` uses synthetic push envelopes. Its integration fixture mocks
+Forgejo and delivery; passing it is not proof of a deployed hook.
 
 The current watcher discovers runs for 90 seconds and waits at most 25 minutes.
 It reports missing runs or timeout explicitly; it does not promise eventual final

@@ -58,10 +58,17 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
 # (tag, nightly or protected manual main release) must still run it. The third
 # publication branch unbinds the shared compiler cache
 # (tools/tests/test_publication_compiler_cache.py).
+# The rebuild runs in its own, parallel reproduction lane, which exists only in
+# publication matrices and refuses to run otherwise; the publication lane waits
+# for its digest before installing or signing.
 grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
-    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+    | grep -Fq "if: matrix.role == 'reproduce'" \
+  && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
+  && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && grep -Fq "second_manifest='\${{ steps.reproduction.outputs.manifest }}'" "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 4 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
@@ -160,7 +167,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
    && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
-   && grep -Fq 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" \
+   && grep -Fq 'latest="registry.tilo.so/tilo/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
   ok 'OS publication promotes one signed two-architecture index after protected native gates'
 else
@@ -184,7 +191,7 @@ else
 fi
 
 durable_promotion_line="$(grep -n 'for tag in "${durable_tags\[@\]}"' "$workflow" | head -1 | cut -d: -f1)"
-latest_promotion_line="$(grep -n 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
+latest_promotion_line="$(grep -n 'latest="registry.tilo.so/tilo/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
 if [ -n "$durable_promotion_line" ] && [ -n "$latest_promotion_line" ] \
    && [ "$durable_promotion_line" -lt "$latest_promotion_line" ] \
    && grep -Fq 'bad semver/source name cannot strand a newly written genN' "$workflow" \
@@ -221,7 +228,7 @@ else
 fi
 
 children='[{"architecture":"x86_64","digest":"sha256:'"$hex"'"},{"architecture":"aarch64","digest":"sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
-kernel_refs='[{"architecture":"x86_64","ref":"code.podesta.ai/qos/tilo-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"code.podesta.ai/qos/tilo-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
+kernel_refs='[{"architecture":"x86_64","ref":"registry.tilo.so/tilo/tilo-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"registry.tilo.so/tilo/tilo-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    TILO_KERNEL_REFS_JSON="$kernel_refs" TILO_RELEASE_CHILDREN_JSON="$children" \
@@ -247,7 +254,7 @@ else
   ok 'provenance refuses unpinned build dependencies'
 fi
 
-firmware="code.podesta.ai/qos/lenovo-firmware@sha256:$hex"
+firmware="code.tilo.so/tilo/lenovo-firmware@sha256:$hex"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
@@ -271,8 +278,8 @@ else
   bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
 fi
 
-fex="code.podesta.ai/qos/tilo-fex-payload-candidate@sha256:$hex"
-guest="code.podesta.ai/qos/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
+fex="registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:$hex"
+guest="registry.tilo.so/tilo/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \

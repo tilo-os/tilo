@@ -6,76 +6,7 @@
 //! what lets `--shots` seed a [`MonitorModel::sample`] snapshot offline that
 //! renders identically to a live frame.
 
-/// A fixed-capacity rolling history of `f32` samples — the backing store
-/// for every time-series chart and sparkline. Oldest sample falls off the
-/// front when the buffer is full. `cap` is small (≈120) so the O(n)
-/// `remove(0)` is irrelevant.
-#[derive(Clone, Debug)]
-pub struct Ring {
-    data: Vec<f32>,
-    cap: usize,
-}
-
-impl Ring {
-    pub fn new(cap: usize) -> Self {
-        Self {
-            data: Vec::with_capacity(cap),
-            cap,
-        }
-    }
-
-    /// Seed a ring from an iterator, keeping only the last `cap` values.
-    pub fn from_iter(cap: usize, it: impl IntoIterator<Item = f32>) -> Self {
-        let mut r = Self::new(cap);
-        for v in it {
-            r.push(v);
-        }
-        r
-    }
-
-    pub fn push(&mut self, v: f32) {
-        if self.data.len() >= self.cap && !self.data.is_empty() {
-            self.data.remove(0);
-        }
-        self.data.push(v);
-    }
-
-    pub fn as_slice(&self) -> &[f32] {
-        &self.data
-    }
-
-    pub fn last(&self) -> f32 {
-        self.data.last().copied().unwrap_or(0.0)
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.cap
-    }
-
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    /// Largest sample currently held, or `0.0` when empty. Used to pick a
-    /// sensible y-axis ceiling for the network/disk charts whose units
-    /// are unbounded.
-    pub fn max(&self) -> f32 {
-        self.data.iter().copied().fold(0.0_f32, f32::max)
-    }
-
-    /// Mean of the held samples (0.0 when empty).
-    pub fn avg(&self) -> f32 {
-        if self.data.is_empty() {
-            0.0
-        } else {
-            self.data.iter().sum::<f32>() / self.data.len() as f32
-        }
-    }
-}
+pub use ui::charts::RollingSeries;
 
 /// One process row in the table.
 #[derive(Clone, Debug)]
@@ -135,12 +66,12 @@ pub struct Metrics {
     pub load_avg: [f32; 3],
 
     // Rolling histories (newest at the back).
-    pub cpu_hist: Ring,
-    pub mem_hist: Ring,
-    pub net_rx_hist: Ring,
-    pub net_tx_hist: Ring,
-    pub disk_read_hist: Ring,
-    pub disk_write_hist: Ring,
+    pub cpu_hist: RollingSeries,
+    pub mem_hist: RollingSeries,
+    pub net_rx_hist: RollingSeries,
+    pub net_tx_hist: RollingSeries,
+    pub disk_read_hist: RollingSeries,
+    pub disk_write_hist: RollingSeries,
 }
 
 impl Metrics {
@@ -213,7 +144,7 @@ impl MonitorModel {
         let cores: Vec<f32> = core_base.to_vec();
 
         // Synthesise wavy histories so the charts read as "alive".
-        let cpu_hist = Ring::from_iter(
+        let cpu_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -225,7 +156,7 @@ impl MonitorModel {
             }),
         );
         let mem_total: u64 = 16 * 1024 * 1024 * 1024;
-        let mem_hist = Ring::from_iter(
+        let mem_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -234,7 +165,7 @@ impl MonitorModel {
         );
         let mem_used = (mem_total as f32 * mem_hist.last()) as u64;
 
-        let net_rx_hist = Ring::from_iter(
+        let net_rx_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -242,7 +173,7 @@ impl MonitorModel {
                 mb.max(0.05) * 1_000_000.0
             }),
         );
-        let net_tx_hist = Ring::from_iter(
+        let net_tx_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -250,7 +181,7 @@ impl MonitorModel {
                 mb.max(0.02) * 1_000_000.0
             }),
         );
-        let disk_read_hist = Ring::from_iter(
+        let disk_read_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -258,7 +189,7 @@ impl MonitorModel {
                 mb.max(0.0) * 1_000_000.0
             }),
         );
-        let disk_write_hist = Ring::from_iter(
+        let disk_write_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
@@ -301,7 +232,7 @@ impl MonitorModel {
     /// the first refresh. Histories are pre-filled with zeros so the
     /// charts don't visibly "grow in" from the left edge.
     pub fn empty() -> Self {
-        let z = || Ring::from_iter(HISTORY, std::iter::repeat_n(0.0, HISTORY));
+        let z = || RollingSeries::from_samples(HISTORY, std::iter::repeat_n(0.0, HISTORY));
         let metrics = Metrics {
             cpu_brand: "CPU".into(),
             host: "localhost".into(),
@@ -667,7 +598,7 @@ fn sample_cmdline(name: &str, user: &str) -> String {
         "monitor" => "/usr/bin/monitor".into(),
         "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
         "tilo-fs" => "/usr/bin/tilo-fs --mount /var/workspace --cache /var/cache/tilo-fs".into(),
-        "iroh-node" => "/usr/bin/iroh-node --relay code.podesta.ai".into(),
+        "iroh-node" => "/usr/bin/iroh-node --relay code.tilo.so".into(),
         "pipewire" => "/usr/bin/pipewire".into(),
         _ => format!("/usr/bin/{name}"),
     }
@@ -706,17 +637,6 @@ pub fn fmt_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ring_caps_and_keeps_newest() {
-        let mut r = Ring::new(3);
-        for v in [1.0, 2.0, 3.0, 4.0] {
-            r.push(v);
-        }
-        assert_eq!(r.as_slice(), &[2.0, 3.0, 4.0]);
-        assert_eq!(r.last(), 4.0);
-        assert_eq!(r.max(), 4.0);
-    }
 
     #[test]
     fn sample_is_fully_populated() {

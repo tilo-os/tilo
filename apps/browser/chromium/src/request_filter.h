@@ -10,7 +10,7 @@
 #include <atomic>
 #include <functional>
 
-namespace qos {
+namespace tilo {
 inline std::string ResourceKind(cef_resource_type_t kind) {
   switch(kind) {
     case RT_MAIN_FRAME: return "document";

@@ -41,14 +41,22 @@ mod color_management_surface_override;
 mod compositor_test;
 #[path = "concept_parity_spec.rs"]
 mod concept_parity_spec;
+#[path = "continuity_suggestion_flow.rs"]
+mod continuity_suggestion_flow;
 #[path = "control_socket_test.rs"]
 mod control_socket_test;
+#[path = "controller_navigation.rs"]
+mod controller_navigation;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
+#[path = "cursor_protocol.rs"]
+mod cursor_protocol;
 #[path = "dbus_runtime_context.rs"]
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "display_layout_switcher.rs"]
+mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
 mod dmabuf_commit_barrier;
 #[path = "dmabuf_direct_capture_path.rs"]
@@ -95,6 +103,10 @@ mod hdr_tonemap_shader;
 mod headless_examples_smoke;
 #[path = "identity_startup.rs"]
 mod identity_startup;
+#[path = "idle_inhibit_protocol.rs"]
+mod idle_inhibit_protocol;
+#[path = "input_method_wire.rs"]
+mod input_method_wire;
 #[path = "inspect_through_broker.rs"]
 mod inspect_through_broker;
 #[path = "interaction_test.rs"]
@@ -107,20 +119,32 @@ mod leak_probe;
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
+#[path = "multi_output.rs"]
+mod multi_output;
+#[path = "notification_center.rs"]
+mod notification_center;
 #[path = "onboarding_visual.rs"]
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
+#[path = "output_management_protocol.rs"]
+mod output_management_protocol;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "per_output_groups.rs"]
+mod per_output_groups;
+#[path = "per_output_scale.rs"]
+mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
 mod permission_prompt_pump;
 #[path = "permissions_tab_test.rs"]
 mod permissions_tab_test;
 #[path = "persisted_app_placeholders.rs"]
 mod persisted_app_placeholders;
+#[path = "pointer_lock_protocol.rs"]
+mod pointer_lock_protocol;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
@@ -139,8 +163,12 @@ mod recorder_test;
 mod recording_frames_test;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "reopen_closed_tab.rs"]
+mod reopen_closed_tab;
 #[path = "replay_test.rs"]
 mod replay_test;
+#[path = "runtime_daemon_process.rs"]
+mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]
@@ -151,6 +179,8 @@ mod session_lock_e2e;
 mod shell_chrome_test;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "shortcuts_door.rs"]
+mod shortcuts_door;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "state_file_format.rs"]
@@ -163,6 +193,12 @@ mod surface_substream_e2e;
 mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "toplevel_configure_states.rs"]
+mod toplevel_configure_states;
+#[path = "toplevel_icon_protocol.rs"]
+mod toplevel_icon_protocol;
+#[path = "transient_sheets.rs"]
+mod transient_sheets;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]

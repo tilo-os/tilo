@@ -15,7 +15,7 @@ import time
 
 class Page(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b'''<!doctype html><title>qOS frame benchmark</title><style>
+        body = b'''<!doctype html><title>Tilo frame benchmark</title><style>
         body{margin:0;background:#f5f5f5}.box{width:300px;height:300px;background:#1870fa;
         animation:move 1s linear infinite alternate}@keyframes move{to{transform:translateX(600px) rotate(180deg)}}
         </style><div class="box"></div>'''
@@ -48,7 +48,7 @@ def main():
     server = ThreadingHTTPServer(('127.0.0.1', 0), Page)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     events = queue.Queue()
-    with tempfile.TemporaryDirectory(prefix='qos-benchmark-') as profile, tempfile.TemporaryFile() as log:
+    with tempfile.TemporaryDirectory(prefix='tilo-benchmark-') as profile, tempfile.TemporaryFile() as log:
         start = time.monotonic()
         child = subprocess.Popen([str(args.host.resolve()), '--profile='+profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         def reader():

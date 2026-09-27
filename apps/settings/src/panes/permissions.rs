@@ -144,6 +144,7 @@ enum Tint {
     Screen,
     Remote,
     Network,
+    AppAction,
 }
 
 impl Tint {
@@ -151,7 +152,7 @@ impl Tint {
         match self {
             Tint::Files => c.semantic.info,
             Tint::Camera | Tint::Microphone => c.semantic.warning,
-            Tint::Screen => c.accent[5],
+            Tint::Screen | Tint::AppAction => c.accent[5],
             Tint::Remote => c.semantic.danger,
             Tint::Network => c.semantic.success,
         }
@@ -189,8 +190,8 @@ fn expiry_label(e: Expiry) -> &'static str {
 }
 
 /// Project one stored capability into a display capability, or `None` when it
-/// is not an app portal grant this pane renders (role/room/action/resource
-/// overrides and restrictions are enforcement plumbing, not app permissions).
+/// is not an app grant this pane renders (role/room/resource overrides and
+/// restrictions are enforcement plumbing, not app permissions).
 fn cap_view(cap: &CapOverride) -> Option<CapView> {
     if cap.effect != Effect::Grant {
         return None;
@@ -227,6 +228,13 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             };
             ("Network", detail, Tint::Network)
         }
+        // Another app's action this app may use: the consent sheet grants
+        // these; the workspace's own Settings lists them under App actions.
+        Scope::Action { app, action } => (
+            "App action",
+            format!("Use \u{201c}{action}\u{201d} in {app}"),
+            Tint::AppAction,
+        ),
         _ => return None,
     };
     Some(CapView {
@@ -713,6 +721,17 @@ mod tests {
             Some("Remote control")
         );
         assert_eq!(g(Scope::NetHost("*".into()), Verb::Write), Some("Network"));
+        let action = cap_view(&CapOverride::grant(
+            Subject::app("so.tilo.shortcuts"),
+            Scope::Action {
+                app: "so.tilo.agent".into(),
+                action: "freeform".into(),
+            },
+            Verb::Write,
+        ))
+        .unwrap();
+        assert_eq!(action.kind, "App action");
+        assert!(action.detail.contains("freeform") && action.detail.contains("so.tilo.agent"));
         // Read vs write is reflected in the file detail.
         let rw = cap_view(&CapOverride::grant(
             Subject::app("a"),

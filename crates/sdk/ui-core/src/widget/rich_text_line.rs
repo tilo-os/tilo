@@ -11,6 +11,7 @@
 //!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
 
 use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use crate::color_compat::ColorCompat;
 use crate::richtext::RichSpan;
@@ -92,7 +93,7 @@ struct MarkDrawCtx<'a> {
     text_size: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ImagePreview {
     #[default]
     Absent,
@@ -108,6 +109,18 @@ impl ImagePreview {
     }
 }
 
+/// The inputs a stacking host measured a line under, and the result.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct StackMeasure {
+    pub(super) width: f32,
+    pub(super) height: f32,
+}
+
+fn default_measurement_theme() -> Arc<Theme> {
+    static DEFAULT: LazyLock<Arc<Theme>> = LazyLock::new(|| Arc::new(Theme::dark()));
+    Arc::clone(&DEFAULT)
+}
+
 #[derive(Default)]
 struct RichTextDirty {
     marks: bool,
@@ -121,7 +134,12 @@ pub struct RichTextLine {
     font_size: f32,
     wrap: bool,
     inline_formatting: bool,
-    measurement_theme: Theme,
+    /// Shared by every line of one editor: the editor hands out one `Arc`
+    /// per theme, so preparing an unchanged theme is a pointer comparison.
+    measurement_theme: Arc<Theme>,
+    /// The height a stacking host last measured for this line, valid while
+    /// the line reports no pending measurement and its layout inputs match.
+    stack_measure: Option<StackMeasure>,
     layout_inset: f32,
     layout_header_height: f32,
     table_preview: Option<bool>,
@@ -164,7 +182,8 @@ impl RichTextLine {
             font_size: DEFAULT_FONT_SIZE,
             wrap: false,
             inline_formatting: true,
-            measurement_theme: Theme::dark(),
+            measurement_theme: default_measurement_theme(),
+            stack_measure: None,
             layout_inset: 0.0,
             layout_header_height: 0.0,
             table_preview: None,
@@ -195,6 +214,7 @@ impl RichTextLine {
     /// For `BlockEditor` heading blocks (H1=28, H2=22, H3=18).
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
+        self.stack_measure = None;
         self.font_size = size;
         self.inner.set_font_size(size);
         self
@@ -207,13 +227,19 @@ impl RichTextLine {
     }
 
     pub fn set_mono(&mut self, mono: bool) {
+        if self.inner.is_mono() != mono {
+            self.stack_measure = None;
+        }
         self.inner.set_mono(mono);
     }
 
     /// Source-code cells retain literal text rather than prose formatting or
     /// note-link shortcuts. Monospace alone does not imply these semantics.
     pub fn set_inline_formatting(&mut self, enabled: bool) {
-        self.dirty.styled_layout |= self.inline_formatting != enabled;
+        if self.inline_formatting != enabled {
+            self.dirty.styled_layout = true;
+            self.stack_measure = None;
+        }
         self.inline_formatting = enabled;
         self.inner.set_compact_multiline(!enabled);
         if !enabled {
@@ -222,6 +248,9 @@ impl RichTextLine {
     }
 
     pub fn set_wrap(&mut self, wrap: bool) {
+        if self.wrap != wrap {
+            self.stack_measure = None;
+        }
         self.wrap = wrap;
         self.inner.set_multiline(wrap);
     }
@@ -231,14 +260,23 @@ impl RichTextLine {
     }
 
     pub(super) fn set_layout_inset(&mut self, inset: f32) {
+        if self.layout_inset.to_bits() != inset.to_bits() {
+            self.stack_measure = None;
+        }
         self.layout_inset = inset;
     }
 
     pub(super) fn set_layout_header_height(&mut self, height: f32) {
+        if self.layout_header_height.to_bits() != height.to_bits() {
+            self.stack_measure = None;
+        }
         self.layout_header_height = height;
     }
 
     pub(super) fn set_table_preview(&mut self, visual: Option<bool>) {
+        if self.table_preview != visual {
+            self.stack_measure = None;
+        }
         self.table_preview = visual;
     }
 
@@ -247,6 +285,9 @@ impl RichTextLine {
     }
 
     pub(super) fn set_image_preview(&mut self, preview: ImagePreview) {
+        if self.image_preview != preview {
+            self.stack_measure = None;
+        }
         self.image_preview = preview;
     }
 
@@ -400,7 +441,10 @@ impl RichTextLine {
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
-        self.dirty.styled_layout |= self.transient_colors != colors;
+        if self.transient_colors == colors {
+            return;
+        }
+        self.dirty.styled_layout = true;
         self.transient_colors = colors;
         self.refresh_attributes();
     }
@@ -725,6 +769,75 @@ impl RichTextLine {
     }
 }
 
+impl RichTextLine {
+    /// Resolve everything layout reads from the theme. A host that lays out
+    /// many lines shares one `Arc` per theme, so an unchanged theme costs a
+    /// pointer comparison instead of re-deriving attributes for every line.
+    pub(super) fn prepare_layout(&mut self, theme: &Arc<Theme>) {
+        if !Arc::ptr_eq(&self.measurement_theme, theme) {
+            // Font overrides remain base values. TextInput's shaped layout
+            // applies the theme scale exactly once; the row height is
+            // resolved by the owner of the surrounding document geometry.
+            self.prepare_attributes(theme);
+            self.inner.capture_layout_text_scale(theme.text_scale);
+            self.measurement_theme = Arc::clone(theme);
+            self.stack_measure = None;
+        }
+        self.inner.set_font_size(self.font_size);
+        self.inner.set_multiline(self.wrap);
+        self.sync_wrapped_spans(theme);
+    }
+
+    /// The fixed row height of a line that is not measured, and the minimum
+    /// of one that is: `font_size * 1.5`, so headings stand taller than
+    /// paragraph rows without a measure pass.
+    pub(super) fn row_height(&self, text_scale: f32) -> f32 {
+        (self.font_size * text_scale * 1.5).max(20.0 * text_scale)
+    }
+
+    /// Whether the line's height comes from measuring its content rather
+    /// than from [`Self::row_height`].
+    pub(super) fn measures_height(&self) -> bool {
+        self.wrap || self.table_preview.is_some() || self.image_preview.is_present()
+    }
+
+    /// The height last measured at `width`, while nothing that feeds the
+    /// measurement has changed since.
+    pub(super) fn stacked_height(&self, width: f32) -> Option<f32> {
+        self.stack_measure
+            .filter(|measure| measure.width.to_bits() == width.to_bits())
+            .filter(|_| !self.layout_needs_measure())
+            .map(|measure| measure.height)
+    }
+
+    pub(super) fn forget_stacked_height(&mut self) {
+        self.stack_measure = None;
+    }
+
+    /// Measure the line's content at `width` for a host that stacks lines
+    /// itself, remembering the result for [`Self::stacked_height`].
+    pub(super) fn measure_stacked(&mut self, width: f32, text_renderer: &mut TextRenderer) -> f32 {
+        let height = self
+            .measure(
+                Size {
+                    width: Some(width),
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                text_renderer,
+            )
+            .height;
+        if self.wrap && self.table_preview.is_none() && !self.image_preview.is_present() {
+            self.inner.adopt_measured_layout();
+        }
+        self.stack_measure = Some(StackMeasure { width, height });
+        height
+    }
+}
+
 impl Default for RichTextLine {
     fn default() -> Self {
         Self::new()
@@ -750,25 +863,12 @@ impl Widget for RichTextLine {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Font overrides remain base values. TextInput's shaped layout applies
-        // the theme scale exactly once; the row height is resolved here because
-        // this wrapper owns the surrounding document geometry.
-        self.prepare_attributes(theme);
-        self.inner.capture_layout_text_scale(theme.text_scale);
-        let scale = theme.text_scale;
-        self.measurement_theme.clone_from(theme);
-        self.inner.set_font_size(self.font_size);
-        self.inner.set_multiline(self.wrap);
-        self.sync_wrapped_spans(theme);
-        // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
-        let height = (self.font_size * scale * 1.5).max(20.0 * scale);
+        self.prepare_layout(&Arc::new(theme.clone()));
+        let height = self.row_height(theme.text_scale);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: if self.wrap
-                    || self.table_preview.is_some()
-                    || self.image_preview.is_present()
-                {
+                height: if self.measures_height() {
                     Dimension::auto()
                 } else {
                     Dimension::length(height)
@@ -801,7 +901,8 @@ impl Widget for RichTextLine {
         available: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        self.sync_wrapped_spans(&self.measurement_theme.clone());
+        let theme = Arc::clone(&self.measurement_theme);
+        self.sync_wrapped_spans(&theme);
         self.dirty.styled_layout = false;
         self.inner.acknowledge_layout_measure();
         if let Some(visual) = self.table_preview {

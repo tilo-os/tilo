@@ -4,7 +4,7 @@
 //!
 //! Code's collaborative state has two layers: durable file records in
 //! `root["files"]`, keyed by UUID, and each file's **buffer text**, stored as an
-//! Automerge `Text` under `root["buffers"]` with the same key (see [`crate::doc`]). Because that text is
+//! Automerge `Text` under `root["buffers"]` with the same key (see `crate::doc`). Because that text is
 //! a `Text` object, every keystroke is a compact `EditText` action whose
 //! dispatcher owns the native collaborative splice. Two peers' disjoint edits
 //! rebase through bounded context; overlapping edits fail closed, and undo/redo

@@ -2,7 +2,7 @@ use super::*;
 use crate::history_mode::*;
 use automerge::{ROOT, transaction::Transactable};
 static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.native-history-fixture",
+    app_id: "dev.tilo.native-history-fixture",
     scopes: &[HistoryScopeDefinition {
         key: "document",
         title: "Native notebook",

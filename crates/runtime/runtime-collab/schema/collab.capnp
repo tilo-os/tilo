@@ -311,6 +311,12 @@ interface ChannelHandle {
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
 
+  # Settings-only, launcher-authenticated access to the shell's speaker
+  # groups: create, edit, identify, calibrate. Devices and outputs travel as
+  # the opaque ids the shell publishes; PipeWire identities are not
+  # representable.
+  speakerCommand @43 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
   # Subscribe to inspection requests the session has addressed to THIS
   # application: what its semantic tree holds at a surface point, under an
   # id, or below one to a bounded depth.
@@ -321,20 +327,20 @@ interface ChannelHandle {
   # serialized `tilo_reference::inspect::InspectRequest`; its `audience` was set by the
   # session from the caller, so the app redacts for it rather than for
   # whoever it thinks is asking.
-  subscribeInspections @43 () -> (stream :InspectionStream);
+  subscribeInspections @44 () -> (stream :InspectionStream);
 
   # Answer one inspection request. `id` echoes `InspectionStream.read`'s;
   # `replyJson` is a serialized `tilo_reference::inspect::InspectReply`, already
   # redacted for the request's audience. The session redacts it again
   # before handing it on.
-  completeInspection @44 (id :UInt64, replyJson :Text) -> ();
+  completeInspection @45 (id :UInt64, replyJson :Text) -> ();
 
   # Tell the session this application's semantic tree changed, so a watcher
   # (the session recorder, pick mode) inspects again instead of polling.
   # `generation` increases with every report from this connection; the
   # application debounces, and reports only a tree that actually changed.
   # Carries no content: whoever wants it inspects, checked as usual.
-  reportSemanticChange @45 (generation :UInt64) -> ();
+  reportSemanticChange @46 (generation :UInt64) -> ();
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is

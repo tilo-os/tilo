@@ -425,7 +425,7 @@ fn families_accept_disjoint_suffixes_and_reject_static_intersections() {
             },
         ],
         vec![good, family("notifications.app.a", ".banners", 32, STRING)],
-        vec![family("qos:", "", 32, STRING)],
+        vec![family("tilo:", "", 32, STRING)],
         vec![family("", "", 32, STRING)],
         vec![family("content.", "", 0, STRING)],
         vec![family("content.", "", 257, STRING)],

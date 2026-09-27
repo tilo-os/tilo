@@ -154,7 +154,7 @@ impl McpServer {
                     "2025-06-18"
                 };
                 Ok(
-                    json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"qos-runtime","version":env!("CARGO_PKG_VERSION")}}),
+                    json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
                 )
             }
             "ping" => Ok(json!({})),
@@ -216,7 +216,7 @@ impl McpServer {
                 let peer = provider.provider.parse::<u64>().ok()?;
                 Some((
                     peer,
-                    json!({"peer_id":peer,"app_id":provider.app_id,"record_id":provider.record_id,"uri":format!("qos://apps/{peer}")}),
+                    json!({"peer_id":peer,"app_id":provider.app_id,"record_id":provider.record_id,"uri":format!("tilo://apps/{peer}")}),
                 ))
             })
             .collect::<Vec<_>>();
@@ -271,9 +271,9 @@ impl McpServer {
     }
     async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
         match name {
-            "qos_list_apps" => self.apps(parse(args)?).await,
-            "qos_query" => self.query(parse(args)?).await,
-            "qos_resolve" => {
+            "tilo_list_apps" => self.apps(parse(args)?).await,
+            "tilo_query" => self.query(parse(args)?).await,
+            "tilo_resolve" => {
                 let a: TargetArgs = parse(args)?;
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
@@ -294,7 +294,7 @@ impl McpServer {
                     .map(|row| json!({"row":row_json(row)}))
                     .ok_or_else(|| "NotFound".into())
             }
-            "qos_invoke" => {
+            "tilo_invoke" => {
                 let a: InvokeArgs = parse(args)?;
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
@@ -328,11 +328,11 @@ impl McpServer {
                 .map_err(|error| error.to_string())?;
                 self.status(invocation)
             }
-            "qos_status" => {
+            "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
                 self.status(invocation_id(&a.invocation_id)?)
             }
-            "qos_cancel" => {
+            "tilo_cancel" => {
                 let a: StatusArgs = parse(args)?;
                 let invocation = invocation_id(&a.invocation_id)?;
                 self.host()
@@ -340,7 +340,7 @@ impl McpServer {
                     .map_err(|error| error.to_string())?;
                 self.status(invocation)
             }
-            "qos_inspect" => self.inspect(parse(args)?).await,
+            "tilo_inspect" => self.inspect(parse(args)?).await,
             _ => Err("Unknown tool".into()),
         }
     }
@@ -443,10 +443,10 @@ impl McpServer {
         let a: Args = parse(params)?;
         let peer = a
             .uri
-            .strip_prefix("qos://apps/")
+            .strip_prefix("tilo://apps/")
             .and_then(|s| s.parse::<u64>().ok())
             .ok_or("Invalid application URI")?;
-        if a.uri != format!("qos://apps/{peer}") {
+        if a.uri != format!("tilo://apps/{peer}") {
             return Err("Invalid application URI".into());
         }
         let value = self.query(parse(json!({"peer_id":peer}))?).await?;
@@ -490,13 +490,13 @@ fn tool_definitions() -> Vec<Value> {
         );
     }
     [
-        ("qos_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
-        ("qos_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
-        ("qos_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
-        ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
-        ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
-        ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
-        ("qos_inspect","Read a live application's semantic tree: the node at a surface point with its path (query {\"kind\":\"at\",\"x\":X,\"y\":Y}), one node by stable id ({\"kind\":\"node\",\"id\":ID}) or a subtree ({\"kind\":\"subtree\",\"root\":ID|null,\"depth\":N}). Each node has id, role, label, value, sensitivity, bounds, children and the ResourceRef it stands for; secrets are never included and personal content is a placeholder",json!({"peer_id":integer,"query":{"type":"object"}}),json!(["peer_id","query"])),
+        ("tilo_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
+        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
+        ("tilo_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
+        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
+        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
+        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
+        ("tilo_inspect","Read a live application's semantic tree: the node at a surface point with its path (query {\"kind\":\"at\",\"x\":X,\"y\":Y}), one node by stable id ({\"kind\":\"node\",\"id\":ID}) or a subtree ({\"kind\":\"subtree\",\"root\":ID|null,\"depth\":N}). Each node has id, role, label, value, sensitivity, bounds, children and the ResourceRef it stands for; secrets are never included and personal content is a placeholder",json!({"peer_id":integer,"query":{"type":"object"}}),json!(["peer_id","query"])),
     ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
 }
 #[cfg(test)]

@@ -125,6 +125,12 @@ impl Predictor {
         *count = count.saturating_add(1);
     }
 
+    /// Whether this user has committed `word` before (in any context).
+    pub fn has_learned(&self, word: &str) -> bool {
+        let word = word.to_lowercase();
+        self.learned.values().any(|words| words.contains_key(&word))
+    }
+
     /// Forget all on-device adaptation immediately. The embedded dictionary
     /// and bundled bigram model remain available, but no typed words stay in
     /// this process after a privacy reset.
@@ -319,6 +325,30 @@ mod tests {
         assert!(!preds.is_empty());
         let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(words[0], "the", "expected 'the' after 'of', got {words:?}");
+    }
+
+    #[test]
+    fn embedded_tables_are_consistent() {
+        let p = Predictor::english();
+        let dict = p.dictionary();
+        assert!(
+            dict.words()
+                .iter()
+                .all(|e| e.word.bytes().all(|b| b.is_ascii_lowercase())),
+            "the dictionary holds lower-case a-z words only"
+        );
+        for (w1, successors) in &p.bigrams {
+            assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");
+            for (w2, _) in successors {
+                assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
+            }
+        }
+        let after_thank = p.predict_next(Some("thank"), "");
+        assert_eq!(
+            after_thank.first().map(|(w, _)| w.as_str()),
+            Some("you"),
+            "got {after_thank:?}"
+        );
     }
 
     #[test]

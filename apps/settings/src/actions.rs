@@ -104,6 +104,9 @@ pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 /// Device-mesh role, relay services and workspace pinning configure this
 /// machine's trust boundary. They are local effects, never CRDT preferences.
 pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
+/// Speaker groups across the person's devices. The compositor owns groups,
+/// consent and calibration; Settings only asks, so these never replicate.
+pub const SPEAKER_OPERATION_TYPE: &str = "settings.speaker-operation";
 
 /// Collaboration policy for every action exported by Settings. There is no
 /// implicit/default bucket: a new operation type must be added here before it
@@ -138,6 +141,7 @@ pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     USER_OPERATION_TYPE,
     AGENT_MODEL_OPERATION_TYPE,
     DEVICE_MESH_OPERATION_TYPE,
+    SPEAKER_OPERATION_TYPE,
 ];
 
 pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
@@ -230,6 +234,9 @@ pub enum InputOperation {
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
     SetTouchpadGestures { enabled: bool },
+    SetTouchpadClickMethod { method: String },
+    SetTouchpadScrollMethod { method: String },
+    SetScrollSpeed { value: f64 },
     SetAccelerationProfile { profile: String },
     SetComposeKey { key: String },
     SetActiveSource { label: String },
@@ -309,6 +316,24 @@ pub enum AudioOperation {
     SetMono {
         enabled: bool,
     },
+    SetEchoCancellation {
+        enabled: bool,
+    },
+    SetSystemSounds {
+        enabled: bool,
+    },
+    SetSystemSoundVolume {
+        value: f64,
+    },
+    /// A sound theme id from the installed themes.
+    SetSoundTheme {
+        theme: String,
+    },
+    /// Whether one system event makes a sound; `event` is its settings key.
+    SetEventSound {
+        event: String,
+        enabled: bool,
+    },
     SetDeviceProfile {
         device_id: u32,
         profile_index: u32,
@@ -358,6 +383,9 @@ pub enum DisplayOperation {
     SetNightLight {
         enabled: bool,
     },
+    SetNightLightSchedule {
+        enabled: bool,
+    },
     SetNightLightTemperature {
         label: String,
     },
@@ -392,6 +420,12 @@ pub enum DisplayOperation {
         connector: String,
         label: String,
     },
+    /// One monitor's brightness, `0.0..=1.0`: the external monitor on
+    /// `connector`, over DDC/CI.
+    SetOutputBrightness {
+        connector: String,
+        value: f64,
+    },
     SetEnabled {
         connector: String,
         enabled: bool,
@@ -416,9 +450,22 @@ pub enum DisplayOperation {
         connector: String,
         profile: Option<String>,
     },
+    /// Place an output's top-left corner at an exact point of the shared
+    /// desktop, as dragging it in the arrangement canvas does.
+    MoveOutput {
+        connector: String,
+        x: i32,
+        y: i32,
+    },
+    /// Paint every display's number and name on it for a few seconds.
+    Identify,
     Apply,
     Confirm,
     Revert,
+    /// Ask again before keeping display changes from this layout tool.
+    ForgetDisplayTool {
+        executable: String,
+    },
 }
 
 /// Process-local delivery envelope for device effects. This value is never
@@ -484,6 +531,62 @@ pub enum DeviceMeshOperation {
     SetReplication { replication: String },
     SetService { service: String, enabled: bool },
     SetWorkspace { id: u64, enabled: bool },
+}
+
+/// Typed speaker commands. Agents and the Speakers pane share this door;
+/// flow steps (which screen is showing) are presentation and are not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeakerOperation {
+    Create {
+        name: String,
+        members: Vec<ui::collaboration::SpeakerMemberSpec>,
+    },
+    Identify {
+        device: String,
+        output: String,
+    },
+    Calibrate {
+        group: String,
+        microphone_device: String,
+        microphone: String,
+    },
+    ApplyCalibration {
+        group: String,
+    },
+    RevertCalibration {
+        group: String,
+    },
+    DismissCalibration {
+        group: String,
+    },
+    Delete {
+        group: String,
+    },
+}
+
+impl SpeakerOperation {
+    /// The shell command this operation asks for.
+    #[must_use]
+    pub fn command(&self) -> ui::collaboration::SpeakerCommand {
+        use ui::collaboration::SpeakerCommand as Command;
+        match self.clone() {
+            Self::Create { name, members } => Command::Create { name, members },
+            Self::Identify { device, output } => Command::Identify { device, output },
+            Self::Calibrate {
+                group,
+                microphone_device,
+                microphone,
+            } => Command::StartCalibration {
+                group,
+                microphone_device,
+                microphone,
+            },
+            Self::ApplyCalibration { group } => Command::ApplyCalibration { group },
+            Self::RevertCalibration { group } => Command::RevertCalibration { group },
+            Self::DismissCalibration { group } => Command::DismissCalibration { group },
+            Self::Delete { group } => Command::Delete { group },
+        }
+    }
 }
 
 /// Lifecycle reported by the pane that actually executes a device-local
@@ -583,6 +686,11 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         DEVICE_MESH_OPERATION_TYPE => {
             let operation: DeviceMeshOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        SPEAKER_OPERATION_TYPE => {
+            let operation: SpeakerOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -748,6 +856,7 @@ fn input_number_operation(template: &InputOperation, value: f64) -> InputOperati
             InputOperation::SetMousePointerSpeed { value }
         }
         InputOperation::SetKeyRepeat { .. } => InputOperation::SetKeyRepeat { value },
+        InputOperation::SetScrollSpeed { .. } => InputOperation::SetScrollSpeed { value },
         _ => unreachable!("input number resources only contain numeric operations"),
     }
 }
@@ -810,6 +919,11 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         });
     let allowed = match key {
         "appearance.theme"
+        | "appearance.schedule"
+        | "appearance.sunrise"
+        | "appearance.sunset"
+        | "appearance.wallpaper_scope"
+        | "appearance.wallpaper_target"
         | "appearance.text_size"
         | "appearance.ui_scale"
         | "region.currency"
@@ -822,7 +936,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.cursor_size"
         | "a11y.color_filter"
         | "a11y.magnifier"
+        | "a11y.magnifier_view"
         | "a11y.switch_keys"
+        | "a11y.bounce_delay"
         | "a11y.switch_scan"
         | "a11y.reader_rate"
         | "a11y.reader_voice" => text(),
@@ -833,6 +949,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.large_cursor"
         | "a11y.sticky_keys"
         | "a11y.slow_keys"
+        | "a11y.bounce_keys"
+        | "a11y.bounce_keys_alert"
+        | "a11y.mouse_keys"
         | "a11y.on_screen_keyboard"
         | "a11y.visual_alerts"
         | "a11y.screen_reader"
@@ -1110,6 +1229,40 @@ fn local_choice_spec(
     .with_contract(local_operation_contract(tags))
 }
 
+/// Largest desktop coordinate the arrangement accepts; far beyond any real
+/// multi-display desk, small enough that every sum stays in range.
+pub const MAX_DISPLAY_COORDINATE: i32 = 65_536;
+
+fn local_point_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &'static str,
+    tags: &'static [&'static str],
+    build: impl Fn(i32, i32) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    let bound = i64::from(MAX_DISPLAY_COORDINATE);
+    let coordinate = |name: &'static str, description: &'static str| {
+        ActionParam::required(name, ParamType::Integer, description)
+            .with_schema(serde_json::json!({ "minimum": -bound, "maximum": bound }))
+    };
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "A point on the shared desktop, in desktop pixels",
+        OperationKind::Effect,
+        type_id,
+        vec![coordinate("x", "Left edge"), coordinate("y", "Top edge")],
+        move |args| {
+            let axis = |name: &str| {
+                i32::try_from(args.integer(name).unwrap_or(0).clamp(-bound, bound))
+                    .unwrap_or_default()
+            };
+            build(axis("x"), axis("y"))
+        },
+    )
+    .with_contract(local_operation_contract(tags))
+}
+
 fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> EncodedAction {
     EncodedAction::encode_operation(type_id, operation).unwrap_or_else(|_| EncodedAction {
         type_id: type_id.into(),
@@ -1189,6 +1342,7 @@ fn section_resource(
         Category::TimeDate => time_date_section(doc, prefs),
         Category::KeyboardShortcuts => shortcuts_section(doc),
         Category::DeviceMesh => device_mesh_section(doc),
+        Category::Speakers => speakers_section(),
         Category::Updates => updates_section(),
         Category::ExternalAccounts => accounts_section(account_inventory),
         Category::Ai => ai_section(),
@@ -1236,6 +1390,7 @@ fn category_for_resource_id(id: &str) -> Option<Category> {
         ("settings.user:", Category::Users),
         ("settings.device-mesh-workspace:", Category::DeviceMesh),
         (crate::panes::ai::PROVIDER_RESOURCE_PREFIX, Category::Ai),
+        ("settings.speaker-group:", Category::Speakers),
         (
             crate::panes::ai::PROVIDER_MODEL_RESOURCE_PREFIX,
             Category::Ai,
@@ -1688,6 +1843,44 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         &["90%", "100%", "110%", "125%", "150%"],
         s(panes::appearance::UI_SCALE_KEY, "100%"),
     ));
+    sec = sec.with_action(choice_prompt_spec(
+        "schedule",
+        "Set day and night schedule",
+        panes::appearance::SCHEDULE_KEY,
+        "Sunset to sunrise, Custom times",
+        &panes::appearance::SCHEDULE_LABELS,
+        s(
+            panes::appearance::SCHEDULE_KEY,
+            panes::appearance::schedule_label(&d.appearance.schedule),
+        ),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunrise",
+        "Set when the day starts",
+        panes::appearance::SUNRISE_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNRISE_KEY, &d.appearance.sunrise),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunset",
+        "Set when the night starts",
+        panes::appearance::SUNSET_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNSET_KEY, &d.appearance.sunset),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "wallpaper_scope",
+        "Set which workspaces a new wallpaper covers",
+        panes::appearance::WALLPAPER_SCOPE_KEY,
+        "This workspace, Every workspace",
+        &panes::appearance::WALLPAPER_SCOPE_LABELS,
+        s(
+            panes::appearance::WALLPAPER_SCOPE_KEY,
+            panes::appearance::scope_label(&d.appearance.wallpaper_scope),
+        ),
+    ));
     sec
 }
 
@@ -1738,6 +1931,21 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
         },
     ));
+    sec = sec.with_action(echo_cancellation_spec());
+    sec = sec.with_action(system_sounds_spec());
+    sec = sec.with_action(system_sound_volume_spec());
+    for event in settings_store::system_sounds::SystemSoundEvent::ALL {
+        sec = sec.with_action(event_sound_spec(event));
+    }
+    let themes = media::event_sound::installed_themes();
+    if let Some(action) = sound_theme_spec(
+        themes
+            .into_iter()
+            .map(|theme| (theme.name, theme.id))
+            .collect(),
+    ) {
+        sec = sec.with_action(action);
+    }
     sec = sec.with_action(local_number_spec(
         "input-volume",
         "Set input volume",
@@ -2021,6 +2229,113 @@ fn audio_control_resource(action: ActionSpec) -> Resource {
     .with_action(action)
 }
 
+fn echo_cancellation_spec() -> ActionSpec {
+    local_bool_spec(
+        "echo-cancellation",
+        "Reduce echo in calls",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEchoCancellation { enabled },
+            )
+        },
+    )
+}
+
+fn system_sounds_spec() -> ActionSpec {
+    local_bool_spec(
+        "system-sounds",
+        "Turn system sounds on or off",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSounds { enabled },
+            )
+        },
+    )
+}
+
+fn system_sound_volume_spec() -> ActionSpec {
+    local_number_spec(
+        "system-sound-volume",
+        "Set system sound volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSoundVolume { value },
+            )
+        },
+    )
+}
+
+/// Action id of one event's sound toggle, e.g. `event-sound-low-battery`.
+#[must_use]
+pub fn event_sound_action_id(event: settings_store::system_sounds::SystemSoundEvent) -> String {
+    format!("event-sound-{}", event.key().replace('_', "-"))
+}
+
+fn event_sound_spec(event: settings_store::system_sounds::SystemSoundEvent) -> ActionSpec {
+    local_bool_spec(
+        event_sound_action_id(event),
+        format!("Play a sound for {}", event.label().to_lowercase()),
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        move |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEventSound {
+                    event: event.key().to_string(),
+                    enabled,
+                },
+            )
+        },
+    )
+}
+
+/// `themes` is `(display name, theme id)`.
+fn sound_theme_spec(themes: Vec<(String, String)>) -> Option<ActionSpec> {
+    if themes.is_empty() || themes.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = themes.iter().map(|(name, _)| name.clone()).collect();
+    Some(local_choice_spec(
+        "sound-theme",
+        "Set sound theme",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "sounds"],
+        move |choice| {
+            let theme = themes
+                .iter()
+                .find(|(name, _)| name == &choice)
+                .map(|(_, id)| id.clone())
+                .unwrap_or_default();
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSoundTheme { theme },
+            )
+        },
+    ))
+}
+
+/// The sound-theme picker's binding; `themes` is `(display name, theme id)`.
+pub fn audio_sound_theme_binding(
+    themes: Vec<(String, String)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = audio_control_resource(sound_theme_spec(themes)?);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
 pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let action = match action_id {
         "muted" => local_bool_spec(
@@ -2044,7 +2359,12 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
             },
         ),
-        _ => return None,
+        "echo-cancellation" => echo_cancellation_spec(),
+        "system-sounds" => system_sounds_spec(),
+        other => settings_store::system_sounds::SystemSoundEvent::ALL
+            .into_iter()
+            .find(|event| event_sound_action_id(*event) == other)
+            .map(event_sound_spec)?,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
 }
@@ -2088,6 +2408,7 @@ pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetBalance { value })
             },
         ),
+        "system-sound-volume" => system_sound_volume_spec(),
         _ => return None,
     };
     let resource = audio_control_resource(action);
@@ -2295,7 +2616,7 @@ pub fn audio_stream_bool_binding(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -2322,6 +2643,18 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             encode_local_operation(
                 DISPLAY_OPERATION_TYPE,
                 &DisplayOperation::SetNightLight { enabled },
+            )
+        },
+    ));
+    sec = sec.with_action(local_bool_spec(
+        "night_light_schedule",
+        "Set Night Light schedule",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLightSchedule { enabled },
             )
         },
     ));
@@ -2395,6 +2728,7 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
                 "settings.display-output",
                 descriptor.label().to_string(),
             );
+            resource = resource.with_action(output_brightness_spec(connector.clone()));
             let operation_connector = connector.clone();
             resource = resource.with_action(local_bool_spec(
                 "enabled",
@@ -2455,6 +2789,23 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
                         &DisplayOperation::SetPosition {
                             connector: operation_connector.clone(),
                             label,
+                        },
+                    )
+                },
+            ));
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_point_spec(
+                "move",
+                "Move display",
+                DISPLAY_OPERATION_TYPE,
+                &["device-local", "display", "live-output"],
+                move |x, y| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::MoveOutput {
+                            connector: operation_connector.clone(),
+                            x,
+                            y,
                         },
                     )
                 },
@@ -2625,6 +2976,11 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
         ),
         ("confirm", "Keep display changes", DisplayOperation::Confirm),
         ("revert", "Revert display changes", DisplayOperation::Revert),
+        (
+            "identify",
+            "Show each display's number on it",
+            DisplayOperation::Identify,
+        ),
     ] {
         if let Some(action) = local_operation_spec(
             id,
@@ -2637,7 +2993,44 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             sec = sec.with_action(action);
         }
     }
+    for tool in settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        sec = sec.with_child(display_tool_resource(tool));
+    }
     sec
+}
+
+/// The resource for one trusted display tool, carrying its `forget` action.
+fn display_tool_resource(tool: &settings_store::display_tools::DisplayTool) -> Resource {
+    let resource = Resource::new(
+        format!("settings.display-tool:{}", tool.executable),
+        "settings.display-tool",
+        tool.name().to_string(),
+    );
+    match local_operation_spec(
+        "forget",
+        "Ask before keeping this tool's display changes",
+        OperationKind::Effect,
+        DISPLAY_OPERATION_TYPE,
+        &DisplayOperation::ForgetDisplayTool {
+            executable: tool.executable.clone(),
+        },
+        &["device-local", "display", "trusted-tool"],
+    ) {
+        Some(action) => resource.with_action(action),
+        None => resource,
+    }
+}
+
+/// Binding for a trusted tool's "Ask again" button: the same `forget`
+/// action an agent or script invokes.
+pub fn display_tool_forget_binding(
+    tool: &settings_store::display_tools::DisplayTool,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&display_tool_resource(tool), "forget").ok()
 }
 
 fn display_control_resource(action: ActionSpec) -> Resource {
@@ -2672,6 +3065,18 @@ pub fn display_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(
                     DISPLAY_OPERATION_TYPE,
                     &DisplayOperation::SetNightLight { enabled },
+                )
+            },
+        ),
+        "night_light_schedule" => local_bool_spec(
+            "night_light_schedule",
+            "Set Night Light schedule",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLightSchedule { enabled },
                 )
             },
         ),
@@ -2762,6 +3167,38 @@ pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
     tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
+/// Binding for the arrangement canvas: a drop becomes the output's `move`
+/// action, the same one an agent or script invokes.
+pub fn display_output_move_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<(i32, i32)>> {
+    let operation_connector = connector.clone();
+    let action = local_point_spec(
+        "move",
+        "Move display",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "live-output"],
+        move |x, y| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::MoveOutput {
+                    connector: operation_connector.clone(),
+                    x,
+                    y,
+                },
+            )
+        },
+    );
+    let resource = display_output_control_resource(&connector, action.clone());
+    tilo_actions::ActionBinding::new(&resource, &action, |(x, y): (i32, i32)| {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("x".into(), serde_json::Value::from(x));
+        arguments.insert("y".into(), serde_json::Value::from(y));
+        arguments
+    })
+    .ok()
+}
+
 fn display_output_control_resource(connector: &str, action: ActionSpec) -> Resource {
     Resource::new(
         format!("settings.display-output:{connector}"),
@@ -2843,6 +3280,37 @@ pub fn display_output_bool_binding(
         &display_output_control_resource(&connector, action),
         action_id,
     )
+}
+
+fn output_brightness_spec(connector: String) -> ActionSpec {
+    local_number_spec(
+        "brightness",
+        "Set monitor brightness",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        move |value| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetOutputBrightness {
+                    connector: connector.clone(),
+                    value,
+                },
+            )
+        },
+    )
+}
+
+/// The brightness slider of one monitor's card.
+pub fn display_output_brightness_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource =
+        display_output_control_resource(&connector, output_brightness_spec(connector.clone()));
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
 }
 
 pub fn display_output_choice_binding(
@@ -3000,6 +3468,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set key-repeat rate",
             InputOperation::SetKeyRepeat { value: 0.0 },
         ),
+        (
+            "scroll-speed",
+            "Set scroll speed",
+            InputOperation::SetScrollSpeed { value: 0.0 },
+        ),
     ] {
         let operation = operation;
         sec = sec.with_action(
@@ -3026,6 +3499,24 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             .with_contract(local_operation_contract(&["device-local", "input"])),
         );
     }
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-click-method",
+        "Set touchpad click method",
+        &crate::panes::mouse_keyboard::CLICK_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadClickMethod { method: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-scroll-method",
+        "Set touchpad scroll method",
+        &crate::panes::mouse_keyboard::SCROLL_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadScrollMethod { method: choice },
+    ));
     sec = sec.with_action(input_choice_spec(
         "acceleration-profile",
         "Set pointer acceleration profile",
@@ -3093,13 +3584,13 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     }
     let mut add_choices: Vec<String> = catalog
         .iter()
-        .filter(|entry| !sources.contains(&entry.id))
+        .filter(|entry| {
+            !sources.contains(&entry.id) && crate::input_sources::has_room_for(&sources, &entry.id)
+        })
         .map(|entry| entry.label.clone())
         .collect();
     add_choices.sort();
-    if !add_choices.is_empty()
-        && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-    {
+    if !add_choices.is_empty() {
         let Some(fallback) = add_choices.first().cloned() else {
             return sec;
         };
@@ -3108,7 +3599,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             ActionSpec::typed_operation(
                 "add-source",
                 "Add keyboard input source",
-                "Choose an installed keyboard layout",
+                "Choose an installed keyboard layout or input method",
                 OperationKind::Effect,
                 KEYBOARD_SOURCE_OPERATION_TYPE,
                 vec![
@@ -3418,6 +3909,21 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set slow keys",
         ),
         (
+            "bounce-keys",
+            panes::accessibility::BOUNCE_KEYS_KEY,
+            "Set bounce keys",
+        ),
+        (
+            "bounce-keys-alert",
+            panes::accessibility::BOUNCE_ALERT_KEY,
+            "Set bounce keys alert",
+        ),
+        (
+            "mouse-keys",
+            panes::accessibility::MOUSE_KEYS_KEY,
+            "Set mouse keys",
+        ),
+        (
             "visual-alerts",
             panes::accessibility::VISUAL_ALERTS_KEY,
             "Set visual alerts",
@@ -3487,15 +3993,29 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ),
         (
             "magnifier",
-            "Set magnifier lens",
+            "Set magnifier zoom",
             panes::accessibility::MAGNIFIER_KEY,
-            "Off, 2×, 3×",
-            &["Off", "2×", "3×"][..],
-            match d.accessibility.magnifier_zoom {
-                2 => "2×",
-                3 => "3×",
-                _ => "Off",
-            },
+            "Off, 2×, 3×, 4×, 5×, 6×",
+            &settings_store::magnifier::ZOOM_LABELS[..],
+            settings_store::magnifier::zoom_label(d.accessibility.magnifier_zoom),
+        ),
+        (
+            "magnifier-view",
+            "Set magnifier view",
+            panes::accessibility::MAGNIFIER_VIEW_KEY,
+            "Lens, Full screen",
+            &["Lens", "Full screen"][..],
+            d.accessibility.magnifier_view.label(),
+        ),
+        (
+            "bounce-delay",
+            "Set bounce keys delay",
+            panes::accessibility::BOUNCE_DELAY_KEY,
+            "100 ms, 200 ms, 300 ms, 500 ms, 800 ms",
+            &["100 ms", "200 ms", "300 ms", "500 ms", "800 ms"][..],
+            crate::prefs::AccessibilityPrefs::bounce_delay_label(
+                d.accessibility.bounce_keys_delay_ms,
+            ),
         ),
         (
             "switch-keys",
@@ -5330,6 +5850,155 @@ fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     section
 }
 
+fn speaker_spec(
+    id: &str,
+    label: &str,
+    placeholder: &str,
+    params: Vec<ActionParam>,
+    encode: impl Fn(&tilo_actions::ActionArgs) -> SpeakerOperation + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        placeholder,
+        OperationKind::Effect,
+        SPEAKER_OPERATION_TYPE,
+        params,
+        move |args| encode_local_operation(SPEAKER_OPERATION_TYPE, &encode(args)),
+    )
+    .with_contract(local_operation_contract(&["device-local", "speakers"]))
+}
+
+/// Speaker sets: create one, and per set delete, calibrate, apply or revert
+/// a calibration. Sets come from the last snapshot the Speakers pane
+/// received, so building this tree never waits on the compositor.
+fn speakers_section() -> Resource {
+    let mut section = Resource::new(
+        pane_resource_id(Category::Speakers),
+        "settings.section",
+        "Speakers",
+    );
+    section = section.with_action(speaker_spec(
+        "create",
+        "Create a speaker set",
+        "Name and members",
+        vec![
+            ActionParam::required("name", ParamType::Text, "Name, such as Living room"),
+            ActionParam::required(
+                "members",
+                ParamType::Text,
+                "JSON list of {device, output, role}; role is {\"role\":\"left\"}, \"right\", \"center\", \"lfe\", \"surround-left\", \"surround-right\" or {\"role\":\"room\",\"x_mm\":…,\"y_mm\":…,\"z_mm\":…}",
+            ),
+        ],
+        |args| SpeakerOperation::Create {
+            name: args.text("name").unwrap_or_default().to_string(),
+            members: serde_json::from_str(args.text("members").unwrap_or_default())
+                .unwrap_or_default(),
+        },
+    ));
+    section = section.with_action(speaker_spec(
+        "identify",
+        "Play a sound on a speaker",
+        "Device and output",
+        vec![
+            ActionParam::required("device", ParamType::Text, "Device id"),
+            ActionParam::required("output", ParamType::Text, "Output selector"),
+        ],
+        |args| SpeakerOperation::Identify {
+            device: args.text("device").unwrap_or_default().to_string(),
+            output: args.text("output").unwrap_or_default().to_string(),
+        },
+    ));
+    let snapshot = crate::speaker_setup::cached_snapshot();
+    let microphones = snapshot
+        .devices
+        .iter()
+        .filter(|device| device.online)
+        .flat_map(|device| {
+            device
+                .microphones
+                .iter()
+                .map(move |microphone| format!("{}/{}", device.id, microphone.selector))
+        })
+        .take(MAX_DYNAMIC_CHOICES)
+        .collect::<Vec<_>>();
+    for group in snapshot
+        .groups
+        .iter()
+        .filter(|group| group.led_here)
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let id = group.id.clone();
+        let mut resource = Resource::new(
+            format!("settings.speaker-group:{id}"),
+            "settings.speaker-group",
+            group.name.clone(),
+        );
+        let delete_id = id.clone();
+        resource = resource.with_action(
+            speaker_spec(
+                "delete",
+                "Delete this speaker set",
+                "",
+                Vec::new(),
+                move |_| SpeakerOperation::Delete {
+                    group: delete_id.clone(),
+                },
+            )
+            .destructive(),
+        );
+        if !microphones.is_empty() {
+            let calibrate_id = id.clone();
+            resource = resource.with_action(speaker_spec(
+                "calibrate",
+                "Calibrate with a microphone",
+                "Microphone",
+                vec![
+                    ActionParam::required_owned(
+                        "microphone",
+                        ParamType::Text,
+                        "Microphone that listens at your seat",
+                    )
+                    .with_choices(microphones.clone()),
+                ],
+                move |args| {
+                    let (device, selector) = args
+                        .text("microphone")
+                        .unwrap_or_default()
+                        .split_once('/')
+                        .unwrap_or_default();
+                    SpeakerOperation::Calibrate {
+                        group: calibrate_id.clone(),
+                        microphone_device: device.to_string(),
+                        microphone: selector.to_string(),
+                    }
+                },
+            ));
+        }
+        for (action, label, make) in [
+            (
+                "apply-calibration",
+                "Apply the measured calibration",
+                (|group| SpeakerOperation::ApplyCalibration { group })
+                    as fn(String) -> SpeakerOperation,
+            ),
+            (
+                "revert-calibration",
+                "Revert to the previous calibration",
+                |group| SpeakerOperation::RevertCalibration { group },
+            ),
+        ] {
+            let group_id = id.clone();
+            resource =
+                resource.with_action(speaker_spec(action, label, "", Vec::new(), move |_| {
+                    make(group_id.clone())
+                }));
+        }
+        section = section.with_child(resource);
+    }
+    section
+}
+
 fn device_mesh_choice_spec(
     id: &'static str,
     label: &'static str,
@@ -5706,6 +6375,9 @@ mod tests {
             "middle-emulation",
             "left-handed",
             "touchpad-gestures",
+            "touchpad-click-method",
+            "touchpad-scroll-method",
+            "scroll-speed",
             "spell-checking",
             "auto-correct",
             "acceleration-profile",
@@ -6541,6 +7213,7 @@ mod tests {
             "audio.input_volume",
             "audio.balance",
             "audio.mono",
+            "audio.echo_cancellation",
             "display.brightness",
             "display.auto_brightness",
             "display.scale",

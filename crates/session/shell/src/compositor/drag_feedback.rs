@@ -21,7 +21,6 @@
 //! the spatial model depends on; the role is accepted and recorded so
 //! the protocol stays honest, and the picture is the compositor's.
 
-use std::io::Cursor;
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
@@ -324,28 +323,16 @@ pub fn preview_for_mimes(mimes: &[String]) -> DragPreview {
     }
 }
 
-/// Decode a bounded raster preview off the compositor thread. The decoder's
-/// allocation and dimension limits make an untrusted drag offer unable to turn
-/// a thumbnail into an unbounded allocation.
+/// Decode a bounded raster preview off the compositor thread, through the
+/// shared preview decoder: it reads the header first and refuses oversized
+/// images before allocating a pixel, so an untrusted drag offer cannot turn a
+/// thumbnail into an unbounded allocation.
 pub fn image_preview(bytes: &[u8]) -> Option<DragPreview> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes));
-    reader = reader.with_guessed_format().ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16_384);
-    limits.max_image_height = Some(16_384);
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader.decode().ok()?;
-    let image = if image.width() > 560 || image.height() > 380 {
-        image.thumbnail(560, 380).to_rgba8()
-    } else {
-        image.to_rgba8()
-    };
-    let (width, height) = image.dimensions();
+    let preview = thumbnail::image_thumb(bytes, thumbnail::ThumbSize::new(560, 380))?;
     Some(DragPreview::Image {
-        rgba: Arc::new(image.into_raw()),
-        width,
-        height,
+        rgba: Arc::new(preview.rgba),
+        width: preview.width,
+        height: preview.height,
     })
 }
 
@@ -455,6 +442,7 @@ pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::path::PathBuf;
 
     #[test]

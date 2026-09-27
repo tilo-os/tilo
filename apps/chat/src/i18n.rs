@@ -1,7 +1,7 @@
 //! Chat's Fluent catalogue.
 //!
 //! User-facing strings are keys, never literals, resolved through the toolkit's
-//! [`ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
+//! [`mod@ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 

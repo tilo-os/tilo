@@ -79,7 +79,7 @@ use ui::widget::Widget;
 /// carry a cover) once, then drives one of the providers per query. Exposing
 /// this list keeps the host's integration a one-liner
 /// (`for t in music::searchable_types() { registry.register(t) }`) with no
-/// reach into the app internals — the same seam [`apps/tube`] pins for videos.
+/// reach into the app internals — the same seam `apps/tube` pins for videos.
 pub fn searchable_types() -> Vec<SearchableType> {
     search_type::all_searchable_types()
 }

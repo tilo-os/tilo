@@ -18,7 +18,7 @@ class ScratchpadEffectsTests(unittest.TestCase):
         return dict(steps=steps), copy.deepcopy(effects), manifest
 
     def lines(self, effects):
-        return ['qos-native-effect '+json.dumps(row) for row in effects]
+        return ['tilo-native-effect '+json.dumps(row) for row in effects]
 
     def test_exact_native_model_edits(self):
         scenario, effects, manifest = self.fixture()
@@ -69,7 +69,7 @@ class ScratchpadEffectsTests(unittest.TestCase):
         scenario,effects,_=self.fixture()
         frames=[dict(cpu_frame_id=10,input_ids=[0,1,2],state=effects[2]['after']),
                 dict(cpu_frame_id=11,input_ids=[3],state=effects[3]['after'])]
-        lines=lambda: self.lines(effects)+['qos-native-frame '+json.dumps(r) for r in frames]
+        lines=lambda: self.lines(effects)+['tilo-native-frame '+json.dumps(r) for r in frames]
         self.assertEqual(validate_scratchpad_frame_states(scenario,lines()),2)
         frames[0]['state']=effects[0]['after']
         with self.assertRaises(ValueError):

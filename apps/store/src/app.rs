@@ -1438,7 +1438,7 @@ impl StoreApp {
             });
         } else {
             let q = self.query.clone();
-            hits.sort_by_key(|i| std::cmp::Reverse(i.fuzzy_score(&q)));
+            hits.sort_by_cached_key(|i| std::cmp::Reverse(i.relevance(&q)));
         }
         hits
     }

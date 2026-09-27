@@ -35,6 +35,18 @@ pub const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_end
 /// Every gateway request and response: a little-endian `u32` length, then
 /// JSON.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(2 * 1024 * 1024);
+/// Largest instruction text one [`Request::Transform`] may carry.
+pub const MAX_TRANSFORM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
+/// Largest input text one [`Request::Transform`] may carry.
+pub const MAX_TRANSFORM_INPUT_BYTES: usize = 256 * 1024;
+/// The most output tokens one [`Request::Transform`] may ask a model for.
+pub const MAX_TRANSFORM_OUTPUT_TOKENS: u32 = 4096;
+/// The longest one [`Request::Transform`] may wait on a provider, retries
+/// included.
+pub const MAX_TRANSFORM_TIMEOUT: Duration = Duration::from_secs(30);
+/// The largest model answer a [`Request::Transform`] returns.
+pub const MAX_TRANSFORM_OUTPUT_BYTES: usize = 256 * 1024;
+
 /// The only encoded-preview media types accepted by the local vision RPC.
 /// Keeping this vocabulary closed means a caller cannot ask the trusted
 /// gateway to fetch a URL or interpret an arbitrary document as an image.
@@ -168,6 +180,21 @@ pub enum Request {
         agent: Option<String>,
         protocol: ProviderProtocol,
         body: serde_json::Value,
+        timeout_ms: u64,
+    },
+    /// One bounded, single-shot text transformation for tilo-agent
+    /// (`agent.transform`): a system instruction and one input, answered
+    /// with the model's text. No tools, no conversation, no provider
+    /// envelope: the gateway resolves the task, builds the provider request
+    /// itself, caps its size, output and deadline, and returns only the
+    /// answer text.
+    Transform {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        instructions: String,
+        input: String,
+        max_output_tokens: u32,
         timeout_ms: u64,
     },
     /// Fixed-shape visual analysis for Photos (`photos.vision`). The gateway
@@ -417,6 +444,37 @@ pub fn plan(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
+}
+
+/// Run one bounded single-shot transformation for `task` through the
+/// isolated model gateway and return the model's answer text. The person's
+/// assignment, not the caller, picks the model. The gateway enforces the
+/// `MAX_TRANSFORM_*` bounds; a request past them is refused, not truncated.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway is unavailable, refuses the
+/// request (including for exceeding a bound), or the provider call fails.
+pub fn transform(
+    task: &str,
+    agent: Option<&str>,
+    instructions: &str,
+    input: &str,
+    max_output_tokens: u32,
+    timeout: Duration,
+) -> Result<String, ClientError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let response = request(Request::Transform {
+        task: task.to_string(),
+        agent: agent.map(str::to_string),
+        instructions: instructions.to_string(),
+        input: input.to_string(),
+        max_output_tokens,
+        timeout_ms,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no transform answer".into()))
 }
 
 /// Request a fixed-schema visual analysis through the launcher-issued gateway

@@ -76,6 +76,7 @@ pub mod settings_app;
 #[cfg(not(feature = "thin"))]
 pub mod shots;
 pub mod sidebar;
+pub mod speaker_setup;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;

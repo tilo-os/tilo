@@ -6,6 +6,10 @@
 //! turns into real effects (`Backend::set_dpms`, painting the lock overlay, swallowing input).
 //! Independent of `winit`/`smithay`/DRM, so exhaustively unit-testable without a seat, GPU, or display.
 //!
+//! Shortly before the display blanks it dims ([`SessionTransition::Dimmed`]), so someone reading
+//! without touching anything gets a warning and a single input to keep the screen on
+//! ([`SessionTransition::Undimmed`]) instead of a sudden black screen.
+//!
 //! Two orthogonal booleans: `blanked` (displays powered down; any input wakes them) and `locked`
 //! (session locked — content hidden behind a compositor overlay, input captured until an
 //! explicit unlock). Independent: an idle locked session still blanks to save power, and waking
@@ -19,6 +23,10 @@ use std::time::{Duration, Instant};
 
 /// Default idle duration before the display blanks (5 minutes).
 pub const DEFAULT_BLANK_SECS: u64 = 300;
+
+/// How long before the blank the display dims. Short blank timeouts dim for at most half of the
+/// idle period, so a display that blanks after a few seconds does not dim the instant it goes idle.
+pub const DIM_BEFORE_BLANK: Duration = Duration::from_secs(15);
 
 /// Default idle duration before the session locks (5 minutes).
 pub const DEFAULT_LOCK_SECS: u64 = 300;
@@ -39,6 +47,11 @@ pub const SUSPEND_SECS_ENV: &str = "TILO_IDLE_SUSPEND_SECS";
 /// An effect the calloop tick must apply after calling into the [`SessionManager`]; a pure value — the manager never touches hardware itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTransition {
+    /// The display is about to blank — lower it (backlight, or a dimming overlay where there is
+    /// no backlight) so the user notices and can keep it on with any input.
+    Dimmed,
+    /// Restore the display's brightness after [`Self::Dimmed`].
+    Undimmed,
     /// The display(s) should be powered off (DPMS off / stop scanout).
     Blanked,
     /// The display(s) should be powered back on.
@@ -147,12 +160,24 @@ impl IdleConfig {
     }
 }
 
+/// What the panel is showing, as far as idle power management is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    /// Full brightness.
+    On,
+    /// Dimmed ahead of blanking.
+    Dimmed,
+    /// Powered down. `dimmed` survives the blank so waking restores the brightness the user
+    /// had, not the dimmed level.
+    Off { dimmed: bool },
+}
+
 /// The compositor's idle + session-lock state machine. All time enters through `now: Instant` parameters so tests can drive it deterministically (no sleeping, no wall-clock reads).
 #[derive(Debug)]
 pub struct SessionManager {
     config: IdleConfig,
     last_activity: Instant,
-    blanked: bool,
+    panel: Panel,
     locked: bool,
     /// Latched once the idle-suspend threshold fires, so `tick` emits [`SessionTransition::Suspend`]
     /// at most once per idle episode. Cleared by [`Self::note_activity`] (input after resume) and [`Self::cancel_suspend`] (a vetoed suspend request).
@@ -165,7 +190,7 @@ impl SessionManager {
         Self {
             config,
             last_activity: now,
-            blanked: false,
+            panel: Panel::On,
             locked: false,
             suspended: false,
         }
@@ -173,7 +198,38 @@ impl SessionManager {
 
     /// Whether the display is currently blanked (DPMS off).
     pub fn is_blanked(&self) -> bool {
-        self.blanked
+        matches!(self.panel, Panel::Off { .. })
+    }
+
+    /// Whether the display is dimmed ahead of blanking (and not yet restored by input).
+    pub fn is_dimmed(&self) -> bool {
+        matches!(self.panel, Panel::Dimmed | Panel::Off { dimmed: true })
+    }
+
+    /// Idle duration at which the display dims, if blanking is enabled.
+    fn dim_timeout(&self) -> Option<Duration> {
+        let blank = self.config.blank_timeout?;
+        let half = blank.checked_div(2).unwrap_or_default();
+        Some(blank.saturating_sub(DIM_BEFORE_BLANK.min(half)))
+    }
+
+    /// Clear the dim, reporting [`SessionTransition::Undimmed`] if the display was dimmed.
+    fn undim(&mut self, out: &mut Vec<SessionTransition>) {
+        let restored = match self.panel {
+            Panel::Dimmed => Panel::On,
+            Panel::Off { dimmed: true } => Panel::Off { dimmed: false },
+            Panel::On | Panel::Off { dimmed: false } => return,
+        };
+        self.panel = restored;
+        out.push(SessionTransition::Undimmed);
+    }
+
+    /// Power the panel back on, reporting [`SessionTransition::Woke`] if it was blanked.
+    fn wake(&mut self, out: &mut Vec<SessionTransition>) {
+        if self.is_blanked() {
+            self.panel = Panel::On;
+            out.push(SessionTransition::Woke);
+        }
     }
 
     /// Whether the session is currently locked.
@@ -186,30 +242,43 @@ impl SessionManager {
         now.saturating_duration_since(self.last_activity)
     }
 
-    /// Record an input event at `now`: resets the idle timer and, if the display was blanked,
-    /// wakes it ([`SessionTransition::Woke`]). Does **not** unlock a locked session — input while locked wakes the display but the session stays locked until [`Self::request_unlock`].
+    /// Record an input event at `now`: resets the idle timer, restores a dimmed display
+    /// ([`SessionTransition::Undimmed`]) and, if the display was blanked, wakes it
+    /// ([`SessionTransition::Woke`]). Brightness comes back before the panel powers on, so waking
+    /// never flashes the dimmed level. Does **not** unlock a locked session — input while locked wakes the display but the session stays locked until [`Self::request_unlock`].
     pub fn note_activity(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         // Input after a resume clears the suspend latch so a later idle episode can suspend again (no transition — resume is signalled out-of-band by logind's `PrepareForSleep`).
         self.suspended = false;
         let mut out = Vec::new();
-        if self.blanked {
-            self.blanked = false;
-            out.push(SessionTransition::Woke);
-        }
+        self.undim(&mut out);
+        self.wake(&mut out);
         out
     }
 
-    /// Advance the timers to `now` and emit any timeout-driven transitions (blank, auto-lock).
+    /// Advance the timers to `now` and emit any timeout-driven transitions (dim, blank, auto-lock).
+    /// A tick that lands past the blank without having seen the dim window blanks directly: the
+    /// dim is a warning, and there is nothing left to warn about.
     /// Idempotent once a threshold has fired: a blanked/locked state stays that way until the boolean is cleared.
     pub fn tick(&mut self, now: Instant) -> Vec<SessionTransition> {
         let idle = self.idle_for(now);
         let mut out = Vec::new();
-        if !self.blanked
+        if self.panel == Panel::On
+            && let Some(dim) = self.dim_timeout()
+            && let Some(blank) = self.config.blank_timeout
+            && idle >= dim
+            && idle < blank
+        {
+            self.panel = Panel::Dimmed;
+            out.push(SessionTransition::Dimmed);
+        }
+        if !self.is_blanked()
             && let Some(t) = self.config.blank_timeout
             && idle >= t
         {
-            self.blanked = true;
+            self.panel = Panel::Off {
+                dimmed: self.panel == Panel::Dimmed,
+            };
             out.push(SessionTransition::Blanked);
         }
         if !self.locked
@@ -227,6 +296,36 @@ impl SessionManager {
             out.push(SessionTransition::Suspend);
         }
         out
+    }
+
+    /// [`Self::tick`], honouring what the inhibitor registry holds. An idle
+    /// inhibitor (a video playing, a presentation, an app's `Inhibit IDLE`)
+    /// means the user is there without touching anything, so the idle episode
+    /// restarts from `now` and nothing dims, blanks, locks or suspends. A
+    /// dim already showing when the inhibitor arrives is lifted (the video
+    /// started, so the warning is moot); a blank is not — only input wakes
+    /// the panel. A suspend-only hold leaves dim, blank and lock alone.
+    pub fn tick_inhibited(
+        &mut self,
+        now: Instant,
+        inhibitors: &tilo_power_mgmt::InhibitRegistry,
+    ) -> Vec<SessionTransition> {
+        let mut out = Vec::new();
+        if inhibitors.is_inhibited_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE) {
+            self.defer_idle(now);
+            if !self.is_blanked() {
+                self.undim(&mut out);
+            }
+        }
+        out.extend(self.tick(now));
+        out
+    }
+
+    /// Restart the idle episode at `now` without it being input: a blanked
+    /// display stays blanked and a latched suspend stays latched, but no
+    /// timeout can fire until a full period has passed from here.
+    pub fn defer_idle(&mut self, now: Instant) {
+        self.last_activity = now;
     }
 
     /// Whether the idle-suspend latch is currently set.
@@ -266,14 +365,18 @@ impl SessionManager {
         self.suspended = false;
     }
 
-    /// Manually lock the session (Super+L / command). Resets the idle timer to `now` so the blank countdown restarts from the lock moment. No-op if already locked.
+    /// Manually lock the session (Super+L / command). Resets the idle timer to `now` so the blank countdown restarts from the lock moment, and lifts a dim so the lock screen shows at full brightness. Locking an already locked session changes nothing else.
     pub fn request_lock(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
-        if self.locked {
-            return Vec::new();
+        let mut out = Vec::new();
+        if !self.is_blanked() {
+            self.undim(&mut out);
         }
-        self.locked = true;
-        vec![SessionTransition::Locked]
+        if !self.locked {
+            self.locked = true;
+            out.push(SessionTransition::Locked);
+        }
+        out
     }
 
     /// Enter the secure pre-sleep state. This is deliberately separate from
@@ -295,12 +398,10 @@ impl SessionManager {
     pub fn resume_from_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         self.suspended = false;
-        if self.blanked {
-            self.blanked = false;
-            vec![SessionTransition::Woke]
-        } else {
-            Vec::new()
-        }
+        let mut out = Vec::new();
+        self.undim(&mut out);
+        self.wake(&mut out);
+        out
     }
 
     /// Apply the unlock transition: clears the lock, wakes the display if blanked, resets the idle timer. No-op if not locked.
@@ -314,10 +415,8 @@ impl SessionManager {
             return Vec::new();
         }
         let mut out = Vec::new();
-        if self.blanked {
-            self.blanked = false;
-            out.push(SessionTransition::Woke);
-        }
+        self.undim(&mut out);
+        self.wake(&mut out);
         self.locked = false;
         out.push(SessionTransition::Unlocked);
         out
@@ -343,6 +442,208 @@ mod tests {
             lock_timeout: lock.map(Duration::from_secs),
             suspend_timeout: suspend.map(Duration::from_secs),
         }
+    }
+
+    #[test]
+    fn an_idle_inhibitor_keeps_the_screen_from_blanking_and_locking() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), Some(120)), t0);
+        let video = registry.acquire_for("Videos", tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+
+        for minute in 1..=10 {
+            assert!(
+                session
+                    .tick_inhibited(t0 + Duration::from_secs(minute * 60), &registry)
+                    .is_empty(),
+                "minute {minute}: a held idle inhibitor must neither blank nor lock"
+            );
+        }
+
+        drop(video);
+        let released = t0 + Duration::from_secs(600);
+        assert!(
+            session
+                .tick_inhibited(released + Duration::from_secs(44), &registry)
+                .is_empty(),
+            "the idle episode restarts when the inhibitor lets go, not from the last input"
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(45), &registry),
+            vec![SessionTransition::Dimmed]
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked]
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(120), &registry),
+            vec![SessionTransition::Locked]
+        );
+    }
+
+    #[test]
+    fn a_suspend_only_hold_still_blanks_and_locks() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), Some(60)), t0);
+        let _download =
+            registry.acquire_for("Downloading", tilo_power_mgmt::inhibit::INHIBIT_SUSPEND);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked, SessionTransition::Locked],
+            "keeping the machine awake is not a reason to leave the screen unlocked"
+        );
+    }
+
+    #[test]
+    fn an_idle_inhibitor_taken_while_blanked_does_not_wake_the_display() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), None), t0);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked]
+        );
+        let _late = registry.acquire_for("Music", tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+        assert!(
+            session
+                .tick_inhibited(t0 + Duration::from_secs(61), &registry)
+                .is_empty()
+        );
+        assert!(session.is_blanked(), "only input wakes a blanked display");
+    }
+
+    // dim before blank
+
+    #[test]
+    fn the_display_dims_fifteen_seconds_before_it_blanks() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+        assert!(s.tick(t0 + Duration::from_secs(284)).is_empty());
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(285)),
+            vec![SessionTransition::Dimmed]
+        );
+        assert!(s.is_dimmed() && !s.is_blanked());
+        assert!(
+            s.tick(t0 + Duration::from_secs(290)).is_empty(),
+            "the dim fires once per idle episode"
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(300)),
+            vec![SessionTransition::Blanked]
+        );
+    }
+
+    #[test]
+    fn input_while_dimmed_restores_brightness_and_restarts_the_countdown() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(290)),
+            vec![SessionTransition::Dimmed]
+        );
+        assert_eq!(
+            s.note_activity(t0 + Duration::from_secs(295)),
+            vec![SessionTransition::Undimmed]
+        );
+        assert!(!s.is_dimmed());
+        assert!(
+            s.tick(t0 + Duration::from_secs(301)).is_empty(),
+            "the input kept the screen on: no blank at the old deadline"
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(295 + 285)),
+            vec![SessionTransition::Dimmed],
+            "a fresh idle episode dims again"
+        );
+    }
+
+    #[test]
+    fn short_blank_timeouts_dim_for_half_the_idle_period() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(Some(10), None), t0);
+        assert!(s.tick(t0 + Duration::from_secs(4)).is_empty());
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(5)),
+            vec![SessionTransition::Dimmed]
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(10)),
+            vec![SessionTransition::Blanked]
+        );
+    }
+
+    #[test]
+    fn blanking_disabled_never_dims() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(None, Some(300)), t0);
+        assert!(s.tick(t0 + Duration::from_secs(290)).is_empty());
+        assert!(!s.is_dimmed());
+    }
+
+    #[test]
+    fn an_idle_inhibitor_blocks_the_dim_and_lifts_one_already_showing() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), None), t0);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(50), &registry),
+            vec![SessionTransition::Dimmed]
+        );
+        let video = registry.acquire_for("Videos", tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(51), &registry),
+            vec![SessionTransition::Undimmed],
+            "playback starting while dimmed restores the screen"
+        );
+        for second in (60..=600).step_by(5) {
+            assert!(
+                session
+                    .tick_inhibited(t0 + Duration::from_secs(second), &registry)
+                    .is_empty(),
+                "second {second}: a held idle inhibitor must not dim"
+            );
+        }
+        drop(video);
+    }
+
+    #[test]
+    fn waking_from_a_dimmed_blank_restores_brightness_before_power() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(Some(60), Some(60)), t0);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(50)),
+            vec![SessionTransition::Dimmed]
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(60)),
+            vec![SessionTransition::Blanked, SessionTransition::Locked]
+        );
+        assert!(
+            s.is_dimmed(),
+            "the dim outlives the blank so waking can undo it"
+        );
+        assert_eq!(
+            s.note_activity(t0 + Duration::from_secs(70)),
+            vec![SessionTransition::Undimmed, SessionTransition::Woke]
+        );
+        assert!(
+            s.is_locked(),
+            "input restores the screen, never the session"
+        );
+    }
+
+    #[test]
+    fn locking_while_dimmed_shows_the_lock_screen_at_full_brightness() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(Some(60), None), t0);
+        let _ = s.tick(t0 + Duration::from_secs(50));
+        assert_eq!(
+            s.request_lock(t0 + Duration::from_secs(51)),
+            vec![SessionTransition::Undimmed, SessionTransition::Locked]
+        );
     }
 
     // IdleConfig::from_env_values
@@ -432,7 +733,11 @@ mod tests {
         // an unrelated reason.
         let mut session = SessionManager::new(cfg(None, None).with_blank(policy.idle_blank), t0);
 
-        assert!(session.tick(t0 + Duration::from_secs(59)).is_empty());
+        assert!(session.tick(t0 + Duration::from_secs(44)).is_empty());
+        assert_eq!(
+            session.tick(t0 + Duration::from_secs(59)),
+            vec![SessionTransition::Dimmed]
+        );
         assert_eq!(
             session.tick(t0 + Duration::from_secs(60)),
             vec![SessionTransition::Blanked]
@@ -444,7 +749,7 @@ mod tests {
         );
         assert_eq!(
             session.note_activity(t0 + Duration::from_secs(61)),
-            vec![SessionTransition::Woke]
+            vec![SessionTransition::Undimmed, SessionTransition::Woke]
         );
         session.set_blank_timeout(never.idle_blank);
         assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
@@ -472,8 +777,13 @@ mod tests {
         let mut s = SessionManager::new(cfg(Some(300), None), t0);
         assert!(!s.is_blanked());
 
-        // Just under the threshold: no transition.
-        assert!(s.tick(t0 + Duration::from_secs(299)).is_empty());
+        // Before the dim window: no transition.
+        assert!(s.tick(t0 + Duration::from_secs(284)).is_empty());
+        // Just under the threshold: dimmed, not blanked.
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(299)),
+            vec![SessionTransition::Dimmed]
+        );
         assert!(!s.is_blanked());
 
         // At/after the threshold: blanks once.
@@ -485,9 +795,13 @@ mod tests {
         assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
         assert!(s.is_blanked());
 
-        // Any input wakes the display and resets the timer.
+        // Any input restores brightness, wakes the display and resets the timer.
         let trans = s.note_activity(t0 + Duration::from_secs(601));
-        assert_eq!(trans, vec![SessionTransition::Woke]);
+        assert_eq!(
+            trans,
+            vec![SessionTransition::Undimmed, SessionTransition::Woke]
+        );
+        assert!(!s.is_dimmed());
         assert!(!s.is_blanked());
         assert_eq!(s.idle_for(t0 + Duration::from_secs(601)), Duration::ZERO);
     }

@@ -192,7 +192,7 @@ impl Chooser {
         }
     }
 
-    /// Decide through the live resource/action catalogue. Unlike [`choose`],
+    /// Decide through the live resource/action catalogue. Unlike `choose`,
     /// this path has no compiled-in application vocabulary: the model must
     /// discover operation ids through read-only tools, and can finish only by
     /// submitting `plan` with native JSON argument values.

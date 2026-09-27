@@ -329,7 +329,7 @@ const DATE_FMT: &str = "%Y-%m-%d";
 /// representation the document stores (datetimes as `DT_FMT` strings, colour as
 /// a palette index, recurrence as an RRULE body, an absent reminder as `-1`).
 /// Carrying the document shape keeps [`Action::apply`] a pure write with no
-/// re-derivation, and makes [`Self::from_event`]/[`Self::to_event`] lossless
+/// re-derivation, and makes [`Self::from_event`]/`Self::to_event` lossless
 /// round-trips.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventData {

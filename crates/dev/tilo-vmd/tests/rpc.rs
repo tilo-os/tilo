@@ -112,6 +112,7 @@ fn full_slot_lifecycle_over_stdio() {
             name: "agent-a".into(),
             kind: SlotKind::Headless,
             owner: Owner::default(),
+            outputs: vec![],
         })
         .unwrap();
     assert!(created.created);
@@ -123,6 +124,7 @@ fn full_slot_lifecycle_over_stdio() {
             name: "agent-a".into(),
             kind: SlotKind::Headless,
             owner: Owner::default(),
+            outputs: vec![],
         })
         .unwrap();
     assert!(!again.created, "create is idempotent");
@@ -231,6 +233,7 @@ fn full_slot_lifecycle_over_stdio() {
             name: "agent-b".into(),
             kind: SlotKind::Headful,
             owner: Owner::default(),
+            outputs: vec![],
         })
         .unwrap();
     let owner = Owner {
@@ -490,6 +493,7 @@ fn input_goes_to_headful_seats_and_apps_install_per_slot() {
                 name: name.into(),
                 kind,
                 owner: Owner::default(),
+                outputs: vec![],
             })
             .unwrap();
     }

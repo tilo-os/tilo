@@ -87,7 +87,7 @@ regressions are recorded below after completion.
 
 ## Local evidence
 
-Host logs: `/tmp/qos-regression-20260915/`.
-VM logs: `/home/parallels/qos-regression-20260915/`.
+Host logs: `/tmp/tilo-regression-20260915/`.
+VM logs: `/home/parallels/tilo-regression-20260915/`.
 Copied VM logs and immutable source manifest:
-`/Users/xaver/.cache/qos-regression-20260915/`.
+`/Users/xaver/.cache/tilo-regression-20260915/`.

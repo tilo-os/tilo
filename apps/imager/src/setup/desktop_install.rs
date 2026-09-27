@@ -272,7 +272,7 @@ mod transaction_core {
             return Err("Desktop input is not a regular package of the authenticated size.".into());
         }
         let directory = tempfile::Builder::new()
-            .prefix("qos-desktop-")
+            .prefix("tilo-desktop-")
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in(parent)
             .map_err(|_| "Cannot create private package staging.")?;
@@ -925,7 +925,7 @@ mod tests {
             distro_version: "44".into(),
             architecture: "aarch64".into(),
             package_format: PackageFormat::Rpm,
-            url: "https://code.podesta.ai/qos/test.rpm".into(),
+            url: "https://code.tilo.so/tilo/test.rpm".into(),
             byte_size: 7,
             sha256: digest.clone(),
             verified_runtime: Some(RuntimeEvidence {
@@ -1260,10 +1260,11 @@ mod tests {
     fn native_desktop_install_local_artifact() {
         assert_eq!(unsafe { libc::geteuid() }, 0);
         let path = std::path::PathBuf::from(
-            std::env::var_os("QOS_DESKTOP_TEST_ARTIFACT").expect("explicit local artifact"),
+            std::env::var_os("TILO_DESKTOP_TEST_ARTIFACT").expect("explicit local artifact"),
         );
-        let digest = std::env::var("QOS_DESKTOP_TEST_SHA256").expect("independent artifact SHA256");
-        let version = std::env::var("QOS_DESKTOP_TEST_VERSION").expect("native package version");
+        let digest =
+            std::env::var("TILO_DESKTOP_TEST_SHA256").expect("independent artifact SHA256");
+        let version = std::env::var("TILO_DESKTOP_TEST_VERSION").expect("native package version");
         let mut backend = native::NativeBackend;
         let host = backend.probe().unwrap();
         let os = host.os_release.clone().unwrap();
@@ -1278,7 +1279,7 @@ mod tests {
                 PackageManager::Apt => PackageFormat::Deb,
                 PackageManager::Pacman => PackageFormat::Arch,
             },
-            url: "https://code.podesta.ai/test-only-local-artifact".into(),
+            url: "https://code.tilo.so/test-only-local-artifact".into(),
             byte_size: std::fs::metadata(&path).unwrap().len(),
             sha256: digest,
             verified_runtime: None,

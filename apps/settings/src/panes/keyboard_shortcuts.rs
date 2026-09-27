@@ -153,6 +153,18 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Reorder the focused window group",
         ),
         (
+            ShortcutAction::MoveGroupToPreviousDisplay,
+            "shortcuts.move_group_to_previous_display",
+            "Move group to display on left",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
+            ShortcutAction::MoveGroupToNextDisplay,
+            "shortcuts.move_group_to_next_display",
+            "Move group to display on right",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
             ShortcutAction::ResizeNarrower,
             "shortcuts.resize_narrower",
             "Make window narrower",
@@ -163,6 +175,120 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "shortcuts.resize_wider",
             "Make window wider",
             "Increase the focused group's width",
+        ),
+        (
+            ShortcutAction::ReopenClosedTab,
+            "shortcuts.reopen_closed_tab",
+            "Reopen closed tab",
+            "Bring back the tab closed most recently in this workspace",
+        ),
+        (
+            ShortcutAction::FocusGroup1,
+            "shortcuts.focus_group_1",
+            "Window 1",
+            "Focus the first window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup2,
+            "shortcuts.focus_group_2",
+            "Window 2",
+            "Focus the second window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup3,
+            "shortcuts.focus_group_3",
+            "Window 3",
+            "Focus the third window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup4,
+            "shortcuts.focus_group_4",
+            "Window 4",
+            "Focus the fourth window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup5,
+            "shortcuts.focus_group_5",
+            "Window 5",
+            "Focus the fifth window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup6,
+            "shortcuts.focus_group_6",
+            "Window 6",
+            "Focus the sixth window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup7,
+            "shortcuts.focus_group_7",
+            "Window 7",
+            "Focus the seventh window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup8,
+            "shortcuts.focus_group_8",
+            "Window 8",
+            "Focus the eighth window in the current strip",
+        ),
+        (
+            ShortcutAction::FocusGroup9,
+            "shortcuts.focus_group_9",
+            "Window 9",
+            "Focus the ninth window in the current strip",
+        ),
+        (
+            ShortcutAction::OpenFiles,
+            "shortcuts.open_files",
+            "Open Files",
+            "Browse this workspace's files",
+        ),
+        (
+            ShortcutAction::OpenTerminal,
+            "shortcuts.open_terminal",
+            "Open a terminal",
+            "Beside the focused window",
+        ),
+        (
+            ShortcutAction::ClipboardHistory,
+            "shortcuts.clipboard_history",
+            "Clipboard history",
+            "Paste something copied earlier",
+        ),
+        (
+            ShortcutAction::Notifications,
+            "shortcuts.notifications",
+            "Notifications",
+            "Show recent notifications",
+        ),
+        (
+            ShortcutAction::ToggleFullscreen,
+            "shortcuts.toggle_fullscreen",
+            "Full screen",
+            "Make the focused window full screen, or restore it",
+        ),
+        (
+            ShortcutAction::ToggleMagnifier,
+            "shortcuts.toggle_magnifier",
+            "Magnifier",
+            "Turn screen magnification on or off",
+        ),
+        (
+            ShortcutAction::MagnifierZoomIn,
+            "shortcuts.magnifier_zoom_in",
+            "Magnifier zoom in",
+            "Magnify more, turning the magnifier on if it is off",
+        ),
+        (
+            ShortcutAction::MagnifierZoomOut,
+            "shortcuts.magnifier_zoom_out",
+            "Magnifier zoom out",
+            "Magnify less, down to off",
+        ),
+        (
+            ShortcutAction::PowerMenu,
+            "shortcuts.power_menu",
+            "Power menu",
+            "Lock, log out, restart or shut down",
         ),
     ]
     .to_vec()
@@ -194,6 +320,14 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::QuickSettings
             | ShortcutAction::Remark
             | ShortcutAction::ShortcutHelp
+            | ShortcutAction::OpenFiles
+            | ShortcutAction::OpenTerminal
+            | ShortcutAction::ClipboardHistory
+            | ShortcutAction::Notifications
+            | ShortcutAction::ToggleMagnifier
+            | ShortcutAction::MagnifierZoomIn
+            | ShortcutAction::MagnifierZoomOut
+            | ShortcutAction::PowerMenu
     )
 }
 
@@ -270,10 +404,23 @@ impl ShortcutPane {
                 system.push(row);
             }
         }
-        crate::widgets::cards(vec![
+        let mut cards = vec![
             card("System", rows(system)),
             card("Desktop navigation", rows(desktop)),
-        ])
+        ];
+        if !self.config.actions.is_empty() {
+            let mut actions: Vec<Box<dyn Widget>> = self
+                .config
+                .actions
+                .iter()
+                .map(|bound| crate::widgets::value_row(&bound.label, &bound.chord.display()))
+                .collect();
+            actions.push(crate::widgets::caption(
+                "A saved shortcut's keyboard trigger binds its chord here; change or remove it in the shortcut.",
+            ));
+            cards.push(card("Actions", rows(actions)));
+        }
+        crate::widgets::cards(cards)
     }
 
     fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {

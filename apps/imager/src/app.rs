@@ -116,7 +116,7 @@ const EMPTY_LINE_1: &str = "Plug in a USB stick or SD card, then press Rescan.";
 const EMPTY_LINE_2: &str = "Internal disks are available after booting this installation medium.";
 const RESCAN_LABEL: &str = "⟳ Rescan";
 const PLAIN_TITLE: &str = "This image is written unchanged";
-const PLAIN_BODY: &str = "Pre-configuration (hostname, user, region) is available for qOS images. Press Continue to write it as-is.";
+const PLAIN_BODY: &str = "Pre-configuration (hostname, user, region) is available for Tilo images. Press Continue to write it as-is.";
 
 /// The text measurements the layout model needs, so the unmeasured 1×
 /// defaults and the renderer-measured bands share one set of formulas: a
@@ -1771,7 +1771,7 @@ impl ImagerApp {
         Self::txt_right(scene, tr, s, size, color, right, top, weight);
     }
 
-    /// A kind badge (`qOS`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
+    /// A kind badge (`Tilo`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
     /// its label needs, filling the band `top ..= top + band_h` from `x`.
     /// Returns the badge's rect so the text column can follow it.
     #[allow(
@@ -1871,7 +1871,7 @@ impl ImagerApp {
             Some(if self.releases().is_empty() {
                 "The image to write. Pick a local .iso or .img file."
             } else {
-                "The image to write. Pick a local .iso or .img file, or a qOS release below."
+                "The image to write. Pick a local .iso or .img file, or a Tilo release below."
             }),
         )
     }
@@ -1889,7 +1889,7 @@ impl ImagerApp {
     fn customize_heading(&self) -> (&'static str, Option<&'static str>) {
         let description = self.customizable().then(|| {
             if self.action == Action::Install {
-                "Set up the machine qOS will install — you can change any of this later."
+                "Set up the machine Tilo will install — you can change any of this later."
             } else {
                 "These choices travel with the installer, so setup on the device is shorter."
             }
@@ -2145,7 +2145,7 @@ impl ImagerApp {
         if self.source.is_some() {
             y += SIBLING + m.card_h(compact); // selected card
         }
-        // qOS releases: caption, then the zero-state card or the rows.
+        // Tilo releases: caption, then the zero-state card or the rows.
         y += GROUP + m.section_h;
         if self.releases().is_empty() {
             y += m.zero_h;
@@ -2344,11 +2344,11 @@ impl ImagerApp {
         }
         let act = match self.action {
             Action::Install => format!(
-                "Install qOS with your settings (host {}, user {})",
+                "Install Tilo with your settings (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
             Action::Flash if self.customizable() => format!(
-                "Write qOS, pre-configured (host {}, user {})",
+                "Write Tilo, pre-configured (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
             Action::Flash => "Write the image, then read-back verify".to_string(),
@@ -3066,7 +3066,7 @@ impl ImagerApp {
         card.y1
     }
 
-    /// Draws the "qOS release" caption, its zero-state or the list of known
+    /// Draws the "Tilo release" caption, its zero-state or the list of known
     /// releases from `top`, returning the bottom of the block.
     fn draw_source_releases(
         &self,
@@ -3192,11 +3192,11 @@ impl ImagerApp {
             r.x0 + SECTION,
             r.y0 + (r.height() - m.card_badge_h) / 2.0,
             m.card_badge_h,
-            "qOS",
+            "Tilo",
             c.accent[5],
         );
         let text_x = badge.x1 + SIBLING;
-        let title = format!("qOS {}", rel.version);
+        let title = format!("Tilo {}", rel.version);
         let (title_w, title_h) = tr.measure_weighted(&title, 14.5, None, TextWeight::Semibold);
         let (inst_w, _) = tr.measure_weighted("installable", 11.0, None, TextWeight::Medium);
         let title_max_w = (r.x1 - SECTION - f64::from(inst_w) - SIBLING - text_x)
@@ -4190,11 +4190,11 @@ impl ImagerApp {
     fn done_ok_copy(install: bool, compact: bool) -> (&'static str, &'static str) {
         match (install, compact) {
             (true, false) => (
-                "qOS is installed",
+                "Tilo is installed",
                 "The disk was written and verified — remove the media and reboot.",
             ),
             (true, true) => (
-                "qOS is installed",
+                "Tilo is installed",
                 "Written and verified. Remove the media and reboot.",
             ),
             (false, false) => (

@@ -27,12 +27,12 @@ def main():
     hashes = {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in binaries}
     args.output.mkdir(parents=True, exist_ok=False)
     metadata = {"binary_sha256": hashes, "runtime_exit_status": None}
-    with tempfile.TemporaryDirectory(prefix="qos-edit-", dir="/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tilo-edit-", dir="/tmp") as temporary:
         root = Path(temporary)
-        env = {key: value for key, value in os.environ.items() if not key.startswith(("QOS_", "QUICK_"))}
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("TILO_", "QUICK_"))}
         env.update({"XDG_CONFIG_HOME": str(root / "config"), "XDG_DATA_HOME": str(root / "data"),
-                    "XDG_CACHE_HOME": str(root / "cache"), "QOS_IDENTITY_ROOT": str(root / "identity"),
-                    "QOS_BLOB_STORE": str(root / "blobs"), "RUST_LOG": "info"})
+                    "XDG_CACHE_HOME": str(root / "cache"), "TILO_IDENTITY_ROOT": str(root / "identity"),
+                    "TILO_BLOB_STORE": str(root / "blobs"), "RUST_LOG": "info"})
         command = [str(binaries[0]), str(root), str(binaries[1]), str(binaries[2]), "--edited-handoff"]
         metadata["command"] = command
         with (args.output / "events.jsonl").open("w") as out, (args.output / "runtime.log").open("w") as err:

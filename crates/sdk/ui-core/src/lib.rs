@@ -119,13 +119,10 @@ pub(crate) mod application_test_support;
 
 pub mod app;
 pub mod auth_backdrop;
-pub mod background;
 pub mod caps_lock;
-pub mod capture;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
-pub mod clipboard;
 pub mod collaboration;
 pub mod collection_transition;
 pub mod color;
@@ -157,7 +154,6 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
-pub mod host;
 #[cfg(all(windows, feature = "notifications"))]
 pub use native::host_notifications;
 pub mod i18n;
@@ -168,9 +164,7 @@ pub mod interaction;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
-pub mod location;
 pub mod math;
-pub mod mpris;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod nav_stack;
@@ -182,8 +176,6 @@ pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
-pub mod png;
-pub mod portal;
 pub mod presence;
 pub mod profiling;
 pub mod query_text;
@@ -197,6 +189,7 @@ pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
+pub mod remote_actions;
 pub mod render_thread;
 pub mod reorder;
 pub mod richtext;
@@ -217,19 +210,26 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
-pub mod time;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
-pub mod wake;
 #[cfg(feature = "native")]
 pub use native::warmup;
 pub mod webview;
 pub mod widget;
 pub mod window_icon;
+
+// Host services — the clock, background work, clipboard, file choosers, URI
+// handlers, notifications, media sessions, location and screen capture — are
+// their own crate below the toolkit. They keep their toolkit paths
+// (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
+#[doc(inline)]
+pub use tilo_host::{
+    background, capture, clipboard, host, location, mpris, png, portal, time, wake,
+};
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
@@ -277,6 +277,9 @@ pub use profiling::{
 };
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use remote_actions::{
+    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+};
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
@@ -291,17 +294,19 @@ pub use state::{
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use ui_graph::{
-    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiComponentRequest, UiDocument,
-    UiDocumentExt, UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole,
-    UiTextSource,
+    LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
+    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{
     FROZEN_VERSION, FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect,
 };
 pub use virtual_viewport::{
-    DragScrollFinish, DragScrollUpdate, DragScroller, ReconcileError, ScrollAlignment,
-    ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
+    DragScrollFinish, DragScrollUpdate, DragScroller, KineticSampler, ReconcileError,
+    ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
+    WheelStep,
 };
 
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid

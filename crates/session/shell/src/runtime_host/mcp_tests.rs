@@ -38,7 +38,7 @@ async fn unknown_tool_is_an_invalid_params_error_with_the_request_id() {
             "jsonrpc": "2.0",
             "id": "unknown-tool-request",
             "method": "tools/call",
-            "params": {"name": "qos_not_a_tool", "arguments": {}}
+            "params": {"name": "tilo_not_a_tool", "arguments": {}}
         }))
         .await
         .unwrap();
@@ -55,7 +55,7 @@ async fn null_id_is_rejected_before_mutating_dispatch_and_valid_id_boundaries_ho
             let (fixture, room, actor) = fixture();
             let mut server = McpServer::new(fixture.broker.clone(), room, actor);
             let mut null_id = call(
-                "qos_invoke",
+                "tilo_invoke",
                 &json!({
                     "peer_id": 71,
                     "revision": "directory-r1",
@@ -138,7 +138,7 @@ async fn protocol_and_argument_boundaries() {
     assert_eq!(
         server
             .handle(call(
-                "qos_inspect",
+                "tilo_inspect",
                 &json!({"peer_id":999,"query":{"kind":"node","id":"t:save"}})
             ))
             .await
@@ -153,14 +153,14 @@ async fn protocol_and_argument_boundaries() {
         json!([]),
     ] {
         assert_eq!(
-            server.handle(call("qos_list_apps", &args)).await.unwrap()["result"]["isError"],
+            server.handle(call("tilo_list_apps", &args)).await.unwrap()["result"]["isError"],
             true
         );
     }
     assert_eq!(
         server
             .handle(call(
-                "qos_status",
+                "tilo_status",
                 &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
             ))
             .await
@@ -170,7 +170,7 @@ async fn protocol_and_argument_boundaries() {
     assert_eq!(
         server
             .handle(call(
-                "qos_cancel",
+                "tilo_cancel",
                 &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
             ))
             .await
@@ -184,15 +184,15 @@ async fn actual_broker_query_resolve_and_stale_invocation() {
     tokio::task::LocalSet::new().run_until(async {
         let (fixture, room, actor) = fixture();
         let mut server = McpServer::new(fixture.broker.clone(),room,actor);
-        let roots=server.handle(call("qos_list_apps",&json!({}))).await.unwrap();
+        let roots=server.handle(call("tilo_list_apps",&json!({}))).await.unwrap();
         assert_eq!(roots["result"]["structuredContent"]["apps"][0]["peer_id"],71);
-        let query=server.handle(call("qos_query",&json!({"peer_id":71})));
+        let query=server.handle(call("tilo_query",&json!({"peer_id":71})));
         let (reply,())=tokio::join!(query, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         assert_eq!(reply["result"]["structuredContent"]["revision"],"directory-r1");
         assert!(reply["result"]["structuredContent"]["rows"][0]["descriptor"]["params"].is_array());
         fixture.set_resolve_mode(DirectoryResolveMode::Stale);
-        let invoke=server.handle(call("qos_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(invoke, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     }).await;
@@ -204,15 +204,15 @@ async fn resources_are_live_room_scoped_and_reads_use_authority() {
         let (fixture, room, actor) = fixture();
         let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor);
         let resources=server.handle(request("resources/list",&json!({}))).await.unwrap();
-        assert_eq!(resources["result"]["resources"][0]["uri"],"qos://apps/71");
-        let read=server.handle(request("resources/read",&json!({"uri":"qos://apps/71"})));
+        assert_eq!(resources["result"]["resources"][0]["uri"],"tilo://apps/71");
+        let read=server.handle(request("resources/read",&json!({"uri":"tilo://apps/71"})));
         let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert!(reply.unwrap()["result"]["contents"][0]["text"].as_str().unwrap().contains("directory-r1"));
         let mut other=McpServer::new(fixture.broker.clone(),"different-room".into(),"outsider".into());
         assert_eq!(other.handle(request("resources/list",&json!({}))).await.unwrap()["result"]["resources"],json!([]));
-        assert!(other.handle(request("resources/read",&json!({"uri":"qos://apps/71"}))).await.unwrap().get("error").is_some());
+        assert!(other.handle(request("resources/read",&json!({"uri":"tilo://apps/71"}))).await.unwrap().get("error").is_some());
         let mut denied=McpServer::new(fixture.broker.clone(),room,"outsider".into());
-        let read=denied.handle(request("resources/read",&json!({"uri":"qos://apps/71"})));
+        let read=denied.handle(request("resources/read",&json!({"uri":"tilo://apps/71"})));
         let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
         let text = reply["result"]["contents"][0]["text"]
@@ -221,7 +221,7 @@ async fn resources_are_live_room_scoped_and_reads_use_authority() {
         let page: Value = serde_json::from_str(text).unwrap();
         assert_eq!(page["rows"], json!([]), "{reply}");
         assert!(!text.contains("workspace:atlas"), "{reply}");
-        let call=denied.handle(call("qos_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let call=denied.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     }).await;
@@ -243,7 +243,7 @@ async fn root_identity_pagination_and_disconnect_are_exact() {
     );
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
     let first = server
-        .handle(call("qos_list_apps", &json!({"max_results":500})))
+        .handle(call("tilo_list_apps", &json!({"max_results":500})))
         .await
         .unwrap();
     assert_eq!(
@@ -255,7 +255,7 @@ async fn root_identity_pagination_and_disconnect_are_exact() {
     );
     assert_eq!(first["result"]["structuredContent"]["next_after_peer"], 128);
     let last = server
-        .handle(call("qos_list_apps", &json!({"after_peer":128})))
+        .handle(call("tilo_list_apps", &json!({"after_peer":128})))
         .await
         .unwrap();
     assert_eq!(
@@ -264,14 +264,14 @@ async fn root_identity_pagination_and_disconnect_are_exact() {
     );
     assert_eq!(
         last["result"]["structuredContent"]["apps"][1]["uri"],
-        "qos://apps/130"
+        "tilo://apps/130"
     );
     fixture
         .broker
         .replace_action_directory_roots_for_test(vec![]);
     assert_eq!(
         server
-            .handle(call("qos_query", &json!({"peer_id":129})))
+            .handle(call("tilo_query", &json!({"peer_id":129})))
             .await
             .unwrap()["result"]["isError"],
         true
@@ -283,7 +283,7 @@ async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
     tokio::task::LocalSet::new().run_until(async {
         let (mut fixture,room,actor)=fixture();
         let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor.clone());
-        let invoke=server.handle(call("qos_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         assert_eq!(reply["result"]["isError"],false,"{reply}");
@@ -292,10 +292,10 @@ async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
         assert_eq!(fixture.take_invocation_actor(),Some(actor));
         assert_eq!(fixture.resolve_count(),1);
         let mut foreign=McpServer::new(fixture.broker.clone(),room,"foreign".into());
-        for tool in ["qos_status","qos_cancel"] {
+        for tool in ["tilo_status","tilo_cancel"] {
             assert_eq!(foreign.handle(call(tool,&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
         }
-        let status=server.handle(call("qos_status",&json!({"invocation_id":id}))).await.unwrap();
+        let status=server.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"]["invocation_id"],id);
         assert_ne!(status["result"]["structuredContent"]["update"]["state"],"succeeded");
     }).await;
@@ -308,17 +308,17 @@ async fn a_retried_invocation_id_starts_the_action_once() {
         let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor.clone());
         let id="6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"invocation_id":id});
-        let invoke=server.handle(call("qos_invoke",&args));
+        let invoke=server.handle(call("tilo_invoke",&args));
         let (first,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let first=first.unwrap();
         assert_eq!(first["result"]["structuredContent"]["invocation_id"],id,"{first}");
         assert_eq!(fixture.take_invocation_actor(),Some(actor));
-        let retry=server.handle(call("qos_invoke",&args)).await.unwrap();
+        let retry=server.handle(call("tilo_invoke",&args)).await.unwrap();
         assert_eq!(retry["result"]["structuredContent"],first["result"]["structuredContent"]);
         assert_eq!(fixture.take_invocation_actor(),None,"a retry never reaches the app again");
         assert_eq!(fixture.resolve_count(),1,"nor re-resolves the directory");
         let other=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{"changed":true},"invocation_id":id});
-        assert_eq!(server.handle(call("qos_invoke",&other)).await.unwrap()["result"]["isError"],true,"an id cannot be reused for another request");
+        assert_eq!(server.handle(call("tilo_invoke",&other)).await.unwrap()["result"]["isError"],true,"an id cannot be reused for another request");
     }).await;
 }
 
@@ -339,7 +339,7 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
             let mut transported = None;
             for arguments in [original.clone(), json!({})] {
                 let invoke = server.handle(call(
-                    "qos_invoke",
+                    "tilo_invoke",
                     &json!({
                         "peer_id": 71,
                         "revision": "directory-r1",
@@ -396,10 +396,10 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
 async fn targets_require_a_nonempty_revision_before_enqueueing() {
     let (fixture, room, actor) = fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
-    for name in ["qos_resolve", "qos_invoke"] {
+    for name in ["tilo_resolve", "tilo_invoke"] {
         let mut args =
             json!({"peer_id":71,"revision":"","resource":"workspace:atlas","action":"open"});
-        if name == "qos_invoke" {
+        if name == "tilo_invoke" {
             args["arguments"] = json!({});
         }
         let reply = tokio::time::timeout(
@@ -447,7 +447,7 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
         );
     }
     let busy = server
-        .handle(call("qos_query", &json!({"peer_id":71})))
+        .handle(call("tilo_query", &json!({"peer_id":71})))
         .await
         .unwrap();
     assert_eq!(busy["result"]["isError"], true);
@@ -459,7 +459,7 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
     );
     drop(fixture);
     let disconnected = server
-        .handle(call("qos_query", &json!({"peer_id":71})))
+        .handle(call("tilo_query", &json!({"peer_id":71})))
         .await
         .unwrap();
     assert!(
@@ -471,7 +471,7 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
     let (fixture, room, actor) = self::fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
     let timeout = server
-        .handle(call("qos_query", &json!({"peer_id":71})))
+        .handle(call("tilo_query", &json!({"peer_id":71})))
         .await
         .unwrap();
     assert_eq!(timeout["result"]["isError"], true);
@@ -491,12 +491,12 @@ async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker()
         let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor);
         fixture.set_confirmation_required(true);
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}});
-        let invoke=server.handle(call("qos_invoke",&args));
+        let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["content"][0]["text"],"the action requires confirmation");
         fixture.set_confirmation_required(false);
         fixture.set_result_spec(tilo_actions::ResultSpec::Json {schema:json!({"type":"object"})});
-        let invoke=server.handle(call("qos_invoke",&args));
+        let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
@@ -509,10 +509,10 @@ async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker()
         let broker_invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
         fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:broker_invocation,output:output.clone()}).await.unwrap();
         let update=tilo_actions::InvocationUpdate::Succeeded {invocation,output};
-        let status=server.handle(call("qos_status",&json!({"invocation_id":id}))).await.unwrap();
+        let status=server.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
         let mut other=McpServer::new(fixture.broker.clone(),room,"foreign".into());
-        assert_eq!(other.handle(call("qos_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
+        assert_eq!(other.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
     }).await;
 }
 
@@ -553,17 +553,17 @@ async fn request_metadata_is_accepted_without_becoming_broker_authority() {
         let mut server = McpServer::new(fixture.broker.clone(), room, actor.clone());
         let metadata = json!({"progressToken":"progress-1","actor":"foreign","workspace":"foreign-room"});
         let listed = server.handle(request("resources/list", &json!({"_meta":metadata}))).await.unwrap();
-        assert_eq!(listed["result"]["resources"][0]["uri"], "qos://apps/71", "{listed}");
-        let read = server.handle(request("resources/read", &json!({"uri":"qos://apps/71","_meta":metadata})));
+        assert_eq!(listed["result"]["resources"][0]["uri"], "tilo://apps/71", "{listed}");
+        let read = server.handle(request("resources/read", &json!({"uri":"tilo://apps/71","_meta":metadata})));
         let (reply, ()) = tokio::join!(read, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
         assert!(reply.unwrap()["result"]["contents"][0]["text"].is_string());
-        let mut invoke = call("qos_invoke", &json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}}));
+        let mut invoke = call("tilo_invoke", &json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}}));
         invoke["params"]["_meta"] = metadata.clone();
         let invoke = server.handle(invoke);
         let (reply, ()) = tokio::join!(invoke, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
         assert_eq!(reply.unwrap()["result"]["isError"], false);
         assert_eq!(fixture.take_invocation_actor(), Some(actor));
-        let mut spoof = call("qos_list_apps", &json!({"actor":"foreign"}));
+        let mut spoof = call("tilo_list_apps", &json!({"actor":"foreign"}));
         spoof["params"]["_meta"] = metadata;
         assert_eq!(server.handle(spoof).await.unwrap()["result"]["isError"], true);
     }).await;
@@ -581,12 +581,12 @@ async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
         json!({"progressToken":1.5}),
     ] {
         for mut input in [
-            call("qos_list_apps", &json!({})),
+            call("tilo_list_apps", &json!({})),
             request("initialize", &json!({"protocolVersion":"2025-06-18"})),
             request("ping", &json!({})),
             request("tools/list", &json!({})),
             request("resources/list", &json!({})),
-            request("resources/read", &json!({"uri":"qos://apps/71"})),
+            request("resources/read", &json!({"uri":"tilo://apps/71"})),
         ] {
             input["params"]["_meta"] = metadata.clone();
             assert_eq!(server.handle(input).await.unwrap()["error"]["code"], -32602);
@@ -597,7 +597,7 @@ async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
         json!({"progressToken":1}),
         json!({"progressToken":"token"}),
     ] {
-        let mut input = call("qos_list_apps", &json!({}));
+        let mut input = call("tilo_list_apps", &json!({}));
         input["params"]["_meta"] = metadata;
         assert_eq!(
             server.handle(input).await.unwrap()["result"]["isError"],
@@ -619,11 +619,11 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         tree.set_active(WorkspaceId(71));
         let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
         let mut server = McpServer::new(fixture.broker.clone(), room, actor.clone());
-        let listed = server.handle(call("qos_list_apps", &json!({}))).await.unwrap();
+        let listed = server.handle(call("tilo_list_apps", &json!({}))).await.unwrap();
         let app = &listed["result"]["structuredContent"]["apps"][0];
         let peer_id = app["peer_id"].as_u64().unwrap();
         assert_eq!(app["record_id"], "atlas");
-        let query = server.handle(call("qos_query", &json!({"peer_id":peer_id})));
+        let query = server.handle(call("tilo_query", &json!({"peer_id":peer_id})));
         let (reply, ()) = tokio::join!(query, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
         assert_eq!(reply["result"]["isError"], false, "first published peer {peer_id} must be queryable: {reply}");
@@ -631,14 +631,14 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         let resource = &page["rows"][0]["resource"];
         assert_eq!(resource, "workspace:atlas");
         let target = json!({"peer_id":peer_id,"revision":page["revision"],"resource":resource,"action":page["rows"][0]["action"]});
-        let resolve = server.handle(call("qos_resolve", &target));
+        let resolve = server.handle(call("tilo_resolve", &target));
         let (reply, ()) = tokio::join!(resolve, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         assert_eq!(reply["result"]["structuredContent"]["row"]["resource"], "workspace:atlas");
         let mut target = target;
         target["arguments"] = json!({});
-        let invoke = server.handle(call("qos_invoke", &target));
+        let invoke = server.handle(call("tilo_invoke", &target));
         let (reply, ()) = tokio::join!(invoke, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
         assert_eq!(reply["result"]["isError"], false, "{reply}");

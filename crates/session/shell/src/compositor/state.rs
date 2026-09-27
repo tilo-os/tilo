@@ -50,8 +50,11 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::output::Output as SmithayOutput;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
     InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
 };
@@ -61,26 +64,31 @@ use smithay::wayland::session_lock::{
 };
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
+use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_ext_data_control, delegate_fractional_scale, delegate_output,
-    delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
+    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit,
+    delegate_output, delegate_input_method_manager, delegate_pointer_constraints,
+    delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
+use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
@@ -217,8 +225,8 @@ impl SessionLockHooks {
     }
 }
 
-/// One output's `(position, size, scale)` in the compositor's combined
-/// coordinate space — see [`State::output_layout`]. Factored into a named
+/// One output's `(position, size, scale)` in the logical desktop — see
+/// [`State::output_layout`]. Factored into a named
 /// alias to keep that field (and every function taking a slice of it) readable.
 pub type OutputPlacement = ((i32, i32), (u32, u32), f64);
 
@@ -408,6 +416,9 @@ pub struct State {
     /// after [`XdgActivationHandler::token_created`] proves they came from a
     /// recent serial on this seat and a focused source surface.
     pub xdg_activation_state: XdgActivationState,
+    /// `xdg_wm_dialog_v1` — the modal hint on transient toplevels, which
+    /// decides whether a sheet blocks its parent.
+    pub xdg_dialog_state: XdgDialogState,
     /// Metadata for compositor-created activation tokens passed to one host
     /// launch. Kept separate from client token data: host app-ids need not
     /// match their desktop-file id.
@@ -475,6 +486,9 @@ pub struct State {
     /// The share registry decides *whether* a peer may drive a surface;
     /// this decides what, where and how fast. Fed a view of the screen once per tick — until then it refuses everything.
     pub remote_input_firewall: RemoteInputFirewall,
+    /// Approved `GlobalShortcuts` grants. Client routing asks it before a
+    /// focused client sees a key, so a granted chord fires over any app.
+    pub global_shortcuts: crate::portal::global_shortcuts::ShellGlobalShortcutsService,
     /// Last `RemoteInput` event that survived the share-registry gate; read by tests to assert injection without a real `Seat<State>` (v2 replaces this).
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
     /// Last `RemoteInput` event the firewall refused, and the rule that refused it — otherwise indistinguishable from a broken filter.
@@ -534,19 +548,26 @@ pub struct State {
     pub fractional_scale_manager: FractionalScaleManagerState,
     /// `wp_viewporter` state, fractional scaling's companion protocol — `wp_viewport.set_destination` declares a 1.5×-buffer's logical size, which integer `set_buffer_scale` can't express.
     pub viewporter: ViewporterState,
+    /// `zwp_idle_inhibit_manager_v1` — how a video player keeps the screen on.
+    pub idle_inhibit_manager: IdleInhibitManagerState,
+    /// Live idle inhibitors and the registry holds their visible windows earn; see [`crate::compositor::idle_inhibit`].
+    pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
+    /// `xdg_toplevel_icon_manager_v1` — a window naming or drawing its own
+    /// icon for its tab; see [`crate::compositor::toplevel_icon`].
+    pub toplevel_icon_manager: XdgToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
-    /// Every output as `(position, size, scale)` in the compositor's
-    /// combined coordinate space, mirrored from the backend.
+    /// Every output as `(position, size, scale)` in the logical desktop,
+    /// mirrored from the backend.
     ///
     /// [`Self::scale`] is one number for the whole session, only right on a
     /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
     pub output_layout: Vec<OutputPlacement>,
-    /// Configurable dimensions keyed by the stable backend output identity.
-    /// This is intentionally separate from `output_layout`, whose tuple is
-    /// consumed by scale/pointer code and predates targeted fullscreen.
+    /// Each output's logical size — its mode over its scale, rotated — keyed
+    /// by the stable backend output identity: what a fullscreen configure
+    /// asks a client for, in the same units as a tiled configure.
     output_sizes: HashMap<crate::compositor::backend::OutputId, (i32, i32)>,
     output_rects: HashMap<crate::compositor::backend::OutputId, Rect>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
@@ -585,12 +606,27 @@ pub struct State {
     pub session_lock_state: SessionLockManagerState,
     /// Bridge from the protocol handler to the native run loop's authoritative lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
+    /// `zwlr_output_manager_v1` + `zwlr_output_power_manager_v1`: display
+    /// arrangement and panel power for external tools. Privileged clients
+    /// only, like session-lock, since either can black out every screen.
+    pub output_management: OutputManagementState,
     /// `zwp_pointer_gestures_v1` global state — advertises touchpad
     /// pinch/swipe/hold gestures to clients. On a bare-TTY (DRM) session
     /// Mutter isn't around to expose gestures, so the compositor does; winit
     /// clients bind it per pointer. Delivering to the focused surface is
     /// gated on routing local libinput input through the seat (today local input drives shell chrome, not client surfaces).
     pub pointer_gestures_state: PointerGesturesState,
+    /// `wp_cursor_shape_manager_v1`: clients name a cursor and the
+    /// compositor draws it, instead of each shipping its own theme.
+    pub cursor_shape_state: CursorShapeManagerState,
+    /// The cursor the pointer-focused client asked for.
+    pub client_cursor: crate::compositor::client_cursor::ClientCursor,
+    /// `zwp_relative_pointer_manager_v1`: unclamped motion deltas for games.
+    pub relative_pointer_state: RelativePointerManagerState,
+    /// `zwp_pointer_constraints_v1`: lock or confine the pointer, granted
+    /// only as [`crate::compositor::pointer_lock`] allows.
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
     /// Local-input → client-surface routing state: the live foreign-surface
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
@@ -602,6 +638,15 @@ pub struct State {
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
     pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
+    /// Which trusted input method currently owns the seat; read by the
+    /// input-method and virtual-keyboard global filters.
+    seat_input_method: crate::compositor::input_method::SeatInputMethod,
+    /// Live connections accepted on a trusted input method's private
+    /// display, so the previous owner's can be cut when the seat moves.
+    trusted_input_method_clients: Vec<(
+        ClientId,
+        crate::compositor::input_method::TrustedInputMethod,
+    )>,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
@@ -614,7 +659,7 @@ pub struct State {
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
 }
 
-fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
+pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
     use smithay::wayland::compositor::get_parent;
 
     let mut current = surface.clone();
@@ -853,6 +898,10 @@ impl State {
     /// The protocol callbacks and the frame builder must share this handle:
     /// otherwise a restored local tab can remain in the rendered tree after
     /// its Wayland surface is adopted and destroyed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one place creates every protocol global the compositor advertises"
+    )]
     pub fn new_with_workspace_tree(
         loop_handle: LoopHandle<'static, Self>,
         display_handle: DisplayHandle,
@@ -861,6 +910,7 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
@@ -880,12 +930,20 @@ impl State {
         // not. Sandboxed apps only see the public Wayland socket. Even a
         // process spoofing `so.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
-        // dedicated socket acceptor.
+        // dedicated socket acceptor, and only the kind that currently owns
+        // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
-            InputMethodManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            InputMethodManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         let virtual_keyboard_manager_state =
-            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         // Advertise `wp_color_manager_v1`, before the state literal below since `display_handle` is moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
         // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`
@@ -893,16 +951,16 @@ impl State {
         // (e.g. 1.5×) and have the compositor composite the correct logical size; the preferred scale is pushed per-surface on commit.
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
-        // Session locking controls the compositor's authentication boundary:
-        // only clients accepted on the session's privileged socket may even
-        // see the manager. Sandboxed and ordinary host applications receive
-        // the public socket and cannot acquire (or later release) the lock.
-        let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
+        let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
+        let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
+        let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         // Clipboard + primary selection + drag-and-drop, advertised before
         // the struct literal (which moves `display_handle`). Selection
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
@@ -914,6 +972,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             xdg_activation_state,
+            xdg_dialog_state,
             host_launch_activations: HashMap::new(),
             host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
@@ -930,6 +989,8 @@ impl State {
             workspace_tree,
             share_registry: ShareRegistry::new(),
             remote_input_firewall: RemoteInputFirewall::new(),
+            global_shortcuts: crate::portal::global_shortcuts::ShellGlobalShortcutsService::global(
+            ),
             last_remote_input: None,
             last_remote_input_denial: None,
             surface_tracker: SurfaceTracker::new(),
@@ -945,6 +1006,9 @@ impl State {
             color_manager,
             fractional_scale_manager,
             viewporter,
+            idle_inhibit_manager,
+            idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
+            toplevel_icon_manager,
             scale,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
@@ -960,11 +1024,19 @@ impl State {
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
+            output_management,
             pointer_gestures_state,
+            cursor_shape_state,
+            client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
+            relative_pointer_state,
+            pointer_constraints_state,
+            pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
+            seat_input_method,
+            trusted_input_method_clients: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -972,6 +1044,20 @@ impl State {
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
+    }
+
+    /// Globals only clients on the privileged socket may see. Session
+    /// locking controls the compositor's authentication boundary; output
+    /// management and output power can reconfigure or black out every
+    /// screen. Sandboxed and ordinary host applications receive the public
+    /// socket and see neither.
+    fn privileged_globals(
+        display_handle: &DisplayHandle,
+    ) -> (SessionLockManagerState, OutputManagementState) {
+        (
+            SessionLockManagerState::new::<Self, _>(display_handle, is_privileged_client),
+            OutputManagementState::new(display_handle),
+        )
     }
 
     /// Advertise `zwp_linux_dmabuf_v1` when the probed render node is
@@ -1147,15 +1233,17 @@ impl State {
     /// Called at startup and on every hotplug. Dropping the per-surface
     /// scale cache alongside it is deliberate: the layout the cached values were derived from is gone, so keeping them would hand clients the scale of a monitor that moved.
     pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
+        // Logical, like every surface position it is looked up with.
         self.output_layout = outputs
             .iter()
-            .map(|o| (o.position, o.size, f64::from(o.scale)))
+            .map(|o| (o.logical_position, o.logical_size(), f64::from(o.scale)))
             .collect();
         self.output_sizes = outputs
             .iter()
             .filter_map(|output| {
-                let width = i32::try_from(output.size.0).ok()?;
-                let height = i32::try_from(output.size.1).ok()?;
+                let (width, height) = output.logical_size();
+                let width = i32::try_from(width).ok()?;
+                let height = i32::try_from(height).ok()?;
                 (width > 0 && height > 0).then_some((output.id, (width, height)))
             })
             .collect();
@@ -1189,12 +1277,7 @@ impl State {
         let output = outputs
             .iter()
             .find(|output| output.id == id && output.size.0 > 0 && output.size.1 > 0)?;
-        Some(Rect::new(
-            f64::from(output.position.0),
-            f64::from(output.position.1),
-            f64::from(output.position.0) + f64::from(output.size.0),
-            f64::from(output.position.1) + f64::from(output.size.1),
-        ))
+        Some(output.logical_rect())
     }
 
     /// Rehome an audience surface deterministically when its chosen output
@@ -1745,6 +1828,47 @@ impl State {
     /// dispatch. `wl_shm` is copied here; a dmabuf worker result was staged by
     /// the pre-commit barrier and is activated here. A buffer neither path can
     /// decode is recorded as an error the tile renders, never a silently stale frame.
+    /// Hand the frame store the window geometry an xdg toplevel's commit just
+    /// applied, so the tile shows the window and not the shadow and resize
+    /// border a client-side-decorating toolkit draws around it. A compositor
+    /// floating surface is skipped: its soft silhouette is meant to be seen.
+    fn note_foreign_window_geometry(surface: &WlSurface, surface_id: u64) {
+        let toplevel_geometry = wl_compositor::with_states(surface, |states| {
+            states.data_map.get::<XdgToplevelSurfaceData>()?;
+            let Some(declared) = states
+                .cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+                .current()
+                .geometry
+            else {
+                return Some(None);
+            };
+            let buffer_scale = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>()
+                .current()
+                .buffer_scale;
+            let logical_size = states
+                .cached_state
+                .get::<smithay::wayland::viewporter::ViewportCachedState>()
+                .current()
+                .dst
+                .map(|size| (size.w, size.h));
+            Some(Some(crate::compositor::foreign::WindowGeometry {
+                x: declared.loc.x,
+                y: declared.loc.y,
+                width: declared.size.w,
+                height: declared.size.h,
+                logical_size,
+                buffer_scale,
+            }))
+        });
+        // Only toplevels: an entry made for any other surface would never be forgotten.
+        if let Some(geometry) = toplevel_geometry {
+            crate::compositor::foreign::store().note_window_geometry(surface_id, geometry);
+        }
+    }
+
     fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
@@ -1815,6 +1939,7 @@ impl State {
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id)
+            || crate::compositor::foreign::store().is_sheet(surface_id)
     }
 
     /// Pump the share-session encoder for `surface_id` on a fresh commit.
@@ -2070,6 +2195,14 @@ impl State {
         let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let serial = self.next_serial();
         match action {
+            // A portal session is remote input too: it must not move a
+            // pointer a local client holds locked or confined.
+            RemoteAction::PointerMotionAbsolute { .. }
+            | RemoteAction::PointerMotionRelative { .. }
+                if self.pointer_lock.is_engaged() =>
+            {
+                false
+            }
             RemoteAction::PointerMotionAbsolute { x, y, .. } => {
                 self.remote_pointer_motion_absolute(x, y, serial, time)
             }
@@ -2451,10 +2584,11 @@ impl RemoteInputSink for State {
                             .get(&surface)
                             .cloned()
                             .and_then(|wl_surface| {
-                                self.remote_input_firewall
-                                    .view()
-                                    .rect(surface)
-                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                                    let origin = crate::compositor::foreign::store()
+                                        .surface_origin(surface, rect);
+                                    (wl_surface, origin.into())
+                                })
                             });
                     pointer.motion(
                         self,
@@ -2484,10 +2618,11 @@ impl RemoteInputSink for State {
                             .get(&surface)
                             .cloned()
                             .and_then(|wl_surface| {
-                                self.remote_input_firewall
-                                    .view()
-                                    .rect(surface)
-                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                                    let origin = crate::compositor::foreign::store()
+                                        .surface_origin(surface, rect);
+                                    (wl_surface, origin.into())
+                                })
                             });
                     pointer.motion(
                         self,
@@ -2749,10 +2884,11 @@ pub struct ClientState {
     /// lifecycle. A *socket* privilege, not a flag a client can ask for: the
     /// sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
-    /// Connection accepted on the compositor-owned OSK socket. This is the
-    /// only credential accepted by the input-method and virtual-keyboard
-    /// global filters; an app-id string is never authority.
-    pub osk: bool,
+    /// Set when the connection was accepted on a trusted input method's
+    /// compositor-owned private display. This is the only credential the
+    /// input-method and virtual-keyboard global filters accept; an app-id
+    /// string is never authority.
+    pub input_method: Option<crate::compositor::input_method::TrustedInputMethod>,
     /// Package identity proven from `SO_PEERCRED` and the compositor's live
     /// launcher registry. `None` denotes an explicitly unconfined host client.
     pub package_id: Option<String>,
@@ -2765,6 +2901,10 @@ pub struct ClientState {
     /// The supervised launch this connection descends from, which ties its
     /// windows to that launch's collaboration connections.
     pub launch_instance: Option<crate::shell::launcher::LaunchInstance>,
+    /// The program behind a privileged connection, read from its peer
+    /// credentials when it connected. Display changes it makes are kept
+    /// without asking once the person trusts this executable.
+    pub executable: Option<String>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -2776,11 +2916,12 @@ impl Default for ClientState {
             compositor_state: CompositorClientState::default(),
             index: NEXT.fetch_add(1, Ordering::Relaxed),
             privileged: false,
-            osk: false,
+            input_method: None,
             package_id: None,
             workspace_id: None,
             enforce_package_id: false,
             launch_instance: None,
+            executable: None,
         }
     }
 }
@@ -2812,23 +2953,37 @@ impl ClientState {
 
     /// Per-client data for a connection accepted on the privileged socket.
     pub fn privileged_arc() -> Arc<Self> {
+        Self::privileged_tool_arc(None)
+    }
+
+    /// Per-client data for a privileged connection whose program is known.
+    pub fn privileged_tool_arc(executable: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             privileged: true,
+            executable,
             ..Self::default()
         })
     }
 
-    /// Per-client state for connections accepted on the private OSK socket.
-    pub fn osk_arc() -> Arc<Self> {
+    /// Per-client state for connections accepted on a trusted input
+    /// method's private display.
+    pub fn input_method_arc(
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            osk: true,
+            input_method: Some(kind),
             ..Self::default()
         })
     }
 }
 
-fn is_osk_client(client: &Client) -> bool {
-    client.get_data::<ClientState>().is_some_and(|d| d.osk)
+/// The trusted-input-method credential of `client`, if it has one.
+fn trusted_input_method(
+    client: &Client,
+) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+    client
+        .get_data::<ClientState>()
+        .and_then(|d| d.input_method)
 }
 
 /// Connection-provenance gate for authority-bearing Wayland protocols.
@@ -2836,7 +2991,7 @@ fn is_osk_client(client: &Client) -> bool {
 /// A client cannot opt into this bit: only the dedicated privileged socket
 /// acceptor constructs this state, while the sandbox launcher exposes only
 /// the public socket.
-fn is_privileged_client(client: &Client) -> bool {
+pub(crate) fn is_privileged_client(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|data| data.privileged)
@@ -2935,6 +3090,11 @@ impl CompositorHandler for State {
                 fs.set_preferred_scale(scale);
             });
         });
+        let session_scale = self.scale;
+        self.client_cursor.surface_committed(surface, session_scale);
+        if crate::compositor::toplevel_icon::sync(surface, surface_id) {
+            tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
+        }
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
@@ -2952,6 +3112,9 @@ impl CompositorHandler for State {
         }
         if let Some(root) = foreign_root {
             self.refresh_foreign_subsurface_tree(&root);
+        }
+        if !self.is_floating_toplevel(surface_id) {
+            Self::note_foreign_window_geometry(surface, surface_id);
         }
         let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
             && wl_compositor::with_states(surface, |states| {
@@ -3133,8 +3296,13 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
         app_id,
         surface
             .client()
-            .and_then(|client| client.get_data::<ClientState>().map(|data| data.osk))
-            .unwrap_or(false),
+            .and_then(|client| {
+                client
+                    .get_data::<ClientState>()
+                    .map(|data| data.input_method)
+            })
+            .flatten()
+            == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard),
     )
 }
 
@@ -3147,17 +3315,10 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
-/// Map the client-bound `wl_output` object back to the stable backend id.
-/// `OutputGlobals` names its Smithay outputs `Tilo-<OutputId>`; parsing only
-/// that compositor-owned prefix rejects arbitrary/foreign output objects.
+/// Map the client-bound `wl_output` object back to the stable backend id;
+/// an output that is not one of the compositor's globals maps to nothing.
 fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
-    let output = SmithayOutput::from_resource(output?)?;
-    output
-        .name()
-        .strip_prefix("Tilo-")?
-        .parse::<u32>()
-        .ok()
-        .map(crate::compositor::backend::OutputId)
+    crate::compositor::output_globals::output_id_of(output?)
 }
 
 /// Calculate a popup's protocol geometry against the visible part of its
@@ -3194,6 +3355,28 @@ fn constrain_transient_rect(mut rect: Rect, bounds: Rect) -> Rect {
         rect = rect.with_origin((rect.x0, rect.y0 + dy));
     }
     rect
+}
+
+/// Where a candidate window goes: directly below the text field's caret
+/// rectangle (`caret` is relative to the field's surface at `parent`), left
+/// edges aligned, the way every desktop input method draws it; flipped above
+/// the caret when there is no room below on the output, then kept on it.
+fn candidate_rect(
+    parent: Rect,
+    caret: Rectangle<i32, Logical>,
+    (width, height): (u32, u32),
+    bounds: Rect,
+) -> Rect {
+    let x = parent.x0 + f64::from(caret.loc.x);
+    let caret_top = parent.y0 + f64::from(caret.loc.y);
+    let caret_bottom = caret_top + f64::from(caret.size.h.max(0));
+    let (width, height) = (f64::from(width), f64::from(height));
+    let y = if caret_bottom + height > bounds.y1 && caret_top - height >= bounds.y0 {
+        caret_top - height
+    } else {
+        caret_bottom
+    };
+    constrain_transient_rect(Rect::new(x, y, x + width, y + height), bounds)
 }
 
 /// Convert client-supplied logical popup geometry without allowing an extreme
@@ -3310,6 +3493,46 @@ impl State {
         self.popup_surfaces()
     }
 
+    /// Remember a connection accepted on a trusted input method's display.
+    pub fn register_trusted_input_method_client(
+        &mut self,
+        client: &Client,
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) {
+        self.trusted_input_method_clients.push((client.id(), kind));
+    }
+
+    /// The trusted input method kind that owns the seat.
+    pub fn input_method_owner_kind(
+        &self,
+    ) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+        self.seat_input_method.get()
+    }
+
+    /// Hand the seat's input method to `owner` (or nobody). Connections of
+    /// any other trusted kind are disconnected on the spot, releasing the
+    /// single `input-method-v2` slot before the new owner can ask for it; a
+    /// dying process cannot keep the seat.
+    pub fn set_input_method_owner(
+        &mut self,
+        owner: Option<crate::compositor::input_method::TrustedInputMethod>,
+    ) {
+        self.seat_input_method.set(owner);
+        let handle = self.display_handle.clone();
+        self.trusted_input_method_clients.retain(|(id, kind)| {
+            if handle.backend_handle().get_client_data(id.clone()).is_err() {
+                return false;
+            }
+            if Some(*kind) == owner {
+                return true;
+            }
+            handle
+                .backend_handle()
+                .kill_client(id.clone(), DisconnectReason::ConnectionClosed);
+            false
+        });
+    }
+
     /// Candidate windows provided by the privileged input method.  They use
     /// the focused text field as their parent and are clipped to its output,
     /// so a candidate strip cannot escape a multi-monitor desktop.
@@ -3321,15 +3544,8 @@ impl State {
                 let parent = popup.get_parent()?;
                 let parent_id = surface_id(&parent.surface);
                 let parent_rect = self.popup_parent_rect(parent_id, 0)?;
-                let (width, height) = crate::compositor::foreign::store()
+                let size = crate::compositor::foreign::store()
                     .frame_size(surface_id(popup.wl_surface()))?;
-                let location = popup.location();
-                let rect = Rect::new(
-                    parent_rect.x0 + f64::from(location.x),
-                    parent_rect.y0 + f64::from(location.y),
-                    parent_rect.x0 + f64::from(location.x) + f64::from(width),
-                    parent_rect.y0 + f64::from(location.y) + f64::from(height),
-                );
                 let output = self.popup_constraint_output(parent_id);
                 let bounds = Rect::new(
                     f64::from(output.loc.x),
@@ -3339,10 +3555,15 @@ impl State {
                 );
                 Some((
                     surface_id(popup.wl_surface()),
-                    constrain_transient_rect(rect, bounds),
+                    candidate_rect(parent_rect, popup.text_input_rectangle(), size, bounds),
                 ))
             })
             .collect()
+    }
+
+    /// [`Self::input_method_popup_surfaces`] for integration tests.
+    pub fn input_method_popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
+        self.input_method_popup_surfaces()
     }
 
     pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
@@ -3621,6 +3842,186 @@ impl XdgActivationHandler for State {
     }
 }
 
+impl XdgDialogHandler for State {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
+        let surface_id = surface_id(toplevel.wl_surface());
+        crate::compositor::foreign::store().set_sheet_modal(surface_id, is_modal);
+    }
+}
+
+impl State {
+    /// Whether `parent` is something a dialog can be shown on: a tab, or a
+    /// sheet already on one.
+    fn can_host_sheet(&self, parent: SurfaceId) -> bool {
+        crate::compositor::foreign::store().is_sheet(parent) || {
+            let tree = self.workspace_tree.read();
+            tab_binding::group_id_for_surface(&tree, parent).is_some()
+        }
+    }
+
+    /// Bring `surface`'s place in the desktop in line with its xdg parent:
+    /// a sheet on the parent's tile while it has one, a tab otherwise.
+    fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        if self.osk_surface == Some(id)
+            || self.is_floating_toplevel(id)
+            || self.is_output_presentation_surface(id)
+        {
+            return;
+        }
+        let store = crate::compositor::foreign::store();
+        let was_sheet = store.is_sheet(id);
+        let parent = surface
+            .parent()
+            .map(|parent| surface_id(&parent))
+            .filter(|parent| self.can_host_sheet(*parent));
+        let Some(parent) = parent else {
+            if was_sheet {
+                store.detach_sheet(id);
+                self.adopt_former_sheet(surface);
+            }
+            return;
+        };
+        let modal = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().map(|data| data.modal))
+                .unwrap_or(false)
+        });
+        if !store.attach_sheet(id, parent, modal) {
+            tracing::warn!(surface_id = id, parent, "refused a cyclic xdg parent");
+            return;
+        }
+        if was_sheet {
+            return;
+        }
+        // Adopted as a tab when it was created (the parent arrives after
+        // `get_toplevel`); a dialog is part of its parent's window, so that
+        // provisional tab goes.
+        let _ = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
+        };
+        self.client_input.promote_to_overlay(id);
+        let root = store.sheet_root(id);
+        // Unlike a tab, the parent's tile does not size a sheet: the dialog
+        // picks its own size, bounded by the tile it sits on.
+        let scale = self.surface_scale(root);
+        let bounds = store.placement(root).map(|rect| {
+            (
+                logical_extent(rect.width(), scale),
+                logical_extent(rect.height(), scale),
+            )
+        });
+        surface.with_pending_state(|pending| {
+            pending.size = None;
+            pending.bounds = bounds.map(Into::into);
+        });
+        tracing::info!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            parent,
+            root,
+            modal,
+            "showing transient toplevel as a sheet on its parent's tile"
+        );
+    }
+
+    /// A sheet whose parent went away is a window in its own right, per
+    /// xdg-shell; adopt it as a tab in the active workspace.
+    fn adopt_former_sheet(&self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        let announced = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        let client = surface.wl_surface().client();
+        let identity = authenticated_toplevel_identity(
+            client
+                .as_ref()
+                .and_then(|client| client.get_data::<ClientState>()),
+            announced,
+        );
+        let Ok((app_id, room)) = identity else {
+            surface.send_close();
+            return;
+        };
+        let adopted = {
+            let mut tree = self.workspace_tree.write();
+            if let Some(room) = room {
+                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room).is_some()
+            } else {
+                tab_binding::adopt_toplevel(&mut tree, id, app_id);
+                true
+            }
+        };
+        if !adopted {
+            surface.send_close();
+        }
+    }
+
+    /// A toplevel is going away: its own sheet link goes, and every sheet
+    /// that hung off it follows. A sheet whose parent was itself a sheet
+    /// moves down onto that sheet's parent; one whose parent was the tile is
+    /// asked to close with it, and becomes a tab meanwhile so a dialog that
+    /// ignores the close is still reachable.
+    fn release_sheets_of_destroyed(&self, id: SurfaceId) {
+        let store = crate::compositor::foreign::store();
+        let grandparent = store.detach_sheet(id).map(|link| link.parent);
+        let orphans = store.sheet_children(id);
+        if orphans.is_empty() {
+            return;
+        }
+        let toplevels: Vec<ToplevelSurface> = self.xdg_shell_state.toplevel_surfaces().to_vec();
+        for orphan in orphans {
+            let Some(toplevel) = toplevels
+                .iter()
+                .find(|toplevel| surface_id(toplevel.wl_surface()) == orphan)
+            else {
+                store.detach_sheet(orphan);
+                continue;
+            };
+            if let Some(grandparent) = grandparent {
+                let modal = store.sheet_link(orphan).is_some_and(|link| link.modal);
+                let _ = store.attach_sheet(orphan, grandparent, modal);
+                continue;
+            }
+            toplevel.send_close();
+            store.detach_sheet(orphan);
+            self.adopt_former_sheet(toplevel);
+        }
+    }
+
+    /// Ask every sheet on `root`'s tile to close — the user closed the
+    /// window they belong to.
+    pub(crate) fn close_sheets_over(&self, root: SurfaceId) {
+        let sheets = crate::compositor::foreign::store().sheets_over(root);
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let id = surface_id(toplevel.wl_surface());
+            if sheets.iter().any(|link| link.surface == id) {
+                toplevel.send_close();
+            }
+        }
+    }
+}
+
+/// `px` physical pixels as whole surface-local (logical) pixels at `scale`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to [1.0, i32::MAX] and rounded before the cast, so it neither truncates a fraction nor wraps"
+)]
+fn logical_extent(px: f64, scale: f64) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -3731,6 +4132,8 @@ impl XdgShellHandler for State {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
+        self.release_sheets_of_destroyed(surface_id);
+        crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }
@@ -3844,6 +4247,10 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
+            if crate::compositor::foreign::store().is_sheet(surface_id) {
+                // A sheet has no tab to rename; the id is read again should it ever become one.
+                return;
+            }
             let host_launch_title = self
                 .host_launch_surface_labels
                 .get(&surface_id)
@@ -3860,6 +4267,13 @@ impl XdgShellHandler for State {
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
+    }
+
+    /// `xdg_toplevel.set_parent`: a toplevel with a parent is a dialog of
+    /// that window, shown as a sheet on its tile; losing the parent makes
+    /// it an ordinary tab again.
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        self.sync_toplevel_parent(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -4129,10 +4543,16 @@ impl SeatHandler for State {
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
-        _image: smithay::input::pointer::CursorImageStatus,
+        image: smithay::input::pointer::CursorImageStatus,
     ) {
+        let scale = self.scale;
+        self.client_cursor.set(image, scale);
     }
 }
+
+// Tablet tools may carry a cursor shape too; with no tablet-specific cursor
+// they share the pointer's.
+impl TabletSeatHandler for State {}
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: InputMethodPopupSurface) {
@@ -4217,6 +4637,7 @@ impl FractionalScaleHandler for State {
 delegate_compositor!(State);
 delegate_xdg_activation!(State);
 delegate_xdg_shell!(State);
+delegate_xdg_dialog!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);
 delegate_shm!(State);
@@ -4226,9 +4647,27 @@ delegate_text_input_manager!(State);
 delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
+delegate_cursor_shape!(State);
+delegate_relative_pointer!(State);
+delegate_pointer_constraints!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
+delegate_idle_inhibit!(State);
+delegate_xdg_toplevel_icon!(State);
+
+/// The icon is double-buffered: it is read on the surface's next commit.
+impl XdgToplevelIconHandler for State {}
+
+impl IdleInhibitHandler for State {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.inhibit(surface);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.uninhibit(&surface);
+    }
+}
 
 // Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
 delegate_data_device!(State);
@@ -4522,6 +4961,35 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
+    fn candidates_sit_below_the_caret_and_flip_above_at_the_output_edge() {
+        let output = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let field = Rect::new(100.0, 200.0, 900.0, 1000.0);
+        let caret = Rectangle::new((40, 30).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, caret, (300, 40), output),
+            Rect::new(140.0, 250.0, 440.0, 290.0)
+        );
+        let fits_exactly = Rectangle::new((40, 820).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, fits_exactly, (300, 40), output),
+            Rect::new(140.0, 1040.0, 440.0, 1080.0),
+            "just enough room below: still below"
+        );
+        let near_bottom = Rectangle::new((40, 830).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, near_bottom, (300, 40), output),
+            Rect::new(140.0, 990.0, 440.0, 1030.0),
+            "no room below: flipped above the caret"
+        );
+        let near_right = Rectangle::new((1780, 30).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, near_right, (300, 40), output),
+            Rect::new(1620.0, 250.0, 1920.0, 290.0),
+            "kept on the output horizontally"
+        );
+    }
+
+    #[test]
     fn only_private_socket_plus_exact_app_id_is_trusted() {
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
@@ -4531,8 +4999,12 @@ mod osk_identity_tests {
 
     #[test]
     fn public_clients_never_receive_the_osk_global_credential() {
-        assert!(!ClientState::default().osk);
-        assert!(ClientState::osk_arc().osk);
+        use crate::compositor::input_method::TrustedInputMethod;
+        assert_eq!(ClientState::default().input_method, None);
+        assert_eq!(
+            ClientState::input_method_arc(TrustedInputMethod::OnScreenKeyboard).input_method,
+            Some(TrustedInputMethod::OnScreenKeyboard)
+        );
     }
 
     #[test]
@@ -4655,6 +5127,9 @@ mod tick_hook_tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
+            logical_position: position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
@@ -4874,6 +5349,17 @@ mod tick_hook_tests {
             Some(crate::compositor::backend::OutputId(10)),
             "unplugging the target must rehome rather than retaining a dead output id"
         );
+        assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn a_fullscreen_configure_is_logical_like_a_tiled_one() {
+        // A tile's configure is its pixels over its scale; a fullscreen one
+        // asking a 2x client for all 3840 pixels would make it render a
+        // buffer twice the output's size.
+        let mut state = make_state();
+        state.set_output_layout(&[out(0, (0, 0), (3840, 2160), 2.0)]);
+        state.fullscreen_output = Some(crate::compositor::backend::OutputId(0));
         assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
     }
 

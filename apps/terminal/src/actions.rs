@@ -24,7 +24,7 @@
 //!
 //! What lives in the Automerge document is exactly the emulator's projection of
 //! the running program's output, seeded by
-//! [`init_crdt`](crate::TerminalWidget::init_crdt) and filled by
+//! `init_crdt` and filled by
 //! [`feed`](crate::TerminalWidget::feed) / the PTY-drain `pump`:
 //!
 //! - `terminal_grid` and `terminal_grid_alt` — the main and alternate screen

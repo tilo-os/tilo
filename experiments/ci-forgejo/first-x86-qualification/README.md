@@ -21,7 +21,7 @@ when an operator later installs these exact bytes and explicitly runs the servic
 
 ## Exact scope and identities
 
-Source inspected: `b4cba2210b4c03be13ec518822756849feadb685` on merged `qos/qos/main`.
+Source inspected: `b4cba2210b4c03be13ec518822756849feadb685` on merged `tilo/tilo/main`.
 `coordinator.json` binds all **29** production `REQUIRED_PATHS` to their committed
 SHA256 values. `controller-source-hashes.json` separately records the **12** trusted
 service files that must be deployed outside candidate checkouts.
@@ -41,9 +41,9 @@ public identities, compatibility evidence and product scope are unchanged.
   current product manifest; this qualification does not change that definition.
 - App publisher: `1cb2f164d3517879cfce6e24106a1d4bc3686096b30b674e7859e6b1c896219a`.
 - Current runtime publisher: `50d099efd7805a4783847f11ba2dd4ecf338e2f6b254a3f8eb5822eec21f3dd1`,
-  freshly derived through the production signer in [run 9734](https://code.podesta.ai/qos/qos/actions/runs/9734)
+  freshly derived through the production signer in [run 9734](https://code.tilo.so/tilo/tilo/actions/runs/9734)
   (API23237, job85267), retained in `runtime-publisher.json`.
-- Immutable builder: `code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a`.
+- Immutable builder: `code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a`.
 - Canonical bundle SHA256: `10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde`,
   **6,113,401 bytes**, exact descriptor and binary/adapter identities in `final-policy.json`.
 - Allowed x86 package ISA: **v3**. ARM is deliberately absent from this first native

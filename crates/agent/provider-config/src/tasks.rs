@@ -152,7 +152,7 @@ pub enum TaskRequest {
     /// The caller writes a provider-dialect body; the gateway sets the model
     /// and options (the `Plan` verb).
     CallerDialect,
-    /// The gateway owns the prompt and schema through a fixed verb; no
+    /// The gateway writes the provider request through a fixed verb; no
     /// caller-written body may reach the model.
     Fixed,
 }
@@ -196,6 +196,25 @@ pub const AGENT_PLANNING: TaskSpec = TaskSpec {
     privacy: PrivacyClass::Open,
     per_agent: true,
     request: TaskRequest::CallerDialect,
+};
+
+/// A single-shot transformation of text an agent was handed: summarising,
+/// extracting to a schema, classifying or a freeform instruction. The
+/// gateway writes the provider request itself, with no tools, so the caller
+/// supplies only instructions and input.
+pub const AGENT_TRANSFORM: TaskSpec = TaskSpec {
+    id: "agent.transform",
+    label_key: "ai-task-agent-transform",
+    description_key: "ai-task-agent-transform-description",
+    consumers: &[AllowedConsumer::App(AGENT_APP)],
+    requires: Requirements {
+        tools: false,
+        capabilities: &[],
+        min_context: 0,
+    },
+    privacy: PrivacyClass::Open,
+    per_agent: true,
+    request: TaskRequest::Fixed,
 };
 
 /// Describing, labelling and reading text in a photo for local search.
@@ -251,6 +270,7 @@ pub const FEEDBACK_REVIEW: TaskSpec = TaskSpec {
 /// Every task the gateway serves.
 pub const REGISTRY: &[&TaskSpec] = &[
     &AGENT_PLANNING,
+    &AGENT_TRANSFORM,
     &PHOTOS_VISION,
     &PHOTOS_FACES,
     &FEEDBACK_REVIEW,
@@ -281,6 +301,8 @@ mod tests {
         assert!(AGENT_PLANNING.admits(&Consumer::app(AGENT_APP)));
         assert!(!AGENT_PLANNING.admits(&Consumer::app(PHOTOS_APP)));
         assert!(!AGENT_PLANNING.admits(&Consumer::Session));
+        assert!(AGENT_TRANSFORM.admits(&Consumer::app(AGENT_APP)));
+        assert!(!AGENT_TRANSFORM.admits(&Consumer::app(PHOTOS_APP)));
         assert!(FEEDBACK_REVIEW.admits(&Consumer::Session));
         assert!(!FEEDBACK_REVIEW.admits(&Consumer::app(AGENT_APP)));
     }

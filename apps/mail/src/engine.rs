@@ -18,7 +18,7 @@
 //!   bundled sample corpus and validates sends by building real MIME with
 //!   `mail-builder` (see `transport::build_mime`) without opening a socket.
 //! * **`live` feature implementation.** Behind `--features live`, the worker
-//!   uses [`async-imap`] for fetch/flag/move and [`lettre`] for submission,
+//!   uses `async-imap` for fetch/flag/move and [`lettre`] for submission,
 //!   over rustls. Screenshot/test construction remains network-free at runtime;
 //!   the data types
 //!   ([`AccountConfig`], [`Draft`], [`Message`]) are already the exact shapes

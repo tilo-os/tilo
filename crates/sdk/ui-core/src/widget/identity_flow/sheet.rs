@@ -1110,7 +1110,7 @@ mod tests {
     fn wrap_chars_breaks_an_unbreakable_token_into_lines_that_fit() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let token: String = "QOSINVITEBASE32".repeat(12);
+        let token: String = "TILOINVITEBASE32".repeat(12);
         let width = 240.0;
         let lines = wrap_chars(&mut tr, &theme, Role::Value, &token, width);
         assert!(

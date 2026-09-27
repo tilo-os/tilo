@@ -1,12 +1,19 @@
 //! Explicit absence of Linux evdev on other hosts; remote forwarding remains available.
 use crate::ForwardedGamepadEvent;
-use std::{io, path::PathBuf};
+use std::{io, os::fd::OwnedFd, path::PathBuf};
+fn unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Linux evdev is unavailable on this host",
+    )
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalGamepadId(PathBuf);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalGamepadInfo {
     pub id: PhysicalGamepadId,
     pub name: String,
+    pub vendor_id: Option<u16>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct LinuxPhysicalGamepadCatalog;
@@ -15,10 +22,21 @@ impl LinuxPhysicalGamepadCatalog {
         Ok(Vec::new())
     }
     pub fn open(&self, _: &PhysicalGamepadId) -> io::Result<LinuxPhysicalGamepadSource> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Linux evdev is unavailable on this host",
-        ))
+        Err(unsupported())
+    }
+    pub fn hotplug_watch(&self) -> io::Result<PhysicalGamepadHotplug> {
+        Err(unsupported())
+    }
+}
+pub struct PhysicalGamepadHotplug {
+    _private: (),
+}
+impl PhysicalGamepadHotplug {
+    pub fn wake_fd(&self) -> io::Result<OwnedFd> {
+        Err(unsupported())
+    }
+    pub fn take_changes(&mut self) -> bool {
+        false
     }
 }
 pub struct LinuxPhysicalGamepadSource {
@@ -30,10 +48,10 @@ pub struct PhysicalGamepadDrain {
     pub saturated: bool,
 }
 impl LinuxPhysicalGamepadSource {
+    pub fn wake_fd(&self) -> io::Result<OwnedFd> {
+        Err(unsupported())
+    }
     pub fn drain(&mut self, _: usize) -> io::Result<PhysicalGamepadDrain> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Linux evdev is unavailable on this host",
-        ))
+        Err(unsupported())
     }
 }

@@ -4021,7 +4021,7 @@ impl Default for BrowserWidget {
 /// option; deterministic rendering is confined to `new_headless`.
 fn default_engine(mode: BrowsingMode) -> SharedEngine {
     #[cfg(feature = "wpe")]
-    if std::env::var("QOS_BROWSER_ENGINE").as_deref() == Ok("wpe") {
+    if std::env::var("TILO_BROWSER_ENGINE").as_deref() == Ok("wpe") {
         if mode.is_private() {
             return engine_or_error(
                 crate::storage::explicit_root()
@@ -7206,7 +7206,7 @@ mod tests {
 
     #[test]
     fn history_clear_on_exit_belongs_to_workspace_lifetime() {
-        const CHILD: &str = "QOS_TEST_HISTORY_EXIT_CHILD";
+        const CHILD: &str = "TILO_TEST_HISTORY_EXIT_CHILD";
         if let Some(root) = std::env::var_os(CHILD) {
             let path = crate::history::history_path().unwrap();
             assert!(
@@ -7517,7 +7517,7 @@ mod tests {
                 let presence = PresenceCtx::default();
                 widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
                 widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-                if let Some(directory) = std::env::var_os("QOS_CREDENTIAL_RENDER_EVIDENCE") {
+                if let Some(directory) = std::env::var_os("TILO_CREDENTIAL_RENDER_EVIDENCE") {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).unwrap();
                     ui::offscreen::OffscreenRenderer::new(390, 700).render_png(
@@ -7612,7 +7612,7 @@ mod tests {
                 scene.encoding().draw_tags.len() > page_tags + 5,
                 "overlay must emit visible content"
             );
-            if let Some(directory) = std::env::var_os("QOS_SITE_RENDER_EVIDENCE") {
+            if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
                 let mut renderer = ui::offscreen::OffscreenRenderer::new(800, 560);
@@ -7688,7 +7688,7 @@ mod tests {
             let mut scene = Scene::new();
             widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            if let Some(directory) = std::env::var_os("QOS_SITE_RENDER_EVIDENCE") {
+            if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
                 let mut renderer = ui::offscreen::OffscreenRenderer::new(390, 700);
@@ -8662,7 +8662,7 @@ mod tests {
     fn default_engine_failure_never_becomes_a_simulated_page() {
         let engine: SharedEngine = engine_or_error(Err("Chromium unavailable".into()));
         let _clone: SharedEngine = Arc::clone(&engine);
-        engine.send(WebViewCommand::Navigate("https://podesta.ai".into()));
+        engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
         assert!(engine.frames().lock().unwrap().is_none());
         assert!(engine.drain_events().iter().any(|event| matches!(event,
             WebViewEvent::LoadFailed { error, .. } if error == "Chromium unavailable")));
@@ -9390,10 +9390,10 @@ mod tests {
     #[cfg(unix)]
     fn private_discovery_failure_filter_worker_does_not_recreate_root_child() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("QOS_TEST_PRIVATE_ROOT").expect("private root"),
+            std::env::var_os("TILO_TEST_PRIVATE_ROOT").expect("private root"),
         );
         let done = std::path::PathBuf::from(
-            std::env::var_os("QOS_TEST_FILTER_LOADER_DONE").expect("completion marker"),
+            std::env::var_os("TILO_TEST_FILTER_LOADER_DONE").expect("completion marker"),
         );
         crate::storage::configure(root.to_str()).unwrap();
         let mut widget = BrowserWidget::new_with_mode(crate::browsing_mode::BrowsingMode::Private);
@@ -9462,10 +9462,10 @@ mod tests {
                 "--ignored",
                 "--nocapture",
             ])
-            .env_remove("QOS_CHROMIUM_HOST")
-            .env("QOS_TEST_PRIVATE_ROOT", &root)
-            .env("QOS_TEST_FILTER_LIST_URL", url)
-            .env("QOS_TEST_FILTER_LOADER_DONE", &done)
+            .env_remove("TILO_CHROMIUM_HOST")
+            .env("TILO_TEST_PRIVATE_ROOT", &root)
+            .env("TILO_TEST_FILTER_LIST_URL", url)
+            .env("TILO_TEST_FILTER_LOADER_DONE", &done)
             .output()
             .unwrap();
         server.join().unwrap();

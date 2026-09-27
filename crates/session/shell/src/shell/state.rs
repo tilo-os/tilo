@@ -37,7 +37,33 @@ pub use tilo_desktop_model::{
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
     compose_id, counter_of, peer_salt_of, role_label,
 };
-pub use tilo_desktop_model::{DesktopTree, DropTarget, STATE_SCHEMA_VERSION, TabMove};
+pub use tilo_desktop_model::{
+    DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
+};
+
+/// Fold this device's schedule claims into those a merged room document
+/// carries. A claim the merge lost to an older concurrent one is kept (the
+/// newer fire time is the answer), and claims for shortcuts the room no
+/// longer holds are dropped.
+fn merge_schedule_claims(
+    merged: &mut Vec<tilo_automation::ScheduleClaim>,
+    local: &[tilo_automation::ScheduleClaim],
+    shortcuts: &[tilo_automation::Shortcut],
+) {
+    for claim in local {
+        match merged.iter_mut().find(|held| held.key() == claim.key()) {
+            Some(held) if claim.supersedes(held) => *held = claim.clone(),
+            Some(_) => {}
+            None => merged.push(claim.clone()),
+        }
+    }
+    merged.retain(|claim| {
+        shortcuts
+            .iter()
+            .any(|shortcut| shortcut.id == claim.shortcut)
+    });
+    merged.sort_by_key(tilo_automation::ScheduleClaim::key);
+}
 
 #[cfg(test)]
 mod identity_fs_tests {
@@ -142,12 +168,14 @@ mod identity_fs_tests {
             ..WorkspaceTree::default()
         };
         tree.export_fs_capabilities();
-        for _ in 0..300 {
-            if log.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // The worker only retires once a publication succeeds, so its
+        // retirement is the event to wait on. Four backed-off failures take
+        // about 1.5 s of sleeps plus five process spawns; the budget is only
+        // a backstop for a worker that never succeeds.
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(60)),
+            "the retry worker never published the queued ACL"
+        );
         assert!(
             log.exists(),
             "the queued ACL survives more than three failures"
@@ -158,10 +186,6 @@ mod identity_fs_tests {
                 .parse::<u8>()
                 .expect("numeric attempt count")
                 > 3
-        );
-        assert!(
-            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
-            "the retry worker must retire before its fixture is removed"
         );
     }
 
@@ -1554,6 +1578,8 @@ impl WorkspaceTree {
             .collect();
         let tasks = ws.tasks.clone();
         let effect_receipts = ws.effect_receipts.clone();
+        let shortcuts = ws.shortcuts.clone();
+        let schedule_claims = ws.schedule_claims.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let peer_identities = self
@@ -1655,6 +1681,12 @@ impl WorkspaceTree {
         }
         if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
             tracing::error!(?error, "room doc: effect receipts map");
+        }
+        if let Err(error) = projection::project_workspace_shortcuts(doc, &shortcuts) {
+            tracing::error!(?error, "room doc: shortcuts map");
+        }
+        if let Err(error) = projection::project_schedule_claims(doc, &schedule_claims) {
+            tracing::error!(?error, "room doc: schedule claims map");
         }
 
         if !governs {
@@ -2305,9 +2337,9 @@ impl WorkspaceTree {
     /// Returns the underlying `automerge::AutomergeError` if any blob in
     /// `changes` fails to decode, or if applying them to the room's
     /// document fails.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
-        reason = "one admission sequence: every refusal is checked on the candidate before any governed field lands"
+        reason = "one admission sequence: every replicated workspace field is checked on the merged candidate before any governed field lands"
     )]
     pub fn apply_room_changes(
         &mut self,
@@ -2352,6 +2384,8 @@ impl WorkspaceTree {
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let channel_class = projection::channel_class_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
+        let shortcuts = projection::workspace_shortcuts_of(&candidate);
+        let mut schedule_claims = projection::schedule_claims_of(&candidate);
         let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
         if let Some(workspace) = self.workspace_in_room(room) {
             for existing in &workspace.effect_receipts {
@@ -2428,6 +2462,11 @@ impl WorkspaceTree {
             ws.tasks = tasks;
             fields_changed = true;
         }
+        merge_schedule_claims(&mut schedule_claims, &ws.schedule_claims, &shortcuts);
+        fields_changed |= ws.shortcuts != shortcuts;
+        ws.shortcuts = shortcuts;
+        fields_changed |= ws.schedule_claims != schedule_claims;
+        ws.schedule_claims = schedule_claims;
         effect_receipts.sort_by_key(|receipt| receipt.invocation.0);
         let mut current_receipts = ws.effect_receipts.clone();
         current_receipts.sort_by_key(|receipt| receipt.invocation.0);
@@ -3336,6 +3375,123 @@ impl WorkspaceTree {
         )
     }
 
+    /// Save `shortcut` in `workspace_id`, replacing the shortcut with the
+    /// same id. `false` when the workspace is not held here.
+    pub fn save_workspace_shortcut(
+        &mut self,
+        workspace_id: WorkspaceId,
+        shortcut: &tilo_automation::Shortcut,
+    ) -> bool {
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        match workspace
+            .shortcuts
+            .iter_mut()
+            .find(|saved| saved.id == shortcut.id)
+        {
+            Some(saved) => *saved = shortcut.clone(),
+            None => workspace.shortcuts.push(shortcut.clone()),
+        }
+        workspace
+            .shortcuts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
+            self.commit_room_change();
+        }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Record that `claim.device` takes a fire time of one of the shortcuts
+    /// saved in `room`, so the saver's other devices see it is taken. A
+    /// claim on an earlier fire time of the same schedule is replaced;
+    /// claims for shortcuts the workspace no longer holds are dropped.
+    /// `false` when nothing changed.
+    pub fn claim_schedule(&mut self, room: RoomId, claim: &tilo_automation::ScheduleClaim) -> bool {
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+        else {
+            return false;
+        };
+        if !workspace
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.id == claim.shortcut)
+        {
+            return false;
+        }
+        let shortcuts = &workspace.shortcuts;
+        workspace.schedule_claims.retain(|held| {
+            shortcuts
+                .iter()
+                .any(|shortcut| shortcut.id == held.shortcut)
+        });
+        match workspace
+            .schedule_claims
+            .iter_mut()
+            .find(|held| held.key() == claim.key())
+        {
+            Some(held) if claim.supersedes(held) => *held = claim.clone(),
+            Some(_) => return false,
+            None => workspace.schedule_claims.push(claim.clone()),
+        }
+        workspace
+            .schedule_claims
+            .sort_by_key(tilo_automation::ScheduleClaim::key);
+        let workspace_id = workspace.id;
+        if tilo_desktop_model::desktop_doc::upsert_schedule_claim(
+            &mut self.doc,
+            workspace_id,
+            claim,
+        ) {
+            self.commit_room_change();
+        }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Delete shortcut `shortcut_id` from `workspace_id`. `false` when there
+    /// was no such shortcut.
+    pub fn remove_workspace_shortcut(
+        &mut self,
+        workspace_id: WorkspaceId,
+        shortcut_id: &str,
+    ) -> bool {
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        let before = workspace.shortcuts.len();
+        workspace
+            .shortcuts
+            .retain(|shortcut| shortcut.id != shortcut_id);
+        if workspace.shortcuts.len() == before {
+            return false;
+        }
+        if tilo_desktop_model::desktop_doc::remove_shortcut(
+            &mut self.doc,
+            workspace_id,
+            shortcut_id,
+        ) {
+            self.commit_room_change();
+        }
+        self.flush_to_disk();
+        true
+    }
+
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
         if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, task) {
             self.commit_room_change();
@@ -3458,6 +3614,8 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         };
@@ -3481,6 +3639,10 @@ impl WorkspaceTree {
     /// A populated tree for demos, `--shots` scenarios and tests.
     /// Everything is invented, so it must never be reachable from a
     /// normal boot; production goes through [`Self::bootstrap_default`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one literal demo workspace, spelled out field by field so every fixture value is visible in one place"
+    )]
     pub fn bootstrap_demo() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
@@ -3559,6 +3721,8 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         };
@@ -3642,6 +3806,8 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class,
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         };
@@ -4387,6 +4553,67 @@ impl WorkspaceTree {
     /// changes elsewhere in the workspace tree.
     fn doc_rewrite_strip_groups(&mut self, strip_id: StripId, groups: &[WindowGroup]) {
         tilo_desktop_model::desktop_doc::rewrite_strip_groups(&mut self.doc, strip_id, groups);
+    }
+
+    /// Bring this device's display partition in line with the displays
+    /// now connected, primary first (see [`OutputPartition::reconcile`]).
+    /// A partition is kept once a second display has been seen; a device
+    /// that only ever had one display carries none. Returns whether the
+    /// partition or any strip order changed.
+    pub fn reconcile_displays(&mut self, displays: &[Display]) -> bool {
+        if displays.len() < 2 && self.desktop.outputs.is_empty() {
+            return false;
+        }
+        let before = self.desktop.outputs.clone();
+        let desktop = &mut self.desktop;
+        let reordered = desktop.outputs.reconcile(&mut desktop.workspaces, displays);
+        desktop.outputs.place_unhomed(&desktop.workspaces);
+        self.mirror_partition_reorder(&reordered);
+        let changed = !reordered.is_empty() || self.desktop.outputs != before;
+        if changed {
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Show `group_id` on display `display` from now on (see
+    /// [`OutputPartition::move_group`]). `false` when there is no such
+    /// display or the group is already there.
+    pub fn move_group_to_display(&mut self, group_id: GroupId, display: u32) -> bool {
+        if self.desktop.outputs.display_of(group_id) == Some(display)
+            || !self
+                .desktop
+                .outputs
+                .displays
+                .iter()
+                .any(|d| d.id == display)
+        {
+            return false;
+        }
+        let desktop = &mut self.desktop;
+        let reordered = desktop
+            .outputs
+            .move_group(&mut desktop.workspaces, group_id, display);
+        self.mirror_partition_reorder(reordered.as_slice());
+        self.flush_to_disk();
+        true
+    }
+
+    /// Mirror strips a partition change reordered into the collaboration
+    /// document, the same as any other group reorder.
+    fn mirror_partition_reorder(&mut self, strips: &[StripId]) {
+        for &strip_id in strips {
+            let groups = self
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .find(|s| s.id == strip_id)
+                .map(|s| s.window_groups.clone());
+            if let Some(groups) = groups {
+                self.doc_rewrite_strip_groups(strip_id, &groups);
+            }
+        }
     }
 
     /// Reorder the window group `group_id` within `strip_id`; the whole
@@ -6958,6 +7185,8 @@ mod active_group_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         };
@@ -7433,6 +7662,8 @@ mod active_workspace_peer_count_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         };

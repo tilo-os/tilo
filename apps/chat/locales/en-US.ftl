@@ -255,8 +255,6 @@ chat-media-screen-stopped = Screen sharing stopped: { $error }
 chat-media-sequence-exhausted = Media stopped: stream sequence limit reached. Leave and rejoin to restart it.
 
 # The emoji picker and a message's edit history.
-chat-emoji-add-reaction = Add reaction
-chat-emoji-title = Emoji
 chat-emoji-frequent = Frequent
 chat-history-title = Edit history
 chat-history-now = Now · { $time }
@@ -320,3 +318,12 @@ chat-a11y-call-share = Share screen
 chat-a11y-call-participants = Show call participants
 chat-a11y-call-expand = Expand or restore call
 chat-a11y-call-leave = Leave call
+
+# Emoji picker: its title when inserting into the composer or reacting to a
+# message, the search field's placeholder and the grid's section headings.
+chat-emoji-title = Emoji
+chat-emoji-add-reaction = Add reaction
+chat-emoji-search = Search emoji
+chat-emoji-recent = Recently used
+chat-emoji-results = Results
+chat-emoji-no-results = No emoji found

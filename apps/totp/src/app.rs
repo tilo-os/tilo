@@ -914,7 +914,7 @@ impl AuthenticatorApp {
 
     /// Open the Add-account screen — the surface the "Scan a QR image" import
     /// starts from. At runtime that action hands off to the **host** file
-    /// chooser via the XDG Desktop Portal ([`Self::request_qr_via_portal`]);
+    /// chooser via the XDG Desktop Portal (`Self::request_qr_via_portal`);
     /// there is no app-drawn picker to render offscreen (HIG §5), so this
     /// `--shots` entry point simply lands on the add screen with its import
     /// method cards.
@@ -1496,7 +1496,7 @@ impl Widget for AuthenticatorApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its account action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }

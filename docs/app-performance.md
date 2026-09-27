@@ -1,6 +1,6 @@
 # Application performance coverage
 
-The [app suite inventory](../scripts/perf/app-suite.json) records 47 GUI applications with native Rust entrypoints under `apps/`, plus the excluded headless `qos-agent` CLI. Every GUI app is **unqualified**. This is a source inventory, not evidence that every app builds or runs on macOS. Package and binary names come from each Cargo manifest, including `windows-app` / `windows` and the implicit `qos-scratchpad` binary.
+The [app suite inventory](../scripts/perf/app-suite.json) records 47 GUI applications with native Rust entrypoints under `apps/`, plus the excluded headless `tilo-agent` CLI. Every GUI app is **unqualified**. This is a source inventory, not evidence that every app builds or runs on macOS. Package and binary names come from each Cargo manifest, including `windows-app` / `windows` and the implicit `tilo-scratchpad` binary.
 
 Implementation follows the [application performance plan](superpowers/plans/2026-09-16-app-performance.md). Improve measured shared-framework bottlenecks first; move to app-specific optimization when controlled measurements show the remaining dominant work is app-specific or shared experiments no longer yield repeatable gains.
 

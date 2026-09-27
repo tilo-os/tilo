@@ -35,7 +35,7 @@ use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, TextInput, VideoPlayer,
+    MenuItem, SearchField, TextInput, VideoPlayer,
 };
 
 use crate::actions::{self, ChatAction};
@@ -445,6 +445,10 @@ pub(crate) enum Hit {
     /// Focus/place the caret in the inline message editor.
     FocusEdit,
     EmojiChoice(String),
+    /// Show one Unicode emoji group (index into the catalogue) in the picker.
+    EmojiGroup(usize),
+    /// Focus/place the caret in the emoji picker's search field.
+    FocusEmojiSearch,
     FocusMain,
     FocusThread,
     Send,
@@ -533,6 +537,8 @@ impl Hit {
             Self::Reaction { msg, emoji } => format!("chat.reaction:{msg}:{emoji}"),
             Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
             Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
+            Self::EmojiGroup(group) => format!("chat.emoji-group:{group}"),
+            Self::FocusEmojiSearch => "chat.emoji-search".into(),
             Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
@@ -732,6 +738,14 @@ pub struct ChatApp {
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Point,
+    /// The picker's query; empty shows the selected group.
+    pub(crate) emoji_search: SearchField,
+    pub(crate) emoji_group: usize,
+    /// How far the picker grid is scrolled, and the rect it scrolls in.
+    pub(crate) emoji_scroll: f64,
+    pub(crate) emoji_grid: Rect,
+    /// This user's recently picked emoji, most recent first.
+    pub(crate) emoji_recents: emoji::Recents,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
@@ -1061,6 +1075,11 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
+            emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
+            emoji_group: 0,
+            emoji_scroll: 0.0,
+            emoji_grid: Rect::ZERO,
+            emoji_recents: emoji::Recents::default(),
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
@@ -3380,11 +3399,26 @@ impl ChatApp {
                         )
                     }
                     Hit::AddReaction { .. } => (t("chat-a11y-add-reaction"), Role::Button, false),
-                    Hit::EmojiChoice(emoji) => (
-                        t_args("chat-a11y-choose-emoji", &[("emoji", text(emoji.clone()))]),
-                        Role::Button,
-                        false,
+                    Hit::EmojiChoice(emoji) => {
+                        let name = emoji::Catalogue::english()
+                            .get(emoji)
+                            .map_or(emoji.as_str(), |found| found.name());
+                        (
+                            t_args("chat-a11y-choose-emoji", &[("emoji", text(name))]),
+                            Role::Button,
+                            false,
+                        )
+                    }
+                    Hit::EmojiGroup(group) => (
+                        emoji::Catalogue::english()
+                            .groups()
+                            .get(*group)
+                            .map_or("Emoji group", emoji::Group::label)
+                            .into(),
+                        Role::Tab,
+                        *group == self.emoji_group,
                     ),
+                    Hit::FocusEmojiSearch => (t("chat-emoji-search"), Role::TextInput, false),
                     Hit::EditHistory { .. } => (t("chat-a11y-edit-history"), Role::Button, false),
                     Hit::EditSave => (t("chat-a11y-edit-save"), Role::Button, false),
                     Hit::EditCancel => (t("chat-a11y-edit-cancel"), Role::Button, false),
@@ -4234,7 +4268,7 @@ impl Widget for ChatApp {
             self.menu = Some(menu);
         }
         if self.emoji_open {
-            self.draw_emoji_picker(scene, tf, tr, theme, &mut hits);
+            self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
         }
         if self.history_open.is_some() {
             self.draw_history_popover(scene, tf, tr, theme, &mut hits);

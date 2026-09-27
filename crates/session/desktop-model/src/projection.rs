@@ -21,6 +21,10 @@ use crate::width::WindowWidth;
 pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 /// Key a room document stores its effect receipts under.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
+/// Key a room document stores its saved shortcuts under.
+pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
+/// Key a room document stores its schedule claims under.
+pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
 /// Key a room document stores its [`collab_types::ChannelClass`] under.
 /// Governance: only the room's authority writes it, and a member refuses
@@ -176,6 +180,139 @@ pub fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
             .then_with(|| left.id.cmp(&right.id))
     });
     tasks
+}
+
+/// Project a workspace's shortcuts as one map value per shortcut id, so two
+/// collaborators saving different shortcuts concurrently merge as two keys.
+/// A key this workspace no longer holds is deleted, which is how deleting a
+/// shortcut reaches the room: a peer's addition lands in the local list when
+/// its change is merged, before this runs again.
+///
+/// # Errors
+///
+/// The document's error when the shortcuts map cannot be created.
+pub fn project_workspace_shortcuts(
+    doc: &mut AutoCommit,
+    shortcuts: &[tilo_automation::Shortcut],
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+    let map = match doc.get(&ROOT, ROOM_AUTOMATIONS_KEY).ok().flatten() {
+        Some((_, id)) => id,
+        None if shortcuts.is_empty() => return Ok(()),
+        None => doc.put_object(&ROOT, ROOM_AUTOMATIONS_KEY, ObjType::Map)?,
+    };
+    let stale: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| !shortcuts.iter().any(|shortcut| shortcut.id == *key))
+        .collect();
+    for key in stale {
+        doc.delete(&map, key.as_str())?;
+    }
+    for shortcut in shortcuts {
+        let Ok(blob) = serde_json::to_vec(shortcut) else {
+            continue;
+        };
+        let unchanged = matches!(
+            doc.get(&map, shortcut.id.as_str()).ok().flatten(),
+            Some((Value::Scalar(value), _))
+                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+        );
+        if !unchanged {
+            doc.put(&map, shortcut.id.as_str(), ScalarValue::Bytes(blob))?;
+        }
+    }
+    Ok(())
+}
+
+/// The shortcuts a room document carries, by id. A value that does not
+/// decode is skipped.
+pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::Shortcut> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((_, map)) = doc.get(&ROOT, ROOM_AUTOMATIONS_KEY).ok().flatten() else {
+        return Vec::new();
+    };
+    let mut shortcuts: Vec<tilo_automation::Shortcut> = doc
+        .keys(&map)
+        .filter_map(|key| match doc.get(&map, key.as_str()).ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts
+}
+
+/// Project a workspace's schedule claims as one map value per schedule
+/// ([`ScheduleClaim::key`](tilo_automation::ScheduleClaim::key)). A key this
+/// workspace no longer holds is deleted, as for shortcuts.
+///
+/// # Errors
+///
+/// The document's error when the claims map cannot be created.
+pub fn project_schedule_claims(
+    doc: &mut AutoCommit,
+    claims: &[tilo_automation::ScheduleClaim],
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+    let map = match doc.get(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY).ok().flatten() {
+        Some((_, id)) => id,
+        None if claims.is_empty() => return Ok(()),
+        None => doc.put_object(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY, ObjType::Map)?,
+    };
+    let stale: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| !claims.iter().any(|claim| claim.key() == *key))
+        .collect();
+    for key in stale {
+        doc.delete(&map, key.as_str())?;
+    }
+    for claim in claims {
+        let Ok(blob) = serde_json::to_vec(claim) else {
+            continue;
+        };
+        let key = claim.key();
+        let unchanged = matches!(
+            doc.get(&map, key.as_str()).ok().flatten(),
+            Some((Value::Scalar(value), _))
+                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+        );
+        if !unchanged {
+            doc.put(&map, key.as_str(), ScalarValue::Bytes(blob))?;
+        }
+    }
+    Ok(())
+}
+
+/// The schedule claims a room document carries. A value that does not
+/// decode, or that is filed under another schedule's key, is skipped.
+pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClaim> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((_, map)) = doc.get(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY).ok().flatten() else {
+        return Vec::new();
+    };
+    let mut claims: Vec<tilo_automation::ScheduleClaim> = doc
+        .keys(&map)
+        .filter_map(|key| {
+            let claim: tilo_automation::ScheduleClaim =
+                match doc.get(&map, key.as_str()).ok().flatten() {
+                    Some((Value::Scalar(value), _)) => match value.as_ref() {
+                        ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                        _ => None,
+                    },
+                    _ => None,
+                }?;
+            (claim.key() == key).then_some(claim)
+        })
+        .collect();
+    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims
 }
 
 /// Project effect receipts keyed by invocation, so receipts from two

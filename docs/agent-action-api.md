@@ -208,6 +208,31 @@ save time against the same descriptors this API enumerates and run through
 the same `ActionHost` door as the invoking person, inside the shortcut's own
 grant.
 
+## AI transforms
+
+The workspace agent (`so.tilo.agent`, running with `--task-runs`) publishes
+one programmatic resource, `agent.transform:default`, whose actions any caller
+invokes like any other app's: `summarise`, `extract`, `classify` and
+`freeform`. A shortcut's `Ai` step lowers to exactly these.
+
+Each takes its text as `input`, or as a `tilo.content:<hash>` address in
+`resource`, and declares a JSON result: text for `summarise` (bounded by
+`length`), a label (or with `multi` a list of labels) for `classify`, a value
+satisfying the caller's own `schema` for `extract`, and text or a value of the
+caller's `schema` for `freeform`. The agent validates the model's answer
+against that shape before returning it; an answer that misses gets one repair
+attempt, then fails with `invalid_model_output` rather than returning a guess.
+Other failure codes are `invalid_arguments`, `input_too_large`,
+`content_unavailable`, `model_unavailable`, `timed_out` and `busy`.
+
+The caller never reaches a model. The agent asks the model gateway for one
+bounded single-shot answer (`Request::Transform` for the `agent.transform`
+task, whose only consumer is `so.tilo.agent`); the gateway resolves the model
+the person assigned to that task, builds the provider request, caps input,
+output tokens and deadline, and returns only the answer text. A shortcut cannot feed
+a secret to a transform: the checker refuses the binding and the interpreter
+refuses it again at run time.
+
 ## Source of truth
 
 | What | Where |
@@ -219,6 +244,7 @@ grant.
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
 | Shortcut pipelines (check + run) | `crates/collab/automation` |
+| AI transforms | `apps/agent/src/transform.rs` |
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |

@@ -27,19 +27,19 @@ def main():
     metadata = {"command": sys.argv, "binary_directory": str(args.bin_dir.resolve()),
                 "binary_sha256_before_launch": hashes if args.benchmark else None}
     (args.output / "run-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    with tempfile.TemporaryDirectory(prefix="qos-rt-", dir="/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tilo-rt-", dir="/tmp") as temporary:
         root = Path(temporary)
         env = os.environ.copy()
-        # Do not inherit an unrelated qOS session's service descriptors/identity.
+        # Do not inherit an unrelated Tilo session's service descriptors/identity.
         for key in list(env):
-            if key.startswith("QOS_") or key.startswith("QUICK_"):
+            if key.startswith("TILO_") or key.startswith("QUICK_"):
                 del env[key]
         env.update({
             "XDG_CONFIG_HOME": str(root / "config"),
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_CACHE_HOME": str(root / "cache"),
-            "QOS_IDENTITY_ROOT": str(root / "identity"),
-            "QOS_BLOB_STORE": str(root / "blobs"),
+            "TILO_IDENTITY_ROOT": str(root / "identity"),
+            "TILO_BLOB_STORE": str(root / "blobs"),
             "RUST_LOG": "info",
         })
         command = [str(args.bin_dir / "examples/shared-runtime-proof"), str(root),
@@ -55,7 +55,7 @@ def main():
                 process.wait()
                 status = 124
             finally:
-                for name in ["dev.qos.photos.log", "dev.qos.word-processor.log", "dev.qos.photos.frames.jsonl", "dev.qos.word-processor.frames.jsonl", "source.png", "received.automerge", "signed-document-events.json"]:
+                for name in ["dev.tilo.photos.log", "dev.tilo.word-processor.log", "dev.tilo.photos.frames.jsonl", "dev.tilo.word-processor.frames.jsonl", "source.png", "received.automerge", "signed-document-events.json"]:
                     if (root / name).exists():
                         shutil.copyfile(root / name, args.output / name)
         events = [json.loads(line) for line in (args.output / "events.jsonl").read_text().splitlines() if line.startswith("{")]

@@ -420,8 +420,10 @@ pub struct CameraApp {
     latest_frame: Option<FrameBuf>,
     frame_gen: u64,
     io_generation: u64,
-    thumb_generation: u64,
-    thumb_pending: HashMap<String, u64>,
+    /// The shared preview pipeline; the recent-capture peek is requested from it.
+    thumb_service: thumbnail::ThumbnailService,
+    /// Captures whose preview is still being generated, by pipeline key.
+    thumb_pending: HashMap<String, thumbnail::ThumbKey>,
     thumb_failed: HashSet<String>,
     scan_generation: u64,
     pending_scan: Option<(String, u64)>,
@@ -510,6 +512,14 @@ impl CameraApp {
             Storage::Disk(_) if cfg!(test) => tilo_content::ContentStore::memory(),
             Storage::Disk(_) => tilo_content::ContentStore::for_app(),
         };
+        // Previews follow the same rule: the sample and tests keep them in memory.
+        let thumb_service = match &storage {
+            Storage::Disk(_) if !cfg!(test) => thumbnail::ThumbnailService::open_default(1)
+                .unwrap_or_else(|_| thumbnail::ThumbnailService::ephemeral(1)),
+            _ => thumbnail::ThumbnailService::ephemeral(1),
+        };
+        let thumb_wake = ui::wake::WakeHandle::new();
+        thumb_service.set_wake(move || thumb_wake.wake());
         Self {
             rect: Rect::ZERO,
             node: None,
@@ -551,7 +561,7 @@ impl CameraApp {
             latest_frame: None,
             frame_gen: 0,
             io_generation: 0,
-            thumb_generation: 0,
+            thumb_service,
             thumb_pending: HashMap::new(),
             thumb_failed: HashSet::new(),
             scan_generation: 0,
@@ -2707,7 +2717,7 @@ impl Widget for CameraApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its metadata action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }
@@ -2968,23 +2978,36 @@ impl Widget for CameraApp {
                 }
             }
         }
-        while let Some(result) = self.worker.try_recv_thumbnail() {
-            if self.thumb_pending.get(&result.id) != Some(&result.generation) {
-                continue;
-            }
-            self.thumb_pending.remove(&result.id);
-            match result.result {
-                Some((rgba, width, height)) => {
+        // A pending preview the pipeline no longer knows (dropped from a full
+        // queue) simply leaves `thumb_pending`, so the next draw asks again.
+        let settled: Vec<(String, Option<thumbnail::ThumbState>)> = self
+            .thumb_pending
+            .iter()
+            .filter_map(|(id, key)| match self.thumb_service.peek(key) {
+                Some(state) if state.is_loading() => None,
+                state => Some((id.clone(), state)),
+            })
+            .collect();
+        for (id, state) in settled {
+            self.thumb_pending.remove(&id);
+            match state {
+                None => {}
+                Some(thumbnail::ThumbState::Ready(preview)) => {
                     if self.thumbs.len() >= MAX_THUMB_CACHE {
                         self.thumbs.clear();
                     }
                     self.thumbs.insert(
-                        result.id,
-                        Image::from_rgba(Arc::from(rgba), width, height).with_fit(ImageFit::Cover),
+                        id,
+                        Image::from_rgba(
+                            Arc::from(preview.rgba.as_slice()),
+                            preview.width,
+                            preview.height,
+                        )
+                        .with_fit(ImageFit::Cover),
                     );
                 }
-                None => {
-                    self.thumb_failed.insert(result.id);
+                _ => {
+                    self.thumb_failed.insert(id);
                 }
             }
             self.dirty = true;
@@ -4754,56 +4777,71 @@ impl CameraApp {
             );
             return;
         }
-        let source = cap
-            .path
-            .clone()
-            .map(crate::worker::ThumbnailSource::Path)
-            .or_else(|| {
-                cap.media_id
-                    .as_ref()
-                    .filter(|media_id| crate::media::is_media_id(media_id))
-                    .cloned()
-                    .map(crate::worker::ThumbnailSource::Media)
-            });
-        let Some(source) = source else {
-            self.thumb_failed.insert(cap.id.clone());
-            return;
-        };
-        let Some(generation) = self.thumb_generation.checked_add(1) else {
-            self.thumb_failed.insert(cap.id.clone());
-            self.toast = Some("Thumbnail counter exhausted; restart Camera".into());
-            return;
-        };
         let (w, h) = THUMB;
-        match self.worker.submit_thumbnail(crate::worker::ThumbnailJob {
-            generation,
-            id: cap.id.clone(),
-            source,
-            width: w,
-            height: h,
-        }) {
-            Ok(()) => {
-                self.thumb_generation = generation;
-                self.thumb_pending.insert(cap.id.clone(), generation);
-                // A low-cost deterministic placeholder means the card never
-                // flashes blank while the bounded decoder is working.
-                if self.thumbs.len() >= MAX_THUMB_CACHE {
-                    self.thumbs.clear();
-                }
-                self.thumbs.insert(
-                    cap.id.clone(),
-                    frame_image_cover(frame::thumbnail(cap.scene, w, h)),
-                );
+        let size = thumbnail::ThumbSize::new(w, h);
+        // `media_id` names verified bytes in the content store, and is the
+        // preview's content address; a local path is admitted only for the
+        // recent capture projection.
+        let media = cap
+            .media_id
+            .as_ref()
+            .filter(|media_id| crate::media::is_media_id(media_id))
+            .cloned();
+        let address_key = media.as_deref().and_then(|id| {
+            thumbnail::ThumbKey::of_address(id.strip_prefix(crate::media::MEDIA_PREFIX)?, size)
+        });
+        let request = match (&cap.path, media) {
+            (Some(path), _) => {
+                let key = address_key.or_else(|| {
+                    let meta = std::fs::metadata(path).ok()?;
+                    let mtime_ms = meta
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_millis();
+                    Some(thumbnail::ThumbKey::of_path_meta(
+                        path,
+                        u64::try_from(mtime_ms).unwrap_or(u64::MAX),
+                        meta.len(),
+                        size,
+                    ))
+                });
+                key.map(|key| {
+                    thumbnail::ThumbRequest::file(
+                        key,
+                        thumbnail::category_for_path(path),
+                        path.clone(),
+                    )
+                })
             }
-            Err(error) => {
-                self.thumb_failed.insert(cap.id.clone());
-                // Queue-full is expected under a quick scroll; the fallback
-                // stays visible and a later thumbnail request can retry it.
-                if !error.contains("busy") {
-                    self.toast = Some(error);
-                }
-            }
+            (None, Some(id)) => address_key.map(|key| {
+                let content = self.content.clone();
+                thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
+                    crate::media::read(&content, &id)
+                })
+            }),
+            (None, None) => None,
+        };
+        let Some(request) = request else {
+            self.thumb_failed.insert(cap.id.clone());
+            return;
+        };
+        let key = request.key();
+        if let thumbnail::ThumbState::Badge(_) = self.thumb_service.request(request) {
+            self.thumb_failed.insert(cap.id.clone());
+            return;
         }
+        self.thumb_pending.insert(cap.id.clone(), key);
+        // A low-cost deterministic placeholder means the card never flashes
+        // blank while the shared pipeline is working.
+        if self.thumbs.len() >= MAX_THUMB_CACHE {
+            self.thumbs.clear();
+        }
+        self.thumbs.insert(
+            cap.id.clone(),
+            frame_image_cover(frame::thumbnail(cap.scene, w, h)),
+        );
     }
 }
 

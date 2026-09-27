@@ -18,13 +18,15 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
+# The shared preview pipeline behind the library grid.
+thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 automerge.workspace = true

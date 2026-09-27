@@ -2,7 +2,7 @@
 //!
 //! Every pane that drives a real hardware action (display, audio,
 //! network, bluetooth) holds an `Arc<dyn os_actions::Dispatcher + Send +
-//! Sync>` so tests can substitute a [`testing::RecordingDispatcher`].
+//! Sync>` so tests can substitute a `testing::RecordingDispatcher`.
 //! [`dispatcher_or_real`] is the small ergonomic helper the pane
 //! constructors call: pass `Some(arc)` from a test to wire the recorder,
 //! pass `None` from production to get `os_actions::RealDispatcher`.
@@ -67,6 +67,10 @@ pub mod testing {
     impl Dispatcher for RecordingDispatcher {
         fn set_brightness(&self, pct: f32) -> Result<(), String> {
             self.push(format!("set_brightness({pct:.2})"));
+            Ok(())
+        }
+        fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+            self.push(format!("set_display_brightness({connector}, {pct:.2})"));
             Ok(())
         }
         fn set_volume(&self, pct: f32) -> Result<(), String> {

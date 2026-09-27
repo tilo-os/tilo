@@ -146,7 +146,7 @@ class ImagePublicationTests(unittest.TestCase):
 
     def test_the_independent_rebuild_never_sees_the_cache(self):
         repro = self.steps["Independently rebuild the release candidate"]
-        self.assertIn("if: steps.release-mode.outputs.publish == 'true'", repro)
+        self.assertIn("if: matrix.role == 'reproduce'", repro)
         self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
         self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
         self.assertIn("no-cache: true", repro)
@@ -186,7 +186,7 @@ class KernelPublicationTests(unittest.TestCase):
         build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
         self.assertIn(
             "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
-            "ref={0}/qos/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
+            "ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
             " || '' }}", build)
         self.assertEqual(self.workflow.count("cache-from:"), 1)
 

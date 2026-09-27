@@ -46,9 +46,17 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 pub mod continuity;
+pub mod day_schedule;
+pub mod display_identify;
+pub mod display_mode;
+pub mod display_tools;
 pub mod hardware;
+pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+pub mod system_sounds;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
@@ -75,41 +83,9 @@ pub fn config_root_from(
     )
 }
 
-/// Resolve one settings file, reusing an existing qOS file in place.
-/// Current Tilo files take precedence independently of unrelated config files.
+/// Resolve one settings file under the config root.
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
-    let root = config_root()?;
-    Some(compatible_config_path(root.parent()?, relative))
-}
-
-fn compatible_config_path(base: &Path, relative: &Path) -> PathBuf {
-    let current = base.join("tilo").join(relative);
-    let legacy = base.join("qos").join(relative);
-    if !current.exists() && legacy.exists() {
-        legacy
-    } else {
-        current
-    }
-}
-
-#[cfg(test)]
-mod rename_compatibility_tests {
-    use super::*;
-    #[test]
-    fn settings_survive_unrelated_new_directories_and_current_file_wins() {
-        let root = super::tests::tmpdir();
-        let relative = Path::new("settings.json");
-        let legacy = root.join("qos/settings.json");
-        let current = root.join("tilo/settings.json");
-        assert_eq!(compatible_config_path(&root, relative), current);
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, "{}").unwrap();
-        std::fs::create_dir_all(root.join("tilo/identity")).unwrap();
-        assert_eq!(compatible_config_path(&root, relative), legacy);
-        std::fs::write(&current, "{}").unwrap();
-        assert_eq!(compatible_config_path(&root, relative), current);
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    Some(config_root()?.join(relative))
 }
 
 /// The shared settings file: `<config root>/settings.json`.

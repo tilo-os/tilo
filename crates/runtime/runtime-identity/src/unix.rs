@@ -224,27 +224,17 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 ///
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
-fn compatible_identity_dir(config: &std::path::Path) -> PathBuf {
-    let current = config.join("tilo").join("identity");
-    let legacy = config.join("qos").join("identity");
-    if !current.exists() && legacy.is_dir() {
-        legacy
-    } else {
-        current
-    }
-}
-
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
         if xdg.is_absolute() {
-            return Ok(compatible_identity_dir(&xdg));
+            return Ok(xdg.join("tilo").join("identity"));
         }
     }
     if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
         let home = PathBuf::from(home);
         if home.is_absolute() {
-            return Ok(compatible_identity_dir(&home.join(".config")));
+            return Ok(home.join(".config").join("tilo").join("identity"));
         }
     }
     Err(io::Error::new(
@@ -1177,6 +1167,33 @@ impl SigningIdentity {
         match &self.source {
             SigningSource::ActionBroker(stream) => stream.sign_collaboration_join(workspace_id),
             _ => self.sign(&collaboration_join_signing_bytes(workspace_id)),
+        }
+    }
+
+    /// Ask the workspace-bound identity broker for the content keys of one
+    /// document route; see [`crate::wire::Request::ChannelKeys`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
+    /// workspace-bound broker connection or the broker refuses the route.
+    pub fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<crate::wire::ChannelKeysReply, NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => {
+                stream.channel_keys(workspace_id, app_id, record_id, known_generation)
+            }
+            SigningSource::Local(_)
+            | SigningSource::LocalThreshold(_)
+            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "channel keys require the workspace identity service",
+            ))),
         }
     }
 

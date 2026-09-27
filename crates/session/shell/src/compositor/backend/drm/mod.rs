@@ -10,6 +10,7 @@
 //! gesture routing · [`outputs`] stable `OutputId` allocation · [`runtime`] hardware glue + the
 //! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
+pub mod access_keys;
 pub mod devices;
 pub mod gestures;
 pub mod hotplug;
@@ -927,7 +928,7 @@ fn apply_scanout_command(
         ScanoutCommand::Resume { dpms_on } => {
             for e in scanouts.iter_mut() {
                 e.scanout.restore();
-                e.scanout.set_dpms(dpms_on);
+                e.scanout.set_dpms(dpms_on && !e.powered_off);
                 e.direct_targets = None;
             }
             *blanked = !dpms_on;
@@ -941,6 +942,23 @@ fn apply_scanout_command(
         ScanoutCommand::SetCursorSize(size) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_cursor_size(size);
+            }
+        }
+        ScanoutCommand::SetPointerImage(image) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.set_pointer_image(image.clone());
+            }
+        }
+        ScanoutCommand::SetOutputPower { output, on } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.powered_off = !on;
+                entry.direct_targets = None;
+                // While the session is blanked every panel is already off;
+                // the wake restores this one only if it is still wanted.
+                if !*blanked && !*paused {
+                    entry.scanout.set_dpms(on);
+                }
+                tracing::info!(output = output.0, on, "DRM present: output power changed");
             }
         }
     }
@@ -966,7 +984,7 @@ fn paint_scanouts(
     mut phase_window: Option<&mut PhaseWindow>,
     direct_bypass_reported: &mut bool,
 ) -> PaintScanoutSample {
-    if scanouts.is_empty() {
+    if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
     }
     let target_size = combined_geometry(outputs);
@@ -1294,7 +1312,7 @@ fn paint_scanouts(
     let bridge_us = bridge_started.elapsed().as_micros();
     let scanout_started = Instant::now();
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-    for e in scanouts.iter_mut() {
+    for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
         paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
     PaintScanoutSample {
@@ -1485,7 +1503,7 @@ impl Presenter for DrmPresenter {
         });
         self.blanked = !on;
         for e in &mut self.scanouts {
-            e.scanout.set_dpms(on);
+            e.scanout.set_dpms(on && !e.powered_off);
             e.direct_targets = None;
         }
     }
@@ -1648,7 +1666,7 @@ impl Backend for DrmBackend {
             s.set_dpms(on);
         }
         for e in &mut self.inner.scanouts {
-            e.scanout.set_dpms(on);
+            e.scanout.set_dpms(on && !e.powered_off);
             e.direct_targets = None;
         }
     }
@@ -1661,12 +1679,39 @@ impl Backend for DrmBackend {
         self.inner.reload_input_settings();
     }
 
+    fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        self.inner.set_pointer_image(image);
+    }
+
+    fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.inner.set_pointer_constraint(constraint);
+    }
+
+    fn warp_pointer(&mut self, x: f64, y: f64) {
+        self.inner.warp_pointer(x, y);
+    }
+
     fn cancel_touch(&mut self) {
         self.inner.cancel_touch();
     }
 
     fn switch_vt(&mut self, vt: i32) {
         self.inner.change_vt(vt);
+    }
+
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        self.inner.output_heads()
+    }
+
+    fn set_output_power(&mut self, output: OutputId, on: bool) {
+        self.inner.set_output_power(output, on);
+    }
+
+    fn set_device_rotation(&mut self, rotation: Option<settings_store::hardware::OutputTransform>) {
+        self.inner.set_device_rotation(rotation);
     }
 }
 
@@ -1764,6 +1809,9 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
+                logical_position: (1920, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let (mut paused, mut blanked) = (false, false);

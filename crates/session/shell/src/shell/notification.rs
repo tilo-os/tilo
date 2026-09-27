@@ -618,13 +618,14 @@ impl NotificationStack {
         y: f64,
         width: f64,
         radius: f64,
+        status: &str,
         history_count: usize,
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
         let label = if history_count > 0 {
-            format!("Do Not Disturb · {history_count} held")
+            format!("{status} · {history_count} held")
         } else {
-            "Do Not Disturb".to_string()
+            status.to_string()
         };
         let text_x = x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
         let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
@@ -789,12 +790,28 @@ impl Widget for NotificationStack {
         text_renderer.set_text_scale(1.0);
 
         let now = Instant::now();
-        let (mut snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
+        let (mut snapshot, locked, quiet, history_count): (
+            Vec<Notification>,
+            bool,
+            Option<String>,
+            usize,
+        ) = {
+            use chrono::{Datelike, Timelike};
             let ch = self.chrome.borrow();
+            let local = chrono::Local::now();
             (
                 ch.notifications().to_vec(),
                 ch.session_locked(),
-                ch.dnd(),
+                ch.quiet_status(
+                    u16::try_from(
+                        local
+                            .hour()
+                            .saturating_mul(60)
+                            .saturating_add(local.minute()),
+                    )
+                    .unwrap_or(0),
+                    u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0),
+                ),
                 ch.notification_history_count(),
             )
         };
@@ -802,7 +819,7 @@ impl Widget for NotificationStack {
             snapshot.retain(|notification| notification.show_on_lock_screen);
         }
         // Nothing to paint unless DND is on and unlocked (show its status pill).
-        if snapshot.is_empty() && (!dnd || locked) {
+        if snapshot.is_empty() && (quiet.is_none() || locked) {
             self.rect = Rect::ZERO;
             text_renderer.set_text_scale(renderer_scale);
             return;
@@ -838,8 +855,9 @@ impl Widget for NotificationStack {
         };
 
         // Muted, no hit-rect — reads as a status chip, not a dismissible toast.
-        if dnd {
-            let pill_rect = Self::draw_dnd_pill(&mut ctx, x0_rest, y, width, radius, history_count);
+        if let Some(status) = quiet.as_deref() {
+            let pill_rect =
+                Self::draw_dnd_pill(&mut ctx, x0_rest, y, width, radius, status, history_count);
             bounds.expand(pill_rect.y0, pill_rect.y1);
             y += pill_rect.height() + TOAST_GAP;
         }
@@ -1296,6 +1314,7 @@ mod tests {
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
             badge_count: None,
             contact_endpoint: None,
+            sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
         }
     }
 
@@ -1564,6 +1583,67 @@ mod tests {
     }
 
     #[test]
+    fn a_retained_mirrored_notification_routes_its_action_back_to_its_device() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let projection = live_remote_projection(8, "Reply later");
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ui_id = chrome.borrow().notifications()[0].id;
+        // The banner times out locally; the origin still holds it.
+        let later = Instant::now() + Duration::from_secs(120);
+        chrome.borrow_mut().update_notification_lifecycle(later);
+        assert!(bridge.drain_continuity_command_egress().is_empty());
+        assert_eq!(chrome.borrow().notification_history()[0].id, ui_id);
+
+        let outcome = chrome.borrow_mut().activate_history_notification(ui_id);
+        assert_eq!(
+            outcome,
+            crate::shell::notification_history::HistoryActivation::Invoked
+        );
+        let commands = bridge.drain_continuity_command_egress();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].target_device, "phone");
+        assert_eq!(
+            commands[0].command,
+            crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            }
+        );
+        assert!(
+            bridge.drain_action_events().is_empty(),
+            "no local D-Bus route"
+        );
+        assert!(chrome.borrow().notification_history().is_empty());
+    }
+
+    #[test]
+    fn a_restored_notification_opens_its_verified_app() {
+        let chrome = new_chrome();
+        let mut restored = Notification::new("Invoice", "");
+        restored.app_id = Some("org.mail".into());
+        restored.app_name = Some("Mail".into());
+        chrome.borrow_mut().set_dnd(true);
+        let id = chrome.borrow_mut().push_notification_full(restored);
+        assert_eq!(
+            chrome.borrow_mut().activate_history_notification(id),
+            crate::shell::notification_history::HistoryActivation::OpenApp {
+                app_id: "org.mail".into(),
+                label: "Mail".into(),
+            }
+        );
+        let system = chrome.borrow_mut().push_notification("Backup", "");
+        assert_eq!(
+            chrome.borrow_mut().activate_history_notification(system),
+            crate::shell::notification_history::HistoryActivation::Unavailable,
+            "a shell notification with nothing to act on stays retained"
+        );
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+    }
+
+    #[test]
     fn origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
@@ -1808,7 +1888,12 @@ mod tests {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
         chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        chrome.borrow_mut().set_dnd(true);
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy {
+                do_not_disturb: true,
+                ..settings_store::notification_policy::NotificationPolicy::default()
+            },
+        );
         bridge.push_incoming(incoming(77, 1, 5000));
         chrome.borrow_mut().pump_dbus_notifications();
         let ch = chrome.borrow();
@@ -1937,6 +2022,94 @@ mod tests {
         );
         chrome.borrow_mut().set_dnd(true);
         assert!(chrome.borrow().revision > r0);
+    }
+
+    #[test]
+    fn dnd_is_the_persisted_policy_and_the_tile_mirrors_it() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_dnd(true);
+        {
+            let ch = chrome.borrow();
+            assert!(ch.dnd());
+            assert!(ch.quick_settings.do_not_disturb);
+            assert_eq!(
+                ch.quiet_status(12 * 60, 0).as_deref(),
+                Some("Do Not Disturb")
+            );
+        }
+        // Personal Settings writes the same policy; the shell adopts it.
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        let ch = chrome.borrow();
+        assert!(!ch.dnd());
+        assert!(!ch.quick_settings.do_not_disturb);
+        assert_eq!(ch.quiet_status(12 * 60, 0), None);
+    }
+
+    #[test]
+    fn a_focus_schedule_names_when_it_ends() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy {
+                focus: settings_store::notification_policy::FocusSchedule {
+                    enabled: true,
+                    start_minute: 22 * 60,
+                    end_minute: 7 * 60 + 30,
+                    ..settings_store::notification_policy::FocusSchedule::default()
+                },
+                ..settings_store::notification_policy::NotificationPolicy::default()
+            },
+        );
+        let ch = chrome.borrow();
+        assert_eq!(
+            ch.quiet_status(23 * 60, 2).as_deref(),
+            Some("Focus until 07:30")
+        );
+        assert_eq!(ch.quiet_status(12 * 60, 2), None);
+    }
+
+    #[test]
+    fn presenting_holds_banners_without_changing_the_persisted_switch() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_presenting(true);
+        chrome
+            .borrow_mut()
+            .push_notification("Private", "not for the room");
+        {
+            let ch = chrome.borrow();
+            assert!(!ch.dnd(), "presenting never rewrites the person's choice");
+            assert!(ch.notifications().is_empty());
+            assert_eq!(ch.notification_history().len(), 1);
+            assert_eq!(
+                ch.quiet_status(12 * 60, 0).as_deref(),
+                Some("Do Not Disturb while presenting")
+            );
+        }
+        chrome.borrow_mut().set_presenting(false);
+        chrome.borrow_mut().push_notification("Back", "shown again");
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+    }
+
+    #[test]
+    fn sharing_a_surface_holds_banners() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 3,
+                can_control: false,
+            },
+        ]);
+        chrome
+            .borrow_mut()
+            .push_notification("Private", "not for peers");
+        let ch = chrome.borrow();
+        assert!(ch.notifications().is_empty());
+        assert_eq!(
+            ch.quiet_status(12 * 60, 0).as_deref(),
+            Some("Do Not Disturb while sharing")
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ fn resource(profile: &str, workspace: &str) -> HistoryResource {
     HistoryResource::new(
         profile,
         workspace,
-        "dev.qos.history-test",
+        "dev.tilo.history-test",
         RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").expect("record id"),
     )
 }
@@ -230,13 +230,13 @@ fn restore_review_is_scoped_and_invalidated_by_selection_or_live_changes() {
         HistoryResource::new(
             "profile-a",
             "workspace-a",
-            "dev.qos.other-app",
+            "dev.tilo.other-app",
             RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").unwrap(),
         ),
         HistoryResource::new(
             "profile-a",
             "workspace-a",
-            "dev.qos.history-test",
+            "dev.tilo.history-test",
             RecordId::parse("uuid:00000000-0000-0000-0000-000000000002").unwrap(),
         ),
     ] {
@@ -275,8 +275,8 @@ fn restore_review_requires_a_preview_and_refuses_effect_receipts() {
     assert_eq!(history.review_restore(), Err(HistoryError::NoPreview));
 
     let context = ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-        .with_app("dev.qos.history-test", "History test")
-        .with_facet(ActionFacet::new("qos.receipt", "effect"));
+        .with_app("dev.tilo.history-test", "History test")
+        .with_facet(ActionFacet::new("tilo.receipt", "effect"));
     doc.put(ROOT, "last_export_receipt", "receipt-1").unwrap();
     let receipt = doc
         .commit_with(
@@ -305,8 +305,8 @@ fn newly_committed_effect_receipt_cannot_bypass_review_before_refresh() {
     let prior_review = history.review_restore().unwrap();
 
     let context = ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-        .with_app("dev.qos.history-test", "History test")
-        .with_facet(ActionFacet::new("qos.receipt", "effect"));
+        .with_app("dev.tilo.history-test", "History test")
+        .with_facet(ActionFacet::new("tilo.receipt", "effect"));
     doc.put(ROOT, "last_export_receipt", "receipt-before-refresh")
         .unwrap();
     let receipt = doc

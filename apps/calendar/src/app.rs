@@ -6867,7 +6867,7 @@ impl Widget for CalendarApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its calendar action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

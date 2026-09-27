@@ -129,6 +129,33 @@ class SelectorTests(unittest.TestCase):
         self.assertNotIn("base", ci_select.make_plan(
             self.metadata, self.root, ["leaf/src/main.rs"], 2)["tested"])
 
+    def test_scoped_readers_run_only_their_reading_tests(self):
+        manifest = ci_select.path_suites.parse(
+            '[[cargo]]\npackage = "base"\ninputs = ["leaf/*.rs", "os/usr/share/x.json"]\n'
+            'readers = ["base/tests/audit.rs"]\n'
+            'scope = { inputs = ["leaf/*.rs"], test = "it", filter = "test(/^audit::/)" }\n')
+        def plan(changes):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest)
+        leaf = plan(["leaf/src/main.rs"])
+        # Still checked and linted, but not tested as a whole package.
+        self.assertIn("base", leaf["selected"])
+        self.assertNotIn("base", leaf["tested"])
+        self.assertEqual(leaf["scoped_tests"], {"base": "--test it -E 'test(/^audit::/)'"})
+        row = leaf["matrix"]["include"][0]
+        self.assertNotIn("base", row["test_packages"].split()[1::2])
+        self.assertEqual(json.loads(row["scoped_tests"]),
+                         [{"package": "base", "test": "it", "filter": "test(/^audit::/)"}])
+        # An unscoped input needs the whole suite, and then nothing is scoped.
+        whole = plan(["leaf/src/main.rs", "os/usr/share/x.json"])
+        self.assertIn("base", whole["tested"])
+        self.assertEqual(whole["scoped_tests"], {})
+        self.assertEqual(whole["matrix"]["include"][0]["scoped_tests"], "")
+        # A package tested anyway (here: changed itself) is not also scoped.
+        both = plan(["leaf/src/main.rs", "base/src/lib.rs"])
+        self.assertIn("base", both["tested"])
+        self.assertEqual(both["scoped_tests"], {})
+
     def test_a_read_input_is_never_treated_as_quality_only(self):
         (self.root / "DEVELOPMENT.md").write_text("")
         manifest = ci_select.path_suites.parse(
@@ -823,6 +850,42 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(sorted(names), sorted(packages))
         self.assertEqual(len(names), len(set(names)))
 
+    def test_recorded_test_time_separates_slow_suites(self) -> None:
+        packages = {name: {"name": name, "targets": [], "dependencies": []}
+                    for name in ("slow-a", "slow-b", "c", "d")}
+        # Equal structure: without timings the two slow suites may share a shard.
+        seconds = {"slow-a": 500, "slow-b": 400, "c": 1}
+        shards = ci_select.balance(set(packages), packages, 2, seconds)
+        placed = [set(shard["packages"].split()[1::2]) for shard in shards]
+        self.assertTrue(any("slow-a" in names for names in placed))
+        self.assertFalse(any({"slow-a", "slow-b"} <= names for names in placed))
+        self.assertEqual(sorted(shard["recorded_test_seconds"] for shard in shards), [401, 500])
+        # The structural estimate keeps its meaning.
+        self.assertEqual(sum(shard["estimated_cost"] for shard in shards),
+                         sum(ci_select.package_cost(pkg) for pkg in packages.values()))
+
+    def test_recorded_test_time_never_changes_selection_or_budgets(self) -> None:
+        changes = ["leaf/src/lib.rs"]
+        plain = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        packages, _ = ci_select.package_maps(self.metadata, self.root)
+        timed = ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                    test_seconds={name: 10_000 for name in packages})
+        for key in ("selected", "tested", "shard_count", "estimated_cost",
+                    "dependants_tested_nightly"):
+            self.assertEqual(plain[key], timed[key], key)
+
+    def test_checked_in_test_seconds_are_valid(self) -> None:
+        seconds = ci_select.recorded_test_seconds()
+        self.assertTrue(seconds, "tools/ci/recorded_test_time.json should carry recorded timings")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seconds.json"
+            self.assertEqual(ci_select.recorded_test_seconds(path), {})
+            for invalid in ('[]', '{"a": 1.5}', '{"a": -1}', '{"a": "1"}', '{"a": true}'):
+                with self.subTest(invalid=invalid):
+                    path.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        ci_select.recorded_test_seconds(path)
+
     def test_each_selected_package_runs_once_on_each_native_architecture(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2, force_full=True)
         rows = plan["matrix"]["include"]
@@ -877,6 +940,9 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
         self.assertEqual(json.loads(values["clippy_matrix"]), plan["matrix"])
+        # An x86_64-only plan needs no standalone check: Clippy covers it.
+        self.assertEqual(json.loads(values["check_matrix"]), {"include": []})
+        self.assertEqual(values["check_required"], "false")
 
     def test_clippy_matrix_lints_each_package_set_once_on_x86(self) -> None:
         self.install_builder_recipe()
@@ -890,6 +956,15 @@ class SelectorTests(unittest.TestCase):
                          sorted(row["packages"] for row in rows if row["arch"] == "aarch64"))
         for row in rows:
             self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+        # Architectures Clippy does not lint keep a standalone all-target check.
+        check = plan["check_matrix"]["include"]
+        self.assertEqual(check, [row for row in rows if row["arch"] != "x86_64"])
+        self.assertEqual(sorted(row["packages"] for row in check),
+                         sorted(row["packages"] for row in clippy))
+        output = self.root / "github-output"
+        ci_select.emit_github(plan, output)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(values["check_required"], "true")
 
     def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)

@@ -98,6 +98,31 @@ pub mod wire {
             record_id: String,
             unsigned_op: Vec<u8>,
         },
+        /// The content keys of one document route of the bound workspace
+        /// and app, once this device has been admitted to its encrypted
+        /// channel. `known_generation` is the generation of the keys the
+        /// caller already holds; an unchanged state answers without keys.
+        /// Appended so earlier requests keep their encoding.
+        ChannelKeys {
+            workspace_id: String,
+            app_id: String,
+            record_id: String,
+            known_generation: u64,
+        },
+    }
+
+    /// What the device may do with a route's content, as the identity
+    /// service reports it to the route's endpoints.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ChannelAccess {
+        /// Admitted; the response carries the channel's content keys.
+        Ready,
+        /// Asked the channel's steward for access and not admitted yet.
+        Waiting,
+        /// This device was removed from the channel.
+        Removed,
+        /// The channel cannot be provisioned on this device right now.
+        Unavailable,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -116,5 +141,23 @@ pub mod wire {
         Signature(Vec<u8>),
         Denied(String),
         Error(String),
+        /// Answer to [`Request::ChannelKeys`]. `keys` holds the encoded
+        /// content keys when `access` is ready and `generation` differs
+        /// from the caller's; it is empty otherwise. Appended so earlier
+        /// responses keep their encoding.
+        ChannelKeys {
+            access: ChannelAccess,
+            generation: u64,
+            keys: Vec<u8>,
+        },
+    }
+
+    /// A decoded [`Response::ChannelKeys`].
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ChannelKeysReply {
+        pub access: ChannelAccess,
+        pub generation: u64,
+        /// Encoded content keys; `None` when unchanged or not ready.
+        pub keys: Option<Vec<u8>>,
     }
 }

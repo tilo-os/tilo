@@ -13,25 +13,25 @@ fn child() -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "bootstrap_child", "--nocapture"])
-        .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
+        .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
-        .env_remove("QOS_RUNTIME_STANDALONE")
-        .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID");
+        .env_remove("TILO_RUNTIME_STANDALONE")
+        .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID");
     command
 }
 #[test]
 fn bootstrap_child() {
-    if std::env::var_os("QOS_BOOTSTRAP_TEST_CHILD").is_none() {
+    if std::env::var_os("TILO_BOOTSTRAP_TEST_CHILD").is_none() {
         return;
     }
-    if std::env::var_os("QOS_BOOTSTRAP_LOOKUP_ONLY").is_some() {
+    if std::env::var_os("TILO_BOOTSTRAP_LOOKUP_ONLY").is_some() {
         assert!(runtime_portal::service_fd("collab").is_none());
         assert!(runtime_portal::service_fd("identity").is_none());
         assert!(!runtime_portal::is_tilo_native());
         return;
     }
-    match runtime_portal::native::ensure_attached("dev.qos.bootstrap-test") {
+    match runtime_portal::native::ensure_attached("dev.tilo.bootstrap-test") {
         Ok(()) => println!("RETURNED"),
         Err(error) => {
             eprintln!("BOOTSTRAP ERROR: {error}");
@@ -47,7 +47,7 @@ fn bootstrap_child() {
 fn malformed_inherited_connection_never_starts_another_host() {
     let output = child()
         .env("TILO_SVC_COLLAB_FD", "bad")
-        .env("QOS_RUNTIME_BINARY", "/must-not-run")
+        .env("TILO_RUNTIME_BINARY", "/must-not-run")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(21));
@@ -56,8 +56,8 @@ fn malformed_inherited_connection_never_starts_another_host() {
 #[test]
 fn explicit_standalone_bypasses_host_lookup() {
     let output = child()
-        .env("QOS_RUNTIME_STANDALONE", "1")
-        .env("QOS_RUNTIME_BINARY", "/must-not-run")
+        .env("TILO_RUNTIME_STANDALONE", "1")
+        .env("TILO_RUNTIME_BINARY", "/must-not-run")
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -72,8 +72,8 @@ fn complete_inherited_connections_take_precedence_over_profile_and_binary() {
     command
         .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
         .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
-        .env("QOS_RUNTIME_PROFILE", "relative-invalid")
-        .env("QOS_RUNTIME_BINARY", "/must-not-run");
+        .env("TILO_RUNTIME_PROFILE", "relative-invalid")
+        .env("TILO_RUNTIME_BINARY", "/must-not-run");
     unsafe {
         command.pre_exec(move || {
             for fd in fds {
@@ -91,20 +91,20 @@ fn complete_inherited_connections_take_precedence_over_profile_and_binary() {
 }
 #[test]
 fn bootstrap_exec_preserves_original_arguments_and_working_directory() {
-    let root = std::env::temp_dir().join(format!("qos-bootstrap-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let host = root.join("host");
     std::fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n").unwrap();
     std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
     let output = child()
         .current_dir(&root)
-        .env("QOS_RUNTIME_BINARY", &host)
+        .env("TILO_RUNTIME_BINARY", &host)
         .output()
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("--run-app\ndev.qos.bootstrap-test\n--\n"),
+        stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
         "{stdout}"
     );
     assert!(
@@ -181,10 +181,10 @@ fn ancestor_owned_descriptors_are_hidden_even_when_bootstrap_is_skipped() {
     let fds = [a.as_raw_fd(), b.as_raw_fd()];
     let mut command = child();
     command
-        .env("QOS_BOOTSTRAP_LOOKUP_ONLY", "1")
+        .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
         .env("TILO_WORKSPACE_ID", "ancestor-workspace")
         .env(
-            "QOS_RUNTIME_CONNECTION_OWNER_PID",
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
             std::process::id().to_string(),
         )
         .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
@@ -204,11 +204,11 @@ fn ancestor_owned_descriptors_are_hidden_even_when_bootstrap_is_skipped() {
 fn standalone_child_ignores_ancestor_metadata_without_mutating_it() {
     let output = child()
         .env(
-            "QOS_RUNTIME_CONNECTION_OWNER_PID",
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
             std::process::id().to_string(),
         )
         .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
-        .env("QOS_RUNTIME_STANDALONE", "1")
+        .env("TILO_RUNTIME_STANDALONE", "1")
         .output()
         .unwrap();
     assert!(
@@ -224,20 +224,20 @@ fn current_and_unknown_transfer_provenance_fail_closed() {
     current
         .args([
             "-c",
-            "export QOS_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
+            "export TILO_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
             "provenance-test",
         ])
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", "bootstrap_child", "--nocapture"])
-        .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
+        .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
         .env("TILO_SVC_COLLAB_FD", "bad")
         .env_remove("TILO_SVC_IDENTITY_FD")
-        .env("QOS_RUNTIME_STANDALONE", "1");
+        .env("TILO_RUNTIME_STANDALONE", "1");
     assert_eq!(current.output().unwrap().status.code(), Some(21));
     for owner in ["unknown", "0"] {
         let output = child()
-            .env("QOS_RUNTIME_CONNECTION_OWNER_PID", owner)
-            .env("QOS_RUNTIME_STANDALONE", "1")
+            .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
+            .env("TILO_RUNTIME_STANDALONE", "1")
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(21));

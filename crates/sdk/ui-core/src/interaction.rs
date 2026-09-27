@@ -307,16 +307,82 @@ impl InteractionEnvironment {
     }
 }
 
-/// Pointer events produced once a direct-touch tap is confirmed.
+/// The navigation a mouse side button asks for: Back and Forward go back and
+/// forward through whatever history the view under them owns, as in every
+/// desktop browser and file manager.
+pub(crate) fn mouse_nav_direction(
+    event: &winit::event::WindowEvent,
+) -> Option<crate::gesture::NavDirection> {
+    use crate::gesture::NavDirection;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+    match event {
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Back,
+            ..
+        } => Some(NavDirection::Back),
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Forward,
+            ..
+        } => Some(NavDirection::Forward),
+        _ => None,
+    }
+}
+
+/// Pointer events synthesised from direct touch, so ordinary widgets work on a
+/// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum TouchPointerEvent {
     Move(winit::dpi::PhysicalPosition<f64>),
-    Press,
-    Release,
+    Press(winit::event::MouseButton),
+    Release(winit::event::MouseButton),
     Scroll {
         delta: winit::dpi::PhysicalPosition<f64>,
         phase: winit::event::TouchPhase,
     },
+    /// Incremental magnification, with `WindowEvent::PinchGesture`'s
+    /// meaning: the content scale is multiplied by `1.0 + delta`.
+    Pinch {
+        delta: f64,
+        phase: winit::event::TouchPhase,
+    },
+}
+
+impl TouchPointerEvent {
+    /// The window event every widget already understands.
+    pub(crate) fn window_event(
+        self,
+        device_id: winit::event::DeviceId,
+    ) -> winit::event::WindowEvent {
+        use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+        match self {
+            Self::Move(position) => WindowEvent::CursorMoved {
+                device_id,
+                position,
+            },
+            Self::Press(button) => WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button,
+            },
+            Self::Release(button) => WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Released,
+                button,
+            },
+            Self::Scroll { delta, phase } => WindowEvent::MouseWheel {
+                device_id,
+                delta: MouseScrollDelta::PixelDelta(delta),
+                phase,
+            },
+            Self::Pinch { delta, phase } => WindowEvent::PinchGesture {
+                device_id,
+                delta,
+                phase,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -324,44 +390,204 @@ struct ActiveTouch {
     id: u64,
     start: winit::dpi::PhysicalPosition<f64>,
     last: winit::dpi::PhysicalPosition<f64>,
+    started_at: crate::time::Instant,
     scrolling: bool,
+    long_pressed: bool,
 }
 
-/// Converts a confirmed single-finger tap into the toolkit's ordinary pointer
-/// contract. Press is deliberately delayed until touch-end: many controls
-/// activate on pointer-down, so emitting it earlier would toggle a checkbox
-/// before a scroll or edge swipe had enough movement to cancel the tap.
-#[derive(Debug, Default)]
+/// Two or more fingers on ordinary content: pinch zooms, a joint drag pans.
+#[derive(Debug, Clone, Copy, Default)]
+struct MultiTouch {
+    pinching: bool,
+    panning: bool,
+    scale: f64,
+}
+
+/// Converts direct touch into the toolkit's ordinary pointer contract.
+///
+/// * One finger: a tap is a left click, a drag scrolls, and a still 500 ms
+///   hold is a secondary click (the context menu). Press is deliberately
+///   delayed until touch-end: many controls activate on pointer-down, so
+///   emitting it earlier would toggle a checkbox before a scroll or edge
+///   swipe had enough movement to cancel the tap.
+/// * Two fingers: [`TouchGestureArena`](crate::gesture::TouchGestureArena)
+///   arbitrates a pinch (`PinchGesture`, anchored at the fingers' centre)
+///   from a pan (pixel scroll), so every pinch-aware view zooms on a
+///   touchscreen exactly as on a touchpad.
+/// * A contact that begins on a widget claiming raw touch
+///   ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch))
+///   produces no pointer events at all and never cancels, or is cancelled by,
+///   another finger; that widget handles its `WindowEvent::Touch` stream
+///   itself.
+#[derive(Default)]
 pub(crate) struct TouchPointerEmulator {
     active: Option<ActiveTouch>,
+    multi: Option<MultiTouch>,
+    arena: crate::gesture::TouchGestureArena,
+    raw: std::collections::HashSet<u64>,
+    device_id: Option<winit::event::DeviceId>,
 }
 
 impl TouchPointerEmulator {
     const TAP_SLOP: f64 = 16.0;
+    pub(crate) const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
     const CANCEL_POINT: winit::dpi::PhysicalPosition<f64> =
         winit::dpi::PhysicalPosition::new(-1.0, -1.0);
 
-    pub(crate) fn events(&mut self, touch: &winit::event::Touch) -> Vec<TouchPointerEvent> {
+    /// Translate one contact update. `claims_raw` is asked only when a
+    /// contact begins, with its physical position.
+    pub(crate) fn events(
+        &mut self,
+        touch: &winit::event::Touch,
+        claims_raw: impl FnOnce(winit::dpi::PhysicalPosition<f64>) -> bool,
+    ) -> Vec<TouchPointerEvent> {
+        use crate::gesture::GesturePhase;
         use winit::event::TouchPhase;
-        match touch.phase {
-            TouchPhase::Started => {
-                if self.active.is_some() {
-                    self.active = None;
-                    return Vec::new();
-                }
-                self.active = Some(ActiveTouch {
-                    id: touch.id,
-                    start: touch.location,
-                    last: touch.location,
-                    scrolling: false,
-                });
-                Vec::new()
+        self.device_id = Some(touch.device_id);
+        if touch.phase == TouchPhase::Started && claims_raw(touch.location) {
+            self.raw.insert(touch.id);
+            return Vec::new();
+        }
+        if self.raw.contains(&touch.id) {
+            if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.raw.remove(&touch.id);
             }
+            return Vec::new();
+        }
+        let point = vello::kurbo::Point::new(touch.location.x, touch.location.y);
+        let phase = match touch.phase {
+            TouchPhase::Started => GesturePhase::Begin,
+            TouchPhase::Moved => GesturePhase::Update,
+            TouchPhase::Ended => GesturePhase::End,
+            TouchPhase::Cancelled => GesturePhase::Cancel,
+        };
+        let gestures = self.arena.on_touch(touch.id, point, phase);
+        if touch.phase == TouchPhase::Started {
+            return self.begin(touch);
+        }
+        if let Some(multi) = self.multi {
+            return self.multi_touch(multi, touch.phase, &gestures);
+        }
+        self.single_touch(touch)
+    }
+
+    fn begin(&mut self, touch: &winit::event::Touch) -> Vec<TouchPointerEvent> {
+        if self.multi.is_some() {
+            return Vec::new();
+        }
+        let Some(first) = self.active.take() else {
+            self.active = Some(ActiveTouch {
+                id: touch.id,
+                start: touch.location,
+                last: touch.location,
+                started_at: crate::time::now(),
+                scrolling: false,
+                long_pressed: false,
+            });
+            return Vec::new();
+        };
+        // A second finger turns the contact into a two-finger gesture; the
+        // first finger's pending tap, hold or scroll is withdrawn.
+        self.multi = Some(MultiTouch {
+            scale: 1.0,
+            ..MultiTouch::default()
+        });
+        if first.long_pressed {
+            Vec::new()
+        } else if first.scrolling {
+            vec![TouchPointerEvent::Scroll {
+                delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+                phase: winit::event::TouchPhase::Cancelled,
+            }]
+        } else {
+            vec![TouchPointerEvent::Move(Self::CANCEL_POINT)]
+        }
+    }
+
+    fn multi_touch(
+        &mut self,
+        mut multi: MultiTouch,
+        phase: winit::event::TouchPhase,
+        gestures: &[crate::gesture::TouchGestureEvent],
+    ) -> Vec<TouchPointerEvent> {
+        use crate::gesture::TouchGestureEvent;
+        use winit::event::TouchPhase;
+        let mut out = Vec::new();
+        match phase {
             TouchPhase::Moved => {
-                let Some(active) = self.active else {
-                    return Vec::new();
-                };
-                if active.id != touch.id {
+                for gesture in gestures {
+                    match *gesture {
+                        TouchGestureEvent::Pinch { center, scale, .. } if scale > 0.0 => {
+                            out.push(TouchPointerEvent::Move(winit::dpi::PhysicalPosition::new(
+                                center.x, center.y,
+                            )));
+                            out.push(TouchPointerEvent::Pinch {
+                                delta: scale / multi.scale - 1.0,
+                                phase: if multi.pinching {
+                                    TouchPhase::Moved
+                                } else {
+                                    TouchPhase::Started
+                                },
+                            });
+                            multi.pinching = true;
+                            multi.scale = scale;
+                        }
+                        TouchGestureEvent::Pan { fingers, delta }
+                            if fingers >= 2 && !multi.pinching =>
+                        {
+                            if let Some(center) = self.arena.center() {
+                                out.push(TouchPointerEvent::Move(
+                                    winit::dpi::PhysicalPosition::new(center.x, center.y),
+                                ));
+                            }
+                            out.push(TouchPointerEvent::Scroll {
+                                delta: winit::dpi::PhysicalPosition::new(delta.0, delta.1),
+                                phase: TouchPhase::Moved,
+                            });
+                            multi.panning = true;
+                        }
+                        _ => {}
+                    }
+                }
+                self.multi = Some(multi);
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                // The first lift ends the two-finger gesture; the remaining
+                // finger stays inert until every contact is up.
+                if multi.pinching {
+                    out.push(TouchPointerEvent::Pinch { delta: 0.0, phase });
+                } else if multi.panning {
+                    out.push(TouchPointerEvent::Scroll {
+                        delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+                        phase,
+                    });
+                }
+                if multi.pinching || multi.panning {
+                    out.push(TouchPointerEvent::Move(Self::CANCEL_POINT));
+                }
+                self.multi = (self.arena.contact_count() > 0).then_some(MultiTouch {
+                    pinching: false,
+                    panning: false,
+                    scale: 1.0,
+                });
+            }
+            TouchPhase::Started => {}
+        }
+        out
+    }
+
+    fn single_touch(&mut self, touch: &winit::event::Touch) -> Vec<TouchPointerEvent> {
+        use winit::event::TouchPhase;
+        let Some(active) = self.active else {
+            return Vec::new();
+        };
+        if active.id != touch.id {
+            return Vec::new();
+        }
+        match touch.phase {
+            TouchPhase::Started => Vec::new(),
+            TouchPhase::Moved => {
+                if active.long_pressed {
                     return Vec::new();
                 }
                 let total_x = touch.location.x - active.start.x;
@@ -388,36 +614,29 @@ impl TouchPointerEmulator {
                 }
             }
             TouchPhase::Ended => {
-                let Some(active) = self.active else {
-                    return Vec::new();
-                };
-                if active.id != touch.id {
-                    return Vec::new();
-                }
                 self.active = None;
-                if active.scrolling {
+                if active.long_pressed {
+                    Vec::new()
+                } else if active.scrolling {
                     vec![TouchPointerEvent::Scroll {
                         delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
                         phase: TouchPhase::Ended,
                     }]
                 } else {
+                    use winit::event::MouseButton;
                     vec![
                         TouchPointerEvent::Move(touch.location),
-                        TouchPointerEvent::Press,
-                        TouchPointerEvent::Release,
+                        TouchPointerEvent::Press(MouseButton::Left),
+                        TouchPointerEvent::Release(MouseButton::Left),
                         TouchPointerEvent::Move(Self::CANCEL_POINT),
                     ]
                 }
             }
             TouchPhase::Cancelled => {
-                let Some(active) = self.active else {
-                    return Vec::new();
-                };
-                if active.id != touch.id {
-                    return Vec::new();
-                }
                 self.active = None;
-                if active.scrolling {
+                if active.long_pressed {
+                    Vec::new()
+                } else if active.scrolling {
                     vec![TouchPointerEvent::Scroll {
                         delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
                         phase: TouchPhase::Cancelled,
@@ -427,6 +646,37 @@ impl TouchPointerEmulator {
                 }
             }
         }
+    }
+
+    /// When a still single-finger hold becomes a long press, if one is armed.
+    pub(crate) fn long_press_deadline(&self) -> Option<crate::time::Instant> {
+        self.active
+            .filter(|active| !active.scrolling && !active.long_pressed)
+            .map(|active| active.started_at + Self::LONG_PRESS)
+    }
+
+    /// Fire a long press whose deadline has passed: a secondary click where
+    /// the finger rests. The finger's eventual lift then does nothing.
+    pub(crate) fn poll(
+        &mut self,
+        now: crate::time::Instant,
+    ) -> Option<(winit::event::DeviceId, Vec<TouchPointerEvent>)> {
+        use winit::event::MouseButton;
+        let deadline = self.long_press_deadline()?;
+        if now < deadline {
+            return None;
+        }
+        let active = self.active.as_mut()?;
+        active.long_pressed = true;
+        let at = active.last;
+        Some((
+            self.device_id?,
+            vec![
+                TouchPointerEvent::Move(at),
+                TouchPointerEvent::Press(MouseButton::Right),
+                TouchPointerEvent::Release(MouseButton::Right),
+            ],
+        ))
     }
 }
 
@@ -523,62 +773,185 @@ mod tests {
         }
     }
 
+    fn feed(
+        emulator: &mut TouchPointerEmulator,
+        phase: winit::event::TouchPhase,
+        id: u64,
+        x: f64,
+        y: f64,
+    ) -> Vec<TouchPointerEvent> {
+        emulator.events(&touch(phase, id, x, y), |_| false)
+    }
+
     #[test]
     fn a_tap_maps_to_press_and_release_only_after_touch_end() {
         use TouchPointerEvent::{Move, Press, Release};
+        use winit::event::{MouseButton, TouchPhase};
         let mut emulator = TouchPointerEmulator::default();
-        assert!(
-            emulator
-                .events(&touch(winit::event::TouchPhase::Started, 7, 10.0, 20.0))
-                .is_empty()
-        );
+        assert!(feed(&mut emulator, TouchPhase::Started, 7, 10.0, 20.0).is_empty());
         assert_eq!(
-            emulator.events(&touch(winit::event::TouchPhase::Ended, 7, 11.0, 20.0)),
+            feed(&mut emulator, TouchPhase::Ended, 7, 11.0, 20.0),
             vec![
                 Move((11.0, 20.0).into()),
-                Press,
-                Release,
+                Press(MouseButton::Left),
+                Release(MouseButton::Left),
                 Move((-1.0, -1.0).into()),
             ]
         );
     }
 
     #[test]
-    fn movement_or_a_second_finger_cancels_without_releasing_inside() {
+    fn movement_scrolls_and_lift_ends_the_scroll() {
         use TouchPointerEvent::{Move, Scroll};
+        use winit::event::TouchPhase;
         let mut emulator = TouchPointerEmulator::default();
-        assert!(
-            emulator
-                .events(&touch(winit::event::TouchPhase::Started, 1, 40.0, 40.0))
-                .is_empty()
-        );
+        assert!(feed(&mut emulator, TouchPhase::Started, 1, 40.0, 40.0).is_empty());
         assert_eq!(
-            emulator.events(&touch(winit::event::TouchPhase::Moved, 1, 80.0, 40.0)),
+            feed(&mut emulator, TouchPhase::Moved, 1, 80.0, 40.0),
             vec![
                 Move((40.0, 40.0).into()),
                 Scroll {
                     delta: (40.0, 0.0).into(),
-                    phase: winit::event::TouchPhase::Moved,
+                    phase: TouchPhase::Moved,
                 }
             ]
         );
         assert_eq!(
-            emulator.events(&touch(winit::event::TouchPhase::Ended, 1, 80.0, 40.0)),
+            feed(&mut emulator, TouchPhase::Ended, 1, 80.0, 40.0),
             vec![Scroll {
                 delta: (0.0, 0.0).into(),
-                phase: winit::event::TouchPhase::Ended,
+                phase: TouchPhase::Ended,
             }]
         );
+        assert_eq!(emulator.long_press_deadline(), None);
+    }
 
-        assert!(
-            emulator
-                .events(&touch(winit::event::TouchPhase::Started, 2, 5.0, 5.0))
-                .is_empty()
+    #[test]
+    fn a_second_finger_withdraws_the_first_fingers_tap() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        assert!(feed(&mut emulator, TouchPhase::Started, 2, 5.0, 5.0).is_empty());
+        assert_eq!(
+            feed(&mut emulator, TouchPhase::Started, 3, 80.0, 5.0),
+            vec![TouchPointerEvent::Move((-1.0, -1.0).into())]
         );
+        assert!(feed(&mut emulator, TouchPhase::Ended, 2, 5.0, 5.0).is_empty());
         assert!(
-            emulator
-                .events(&touch(winit::event::TouchPhase::Started, 3, 8.0, 8.0))
-                .is_empty()
+            feed(&mut emulator, TouchPhase::Ended, 3, 80.0, 5.0).is_empty(),
+            "no finger of a withdrawn two-finger contact clicks"
+        );
+    }
+
+    #[test]
+    fn spreading_two_fingers_pinches_about_their_centre() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        feed(&mut emulator, TouchPhase::Started, 1, 100.0, 100.0);
+        feed(&mut emulator, TouchPhase::Started, 2, 200.0, 100.0);
+        let mut scale = 1.0;
+        let mut phases = Vec::new();
+        for x in [220.0, 240.0, 260.0] {
+            for event in feed(&mut emulator, TouchPhase::Moved, 2, x, 100.0) {
+                if let TouchPointerEvent::Pinch { delta, phase } = event {
+                    scale *= 1.0 + delta;
+                    phases.push(phase);
+                }
+            }
+        }
+        assert!((scale - 1.6).abs() < 1e-9, "{scale}");
+        assert_eq!(phases.first(), Some(&TouchPhase::Started));
+        let end = feed(&mut emulator, TouchPhase::Ended, 2, 260.0, 100.0);
+        assert!(end.contains(&TouchPointerEvent::Pinch {
+            delta: 0.0,
+            phase: TouchPhase::Ended,
+        }));
+        assert!(feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 100.0).is_empty());
+    }
+
+    #[test]
+    fn two_fingers_moving_together_scroll() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        feed(&mut emulator, TouchPhase::Started, 1, 100.0, 300.0);
+        feed(&mut emulator, TouchPhase::Started, 2, 200.0, 300.0);
+        feed(&mut emulator, TouchPhase::Moved, 1, 100.0, 260.0);
+        let events = feed(&mut emulator, TouchPhase::Moved, 2, 200.0, 260.0);
+        assert!(events.contains(&TouchPointerEvent::Scroll {
+            delta: (0.0, -20.0).into(),
+            phase: TouchPhase::Moved,
+        }));
+        assert!(
+            feed(&mut emulator, TouchPhase::Ended, 1, 100.0, 260.0).contains(
+                &TouchPointerEvent::Scroll {
+                    delta: (0.0, 0.0).into(),
+                    phase: TouchPhase::Ended,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn a_still_hold_becomes_a_secondary_click_and_its_lift_is_inert() {
+        use TouchPointerEvent::{Move, Press, Release};
+        use winit::event::{MouseButton, TouchPhase};
+        let mut emulator = TouchPointerEmulator::default();
+        feed(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
+        feed(&mut emulator, TouchPhase::Moved, 4, 54.0, 60.0);
+        let deadline = emulator.long_press_deadline().expect("armed");
+        let early = deadline
+            .checked_sub(crate::time::Duration::from_millis(1))
+            .expect("a deadline in the future");
+        assert!(emulator.poll(early).is_none(), "not before the deadline");
+        let (_, events) = emulator
+            .poll(deadline)
+            .expect("the hold fires at its deadline");
+        assert_eq!(
+            events,
+            vec![
+                Move((50.0, 60.0).into()),
+                Press(MouseButton::Right),
+                Release(MouseButton::Right),
+            ]
+        );
+        assert!(emulator.poll(deadline).is_none(), "fires once");
+        assert!(feed(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0).is_empty());
+        assert!(feed(&mut emulator, TouchPhase::Ended, 4, 90.0, 60.0).is_empty());
+    }
+
+    #[test]
+    fn moving_past_the_slop_disarms_the_hold() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        feed(&mut emulator, TouchPhase::Started, 5, 50.0, 60.0);
+        feed(&mut emulator, TouchPhase::Moved, 5, 50.0, 100.0);
+        assert_eq!(emulator.long_press_deadline(), None);
+    }
+
+    #[test]
+    fn raw_touch_contacts_overlap_without_cancelling_each_other() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        for (phase, id, x) in [
+            (TouchPhase::Started, 1, 10.0),
+            (TouchPhase::Started, 2, 60.0),
+            (TouchPhase::Ended, 1, 10.0),
+            (TouchPhase::Ended, 2, 60.0),
+        ] {
+            assert!(
+                emulator
+                    .events(&touch(phase, id, x, 10.0), |_| true)
+                    .is_empty()
+            );
+        }
+        assert!(emulator.raw.is_empty());
+        // A raw contact does not turn an ordinary finger into a two-finger
+        // gesture: the ordinary tap still clicks.
+        emulator.events(&touch(TouchPhase::Started, 3, 10.0, 10.0), |_| true);
+        assert!(feed(&mut emulator, TouchPhase::Started, 4, 300.0, 300.0).is_empty());
+        assert_eq!(
+            feed(&mut emulator, TouchPhase::Ended, 4, 300.0, 300.0).len(),
+            4,
+            "move, press, release, leave"
         );
     }
 }

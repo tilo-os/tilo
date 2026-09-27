@@ -48,6 +48,144 @@ pub enum PermissionProfileOperation {
         subject: String,
         expires_unix: u64,
     },
+    /// Let application `app` use `target_app`'s `action` here.
+    GrantAppAction {
+        app: String,
+        target_app: String,
+        action: String,
+        /// `session` or `always`.
+        lifetime: String,
+    },
+    /// Take back every grant letting `app` use `target_app`'s `action`.
+    RevokeAppAction {
+        app: String,
+        target_app: String,
+        action: String,
+    },
+}
+
+/// Governance action letting one application use another's action.
+pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
+/// Governance action taking such a grant back.
+pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
+
+/// Whether `action` is one of the workspace's governance actions, which
+/// the workspace itself runs rather than an application.
+#[must_use]
+pub fn is_governance_action(action: &str) -> bool {
+    matches!(
+        action,
+        crate::shell::state::PROFILE_SAVE_ACTION_ID
+            | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
+            | APP_ACTION_GRANT_ACTION_ID
+            | APP_ACTION_REVOKE_ACTION_ID
+    )
+}
+
+/// The verb a typed app-action grant carries: enough for any action that
+/// asks at most to edit. An action that asks to govern is never granted to
+/// an application this way.
+const APP_ACTION_GRANT_VERB: Verb = Verb::Write;
+
+/// Grant or revoke an application another application's action in
+/// `workspace_id`, as `actor`, mirrored into the room document and to
+/// disk. `actor` must be allowed the governance action itself, exactly as
+/// for permission roles.
+///
+/// # Errors
+///
+/// A refusal worded for the person: no authority, a room governed
+/// elsewhere, or arguments that name nothing grantable.
+pub(crate) fn apply_app_action_operation(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    workspace_id: WorkspaceId,
+    actor: &crate::shell::state::Actor,
+    operation: &PermissionProfileOperation,
+) -> Result<(), String> {
+    let (action_id, app, target_app, action) = match operation {
+        PermissionProfileOperation::GrantAppAction {
+            app,
+            target_app,
+            action,
+            ..
+        } => (APP_ACTION_GRANT_ACTION_ID, app, target_app, action),
+        PermissionProfileOperation::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        } => (APP_ACTION_REVOKE_ACTION_ID, app, target_app, action),
+        _ => return Err("not an app action grant".into()),
+    };
+    let (app, target_app, action) = (app.trim(), target_app.trim(), action.trim());
+    if app.is_empty() || target_app.is_empty() || action.is_empty() {
+        return Err("name the application, the other application and its action".into());
+    }
+    let room = tree
+        .room_of(workspace_id)
+        .ok_or_else(|| "no such workspace".to_string())?;
+    if !room.is_nil() && !tree.governs_room(room) {
+        return Err("this device is not the workspace governance authority".into());
+    }
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| "no such workspace".to_string())?;
+    if !workspace.allows(
+        actor,
+        &crate::shell::state::ResourceRef::Action {
+            app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+            action: action_id.into(),
+        },
+        Verb::Admin,
+    ) {
+        return Err("the caller is not allowed to change what apps may use".into());
+    }
+    let scope = Scope::Action {
+        app: target_app.to_string(),
+        action: action.to_string(),
+    };
+    let subject = Subject::app(app);
+    if let PermissionProfileOperation::GrantAppAction { lifetime, .. } = operation {
+        if target_app == crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID {
+            return Err("governing the workspace is assigned with a permission role".into());
+        }
+        let expiry = match lifetime.trim().to_ascii_lowercase().as_str() {
+            "session" => Expiry::EndOfSession,
+            "always" => Expiry::Never,
+            _ => return Err("lifetime must be session or always".into()),
+        };
+        let grantor = actor
+            .principals
+            .iter()
+            .find(|principal| !matches!(principal, Principal::Room(_)))
+            .cloned()
+            .ok_or_else(|| "the caller carries no identity to grant as".to_string())?;
+        let id = workspace.grant_capability(
+            CapOverride::grant(subject, scope, APP_ACTION_GRANT_VERB)
+                .expiring(expiry)
+                .granted_by(grantor),
+        );
+        let stored = workspace
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+            .cloned();
+        if let Some(stored) = stored {
+            tree.doc_insert_capability(workspace_id, &stored);
+        }
+    } else {
+        let removed = workspace.revoke_matching(|capability| {
+            capability.effect == Effect::Grant
+                && capability.subject == subject
+                && capability.scope == scope
+        });
+        for id in removed {
+            tree.doc_revoke_capability(workspace_id, &id);
+        }
+    }
+    Ok(())
 }
 
 fn encoded_profile_operation(
@@ -213,6 +351,70 @@ pub(crate) fn permission_profile_resource_with_access(
             },
         )
         .with_description("Assign a saved least-privilege role to a person, application, or agent.")
+        .with_contract(contract.clone()),
+    );
+
+    let app_action_params = || {
+        vec![
+            ActionParam::required_owned(
+                "app",
+                ParamType::Text,
+                "Package id of the application that would use the action",
+            ),
+            ActionParam::required_owned(
+                "target_app",
+                ParamType::Text,
+                "Package id of the application that publishes the action",
+            ),
+            ActionParam::required_owned("action", ParamType::Text, "The action's id"),
+        ]
+    };
+    let mut grant_params = app_action_params();
+    grant_params.push(
+        ActionParam::required_owned("lifetime", ParamType::Text, "How long the grant lasts")
+            .with_choices(["session", "always"]),
+    );
+    root.actions.push(
+        tilo_actions::ActionSpec::typed_operation(
+            APP_ACTION_GRANT_ACTION_ID,
+            "Let an app use another app's action",
+            "App and action",
+            OperationKind::Effect,
+            PERMISSION_PROFILE_ACTION_TYPE,
+            grant_params,
+            |arguments| {
+                encoded_profile_operation(&PermissionProfileOperation::GrantAppAction {
+                    app: arguments.text("app").unwrap_or_default().to_string(),
+                    target_app: arguments.text("target_app").unwrap_or_default().to_string(),
+                    action: arguments.text("action").unwrap_or_default().to_string(),
+                    lifetime: arguments.text("lifetime").unwrap_or_default().to_string(),
+                })
+            },
+        )
+        .with_description(
+            "Grant one application the use of one action another application publishes, in this workspace.",
+        )
+        .with_contract(contract.clone()),
+    );
+    root.actions.push(
+        tilo_actions::ActionSpec::typed_operation(
+            APP_ACTION_REVOKE_ACTION_ID,
+            "Stop an app using another app's action",
+            "App and action",
+            OperationKind::Effect,
+            PERMISSION_PROFILE_ACTION_TYPE,
+            app_action_params(),
+            |arguments| {
+                encoded_profile_operation(&PermissionProfileOperation::RevokeAppAction {
+                    app: arguments.text("app").unwrap_or_default().to_string(),
+                    target_app: arguments.text("target_app").unwrap_or_default().to_string(),
+                    action: arguments.text("action").unwrap_or_default().to_string(),
+                })
+            },
+        )
+        .with_description(
+            "Take back every grant letting one application use another application's action in this workspace.",
+        )
         .with_contract(contract.clone()),
     );
 
@@ -1408,7 +1610,9 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::Device(device) => device_label(device).to_string(),
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
-        Scope::Action { app, action } => format!("“{action}” in {app}"),
+        Scope::Action { app, action } => {
+            format!("“{action}” in {}", tilo_desktop_model::apps::app_label(app))
+        }
         Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(*kind)),
         Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
     }
@@ -1497,6 +1701,9 @@ pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubjectKind {
     App,
+    /// An app granted another app's action: its own section, so what apps
+    /// may do to each other is never lost among device and file access.
+    AppAction,
     Member,
     Agent,
     Role,
@@ -1509,6 +1716,7 @@ impl SubjectKind {
     pub fn section_label(self) -> &'static str {
         match self {
             SubjectKind::App => "Apps",
+            SubjectKind::AppAction => "App actions",
             SubjectKind::Member => "People",
             SubjectKind::Agent => "Agents",
             SubjectKind::Role => "Roles",
@@ -1527,7 +1735,7 @@ pub struct GrantSubject {
 impl GrantSubject {
     pub fn to_subject(&self) -> Option<Subject> {
         match self.kind {
-            SubjectKind::App => Some(Subject::app(self.id.clone())),
+            SubjectKind::App | SubjectKind::AppAction => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
             SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
             // A role-wide grant is a policy decision, not a per-workspace click.
@@ -1538,7 +1746,9 @@ impl GrantSubject {
     pub fn display(&self) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
-            SubjectKind::App => tilo_desktop_model::apps::app_label(&self.id).to_string(),
+            SubjectKind::App | SubjectKind::AppAction => {
+                tilo_desktop_model::apps::app_label(&self.id).to_string()
+            }
             _ => self.id.clone(),
         }
     }
@@ -1975,6 +2185,9 @@ pub struct AgentRow {
     /// A human-readable summary of the *scoped* authority, not a role.
     /// Agents never inherit their admission capability as ambient access.
     pub preset: AgentAuthorityPreset,
+    /// Set when the agent is a service member: a cloud or relay identity
+    /// admitted to the room's encrypted channels with a stated purpose.
+    pub service: Option<crate::shell::service_members::ServiceMember>,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2197,11 +2410,14 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             })
             .count();
         let preset = agent_authority_preset(ws, &agent);
+        let service =
+            crate::shell::service_members::service_purpose(ws, &agent, tilo_clock::unix_now());
         rows.push(AgentRow {
             agent,
             role,
             grant_count,
             preset,
+            service,
             row_rect,
             role_rect,
             review_rect,
@@ -2756,6 +2972,29 @@ pub fn draw_agents_pane(
     }
 }
 
+/// One line on what a service member may do in the room and for how long.
+fn service_member_detail(service: &crate::shell::service_members::ServiceMember) -> String {
+    let scope = match service.verb {
+        Verb::Admin => "administers",
+        Verb::Write | Verb::Invite => "reads and edits",
+        Verb::Comment => "reads and comments",
+        Verb::Read => "reads",
+    };
+    let device = hex::encode(service.device.as_bytes().get(..4).unwrap_or_default());
+    let until = service.expires_at.map_or_else(
+        || "until removed".to_string(),
+        |deadline| {
+            let remaining = deadline.saturating_sub(tilo_clock::unix_now());
+            match remaining {
+                0..60 => "access ends within a minute".to_string(),
+                60..3_600 => format!("access ends in {} min", remaining / 60),
+                _ => format!("access ends in {} h", remaining / 3_600),
+            }
+        },
+    );
+    format!("Service member · {scope} end-to-end encrypted content · {until} · device {device}")
+}
+
 fn draw_agent_row(
     scene: &mut Scene,
     transform: Affine,
@@ -2774,13 +3013,20 @@ fn draw_agent_row(
         row.row_rect.x0 + 12.0 + avatar_size,
         row.row_rect.center().y + avatar_size / 2.0,
     );
-    let name = short_id(&row.agent);
+    let name = match &row.service {
+        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
+        _ => short_id(&row.agent),
+    };
     draw_avatar(scene, transform, avatar, &name, true, text_renderer, theme);
     let badge = draw_pill(
         scene,
         transform,
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        "AGENT",
+        if row.service.is_some() {
+            "SERVICE"
+        } else {
+            "AGENT"
+        },
         Tint {
             color: colors.accent[5],
             alpha: 1.0,
@@ -2801,16 +3047,20 @@ fn draw_agent_row(
         None,
     );
     let admission = agent_admission_label(row.role);
-    let detail = match row.grant_count {
-        0 => format!("{admission} · no scoped permissions — review required"),
-        1 => format!(
-            "{admission} · {} profile · 1 scoped permission",
-            row.preset.label()
-        ),
-        n => format!(
-            "{admission} · {} profile · {n} scoped permissions",
-            row.preset.label()
-        ),
+    let detail = if let Some(service) = &row.service {
+        service_member_detail(service)
+    } else {
+        match row.grant_count {
+            0 => format!("{admission} · no scoped permissions — review required"),
+            1 => format!(
+                "{admission} · {} profile · 1 scoped permission",
+                row.preset.label()
+            ),
+            n => format!(
+                "{admission} · {} profile · {n} scoped permissions",
+                row.preset.label()
+            ),
+        }
     };
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);
@@ -3258,6 +3508,16 @@ pub struct PermissionsPaneLayout {
     pub overflow: usize,
 }
 
+/// The section a capability is listed in: its subject's, except that an
+/// app granted another app's action is listed under App actions.
+fn classify_capability(cap: &CapOverride) -> GrantSubject {
+    let mut subject = classify_subject(&cap.subject);
+    if subject.kind == SubjectKind::App && matches!(cap.scope, Scope::Action { .. }) {
+        subject.kind = SubjectKind::AppAction;
+    }
+    subject
+}
+
 fn classify_subject(subject: &Subject) -> GrantSubject {
     match subject {
         Subject::Principal(Principal::App(id)) => GrantSubject {
@@ -3306,7 +3566,7 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
                     || matches!(cap.subject, Subject::Principal(Principal::Agent(_))));
             cap.effect == Effect::Grant && !membership_has_own_roster
         })
-        .map(|cap| (classify_subject(&cap.subject), cap))
+        .map(|cap| (classify_capability(cap), cap))
         .collect();
     out.sort_by(|a, b| {
         a.0.kind
@@ -4474,6 +4734,103 @@ mod members_pane_tests {
 
         let viewer = "viewer".to_string();
         assert!(permission_profile_resource(&ws, &viewer).actions.is_empty());
+    }
+
+    #[test]
+    fn app_action_grants_are_typed_admin_actions_that_only_governors_apply() {
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let mut ws = Workspace::new(WorkspaceId(93), "Research");
+        let owner = "owner".to_string();
+        ws.set_owner(owner.clone());
+        let room = ws.room.to_string();
+        let resource = permission_profile_resource(&ws, &owner);
+        for id in [APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID] {
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .expect("offered to an administrator");
+            assert_eq!(
+                action.contract.permission,
+                tilo_actions::PermissionRequirement::Admin
+            );
+            assert_eq!(
+                action.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert!(is_governance_action(id));
+        }
+        let owner_actor = ws.actor_for_person(&owner);
+        let stranger = ws.actor_for_person(&"stranger".to_string());
+        tree.desktop.workspaces.push(ws);
+        let grant = |lifetime: &str, target_app: &str| PermissionProfileOperation::GrantAppAction {
+            app: "so.tilo.shortcuts".into(),
+            target_app: target_app.into(),
+            action: "freeform".into(),
+            lifetime: lifetime.into(),
+        };
+        let id = WorkspaceId(93);
+
+        assert!(
+            apply_app_action_operation(&mut tree, id, &stranger, &grant("always", "so.tilo.agent"))
+                .is_err(),
+            "someone who does not govern the workspace grants nothing"
+        );
+        assert!(
+            apply_app_action_operation(
+                &mut tree,
+                id,
+                &owner_actor,
+                &grant("always", crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID),
+            )
+            .is_err(),
+            "governing the workspace is not an app action to grant"
+        );
+        assert!(
+            apply_app_action_operation(
+                &mut tree,
+                id,
+                &owner_actor,
+                &grant("once", "so.tilo.agent")
+            )
+            .is_err(),
+            "a typed grant lasts a session or until revoked"
+        );
+        apply_app_action_operation(
+            &mut tree,
+            id,
+            &owner_actor,
+            &grant("session", "so.tilo.agent"),
+        )
+        .expect("the owner grants");
+        let as_app = crate::shell::state::Actor::app("so.tilo.shortcuts").in_room(room);
+        let freeform = crate::shell::state::ResourceRef::Action {
+            app: "so.tilo.agent".into(),
+            action: "freeform".into(),
+        };
+        let ws = &tree.desktop.workspaces[0];
+        assert!(ws.allows(&as_app, &freeform, Verb::Write));
+        assert!(!ws.allows(&as_app, &freeform, Verb::Admin));
+        let granted = ws
+            .capabilities
+            .iter()
+            .find(|capability| matches!(capability.scope, Scope::Action { .. }))
+            .expect("recorded");
+        assert_eq!(granted.expiry, Expiry::EndOfSession);
+        assert_eq!(granted.granted_by, Some(Principal::Person(owner)));
+
+        apply_app_action_operation(
+            &mut tree,
+            id,
+            &owner_actor,
+            &PermissionProfileOperation::RevokeAppAction {
+                app: "so.tilo.shortcuts".into(),
+                target_app: "so.tilo.agent".into(),
+                action: "freeform".into(),
+            },
+        )
+        .expect("the owner revokes");
+        assert!(!tree.desktop.workspaces[0].allows(&as_app, &freeform, Verb::Read));
     }
 
     #[test]

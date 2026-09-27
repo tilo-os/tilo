@@ -13,12 +13,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
+use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace};
+use ui::widget::{Button, ButtonFace, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
 
 use crate::app::{ChatApp, Hit};
-use crate::emoji;
 use crate::geometry::line_top;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::{
@@ -1444,41 +1444,45 @@ impl ChatApp {
     }
 
     // -------------------------------------------------------- emoji picker
+    /// The picker popover: a search field, a tab per Unicode group, and a
+    /// scrolling grid showing either the search results or recently used
+    /// emoji followed by the selected group.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear layout-then-paint pass: panel, search, tabs, clipped grid"
+    )]
     pub(crate) fn draw_emoji_picker(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
+        let catalogue = emoji::Catalogue::english();
         // full-window dismiss scrim (lowest priority)
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 
-        let w = 320.0;
-        let cols = 7usize;
+        let w = 336.0;
+        let cols = 8usize;
         let cell = (w - 24.0) / cols as f64;
-        // height: quick row + categories
-        let mut rows_total = 1; // quick row
-        for cat in emoji::CATEGORIES {
-            rows_total += 1 + cat.emoji.len().div_ceil(cols); // label + grid rows
-        }
-        let h = 56.0 + rows_total as f64 * cell + 12.0;
-        let mut x0 = self.emoji_anchor.x;
-        let mut y0 = self.emoji_anchor.y;
-        x0 = x0.clamp(self.rect.x0 + 8.0, self.rect.x1 - w - 8.0);
-        y0 = y0.clamp(
+        let grid_rows = 7.0;
+        let h = 36.0 + 34.0 + 8.0 + 32.0 + 8.0 + grid_rows * cell + 8.0;
+        let x0 = self.emoji_anchor.x.clamp(
+            self.rect.x0 + 8.0,
+            (self.rect.x1 - w - 8.0).max(self.rect.x0 + 8.0),
+        );
+        let y0 = self.emoji_anchor.y.clamp(
             self.rect.y0 + 8.0,
             (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
         // The shadow is the panel's own shape, from the elevation ladder (HIG
-        // §9.3); the solid 5 px silhouette it replaces was a grey ring on the
-        // light preset.
+        // §9.3); a floating Panel carries the derived border, crisp on the
+        // outermost pixel row (HIG §9.5).
         ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
-        // A floating Panel: the derived panel border, crisp on the outermost
-        // pixel row (HIG §9.5).
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1488,11 +1492,11 @@ impl ChatApp {
             &ui::surface::edge_outline(panel, 14.0),
         );
 
-        let title = crate::i18n::t(if self.emoji_target.is_some() {
-            "chat-emoji-add-reaction"
+        let title = if self.emoji_target.is_some() {
+            crate::i18n::t("chat-emoji-add-reaction")
         } else {
-            "chat-emoji-title"
-        });
+            crate::i18n::t("chat-emoji-title")
+        };
         label(
             scene,
             tr,
@@ -1504,56 +1508,124 @@ impl ChatApp {
             panel.y0 + 12.0,
         );
 
-        let mut y = panel.y0 + 36.0;
-        // quick row
-        label(
-            scene,
-            tr,
-            tf,
-            &crate::i18n::t("chat-emoji-frequent"),
-            10.5,
-            c.text_dim,
-            panel.x0 + 14.0,
-            y,
-        );
-        y += 16.0;
-        Self::emoji_grid(
-            PaintContext::new(scene, tf, tr, theme),
-            &emoji::QUICK,
+        // Search: the shared field, placed by hand like the composers.
+        let search = Rect::new(
             panel.x0 + 12.0,
-            &mut y,
-            cols,
-            cell,
-            hits,
+            panel.y0 + 36.0,
+            panel.x1 - 12.0,
+            panel.y0 + 70.0,
         );
-        for cat in emoji::CATEGORIES {
-            label(
-                scene,
-                tr,
-                tf,
-                cat.name,
-                10.5,
-                c.text_dim,
-                panel.x0 + 14.0,
-                y,
-            );
+        self.emoji_search.apply_layout_external(search);
+        self.emoji_search.draw(scene, tf, tr, theme, presence);
+        ChatApp::push_hit(hits, search, Hit::FocusEmojiSearch);
+        // The rest of the panel keeps the query focused instead of dismissing;
+        // the field's own rect above stays its accessible bounds.
+        ChatApp::push_hit(hits, panel, Hit::FocusEmojiSearch);
+        let query = self.emoji_search.value().trim().to_owned();
+
+        // Group tabs, painted by the shared segmented face.
+        let groups = catalogue.groups();
+        self.emoji_group = self.emoji_group.min(groups.len().saturating_sub(1));
+        let tabs_y = search.y1 + 8.0;
+        let tab_w = (w - 24.0) / groups.len().max(1) as f64;
+        let tab_rects: Vec<Rect> = (0..groups.len())
+            .map(|i| {
+                let x = panel.x0 + 12.0 + i as f64 * tab_w;
+                Rect::new(x, tabs_y, x + tab_w, tabs_y + 32.0)
+            })
+            .collect();
+        let icons: Vec<&str> = groups.iter().map(emoji::Group::icon).collect();
+        let selected = if query.is_empty() {
+            self.emoji_group
+        } else {
+            usize::MAX
+        };
+        ToggleGroup::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &SegmentedFace::new(&tab_rects, &icons, selected)
+                .style(SegmentedStyle::Underline)
+                .text_size(16.0)
+                .weight(TextWeight::Regular),
+        );
+        for (i, r) in tab_rects.iter().enumerate() {
+            ChatApp::push_hit(hits, *r, Hit::EmojiGroup(i));
+        }
+
+        // The scrolling grid: search results, or recents + the group.
+        let grid = Rect::new(
+            panel.x0 + 12.0,
+            tabs_y + 40.0,
+            panel.x1 - 12.0,
+            panel.y1 - 8.0,
+        );
+        self.emoji_grid = grid;
+        let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
+        if query.is_empty() {
+            let recents: Vec<&str> = self
+                .emoji_recents
+                .items()
+                .iter()
+                .map(String::as_str)
+                .collect();
+            if !recents.is_empty() {
+                sections.push((crate::i18n::t("chat-emoji-recent"), recents));
+            }
+            if let Some(group) = groups.get(self.emoji_group) {
+                sections.push((
+                    group.label().to_owned(),
+                    catalogue
+                        .group_emoji(group)
+                        .iter()
+                        .map(emoji::Emoji::text)
+                        .collect(),
+                ));
+            }
+        } else {
+            let found: Vec<&str> = catalogue
+                .search(&query, cols * 12)
+                .into_iter()
+                .map(emoji::Emoji::text)
+                .collect();
+            let heading = if found.is_empty() {
+                crate::i18n::t("chat-emoji-no-results")
+            } else {
+                crate::i18n::t("chat-emoji-results")
+            };
+            sections.push((heading, found));
+        }
+        let content_h: f64 = sections
+            .iter()
+            .map(|(_, set)| 16.0 + set.len().div_ceil(cols) as f64 * cell + 6.0)
+            .sum();
+        self.emoji_scroll = self.emoji_scroll.min((content_h - grid.height()).max(0.0));
+
+        crate::paint::push_clip(scene, tf, grid);
+        let mut y = grid.y0 - self.emoji_scroll;
+        for (heading, set) in &sections {
+            label(scene, tr, tf, heading, 10.5, c.text_dim, grid.x0 + 2.0, y);
             y += 16.0;
             Self::emoji_grid(
                 PaintContext::new(scene, tf, tr, theme),
-                cat.emoji,
-                panel.x0 + 12.0,
+                set,
+                grid,
                 &mut y,
                 cols,
                 cell,
                 hits,
             );
         }
+        scene.pop_layer();
     }
 
+    /// One section's cells from `*y` down, advancing `*y` past them. Only
+    /// cells inside `clip` receive a hit target.
     fn emoji_grid(
         paint: PaintContext<'_>,
         set: &[&str],
-        x0: f64,
+        clip: Rect,
         y: &mut f64,
         cols: usize,
         cell: f64,
@@ -1569,9 +1641,12 @@ impl ChatApp {
         for (i, e) in set.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let cx = x0 + col as f64 * cell;
+            let cx = clip.x0 + col as f64 * cell;
             let cyy = *y + row as f64 * cell;
             let cellr = Rect::new(cx, cyy, cx + cell - 4.0, cyy + cell - 4.0);
+            if cellr.y1 < clip.y0 || cellr.y0 > clip.y1 {
+                continue;
+            }
             let (ew, eh) = tr.measure(e, 19.0, None);
             text(
                 scene,
@@ -1585,7 +1660,10 @@ impl ChatApp {
                 TextWeight::Regular,
                 None,
             );
-            ChatApp::push_hit(hits, cellr, Hit::EmojiChoice((*e).to_string()));
+            let target = cellr.intersect(clip);
+            if target.area() > 0.0 {
+                ChatApp::push_hit(hits, target, Hit::EmojiChoice((*e).to_string()));
+            }
         }
         let rows = set.len().div_ceil(cols);
         *y += rows as f64 * cell + 6.0;

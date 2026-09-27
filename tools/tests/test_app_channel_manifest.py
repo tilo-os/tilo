@@ -31,7 +31,7 @@ class ChannelReaderTests(unittest.TestCase):
                         'publication': {'status': 'unpublished'}}
         self.upload = {'schema': 'tilo.app-upload/v1', 'source_sha': 'a' * 40, 'architecture': 'x86_64',
                        'sha256': '4' * 64, 'bytes': 123,
-                       'url': 'https://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'}
+                       'url': 'https://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'}
 
     def published(self):
         raw = encode(self.upload)
@@ -105,7 +105,7 @@ class ChannelReaderTests(unittest.TestCase):
 
     def test_mutable_url_and_cross_architecture_receipts_rejected(self):
         for url in (self.upload['url'].replace('0.0.0-' + 'a' * 40, 'latest'),
-                    self.upload['url'].replace('code.podesta.ai', 'example.invalid')):
+                    self.upload['url'].replace('code.tilo.so', 'example.invalid')):
             raw = encode(dict(self.upload, url=url))
             with self.assertRaises(ValueError):
                 c.attach_publication(self.receipt, raw, hashlib.sha256(raw).hexdigest(), self.policy)

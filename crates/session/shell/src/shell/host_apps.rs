@@ -12,13 +12,15 @@
 //! workspace containing its window, but is not passed to the app and grants
 //! no Tilo service or sandbox authority. The palette labels host apps under
 //! [`ResourceKind::HostApplication`] so a user can tell which kind of
-//! app they're looking at. Host-desktop sessions also pass the private
-//! rootless-Xwayland display for software that cannot speak Wayland.
+//! app they're looking at. Software that cannot speak Wayland reaches the
+//! private rootless-Xwayland display of the workspace it opens in, and only
+//! that one: X11 has no client isolation, so one X server never spans two
+//! workspaces.
 //!
 //! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
 
 use desktop_entry::{DesktopEntry, EntrySource};
 
@@ -38,6 +40,14 @@ pub struct HostApp {
     /// Every string this app's window might announce itself as. See
     /// [`DesktopEntry::window_identities`].
     pub window_identities: Vec<String>,
+    /// `MimeType=`: what the entry says it opens, including
+    /// `x-scheme-handler/*` for URI schemes.
+    pub mime_types: Vec<String>,
+    /// `Terminal=true`: a console program, run inside the Tilo terminal.
+    pub terminal: bool,
+    /// `Icon=`: an icon-theme name or an absolute path, resolved by
+    /// [`crate::app_icons`].
+    pub icon: Option<String>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -93,91 +103,30 @@ pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
     )
 }
 
-#[cfg(test)]
-pub(crate) fn queued_launch_count_for_test() -> usize {
-    queued_launches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct X11Session {
     pub display: String,
     pub authority: PathBuf,
 }
 
-fn x11_slot() -> &'static RwLock<Option<X11Session>> {
-    static SESSION: OnceLock<RwLock<Option<X11Session>>> = OnceLock::new();
-    SESSION.get_or_init(|| RwLock::new(None))
-}
-
-#[cfg(any(test, target_os = "linux"))]
-pub(crate) fn set_x11_session(session: Option<X11Session>) {
-    let ready = session.is_some();
-    if let Ok(mut slot) = x11_slot().write() {
-        *slot = session;
+/// The X11 connection a host launch into `workspace` may inherit: that
+/// workspace's own display, created on first use. A launch attributed to no
+/// workspace gets none, and callers never fall back to ambient
+/// DISPLAY/XAUTHORITY.
+fn x11_session_for(workspace: Option<&str>) -> Option<X11Session> {
+    #[cfg(target_os = "linux")]
+    {
+        workspace.and_then(crate::compositor::xwayland::session_for_workspace)
     }
-    if ready && let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Ready;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = workspace;
+        None
     }
-}
-
-/// The bridge is deliberately asynchronous: callers need to distinguish the
-/// short startup race from a terminal outage.  `Unavailable` is also the
-/// default for native Tilo sessions, where Wayland host apps must not be gated
-/// on an optional compatibility service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum X11Availability {
-    Starting,
-    Ready,
-    Unavailable,
-}
-
-fn x11_availability_slot() -> &'static RwLock<X11Availability> {
-    static STATE: OnceLock<RwLock<X11Availability>> = OnceLock::new();
-    STATE.get_or_init(|| RwLock::new(X11Availability::Unavailable))
-}
-
-pub(crate) fn set_x11_starting() {
-    if let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Starting;
-    }
-}
-
-pub(crate) fn set_x11_unavailable() {
-    if let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Unavailable;
-    }
-}
-
-pub(crate) fn x11_availability() -> X11Availability {
-    x11_availability_slot()
-        .read()
-        .map_or(X11Availability::Unavailable, |state| *state)
-}
-
-/// The only X11 connection host launches may inherit. The compositor revokes
-/// this as soon as its bridge exits; callers must treat `None` as a deliberate
-/// Wayland-only launch, never fall back to ambient DISPLAY/XAUTHORITY.
-pub(crate) fn x11_session() -> Option<X11Session> {
-    x11_slot().read().ok().and_then(|slot| slot.clone())
-}
-
-/// Whether host launches which may need X11 can safely be dispatched.
-///
-/// The host-session bridge starts asynchronously so the compositor can paint
-/// immediately.  Session restore and very fast launcher interaction can race
-/// that startup; launching without the private DISPLAY makes X11-only apps
-/// fail permanently even though the bridge becomes ready a few milliseconds
-/// later.  Keep the request queued until publication instead.
-#[cfg(test)]
-pub(crate) fn x11_ready() -> bool {
-    x11_availability() == X11Availability::Ready && x11_session().is_some()
 }
 
 impl HostApp {
-    fn from_entry(entry: &DesktopEntry) -> Self {
+    pub(crate) fn from_entry(entry: &DesktopEntry) -> Self {
         Self {
             desktop_id: entry.id.clone(),
             name: entry.name.clone(),
@@ -185,6 +134,9 @@ impl HostApp {
             categories: entry.categories.clone(),
             keywords: entry.keywords.clone(),
             window_identities: entry.window_identities(),
+            mime_types: entry.mime_types.clone(),
+            terminal: entry.terminal,
+            icon: entry.icon.clone(),
         }
     }
 
@@ -389,6 +341,88 @@ pub(crate) fn launch_resolved_with_activation(
     portal_workspace_id: Option<String>,
     activation_token: Option<&str>,
 ) -> Result<HostApp, LaunchError> {
+    launch_resolved(
+        app,
+        document.map(HostOpen::Document),
+        portal_workspace_id,
+        activation_token,
+    )
+}
+
+/// What a host launch hands the application, if anything.
+#[derive(Debug, Clone, Copy)]
+pub enum HostOpen<'a> {
+    Document(&'a Path),
+    Url(&'a str),
+}
+
+/// Open `url` in a host application, the way a host `x-scheme-handler` is used.
+///
+/// # Errors
+///
+/// Returns the same launch-resolution errors as [`launch_with_document`].
+pub fn launch_with_url(
+    desktop_id: &str,
+    url: &str,
+    portal_workspace_id: Option<String>,
+) -> Result<HostApp, LaunchError> {
+    require_host_execution()?;
+    let app = find(desktop_id).ok_or_else(|| LaunchError::HostAppNotFound {
+        desktop_id: desktop_id.to_string(),
+    })?;
+    launch_resolved(app, Some(HostOpen::Url(url)), portal_workspace_id, None)
+}
+
+/// The argv a `Terminal=true` entry runs, with `%f`/`%u` expanded exactly as
+/// an unconfined launch would.
+fn terminal_argv(app: &HostApp, open: Option<HostOpen<'_>>) -> Result<Vec<String>, LaunchError> {
+    let entry = desktop_entry::cache::cached_scan()
+        .find(&app.desktop_id)
+        .cloned()
+        .ok_or_else(|| LaunchError::HostAppNotFound {
+            desktop_id: app.desktop_id.clone(),
+        })?;
+    let env = desktop_entry::launch::LaunchEnv {
+        files: match open {
+            Some(HostOpen::Document(path)) => vec![path.display().to_string()],
+            _ => Vec::new(),
+        },
+        urls: match open {
+            Some(HostOpen::Url(url)) => vec![url.to_string()],
+            _ => Vec::new(),
+        },
+        ..desktop_entry::launch::LaunchEnv::default()
+    };
+    desktop_entry::launch::terminal_argv(&entry, &env).map_err(|error| {
+        LaunchError::HostAppRefused {
+            desktop_id: app.desktop_id.clone(),
+            detail: error.to_string(),
+        }
+    })
+}
+
+fn launch_resolved(
+    app: HostApp,
+    open: Option<HostOpen<'_>>,
+    portal_workspace_id: Option<String>,
+    activation_token: Option<&str>,
+) -> Result<HostApp, LaunchError> {
+    if app.terminal {
+        // The window that appears is the Terminal's, not one announcing this
+        // entry's identities, so a placement noted for them would go stale.
+        launcher::clear_pending_placement(&app.desktop_id);
+        let argv = terminal_argv(&app, open)?;
+        let room = portal_workspace_id
+            .as_deref()
+            .and_then(crate::shell::state::RoomId::parse)
+            .ok_or(LaunchError::NoWorkspace)?;
+        launcher::launch_terminal_command(&argv, room)?;
+        return Ok(app);
+    }
+    let document = match open {
+        Some(HostOpen::Document(path)) => Some(path),
+        _ => None,
+    };
     let Some(socket) = launcher::wayland_socket() else {
         launcher::clear_pending_placement(&app.desktop_id);
         return Err(LaunchError::NoDisplay);
@@ -400,8 +434,8 @@ pub(crate) fn launch_resolved_with_activation(
             return Err(error);
         }
     };
-    let x11 = x11_session();
-    let command = build_launch_command(
+    let x11 = x11_session_for(portal_workspace_id.as_deref());
+    let mut command = build_launch_command(
         &app,
         &launcher_bin,
         &socket,
@@ -410,10 +444,84 @@ pub(crate) fn launch_resolved_with_activation(
         portal_workspace_id,
         activation_token,
     );
+    if let Some(HostOpen::Url(url)) = open {
+        command.args.push("--open-url".to_string());
+        command.args.push(url.to_string());
+    }
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
     Ok(app)
+}
+
+/// The `tilo-launcher run-host` command for an XDG autostart entry. It names
+/// the file itself, since autostart entries need not be in any
+/// `applications` directory. Pure, like [`build_launch_command`].
+pub(crate) fn build_autostart_command(
+    entry: &DesktopEntry,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    x11: Option<&X11Session>,
+    portal_workspace_id: Option<String>,
+) -> launcher::LaunchCommand {
+    let mut command = build_launch_command(
+        &HostApp::from_entry(entry),
+        launcher_bin,
+        wayland_socket,
+        None,
+        x11,
+        portal_workspace_id,
+        None,
+    );
+    command.args.push("--desktop-file".to_string());
+    command.args.push(entry.path.display().to_string());
+    command
+}
+
+/// Start the session's XDG autostart entries, attributing their portal
+/// requests to `portal_workspace_id`. Console programs (`Terminal=true`)
+/// are not started at login: a terminal window nobody asked for is noise.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::NoDisplay`] or a launcher-resolution error when
+/// nothing can be started at all.
+pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, LaunchError> {
+    require_host_execution()?;
+    let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
+    let launcher_bin = launcher::resolve_launcher_bin()?;
+    let desktops = vec![crate::compositor::session_env::CURRENT_DESKTOP.to_string()];
+    let scan = desktop_entry::autostart::scan_autostart(
+        &desktop_entry::autostart::autostart_dirs(),
+        &desktops,
+        desktop_entry::autostart::program_on_path,
+    );
+    for (path, reason) in &scan.skipped {
+        tracing::info!(path = %path.display(), ?reason, "autostart entry not started");
+    }
+    let x11 = x11_session_for(portal_workspace_id);
+    let startable: Vec<&DesktopEntry> = scan
+        .start
+        .iter()
+        .filter(|entry| {
+            if entry.terminal {
+                tracing::info!(id = %entry.id, "autostart console program not started");
+            }
+            !entry.terminal
+        })
+        .collect();
+    for entry in &startable {
+        let command = build_autostart_command(
+            entry,
+            &launcher_bin,
+            &socket,
+            x11.as_ref(),
+            portal_workspace_id.map(str::to_string),
+        );
+        launcher::remember_launch_named(&entry.id, &entry.window_identities(), &entry.name);
+        let _ = launcher::spawn_launch(entry.id.clone(), entry.name.clone(), command);
+    }
+    Ok(startable.len())
 }
 
 /// A foreign toplevel arrives with an `app_id` Tilo didn't mint, so the
@@ -460,6 +568,9 @@ mod tests {
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
+            mime_types: Vec::new(),
+            terminal: false,
+            icon: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -554,88 +665,6 @@ mod tests {
         );
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn revoked_x11_session_cannot_leak_into_a_later_host_launch() {
-        let app = app("com.example.Legacy", "Legacy", &["legacy"]);
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
-        }));
-        assert!(x11_session().is_some(), "fixture published an X11 bridge");
-
-        // This is the exact action SessionXwayland takes after reaping its
-        // child. A later host launch must receive no stale bridge arguments.
-        set_x11_session(None);
-        let command = build_launch_command(
-            &app,
-            Path::new("/usr/bin/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-2"),
-            None,
-            x11_session().as_ref(),
-            None,
-            None,
-        );
-        assert!(
-            !command
-                .args
-                .iter()
-                .any(|arg| arg == "--x11-display" || arg == "--x11-authority"),
-            "a dead bridge must not hand a later X11/Electron launch stale connection details"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    #[cfg(target_os = "linux")]
-    fn a_queued_host_launch_survives_the_xwayland_startup_window() {
-        set_x11_starting();
-        set_x11_session(None);
-        let _ = drain_queued_launches();
-        queue_launch(QueuedLaunch {
-            app: app("org.example.Legacy.desktop", "Legacy", &["Legacy"]),
-            placement: crate::compositor::tab_binding::Placement::NewGroup,
-            portal_workspace_id: None,
-            requested_at: std::time::Instant::now(),
-        })
-        .expect("Linux accepts a queued host launch");
-
-        assert!(!x11_ready());
-        assert_eq!(
-            queued_launch_count_for_test(),
-            1,
-            "checking readiness must not consume the launch queued during login"
-        );
-
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
-        }));
-        assert!(x11_ready());
-        let requests = drain_queued_launches();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].app.desktop_id, "org.example.Legacy.desktop");
-        set_x11_session(None);
-        set_x11_unavailable();
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn x11_availability_distinguishes_startup_from_terminal_outage() {
-        set_x11_session(None);
-        set_x11_starting();
-        assert_eq!(x11_availability(), X11Availability::Starting);
-        set_x11_unavailable();
-        assert_eq!(x11_availability(), X11Availability::Unavailable);
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/tmp/tilo-test-authority"),
-        }));
-        assert_eq!(x11_availability(), X11Availability::Ready);
-        set_x11_session(None);
-        set_x11_unavailable();
-    }
-
     /// Scan the host for installed applications.
     #[test]
     fn the_host_scan_returns_entries_with_usable_identities() {
@@ -727,5 +756,149 @@ mod unavailable_provider_tests {
             launch("fixture.desktop", None),
             Err(LaunchError::ProviderUnavailable { .. })
         ));
+    }
+
+    fn fixture_hosts(dir: &Path) -> Vec<HostApp> {
+        let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+        write(
+            "org.gnome.Evince.desktop",
+            "[Desktop Entry]\nType=Application\nName=Document Viewer\nExec=evince %U\n\
+             MimeType=application/pdf;image/tiff;\n",
+        );
+        write(
+            "okular.desktop",
+            "[Desktop Entry]\nType=Application\nName=Okular\nExec=okular %U\n\
+             MimeType=application/pdf;\n",
+        );
+        write(
+            "mutt.desktop",
+            "[Desktop Entry]\nType=Application\nName=Mutt\nExec=mutt %u\nTerminal=true\n\
+             MimeType=x-scheme-handler/mailto;\n",
+        );
+        desktop_entry::scan_dirs(&[dir.to_path_buf()], &["tilo".to_string()])
+            .entries
+            .iter()
+            .map(HostApp::from_entry)
+            .collect()
+    }
+
+    #[test]
+    fn host_mime_claims_and_mimeapps_defaults_feed_the_resolver() {
+        use desktop_policy::{MimeAppsChain, MimeAppsList, PersonalDefaults, ResourceKind};
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = fixture_hosts(dir.path());
+        let mutt = hosts.iter().find(|host| host.desktop_id == "mutt").unwrap();
+        assert!(mutt.terminal, "Terminal=true is carried to the launch path");
+
+        let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
+            "[Default Applications]\napplication/pdf=okular.desktop;\n\
+             [Removed Associations]\nimage/tiff=org.gnome.Evince.desktop;\n\
+             [Added Associations]\ntext/plain=okular.desktop;\n",
+        )]);
+        let candidates = crate::shell::launcher::host_app_candidates(&hosts, &chain);
+        let evince = candidates
+            .iter()
+            .find(|c| c.package_id == "org.gnome.Evince.desktop")
+            .unwrap();
+        assert!(evince.handles(&ResourceKind::mime("application/pdf").unwrap()));
+        assert!(
+            !evince.handles(&ResourceKind::mime("image/tiff").unwrap()),
+            "a removed association no longer counts"
+        );
+        let okular = candidates
+            .iter()
+            .find(|c| c.package_id == "okular.desktop")
+            .unwrap();
+        assert!(
+            okular.handles(&ResourceKind::mime("text/plain").unwrap()),
+            "an added association counts"
+        );
+        let mutt = candidates
+            .iter()
+            .find(|c| c.package_id == "mutt.desktop")
+            .unwrap();
+        assert!(mutt.handles(&ResourceKind::scheme("mailto").unwrap()));
+
+        let pdf = ResourceKind::mime("application/pdf").unwrap();
+        let selected = desktop_policy::DefaultAppResolver::new(&candidates)
+            .with_system_defaults(&chain)
+            .resolve(&pdf, "", &PersonalDefaults::default(), None)
+            .unwrap();
+        assert_eq!(selected.package_id, "okular.desktop");
+
+        let personal = PersonalDefaults {
+            handlers: [(pdf, "org.gnome.Evince.desktop".to_string())].into(),
+        };
+        let published =
+            crate::shell::launcher::resolved_host_defaults(&candidates, &chain, &personal);
+        assert_eq!(
+            published.defaults.get("application/pdf"),
+            Some(&vec!["org.gnome.Evince.desktop".to_string()]),
+            "the published list carries the person's choice for host tools"
+        );
+        assert_eq!(
+            published.defaults.get("x-scheme-handler/mailto"),
+            Some(&vec!["mutt.desktop".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_package_claim_is_not_published_to_host_tools() {
+        use desktop_policy::{AppCandidate, MimeAppsChain, PersonalDefaults, ResourceKind};
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = fixture_hosts(dir.path());
+        let chain = MimeAppsChain::default();
+        let mut candidates = crate::shell::launcher::host_app_candidates(&hosts, &chain);
+        candidates.push(AppCandidate {
+            package_id: "so.tilo.pdf-viewer".into(),
+            display_name: "PDF Viewer".into(),
+            resources: [ResourceKind::mime("application/pdf").unwrap()].into(),
+        });
+        let published = crate::shell::launcher::resolved_host_defaults(
+            &candidates,
+            &chain,
+            &PersonalDefaults::default(),
+        );
+        assert!(!published.defaults.contains_key("application/pdf"));
+        assert!(published.defaults.contains_key("image/tiff"));
+    }
+
+    #[test]
+    fn an_autostart_entry_is_started_by_its_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync-client.desktop");
+        std::fs::write(
+            &path,
+            "[Desktop Entry]\nType=Application\nName=Sync\nExec=sync-client --background\n",
+        )
+        .unwrap();
+        let scan = desktop_entry::autostart::scan_autostart(
+            &[dir.path().to_path_buf()],
+            &["tilo".to_string()],
+            |_| true,
+        );
+        let [entry] = scan.start.as_slice() else {
+            panic!("one entry to start: {scan:?}");
+        };
+        let command = build_autostart_command(
+            entry,
+            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/run/user/1000/wayland-1"),
+            None,
+            Some("room".to_string()),
+        );
+        assert_eq!(
+            command.args,
+            vec![
+                "run-host",
+                "--desktop-id",
+                "sync-client",
+                "--wayland-socket",
+                "/run/user/1000/wayland-1",
+                "--desktop-file",
+                &path.display().to_string(),
+            ]
+        );
+        assert_eq!(command.portal_workspace_id.as_deref(), Some("room"));
     }
 }

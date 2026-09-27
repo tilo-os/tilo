@@ -87,6 +87,17 @@ pub struct Workspace {
     /// it to tell a person plainly that what they post here is public.
     #[serde(default)]
     pub channel_class: collab_types::ChannelClass,
+    /// Shortcuts saved in this workspace: a person's own in their personal
+    /// workspace, shared ones in a collaborative one. Projected as a CRDT
+    /// map keyed by shortcut id, so they reach every desktop the workspace
+    /// reaches.
+    #[serde(default)]
+    pub shortcuts: Vec<tilo_automation::Shortcut>,
+    /// Which of the saver's devices took the latest fire time of each
+    /// scheduled shortcut, so a schedule runs once across them. Projected
+    /// beside the shortcuts, one map key per schedule.
+    #[serde(default)]
+    pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -797,6 +808,8 @@ impl Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         }
@@ -867,6 +880,8 @@ impl Default for Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
         }

@@ -13,7 +13,7 @@ import canonical_verifier_bundle as bundle
 import final_app_receipt as final
 import test_app_channel_manifest as fixtures
 
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
 def executable(path, machine=62):

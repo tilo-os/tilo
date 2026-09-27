@@ -18,9 +18,14 @@ pub mod bridge;
 #[cfg(target_os = "linux")]
 pub mod capture;
 #[cfg(target_os = "linux")]
+pub mod client_cursor;
+#[cfg(target_os = "linux")]
 pub mod client_input;
+pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
+#[cfg(target_os = "linux")]
+pub mod device_rotation;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -34,6 +39,11 @@ pub mod hosted;
 #[cfg(target_os = "linux")]
 pub mod hosted_test_control;
 pub mod idle;
+#[cfg(target_os = "linux")]
+pub mod idle_inhibit;
+pub mod input_method;
+#[cfg(target_os = "linux")]
+pub mod input_method_service;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
@@ -44,16 +54,21 @@ pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]
-pub mod osk_service;
-#[cfg(target_os = "linux")]
 pub mod output_globals;
+pub mod output_heads;
+#[cfg(target_os = "linux")]
+pub mod output_management;
 pub mod pacing;
+#[cfg(target_os = "linux")]
+pub mod pointer_lock;
 pub mod present;
 pub mod projection_capture;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
+pub mod screen_dim;
 pub mod selection;
+pub mod session_env;
 #[cfg(target_os = "linux")]
 pub mod state;
 pub mod surface_outputs;
@@ -64,7 +79,9 @@ pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
-mod xwayland;
+pub mod toplevel_icon;
+#[cfg(target_os = "linux")]
+pub(crate) mod xwayland;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

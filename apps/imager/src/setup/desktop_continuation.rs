@@ -459,7 +459,7 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
         .ok_or("Import executable has no installed directory")?;
     // Nix seals its actual wrapped ELF path at build time. FHS packages keep
     // the root-owned shell ELF beside this installed import executable.
-    let trusted_shell = option_env!("QOS_DESKTOP_TRUSTED_SHELL_PATH")
+    let trusted_shell = option_env!("TILO_DESKTOP_TRUSTED_SHELL_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| parent.join("tilo-shell"));
     authenticated_session_ready(&runtime, &display, &trusted_shell)
@@ -491,7 +491,7 @@ fn authenticated_session_ready(
         return Err("Untrusted session display".into());
     }
     let key = hex::encode(bytes);
-    let socket = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
+    let socket = runtime.join(format!("tilo-import-{key}-{}.sock", wayland.ino()));
     let mut stream = connect_readiness(&socket)
         .map_err(|_| "Waiting for trusted Tilo identity setup to finish".to_string())?;
     stream
@@ -499,11 +499,11 @@ fn authenticated_session_ready(
         .map_err(|e| e.to_string())?;
     authenticate_session_peer(&stream, trusted_shell, uid)?;
     pin.validate().map_err(|e| e.to_string())?;
-    let mut response = [0_u8; 20];
+    let mut response = [0_u8; 21];
     stream
         .read_exact(&mut response)
         .map_err(|_| "Tilo identity setup is still pending".to_string())?;
-    if &response != b"qos-import-ready-v1\n" {
+    if &response != b"tilo-import-ready-v1\n" {
         return Err("Tilo identity setup is still pending".into());
     }
     let current = std::fs::symlink_metadata(runtime.join(display)).map_err(|e| e.to_string())?;
@@ -685,7 +685,7 @@ mod tests {
             authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted).is_err()
         );
         let ino = fs::symlink_metadata(root.join("wayland-1")).unwrap().ino();
-        let socket = root.join(format!("qos-import-7761796c616e642d31-{ino}.sock"));
+        let socket = root.join(format!("tilo-import-7761796c616e642d31-{ino}.sock"));
         let _fake = UnixListener::bind(socket).unwrap();
         let error = authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
             .unwrap_err();
@@ -959,7 +959,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    #[ignore = "controller-only disposable native current-user fixture; requires QOS_CONTINUATION_FIXTURE_SOURCE"]
+    #[ignore = "controller-only disposable native current-user fixture; requires TILO_CONTINUATION_FIXTURE_SOURCE"]
     fn seed_native_first_login_fixture() {
         use std::os::unix::fs::MetadataExt;
         // SAFETY: getuid has no memory contract. A root-run seed would name the
@@ -968,10 +968,10 @@ mod tests {
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
         let home = xdg_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(
-            std::env::var_os("QOS_CONTINUATION_FIXTURE_SOURCE")
+            std::env::var_os("TILO_CONTINUATION_FIXTURE_SOURCE")
                 .expect("set the dedicated fixture root"),
         );
-        assert_eq!(requested, home.join("qos-native-migration-fixture"));
+        assert_eq!(requested, home.join("tilo-native-migration-fixture"));
         assert_eq!(requested.canonicalize().unwrap(), requested);
         assert_eq!(fs::symlink_metadata(&requested).unwrap().uid(), uid);
         let mut controller =

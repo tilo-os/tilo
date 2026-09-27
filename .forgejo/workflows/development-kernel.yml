@@ -44,10 +44,10 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = aarch64
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BASE_REF" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
-          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
+          [[ "$BASE_REF" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          [[ "$RPMS_REF" =~ ^(registry\.tilo\.so/tilo/rpms|registry\.tilo\.so/tilo/tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
           [ -z "$KERNEL_BUILDROOT_REF" ] \
-            || [[ "$KERNEL_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
+            || [[ "$KERNEL_BUILDROOT_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
@@ -66,14 +66,14 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           bash os/dev/assert-native-arch.sh aarch64
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-          echo "CANDIDATE=code.podesta.ai/qos/tilo-development-kernel-aarch64:candidate-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          echo "CANDIDATE=registry.tilo.so/tilo/tilo-development-kernel-aarch64:candidate-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Authenticate development artifact transfers
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Require native input images
         run: |
@@ -107,9 +107,9 @@ jobs:
             KERNEL_BUILDROOT_REF=${{ env.KERNEL_BUILDROOT_REF }}
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
           cache-from: |
-            type=registry,ref=code.podesta.ai/qos/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:aarch64
-          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-development-kernel-buildcache:aarch64,mode=min
+            type=registry,ref=registry.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64
+            type=registry,ref=registry.tilo.so/tilo/tilo-kernel-buildcache:aarch64
+          cache-to: type=registry,ref=registry.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 
       - name: Inspect packaged RPM without executing its payload

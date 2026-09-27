@@ -75,9 +75,16 @@ const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// is talking to *this* compositor and not a session one.
 const TILO_SEAT_NAME: &str = "tilo-desktop";
 
-/// How long any single wait-for-condition may take. Generous, because a cold
-/// headless compositor spins up a wgpu offscreen renderer on its first frame.
+/// How long any single wait-for-condition may take once the compositor is
+/// serving. Startup has its own budget, [`STARTUP_DEADLINE`].
 const DEADLINE: Duration = Duration::from_secs(25);
+
+/// How long a spawned compositor may take to go from `exec` to answering its
+/// first test-control request with a laid-out frame. Cold start compiles the
+/// renderer's pipelines and shapes the first chrome, which a loaded CI runner
+/// can stretch well past [`DEADLINE`]. This only bounds a hang: a compositor
+/// that exits, or closes its stderr, fails the wait at once with its log.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(120);
 
 // Compositor harness
 
@@ -191,7 +198,7 @@ impl Compositor {
         );
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let rx = Self::drain_log_pipes(&mut child, &log);
-        let found = Self::wait_for_sockets(&rx, &mut child, &log);
+        let found = Self::wait_until_serving(&rx, &mut child, &log);
 
         let this = Self {
             child,
@@ -235,7 +242,7 @@ impl Compositor {
             false,
         );
         let rx = Self::drain_log_pipes(&mut child, &self.log);
-        let found = Self::wait_for_sockets(&rx, &mut child, &self.log);
+        let found = Self::wait_until_serving(&rx, &mut child, &self.log);
         self.wayland_socket = self.runtime_dir.join(&found["public"]);
         self.privileged_socket = self.runtime_dir.join(&found["privileged"]);
         self.control_socket = PathBuf::from(&found["control"]);
@@ -341,7 +348,7 @@ impl Compositor {
     /// Drain the compositor's stdout/stderr pipes on background threads —
     /// unread output blocks the compositor mid-write, surfacing as an
     /// unrelated timeout much later. Returns the channel that
-    /// [`Self::wait_for_sockets`] reads the announced socket paths from.
+    /// [`Self::wait_until_serving`] reads the announced socket paths from.
     /// Split out of [`Self::start_with`] to keep it short.
     fn drain_log_pipes(
         child: &mut Child,
@@ -387,30 +394,122 @@ impl Compositor {
         rx
     }
 
-    /// Block until all three sockets (public, privileged, control) have been
-    /// announced, or panic with the compositor's log on timeout. Split out of
-    /// [`Self::start_with`] to keep it short.
-    fn wait_for_sockets(
+    /// Block until the compositor is actually serving, not merely bound.
+    ///
+    /// The compositor announces each socket as it binds it, during startup
+    /// and before its event loop first turns. Nothing on those sockets is
+    /// answered until then, so taking the announcements as readiness charges
+    /// the whole cold start to the first request a test makes. Readiness is
+    /// therefore a handshake: all three sockets announced, then a
+    /// `list_targets` request answered with at least one laid-out target,
+    /// which only a completed frame produces. One [`STARTUP_DEADLINE`],
+    /// measured from spawn, bounds all of it; a compositor that dies fails
+    /// the wait immediately.
+    fn wait_until_serving(
         rx: &mpsc::Receiver<(String, String)>,
         child: &mut Child,
         log: &Arc<Mutex<Vec<String>>>,
     ) -> HashMap<String, String> {
-        let mut found: HashMap<String, String> = HashMap::new();
         let started = Instant::now();
+        let fail = |child: &mut Child, why: &str| -> ! {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "compositor did not start: {why} (after {:?}). Compositor log:\n{}",
+                started.elapsed(),
+                log.lock().map(|l| l.join("\n")).unwrap_or_default()
+            );
+        };
+
+        let mut found: HashMap<String, String> = HashMap::new();
         while found.len() < 3 {
-            let remaining = DEADLINE.saturating_sub(started.elapsed());
-            if let Ok((key, value)) = rx.recv_timeout(remaining) {
-                found.insert(key, value);
-            } else {
-                let _ = child.kill();
-                panic!(
-                    "compositor did not publish all three sockets within {DEADLINE:?}; \
-                     got {found:?}. Compositor log:\n{}",
-                    log.lock().map(|l| l.join("\n")).unwrap_or_default()
-                );
+            let remaining = STARTUP_DEADLINE.saturating_sub(started.elapsed());
+            match rx.recv_timeout(remaining) {
+                Ok((key, value)) => {
+                    found.insert(key, value);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => fail(
+                    child,
+                    &format!("it closed stderr having announced only {found:?}"),
+                ),
+                Err(mpsc::RecvTimeoutError::Timeout) => fail(
+                    child,
+                    &format!("it announced only {found:?} within {STARTUP_DEADLINE:?}"),
+                ),
             }
         }
+
+        let control = PathBuf::from(&found["control"]);
+        loop {
+            match Self::laid_out_targets(&control, child, started) {
+                Ok(0) => std::thread::sleep(Duration::from_millis(20)),
+                Ok(_) => break,
+                Err(why) => fail(child, &why),
+            }
+        }
+        eprintln!(
+            "[clipboard-e2e] compositor serving after {:?}",
+            started.elapsed()
+        );
         found
+    }
+
+    /// One readiness probe: ask for the laid-out targets and wait for the
+    /// answer while the compositor is alive and startup has time left.
+    /// Returns how many targets the latest frame laid out.
+    fn laid_out_targets(
+        control: &Path,
+        child: &mut Child,
+        started: Instant,
+    ) -> Result<usize, String> {
+        use std::io::Write;
+        const POLL: Duration = Duration::from_millis(100);
+        let mut stream = UnixStream::connect(control)
+            .map_err(|e| format!("connect to test control {}: {e}", control.display()))?;
+        stream
+            .set_read_timeout(Some(POLL))
+            .map_err(|e| format!("set control read timeout: {e}"))?;
+        stream
+            .write_all(b"{\"op\":\"list_targets\"}\n")
+            .map_err(|e| format!("write the readiness request: {e}"))?;
+        // Short reads let the loop notice an exit. `read_until` keeps the
+        // bytes that arrived before a timeout, so a response split across
+        // reads is still reassembled.
+        let mut reader = BufReader::new(stream);
+        let mut response = Vec::new();
+        loop {
+            match reader.read_until(b'\n', &mut response) {
+                Ok(_) if response.last() == Some(&b'\n') => break,
+                Ok(_) => return Err("test control closed without answering".into()),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => return Err(format!("read the readiness response: {e}")),
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(format!("it exited with {status}"));
+            }
+            if started.elapsed() >= STARTUP_DEADLINE {
+                return Err(format!(
+                    "its event loop did not answer test control within {STARTUP_DEADLINE:?}"
+                ));
+            }
+        }
+        let value: serde_json::Value = serde_json::from_slice(&response).map_err(|e| {
+            format!(
+                "readiness response was not JSON ({e}): {:?}",
+                String::from_utf8_lossy(&response)
+            )
+        })?;
+        value
+            .get("targets")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .ok_or_else(|| format!("readiness response had no targets: {value}"))
     }
 
     fn control(&self, request: &serde_json::Value) -> serde_json::Value {
@@ -1215,6 +1314,60 @@ fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leak
     assert!(
         client.state.pointer_events.is_empty(),
         "a shell-owned multi-touch gesture must not manufacture client pointer motion, click, or drag: {:?}",
+        client.state.pointer_events
+    );
+}
+
+/// A one-finger tap on a client tile is a `wl_touch` down/up pair for that
+/// client and nothing else. The compositor's pointer emulation exists for
+/// shell chrome; a client that already received the touch sequence must not
+/// also see a `wl_pointer` click, or every tap would activate it twice.
+#[test]
+fn a_touch_tap_on_a_client_activates_it_once() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.touch-tap");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |state| state.touch_bound,
+        "the client did not finish binding wl_touch before injection",
+    );
+    client.roundtrip();
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    client.wait_until(
+        |state| state.touch_events.contains(&TouchTrace::Up(0)),
+        "the tapped client never received its wl_touch up",
+    );
+    for _ in 0..4 {
+        client.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        client.state.touch_events,
+        vec![
+            TouchTrace::Down(0),
+            TouchTrace::Frame,
+            TouchTrace::Up(0),
+            TouchTrace::Frame,
+        ],
+        "the tapped client receives exactly one touch sequence"
+    );
+    let buttons = client
+        .state
+        .pointer_events
+        .iter()
+        .filter(|event| **event == "button")
+        .count();
+    assert_eq!(
+        buttons, 0,
+        "a tap already delivered as wl_touch must not also click the client: {:?}",
         client.state.pointer_events
     );
 }

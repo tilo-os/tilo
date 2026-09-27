@@ -22,6 +22,7 @@ use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
+    ScreenshotSendTarget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
@@ -94,6 +95,12 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// "Send…" chose a target for the saved screenshot; the compositor
+    /// routes it over the device fabric or into the workspace.
+    ScreenshotSendRequested {
+        path: PathBuf,
+        target: ScreenshotSendTarget,
+    },
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -389,11 +396,12 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
     ) -> Result<(f64, f64, f64), String> {
-        let (width, height) = frame_builder.viewport();
+        let (width, height) = frame_builder.scene_size();
         let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let pointer = frame_builder
             .capture_pointer_position()
+            .map(|p| frame_builder.layout_point_to_scene(p))
             .ok_or_else(|| "move the pointer over the colour to pick it".to_string())?;
         let x = pointer
             .x
@@ -434,7 +442,7 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         scene: &Scene,
     ) -> Result<(u32, u32, std::sync::Arc<[u8]>), String> {
-        let (width, height) = frame_builder.viewport();
+        let (width, height) = frame_builder.scene_size();
         let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let mut renderer = OffscreenRenderer::try_new(width, height)
@@ -677,6 +685,16 @@ impl CaptureExecutor {
                     ScreenshotCommand::CopyLast => self
                         .copy_last_screenshot(frame_builder)
                         .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::SendLast(target) => {
+                        self.last_screenshot.clone().map_or_else(
+                            || {
+                                CaptureOutcome::Failed(
+                                    "there is no saved screenshot to send".into(),
+                                )
+                            },
+                            |path| CaptureOutcome::ScreenshotSendRequested { path, target },
+                        )
+                    }
                 }
             } else if let Some(command) = intent.replay_command {
                 match command {
@@ -1411,17 +1429,27 @@ impl CaptureExecutor {
                 let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    play_shutter(frame_builder);
                     Ok(CaptureOutcome::Copied { width, height })
                 } else {
                     Err("the clipboard refused image data".into())
                 }
             }
-            CaptureDestination::File => {
+            CaptureDestination::File | CaptureDestination::FileAndClipboard => {
                 let path = next_screenshot_path(self.sequence);
                 self.sequence = self.sequence.saturating_add(1);
                 write_png(&path, width, height, &rgba)?;
                 self.last_screenshot = Some(path.clone());
+                // The saved file is the durable result; a clipboard that
+                // refuses the pixels leaves it in place, so it is logged
+                // rather than failing the capture.
+                if intent.destination == CaptureDestination::FileAndClipboard
+                    && !ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                {
+                    tracing::warn!(path = %path.display(), "screenshot saved but not copied");
+                }
                 frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                play_shutter(frame_builder);
                 Ok(CaptureOutcome::Saved(path))
             }
             CaptureDestination::FloatingWindow => {
@@ -1429,6 +1457,14 @@ impl CaptureExecutor {
             }
         }
     }
+}
+
+/// The shutter sound for a screenshot the person just took.
+fn play_shutter(frame_builder: &mut FrameBuilder) {
+    frame_builder.with_chrome(|chrome| {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Screenshot);
+    });
 }
 
 fn refresh_mirror(
@@ -1620,16 +1656,21 @@ fn render_session_frame(
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let image = crate::shell::foreign::surface_image(surface_id)
         .ok_or_else(|| "the surface has not drawn a frame yet".to_string())?;
+    let sheets = crate::shell::foreign::sheet_images(surface_id);
     let (width, height, fit) = output_dimensions(rect.width() * scale, rect.height() * scale)?;
     let mut scene = Scene::new();
     let local = Rect::from_origin_size(Point::ZERO, rect.size());
     if !crate::shell::foreign::paint_tile_surface(
         &mut scene,
         Affine::scale(scale * fit),
-        &image,
+        &crate::shell::foreign::TileSurface {
+            id: surface_id,
+            image: &image,
+            sheets: &sheets,
+            preserve_transparency: false,
+        },
         local,
         theme,
-        false,
     ) {
         return Err("the surface has nothing to show".into());
     }
@@ -1850,7 +1891,17 @@ fn capture_source(
     intent: &CaptureIntent,
 ) -> (Scene, Vec<Rect>) {
     let (mut source, regions) = match intent.extent {
-        CaptureExtent::Visible => (clean_screen_scene.clone(), intent.regions.clone()),
+        // The clean screen is the presented scene, where each display drew
+        // its part of the desktop at its own scale; the regions were chosen
+        // on the logical desktop.
+        CaptureExtent::Visible => (
+            clean_screen_scene.clone(),
+            intent
+                .regions
+                .iter()
+                .filter_map(|region| frame_builder.layout_rect_to_scene(*region))
+                .collect(),
+        ),
         CaptureExtent::FullApp | CaptureExtent::WholeStrip => {
             let ids: Vec<String> = intent
                 .targets
@@ -1876,8 +1927,14 @@ fn capture_source(
     };
     if intent.include_pointer
         && let Some(pointer) = frame_builder.capture_pointer_position()
+        && let Some(cursor) = frame_builder.pointer_image().bitmap(24)
     {
-        draw_pointer(&mut source, pointer);
+        let pointer = if intent.extent == CaptureExtent::Visible {
+            frame_builder.layout_point_to_scene(pointer)
+        } else {
+            pointer
+        };
+        crate::compositor::cursor::draw_scene(&mut source, &cursor, pointer);
     }
     (source, regions)
 }
@@ -1887,15 +1944,6 @@ fn capture_source(
 /// resilience path so a Vello bump-buffer growth is never encoded as black.
 fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u8> {
     renderer.render_rgba_resilient(scene)
-}
-
-fn draw_pointer(scene: &mut Scene, at: vello::kurbo::Point) {
-    crate::compositor::cursor::draw_scene(
-        scene,
-        crate::compositor::cursor::CursorShape::Default,
-        24,
-        at,
-    );
 }
 
 fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {

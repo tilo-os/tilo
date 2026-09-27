@@ -665,6 +665,15 @@ impl App {
         self.collaboration.manager.state()
     }
 
+    /// What this device can do with the document's end-to-end encrypted
+    /// channel: while it is waiting for access (a new device before its
+    /// welcome arrives) or was removed, nothing is read or written and the
+    /// app says so instead of showing stale or undecryptable content. `None`
+    /// until the route reports.
+    pub fn channel_access(&self) -> Option<crate::collaboration::ChannelAccessState> {
+        self.collaboration.channel_access
+    }
+
     /// React to the managers' connection changes. Work that only runs while
     /// connected is level-triggered, so a manager that has just become ready
     /// publishes the current state once instead of waiting for the next
@@ -782,6 +791,11 @@ impl App {
             }
             CollabEvent::Inspection { id, request } => self.answer_inspection(id, &request),
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
+            CollabEvent::ChannelAccess { route, state } => {
+                if self.collaboration.manager.requested_primary_route() == Some(&route) {
+                    self.collaboration.channel_access = Some(state);
+                }
+            }
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.

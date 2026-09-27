@@ -64,7 +64,6 @@ pub mod call;
 pub mod comments;
 pub mod continuity;
 pub mod doc;
-pub mod emoji;
 pub mod events;
 pub mod feedback;
 pub mod geometry;

@@ -20,9 +20,17 @@
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
+pub mod app_action_access;
+pub mod app_action_consent;
+pub mod automation_folders;
+pub mod automation_host;
+pub mod automation_triggers;
 pub(crate) mod capture_surface;
 pub mod catalogue;
+pub mod channel_encryption;
+pub mod channel_policy;
 pub mod chrome_state;
+pub mod closed_tabs;
 pub mod codec_pack_notice;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
@@ -36,6 +44,7 @@ mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod community;
 pub mod continuity_policy;
+pub mod continuity_suggestion;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
@@ -44,9 +53,14 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod display_bars;
+pub mod display_confirm;
+pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;
+pub mod fabric_clock;
 mod file_picker_overlay;
+pub mod fixed_chords;
 pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
@@ -62,13 +76,17 @@ pub mod identity_provisioning;
 pub mod input_policy;
 pub mod launch_gate;
 pub mod launcher;
+pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;
 pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
+pub mod notification_history;
+pub mod now_playing;
 pub mod osd;
+pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
 pub mod peer_join_toast;
@@ -90,6 +108,7 @@ pub mod projection;
 mod projection_overlay;
 pub mod quick_settings;
 pub mod realtime_session;
+pub mod recent_files;
 pub mod record_custody;
 pub mod recorder;
 pub mod remark;
@@ -102,15 +121,23 @@ pub mod render;
 pub mod replay;
 pub mod room_activity;
 pub mod room_records;
+pub mod screenshot_send;
 pub mod search;
+pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
+pub mod speaker_calibration;
+pub mod speaker_group;
+pub mod speaker_group_audio;
+pub mod speaker_group_runtime;
+pub mod speaker_settings;
 pub mod split_row;
 pub mod state;
 pub mod status;
 pub mod system_monitor;
+pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
 pub mod test_control;
@@ -160,6 +187,8 @@ pub(crate) struct WorkspaceSceneParts {
     pub topbar: *mut topbar_chrome::TopBarChrome,
     pub workspace: *mut dyn Widget,
     pub work_area: *mut Column,
+    /// Compact top bars of the displays other than the primary.
+    pub display_bars: *mut display_bars::DisplayBars,
 }
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
@@ -1213,6 +1242,7 @@ pub fn to_ui_window_group_with_inputs(
                     id: t.id,
                     title: t.title.clone(),
                     app_kind: Some(kind),
+                    icon: crate::app_icons::for_tile(&t.tile),
                 },
                 to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
@@ -1230,6 +1260,9 @@ pub fn to_ui_window_group_with_inputs(
 /// [`doc_open::open_in_workspace`] — the explorer asks, the compositor
 /// answers. Named so a test can install it against its own chrome too.
 pub fn install_document_opener(chrome: &chrome_state::Chrome) {
+    file_explorer::open_with::set_open_with_route(std::rc::Rc::new(ShellOpenWithRoute {
+        chrome: chrome.clone(),
+    }));
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
         let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
@@ -1276,6 +1309,49 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
             .map(|_| ())
             .map_err(|e| e.user_message())
     });
+}
+
+/// Files' "Open With": candidates, launches and defaults all come from
+/// [`doc_open`], under the active workspace's policy and the local person.
+struct ShellOpenWithRoute {
+    chrome: chrome_state::Chrome,
+}
+
+impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
+    fn candidates(&self, path: &std::path::Path) -> file_explorer::open_with::OpenWithCandidates {
+        let apps = {
+            let state = self.chrome.borrow();
+            let tree = state.tree();
+            doc_open::open_with_choices(
+                path,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        file_explorer::open_with::OpenWithCandidates {
+            type_label: doc_open::type_label(path),
+            apps: apps
+                .into_iter()
+                .map(|choice| file_explorer::open_with::OpenWithApp {
+                    id: choice.id,
+                    name: choice.name,
+                    is_default: choice.is_default,
+                })
+                .collect(),
+        }
+    }
+
+    fn open_with(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::open_with_app(path, &self.chrome, app_id)
+            .map(|_| ())
+            .map_err(|error| error.user_message())
+    }
+
+    fn set_default(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::set_personal_default(path, app_id)
+    }
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
@@ -1479,7 +1555,12 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .with_gap(0.0)
         .push(topbar)
         .push(workspace);
-    let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
+    let mut display_bars = Box::new(display_bars::DisplayBars::new(chrome.clone()));
+    let display_bars_ptr = &raw mut *display_bars;
+    let stack = Stack::new()
+        .push(backdrop)
+        .push(Box::new(foreground_col))
+        .push(display_bars);
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
@@ -1495,6 +1576,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             topbar: topbar_ptr,
             workspace: workspace_ptr,
             work_area: work_area_ptr,
+            display_bars: display_bars_ptr,
         },
     )
 }

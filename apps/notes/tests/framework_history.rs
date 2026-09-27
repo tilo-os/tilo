@@ -483,7 +483,7 @@ fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
         .env("XDG_DATA_HOME", &state)
         .env("TILO_NOTES_ROOT", &notebook)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
-        .env("QOS_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
+        .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
         .args(["--headless-drive", &spec.to_string()])
         .output()
         .unwrap();

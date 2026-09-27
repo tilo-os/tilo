@@ -12,6 +12,7 @@
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?, channel_class,
 //! capabilities: {id → json}, permission_profiles_v1: {key → json},
 //! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
+//! automations_v1: {shortcut id → json},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
 
@@ -24,7 +25,7 @@ use collab_types::caps::CapOverride;
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::projection::ROOM_EFFECT_RECEIPTS_KEY;
+use crate::projection::{ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_SCHEDULE_CLAIMS_KEY};
 use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
@@ -256,6 +257,20 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
                 .iter()
                 .map(|receipt| (receipt.invocation.0.to_string(), receipt)),
         );
+        put_blob_map(
+            doc,
+            &entry,
+            ROOM_AUTOMATIONS_KEY,
+            ws.shortcuts
+                .iter()
+                .map(|shortcut| (shortcut.id.clone(), shortcut)),
+        );
+        put_blob_map(
+            doc,
+            &entry,
+            ROOM_SCHEDULE_CLAIMS_KEY,
+            ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
+        );
         let Ok(strips) = doc.put_object(&entry, STRIPS_KEY, ObjType::List) else {
             continue;
         };
@@ -310,6 +325,20 @@ fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
     read_blob_map(doc, entry, TASKS_KEY).unwrap_or_default()
 }
 
+fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Shortcut> {
+    let mut shortcuts: Vec<tilo_automation::Shortcut> =
+        read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
+    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts
+}
+
+fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
+    let mut claims: Vec<tilo_automation::ScheduleClaim> =
+        read_blob_map(doc, entry, ROOM_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
+    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims
+}
+
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
     let mut receipts: Vec<WorkspaceEffectReceipt> =
         read_blob_map(doc, entry, ROOM_EFFECT_RECEIPTS_KEY).unwrap_or_default();
@@ -327,7 +356,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, capabilities, profiles, tasks and receipts come from the
+/// ownership, capabilities, profiles, tasks, receipts and shortcuts come from the
 /// document; `active_strip`, `active_group` and presence stay as the tree
 /// had them. Each workspace keeps its existing strips by id, then the
 /// document's topology and tabs are folded in: width and maximization stay
@@ -376,6 +405,8 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
+        ws.shortcuts = read_shortcuts(doc, entry);
+        ws.schedule_claims = read_schedule_claims(doc, entry);
         rebuilt.push(ws);
     }
     desktop.workspaces = rebuilt;
@@ -586,6 +617,48 @@ pub fn upsert_permission_profile(
 /// Record a task under its id.
 pub fn upsert_task(doc: &mut AutoCommit, workspace_id: WorkspaceId, task: &WorkspaceTask) -> bool {
     upsert_blob(doc, workspace_id, TASKS_KEY, &task.id, task)
+}
+
+/// Record a shortcut under its id, replacing any earlier version of it.
+pub fn upsert_shortcut(
+    doc: &mut AutoCommit,
+    workspace_id: WorkspaceId,
+    shortcut: &tilo_automation::Shortcut,
+) -> bool {
+    upsert_blob(
+        doc,
+        workspace_id,
+        ROOM_AUTOMATIONS_KEY,
+        &shortcut.id,
+        shortcut,
+    )
+}
+
+/// Delete a shortcut, so the deletion is not only local.
+pub fn remove_shortcut(doc: &mut AutoCommit, workspace_id: WorkspaceId, shortcut_id: &str) -> bool {
+    let Some(entry) = workspace_entry(doc, workspace_id) else {
+        return false;
+    };
+    let Some(shortcuts) = obj(doc, &entry, ROOM_AUTOMATIONS_KEY) else {
+        return false;
+    };
+    doc.get(&shortcuts, shortcut_id).ok().flatten().is_some()
+        && doc.delete(&shortcuts, shortcut_id).is_ok()
+}
+
+/// Record a schedule claim under its schedule, replacing the earlier one.
+pub fn upsert_schedule_claim(
+    doc: &mut AutoCommit,
+    workspace_id: WorkspaceId,
+    claim: &tilo_automation::ScheduleClaim,
+) -> bool {
+    upsert_blob(
+        doc,
+        workspace_id,
+        ROOM_SCHEDULE_CLAIMS_KEY,
+        &claim.key(),
+        claim,
+    )
 }
 
 /// Record an effect receipt under its invocation.

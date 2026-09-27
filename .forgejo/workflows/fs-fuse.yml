@@ -15,6 +15,7 @@ on:
   #     - "crates/doc/bounded-zip/**"
   #     - "crates/doc/tilo-automerge/**"
   #     - "crates/media/thumbnail/**"
+  #     - "crates/media/core/**"
   #     - "crates/runtime/runtime-fs/**"
   #     - "crates/runtime/runtime-portal/**"
   #     - "crates/system/advisory-lock/**"
@@ -66,6 +67,7 @@ on:
       - "crates/doc/tilo-automerge/**"
       - "crates/doc/pdf/**"
       - "crates/media/thumbnail/**"
+      - "crates/media/core/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/advisory-lock/**"
@@ -92,6 +94,7 @@ on:
       - "crates/sdk/font-catalog/**"
       - "crates/dev/test-env/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
       - "crates/system/tilo-clock/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
@@ -110,6 +113,8 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
       - "tools/ci/sccache.sh"
+      - "tools/ci/native-stores.sh"
+      - "tools/native-tier1.sh"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
@@ -142,10 +147,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -177,10 +179,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -191,8 +190,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Resolve the CI builder
         id: resolve
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 tools/ci/resolve_builder.py
 
   real-fuse:
@@ -208,9 +205,6 @@ jobs:
     timeout-minutes: 60
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
       options: --device /dev/fuse --cap-add SYS_ADMIN
     steps:
       - name: Checkout
@@ -308,6 +302,87 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  # The native data plane's acceptance suites (`fs --test native_tier1`,
+  # `fs-native --test it`): two daemons on two loop-mounted Btrfs stores,
+  # fanotify journal and pre-content hydration, leases, SQLite and git sync.
+  # TILO_REQUIRE_FANOTIFY=1 turns every skip into a failure. They need a
+  # kernel with pre-content fanotify events (Linux 6.14 or later with
+  # CONFIG_FANOTIFY_ACCESS_PERMISSIONS=y), Btrfs, loop devices and a
+  # privileged container. No runner has that kernel yet: the Kata guest
+  # kernels are 6.12 (x86-64) and 6.18 (ARM64), both without
+  # CONFIG_FANOTIFY_ACCESS_PERMISSIONS. The job stays skipped, instead of
+  # queueing forever, until a `runner-native-storage` pool exists and
+  # TILO_NATIVE_STORAGE_RUNNER is set to true.
+  native-tier1:
+    needs: [applicability, builder]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        needs.builder.result == 'success' && vars.TILO_NATIVE_STORAGE_RUNNER == 'true'
+      }}
+    runs-on: runner-native-storage
+    timeout-minutes: 60
+    env:
+      TILO_FS_FUSE_REQUIRED: "0"
+      TILO_REQUIRE_FUSE: "0"
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+      # Privilege applies inside the disposable guest only: loop devices,
+      # Btrfs mounts, fanotify filesystem marks and pre-content groups.
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Ensure store and scenario tools
+        run: |
+          missing=()
+          command -v mkfs.btrfs >/dev/null || missing+=(btrfs-progs)
+          command -v losetup >/dev/null || missing+=(util-linux)
+          command -v sqlite3 >/dev/null || missing+=(sqlite)
+          command -v git >/dev/null || missing+=(git-core)
+          if [ "${#missing[@]}" -gt 0 ]; then dnf install -y "${missing[@]}"; fi
+
+      # The job container's /dev is a static tmpfs with no udev, so loop
+      # nodes never appear; the guest kernel's devtmpfs has them.
+      - name: Expose kernel block device nodes
+        run: |
+          modprobe loop 2>/dev/null || true
+          if [ ! -e /dev/loop-control ]; then
+            mount -t devtmpfs devtmpfs /dev
+            mkdir -p /dev/pts /dev/shm
+            mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/loop-control
+          uname -r
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
+
+      - name: Run the native data plane acceptance suites
+        env:
+          TILO_NATIVE_TIER1_DIR: ${{ runner.temp }}/native-tier1
+        run: >-
+          bash scripts/ci-run.sh "native Tier 1 acceptance" --
+          tools/native-tier1.sh --nocapture
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### native-tier1 compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   # File Explorer's full UI/library harness links the entire toolkit. Building
   # it after the relay, shell, and FUSE harnesses filled the privileged
   # runner's container overlay, then an ordinary tempfile write failed with
@@ -329,9 +404,6 @@ jobs:
       TILO_REQUIRE_FUSE: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

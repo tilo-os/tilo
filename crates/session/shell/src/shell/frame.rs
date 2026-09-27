@@ -137,58 +137,6 @@ struct FloatingTransferProxy {
     image: ImageData,
 }
 
-/// Append-only receipt for the capture pass. It avoids cloning a scene merely to detect an
-/// externally appended mirror, while covering both ordinary encoding streams and late resources.
-#[derive(Clone, Copy)]
-struct CaptureSceneLengths {
-    path_tags: usize,
-    path_data: usize,
-    draw_tags: usize,
-    draw_data: usize,
-    transforms: usize,
-    styles: usize,
-    patches: usize,
-    color_stops: usize,
-    glyphs: usize,
-    glyph_runs: usize,
-    normalized_coords: usize,
-}
-
-impl CaptureSceneLengths {
-    fn grew_from(self, before: Self) -> bool {
-        self.path_tags > before.path_tags
-            || self.path_data > before.path_data
-            || self.draw_tags > before.draw_tags
-            || self.draw_data > before.draw_data
-            || self.transforms > before.transforms
-            || self.styles > before.styles
-            || self.patches > before.patches
-            || self.color_stops > before.color_stops
-            || self.glyphs > before.glyphs
-            || self.glyph_runs > before.glyph_runs
-            || self.normalized_coords > before.normalized_coords
-    }
-}
-
-fn capture_scene_lengths(scene: &Scene) -> CaptureSceneLengths {
-    let encoding = scene.encoding();
-    let streams = encoding.stream_offsets();
-    let resources = &encoding.resources;
-    CaptureSceneLengths {
-        path_tags: streams.path_tags,
-        path_data: streams.path_data,
-        draw_tags: streams.draw_tags,
-        draw_data: streams.draw_data,
-        transforms: streams.transforms,
-        styles: streams.styles,
-        patches: resources.patches.len(),
-        color_stops: resources.color_stops.len(),
-        glyphs: resources.glyphs.len(),
-        glyph_runs: resources.glyph_runs.len(),
-        normalized_coords: resources.normalized_coords.len(),
-    }
-}
-
 /// A produced shell scene plus a conservative retained-damage relation to its predecessor.
 /// `None` regions request a dense render; an empty region list is never emitted as sparse work.
 pub struct FramePaint {
@@ -321,6 +269,16 @@ fn night_light_multiplier(kelvin: u32) -> Color {
     Color::from_rgb8(255, green, blue)
 }
 
+/// Whether night light shows: on the schedule it follows the day/night phase,
+/// otherwise the manual switch.
+fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
+    if scheduled {
+        night.unwrap_or(false)
+    } else {
+        manual
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DesktopColorFilter {
     #[default]
@@ -330,10 +288,12 @@ enum DesktopColorFilter {
     GrayscaleInverted,
 }
 
+use settings_store::magnifier::{MagnifierState, MagnifierView};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
     color_filter: DesktopColorFilter,
-    magnifier_zoom: u8,
+    magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
@@ -341,7 +301,10 @@ impl Default for VisualAccessibility {
     fn default() -> Self {
         Self {
             color_filter: DesktopColorFilter::None,
-            magnifier_zoom: 1,
+            magnifier: MagnifierState {
+                zoom: settings_store::magnifier::OFF,
+                view: MagnifierView::Lens,
+            },
             cursor_crosshair: false,
         }
     }
@@ -360,12 +323,7 @@ impl VisualAccessibility {
                 Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
                 _ => DesktopColorFilter::None,
             },
-            magnifier_zoom: section
-                .get("magnifier_zoom")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(1)
-                .clamp(1, 3),
+            magnifier: MagnifierState::from_section(&section),
             cursor_crosshair: section
                 .get("cursor_crosshair")
                 .and_then(serde_json::Value::as_bool)
@@ -374,7 +332,7 @@ impl VisualAccessibility {
     }
 }
 
-use crate::shell::overlay_host::OutputGeometry;
+use crate::shell::output_scene::{self, OutputGeometry};
 
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
@@ -414,8 +372,21 @@ pub struct FrameBuilder {
     last_theme_store_check: Instant,
     night_light: bool,
     night_light_temperature: u32,
+    /// The day/night schedule an "Automatic" theme or a scheduled night light
+    /// follows, and whether it was night when last applied. Sunrise and sunset
+    /// change what is drawn without changing the settings file.
+    day_phase: Option<(settings_store::day_schedule::Scheduled, bool)>,
     visual_accessibility: VisualAccessibility,
+    /// Where the magnifier looks: the pointer, or the keyboard focus when it moved last.
+    magnifier_focus: crate::shell::magnifier::FocusTracker,
+    /// The keyboard focus rectangle the compositor last reported, while the magnifier is on.
+    keyboard_focus_rect: Option<Rect>,
+    /// The logical desktop the shell lays out in: the bounding box of every
+    /// display's logical rectangle.
     viewport: (f64, f64),
+    /// The physical-pixel scene the displays present from. Equal to
+    /// `viewport` unless a display draws at a scale other than 1.
+    scene_size: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
     /// display anyone has — a group sized as a fraction of it would span
@@ -458,6 +429,8 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// What the pointer shows right now, so captures draw the same image.
+    pointer_image: crate::compositor::cursor::PointerImage,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -635,8 +608,12 @@ impl FrameBuilder {
             last_theme_store_check: Instant::now(),
             night_light: false,
             night_light_temperature: 3_700,
+            day_phase: None,
             visual_accessibility: VisualAccessibility::default(),
+            magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
+            keyboard_focus_rect: None,
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
+            scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
                 // The broker fans every local app's frame to the whole room
@@ -658,6 +635,7 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            pointer_image: crate::compositor::cursor::PointerImage::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -668,21 +646,73 @@ impl FrameBuilder {
     /// compositor last reported, else a single display the size of the viewport.
     fn effective_outputs(&self) -> Vec<OutputGeometry> {
         self.outputs.clone().unwrap_or_else(|| {
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.viewport.0,
-                height: self.viewport.1,
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.viewport.0,
+                self.viewport.1,
+            )]
         })
+    }
+
+    /// The displays the shell lays out and paints across: whatever the
+    /// compositor last reported, else one unscaled display the size of the
+    /// viewport.
+    pub fn output_geometry(&self) -> Vec<OutputGeometry> {
+        self.effective_outputs()
     }
 
     /// Tell the frame builder which displays it's painting across, so a
     /// group's width is a fraction of its own monitor rather than the
-    /// combined desktop. Called at startup and on hotplug/mode change.
+    /// combined desktop, and each display draws the desktop at its own
+    /// scale. The logical viewport and the scene size follow the displays.
+    /// Called at startup and on hotplug/mode change.
     pub fn set_output_geometry(&mut self, outputs: Vec<OutputGeometry>) {
-        if self.outputs.as_deref() != Some(outputs.as_slice()) {
-            self.outputs = Some(outputs);
-            self.rebuild_layout_tree();
+        if outputs.is_empty() || self.outputs.as_deref() == Some(outputs.as_slice()) {
+            return;
+        }
+        let (lw, lh) = output_scene::logical_extent(&outputs);
+        let (sw, sh) = output_scene::scene_extent(&outputs);
+        if lw > 0.0 && lh > 0.0 {
+            self.viewport = (lw, lh);
+        }
+        if sw > 0.0 && sh > 0.0 {
+            self.scene_size = (sw, sh);
+        }
+        self.outputs = Some(outputs);
+        self.rebuild_layout_tree();
+    }
+
+    /// The physical-pixel scene [`Self::paint`] produces: what a renderer
+    /// target or a whole-desktop capture is sized to.
+    pub fn scene_size(&self) -> (f64, f64) {
+        self.scene_size
+    }
+
+    /// A logical desktop point in scene pixels, through the display it is on.
+    pub fn layout_point_to_scene(&self, p: Point) -> Point {
+        match &self.outputs {
+            Some(outputs) => output_scene::point_to_scene(outputs, p),
+            None => p,
+        }
+    }
+
+    /// The scene pixels a logical desktop rectangle covers, across every
+    /// display it touches.
+    pub fn layout_rect_to_scene(&self, rect: Rect) -> Option<Rect> {
+        match &self.outputs {
+            Some(outputs) => output_scene::rect_to_scene(outputs, rect),
+            None => Some(rect),
+        }
+    }
+
+    /// Append a scene drawn in logical desktop coordinates to a painted
+    /// scene, drawn by every display at its own scale — for compositor-owned
+    /// layers (drag feedback, audience surfaces) added after [`Self::paint`].
+    pub fn compose_layout_scene(&self, logical: &Scene, target: &mut Scene) {
+        match &self.outputs {
+            Some(outputs) => output_scene::compose(outputs, logical, target),
+            None => target.append(logical, None),
         }
     }
 
@@ -1097,10 +1127,32 @@ impl FrameBuilder {
         }
     }
 
-    /// Render the current frame into a fresh Vello scene. Caller hands it to
-    /// a renderer (offscreen/live/compositor backend).
+    /// Render the current frame into a fresh Vello scene, in scene pixels:
+    /// every display draws its part of the desktop at its own scale. Caller
+    /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        let logical = self.paint_logical();
+        self.to_scene(logical)
+    }
+
+    /// The painted desktop in scene pixels. Passes the logical scene through
+    /// untouched when no display magnifies it.
+    fn to_scene(&self, logical: Scene) -> Scene {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let mut scene = Scene::new();
+                output_scene::compose(outputs, &logical, &mut scene);
+                scene
+            }
+            _ => logical,
+        }
+    }
+
+    /// [`Self::paint`] before the displays magnify it: the desktop in
+    /// logical coordinates, the space the widget tree is laid out in.
+    fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut scene = Scene::new();
         self.host.draw(
             &mut scene,
@@ -1195,6 +1247,7 @@ impl FrameBuilder {
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1262,7 +1315,7 @@ impl FrameBuilder {
                     self.visual_accessibility.color_filter,
                     DesktopColorFilter::None
                 )
-                || self.visual_accessibility.magnifier_zoom > 1
+                || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
         let damage_regions = (!global_filter)
             .then(|| self.damage_from_sections(&sections, global_filter))
@@ -1299,6 +1352,7 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
+        let scene = self.to_scene(scene);
 
         self.last_produced_sections = Some(ProducedSections {
             backdrop: sections.backdrop,
@@ -1407,8 +1461,10 @@ impl FrameBuilder {
         // leave those neighbouring pixels from the previous frame behind.
         // Matches TILE_WIDTH/TILE_HEIGHT in vello_encoding/src/config.rs.
         const CLIP_TILE_EDGE: f64 = 16.0;
-        let rect = rect?;
-        let (width, height) = self.viewport;
+        // Sections are drawn in logical coordinates; the damage is in the
+        // scene pixels each display drew them into.
+        let rect = self.layout_rect_to_scene(rect?)?;
+        let (width, height) = self.scene_size;
         let x0 = ((rect.x0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, width);
         let y0 = ((rect.y0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, height);
         let x1 = ((rect.x1 / CLIP_TILE_EDGE).ceil() * CLIP_TILE_EDGE).clamp(0.0, width);
@@ -1463,41 +1519,54 @@ impl FrameBuilder {
         let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
         self.apply_color_filter(scene, bounds);
         let pointer = self.host.pointer_position();
-        if self.visual_accessibility.magnifier_zoom > 1
-            && let Some(pointer) = pointer
+        if self.visual_accessibility.magnifier.is_on()
+            && let Some(centre) = self.magnifier_focus.centre()
         {
-            // A lens deliberately leaves the underlying coordinate space
-            // untouched: its centre is the real hardware pointer and hence
-            // the target under the centre remains exactly clickable.
             let source = scene.clone();
-            let lens_w = 420.0_f64.min(self.viewport.0 * 0.7);
-            let lens_h = 280.0_f64.min(self.viewport.1 * 0.7);
-            let lens = Rect::from_center_size(pointer, (lens_w, lens_h));
-            let clip = RoundedRect::from_rect(lens, 18.0);
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &clip,
+            let magnify = crate::shell::magnifier::magnify(
+                centre,
+                f64::from(self.visual_accessibility.magnifier.zoom),
             );
-            let z = f64::from(self.visual_accessibility.magnifier_zoom);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-            )]
-            let magnify = Affine::translate((pointer.x, pointer.y))
-                * Affine::scale(z)
-                * Affine::translate((-pointer.x, -pointer.y));
-            scene.append(&source, Some(magnify));
-            scene.pop_layer();
-            scene.stroke(
-                &Stroke::new(3.0),
-                Affine::IDENTITY,
-                self.theme.border_focus,
-                None,
-                &clip,
-            );
+            match self.visual_accessibility.magnifier.view {
+                MagnifierView::Lens => {
+                    // A lens deliberately leaves the underlying coordinate space
+                    // untouched: scaling about the centre keeps the target there
+                    // exactly where it really is, so it remains clickable.
+                    let lens = crate::shell::magnifier::lens_rect(centre, self.viewport);
+                    let clip = RoundedRect::from_rect(lens, 18.0);
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                    scene.stroke(
+                        &Stroke::new(3.0),
+                        Affine::IDENTITY,
+                        self.theme.border_focus,
+                        None,
+                        &clip,
+                    );
+                }
+                MagnifierView::FullScreen => {
+                    // The magnified copy covers the whole screen; scaling about the
+                    // centre pans it so the screen's edges are reached as the
+                    // centre reaches them.
+                    *scene = Scene::new();
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &bounds,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                }
+            }
         }
         if self.visual_accessibility.cursor_crosshair
             && let Some(pointer) = pointer
@@ -1520,10 +1589,50 @@ impl FrameBuilder {
         }
     }
 
+    /// Pick up a shortcut's magnifier change at once, and note where the pointer and the keyboard
+    /// focus are for the magnifier to follow.
+    fn refresh_magnifier(&mut self) {
+        self.refresh_magnifier_at(Instant::now());
+    }
+
+    fn refresh_magnifier_at(&mut self, now: Instant) {
+        if self.host.take_magnifier_changed() && self.watch_configured_theme {
+            self.visual_accessibility = VisualAccessibility::load();
+        }
+        self.magnifier_focus
+            .observe(self.host.pointer_position(), self.keyboard_focus_rect, now);
+    }
+
+    /// Where the keyboard focus is on screen, for the magnifier to follow: the focused shell
+    /// control, else the focused window. Only looked up while the magnifier is on.
+    pub fn note_keyboard_focus(&mut self, focus: Option<NodeId>) {
+        self.keyboard_focus_rect = if self.visual_accessibility.magnifier.is_on() {
+            focus
+                .and_then(|id| self.node_map.get(&id))
+                // SAFETY: `node_map` belongs to the current, live layout tree.
+                .map(|&widget| unsafe { (*widget).get_rect() })
+                .filter(|rect| rect.area() > 0.0)
+                .or_else(|| self.host.focused_window_rect())
+        } else {
+            None
+        };
+    }
+
     fn refresh_display_comfort(&mut self) {
         let settings = settings_store::load();
-        self.night_light =
-            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
+        let scheduled_night_light =
+            settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
+        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
+            .is_some_and(settings_store::day_schedule::is_automatic);
+        self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
+            let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
+            (schedule, schedule.is_night(ui::theme::local_moment()))
+        });
+        self.night_light = night_light_on(
+            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false),
+            scheduled_night_light,
+            self.day_phase.map(|(_, night)| night),
+        );
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1552,7 +1661,10 @@ impl FrameBuilder {
         self.last_theme_store_check = Instant::now();
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if stamp == self.theme_store_stamp {
+        let phase_changed = self
+            .day_phase
+            .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
+        if stamp == self.theme_store_stamp && !phase_changed {
             return;
         }
         self.theme_store_stamp = stamp;
@@ -1889,15 +2001,19 @@ impl FrameBuilder {
     /// recording status out of the encoded pixels.
     /// Returns whether compositor-owned capture chrome appended encoded scene data.
     pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
-        let before = capture_scene_lengths(scene);
+        let mut logical = Scene::new();
         self.host.draw_capture_overlays(
-            scene,
+            &mut logical,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
         );
-        capture_scene_lengths(scene).grew_from(before)
+        if logical.encoding_eq(&Scene::new()) {
+            return false;
+        }
+        self.compose_layout_scene(&logical, scene);
+        true
     }
 
     pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
@@ -2230,6 +2346,27 @@ impl FrameBuilder {
         self.host.pointer_position()
     }
 
+    /// The pointer image the compositor is showing, for captures.
+    pub fn pointer_image(&self) -> &crate::compositor::cursor::PointerImage {
+        &self.pointer_image
+    }
+
+    pub fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        self.pointer_image = image;
+    }
+
+    /// The cursor the chrome under `point` asks for: the smallest widget
+    /// containing the point that names one wins, so a nested button beats
+    /// the bar around it — the same rule `ui::App` applies to app windows.
+    pub fn chrome_cursor_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<winit::window::CursorIcon> {
+        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
+        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
+        best.map(|(_, icon)| icon)
+    }
+
     /// Inner node id (host's root child). Required by the input dispatch
     /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
     /// `None` only in the narrow window where `rebuild_layout_tree` just
@@ -2359,11 +2496,18 @@ impl FrameBuilder {
         &mut self.text_renderer
     }
 
-    /// Resize the viewport, triggering a structural rebuild on the next
-    /// `relayout` (the wrapper root node carries an explicit extent). Used
-    /// by the compositor's `BackendEvent::OutputResized` handler.
+    /// Resize the scene the backend presents, triggering a structural
+    /// rebuild on the next `relayout` (the wrapper root node carries an
+    /// explicit extent). Without display geometry the logical viewport is
+    /// this same size; with it, [`Self::set_output_geometry`] owns the
+    /// logical viewport. Used by the compositor's
+    /// `BackendEvent::OutputResized` handler.
     pub fn set_viewport(&mut self, viewport: (u32, u32)) {
-        self.viewport = (f64::from(viewport.0), f64::from(viewport.1));
+        let size = (f64::from(viewport.0), f64::from(viewport.1));
+        self.scene_size = size;
+        if self.outputs.is_none() {
+            self.viewport = size;
+        }
         self.rebuild_layout_tree();
     }
 
@@ -2577,6 +2721,25 @@ impl FrameBuilder {
         for (name, rect) in host.power_menu_semantic_rects() {
             put(name.into(), rect);
         }
+    }
+}
+
+fn chrome_cursor_walk(
+    widget: &dyn ui::widget::Widget,
+    point: vello::kurbo::Point,
+    best: &mut Option<(f64, winit::window::CursorIcon)>,
+) {
+    let rect = widget.get_rect();
+    if rect.contains(point)
+        && let Some(icon) = widget.cursor_shape(point)
+    {
+        let area = rect.area().max(0.0);
+        if best.is_none_or(|(smallest, _)| area < smallest) {
+            *best = Some((area, icon));
+        }
+    }
+    for child in widget.children() {
+        chrome_cursor_walk(child, point, best);
     }
 }
 
@@ -3246,6 +3409,50 @@ mod tests {
     }
 
     #[test]
+    fn the_magnifier_centres_on_the_keyboard_focus_once_it_moves_past_a_resting_pointer() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        fb.visual_accessibility.magnifier.zoom = 2;
+        let t0 = Instant::now();
+        let pointer = Point::new(20.0, 700.0);
+        fb.host.note_pointer(pointer);
+        fb.note_keyboard_focus(None);
+        fb.refresh_magnifier_at(t0);
+        let focused = fb.focusable_order().into_iter().find_map(|id| {
+            let &widget = fb.node_map.get(&id)?;
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let rect = unsafe { (*widget).get_rect() };
+            (rect.area() > 0.0 && rect.center() != pointer).then_some((id, rect))
+        });
+        let Some((node, rect)) = focused else {
+            panic!("the desktop offers a focusable control");
+        };
+        assert_eq!(
+            fb.magnifier_focus.centre(),
+            Some(pointer),
+            "before the focus moves, the pointer leads"
+        );
+
+        fb.note_keyboard_focus(Some(node));
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(50));
+        assert_eq!(fb.magnifier_focus.centre(), Some(rect.center()));
+
+        let moved = Point::new(40.0, 690.0);
+        fb.host.note_pointer(moved);
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(100));
+        assert_eq!(fb.magnifier_focus.centre(), Some(moved));
+    }
+
+    #[test]
+    fn keyboard_focus_is_not_tracked_while_the_magnifier_is_off() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let node = fb.focusable_order().into_iter().next();
+        fb.note_keyboard_focus(node);
+        assert_eq!(fb.keyboard_focus_rect, None);
+    }
+
+    #[test]
     fn focused_terminal_gets_plain_tab_before_focus_traversal() {
         let mut fb = FrameBuilder::new((1280, 800));
         fb.relayout();
@@ -3380,6 +3587,14 @@ mod tests {
         assert!(!floating_transfer_proxy_needed(false, true, false, true));
         assert!(floating_transfer_proxy_needed(true, false, true, false));
         assert!(!floating_transfer_proxy_needed(true, false, false, false));
+    }
+
+    #[test]
+    fn scheduled_night_light_follows_the_phase_not_the_switch() {
+        assert!(night_light_on(false, true, Some(true)));
+        assert!(!night_light_on(true, true, Some(false)));
+        assert!(night_light_on(true, false, Some(false)));
+        assert!(!night_light_on(false, false, Some(true)));
     }
 
     #[test]
@@ -3576,7 +3791,7 @@ mod tests {
             .expect("restored tab must publish its configure rect before the client can draw");
         assert!(rect.width() > 0.0 && rect.height() > 0.0);
         let (width, height) = store
-            .take_pending_configure(SURFACE, 1.0)
+            .take_pending_configure(SURFACE)
             .expect("layout must make the initial client configure available without input");
         assert!(
             fb.needs_animation_frame(),

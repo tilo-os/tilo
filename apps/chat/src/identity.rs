@@ -133,7 +133,7 @@ fn color_from_bytes(b: &[u8]) -> usize {
     (fnv1a(b) % 8) as usize
 }
 
-/// [`color_from_bytes`], for a caller outside this module that has taken a
+/// `color_from_bytes`, for a caller outside this module that has taken a
 /// new id and has to move the colour with it. A colour derived from an id
 /// the peer no longer authors under is a caret that disagrees with the
 /// avatar beside it.
@@ -182,7 +182,7 @@ fn initials_of(name: &str) -> String {
     if s.is_empty() { "Y".to_string() } else { s }
 }
 
-/// [`initials_of`], for a caller that has just learned the name the room
+/// `initials_of`, for a caller that has just learned the name the room
 /// gave this participant and has to move the monogram with it.
 pub fn initials_for(name: &str) -> String {
     initials_of(name)

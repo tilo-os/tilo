@@ -75,15 +75,15 @@ review, a minimum context window) and a privacy class:
 
 | Class | Where it may run | Tasks |
 | --- | --- | --- |
-| Open | Any configured provider | `agent.planning` |
+| Open | Any configured provider | `agent.planning`, `agent.transform` |
 | Sensitive | This device, unless the person explicitly allows a provider | `feedback.review` |
 | Device only | Only the model manager's supervised runtime | `photos.vision`, `photos.faces` |
 
 The registry is compiled into the gateway, so a sandboxed app cannot declare
 its own privacy class. Adding a feature's task is adding a `TaskSpec` there.
 Tasks whose request the caller writes use the `Plan` verb; tasks whose prompt
-the gateway owns use a fixed verb (`AnalyzeImage`, `ClusterFaces`,
-`ReviewTrace`).
+the gateway builds use a fixed verb (`Transform`, `AnalyzeImage`,
+`ClusterFaces`, `ReviewTrace`).
 
 The gateway resolves `(consumer, task, agent)` with `assign::resolve`, most
 specific first: an assignment for this agent, then for the task, then the

@@ -304,7 +304,7 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
 /// the document stores (id and birthday as strings, the repeated rows as the
 /// same [`Labeled`]/[`Address`] shapes the doc holds). Carrying the document
 /// shape keeps [`Action::apply`] a pure write with no re-derivation, and makes
-/// [`Self::from_contact`]/[`Self::to_contact`] lossless round-trips.
+/// [`Self::from_contact`]/`Self::to_contact` lossless round-trips.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactData {
     pub id: String,

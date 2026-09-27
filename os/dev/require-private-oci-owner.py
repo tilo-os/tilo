@@ -7,14 +7,14 @@ import sys
 from http.client import HTTPSConnection
 
 
-OWNER_HOST = "code.podesta.ai"
-OWNER_PATH = "/api/v1/orgs/qos"
+OWNER_HOST = "code.tilo.so"
+OWNER_PATH = "/api/v1/orgs/tilo"
 
 
 def owner_is_private(payload: object) -> bool:
     return (
         isinstance(payload, dict)
-        and payload.get("username") == "qos"
+        and payload.get("username") == "tilo"
         and payload.get("visibility") == "private"
     )
 
@@ -41,7 +41,7 @@ def main() -> int:
     if not owner_is_private(owner):
         print("Refusing to publish Lenovo firmware to a non-private OCI owner", file=sys.stderr)
         return 1
-    print("Verified private OCI owner qos for Lenovo firmware publication")
+    print("Verified private OCI owner tilo for Lenovo firmware publication")
     return 0
 
 

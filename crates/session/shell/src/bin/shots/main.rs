@@ -65,6 +65,10 @@ struct Args {
     /// Per-channel delta below which a pixel still counts as "match" in
     /// `check` mode. Tunable for noisy GPUs.
     diff_threshold: u8,
+    /// Multi-output arrangement from `--outputs`. When set, the viewport
+    /// is the arrangement's combined extent and strips resolve window
+    /// widths against each output, exactly as the live compositor does.
+    outputs: Option<Vec<shell::compositor::backend::Output>>,
     /// Maximum number of differing pixels per image before a file is
     /// reported as DIFF in `check` mode. Lets CI tolerate the small
     /// number of pixels that flicker between renders because of live
@@ -170,6 +174,7 @@ impl Args {
             baseline: None,
             diff_threshold: 4,
             max_diff_pixels: 0,
+            outputs: None,
         };
         let mut scenes_explicit = false;
 
@@ -227,6 +232,14 @@ impl Args {
                 args.step_duration = take_value(rest, "--step-duration")?
                     .parse()
                     .map_err(|e| format!("--step-duration: {e}"))?;
+            }
+            "--outputs" => {
+                let value = take_value(rest, "--outputs")?;
+                let outputs =
+                    shell::compositor::backend::headless::resolve_output_arrangement(&value)
+                        .map_err(|e| format!("--outputs: {e}"))?;
+                (args.width, args.height) = shell::compositor::backend::combined_geometry(&outputs);
+                args.outputs = Some(outputs);
             }
             "--list-scenarios" => args.list_scenarios = true,
             "--sweep" => args.sweep = Some(apply_sweep_flag(rest)?),
@@ -301,6 +314,11 @@ impl Args {
             if args.out == *"target/tilo-shots" {
                 args.out = PathBuf::from("target/tilo-shots.mp4");
             }
+        }
+        if args.outputs.is_some() && args.sweep.is_some() {
+            return Err(
+                "--outputs fixes the viewport to the arrangement's extent; drop --sweep".into(),
+            );
         }
         if args.mode == Mode::Window && (args.sweep.is_some() || args.per_frame.is_some()) {
             return Err("--sweep / --per-frame are not supported in window mode".into());
@@ -377,6 +395,10 @@ Common flags:\n\
                         former, ./target/tilo-shots.mp4 for the latter)\n\
   --width N             viewport width  (default 1600)\n\
   --height N            viewport height (default 900)\n\
+  --outputs ARRANGEMENT lay the shell out across several displays instead of\n\
+                        one; ARRANGEMENT is a fixture ({fixtures})\n\
+                        or a spec like 2560x1600@2,1920x1080@1+2560+0,1920x1080r90.\n\
+                        Overrides --width/--height with the combined extent\n\
   --fps N               [recording] frame rate (default 30)\n\
   --step-duration S     [recording] seconds of video per scenario step (default 1.0)\n\
   --sweep [LIST]        run at multiple resolutions and write to\n\
@@ -411,6 +433,11 @@ Examples:\n\
   shots --mode window    --scenario workspace_switch\n\
   shots check --baseline target/baseline --out target/current\n",
         default_sweep = default_sweep.join(","),
+        fixtures = shell::compositor::backend::headless::OUTPUT_FIXTURES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", "),
         scene_list = scene_list,
         scenarios = scenario_list.join("\n"),
     );
@@ -484,14 +511,22 @@ fn run_capture(args: &Args) -> Result<(), String> {
 }
 
 fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> Result<(), String> {
+    let outputs = args.outputs.as_deref();
+    let new_driver = || {
+        let mut driver = ShellDriver::new(viewport);
+        if let Some(outputs) = outputs {
+            driver.set_outputs(outputs);
+        }
+        driver
+    };
     match args.mode {
         Mode::Offscreen => match args.scenario.as_deref() {
             Some(name) => {
                 let scenario = require_scenario(name);
-                let mut driver = ShellDriver::new(viewport);
+                let mut driver = new_driver();
                 mode::offscreen::run_scenario(&mut driver, &scenario, out, args.per_frame)?;
             }
-            None => mode::offscreen::run_scenes(&args.scenes, out, viewport)?,
+            None => mode::offscreen::run_scenes(&args.scenes, out, viewport, outputs)?,
         },
         Mode::Headless => {
             let Some(name) = args.scenario.as_deref() else {
@@ -499,7 +534,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
                 return Ok(());
             };
             let scenario = require_scenario(name);
-            let mut driver = ShellDriver::new(viewport);
+            let mut driver = new_driver();
             mode::headless::run_scenario(&mut driver, &scenario, out, args.per_frame)?;
         }
         Mode::Recording => {
@@ -508,7 +543,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
                 return Ok(());
             };
             let scenario = require_scenario(name);
-            let mut driver = ShellDriver::new(viewport);
+            let mut driver = new_driver();
             let summary = mode::recording::run_scenario(
                 &mut driver,
                 &scenario,

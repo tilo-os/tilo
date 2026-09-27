@@ -7,7 +7,7 @@
 //! paginated text with highlight bands behind glyphs and margin annotation
 //! glyphs doesn't map onto stock layout widgets: the surface is drawn
 //! straight into the Vello [`Scene`] via [`crate::paginate`] and
-//! [`crate::paint`]. `draw` records clickable [`Hit`] regions; `handle_event`
+//! [`crate::paint`]. `draw` records clickable `Hit` regions; `handle_event`
 //! hit-tests them on the next click; a frame always precedes input so
 //! regions are never stale.
 //!

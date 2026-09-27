@@ -376,11 +376,14 @@ fn nearby_source_from_grants(
 }
 
 mod action_host;
+mod app_consent;
 mod inspection;
+mod launchable;
 
 pub use inspection::{
     INSPECTION_TIMEOUT, InspectCaller, InspectableApp, InspectionJob, SemanticChange,
 };
+pub(crate) use launchable::launchable_provider;
 
 fn nearby_policy_enabled(
     policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
@@ -636,6 +639,20 @@ impl BrokerActor {
             is_agent: true,
         }
     }
+
+    /// Who this actor is to `workspace`'s capability policy. An application
+    /// (`app:<package id>`) holds no role there: only what the workspace
+    /// grants that application.
+    pub(crate) fn policy_in(&self, workspace: &crate::shell::state::Workspace) -> Actor {
+        if let Some(app) = self.id.strip_prefix("app:") {
+            return Actor::app(app).in_room(workspace.room.to_string());
+        }
+        if self.is_agent {
+            workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
+        } else {
+            workspace.actor_for_person(&self.id)
+        }
+    }
 }
 
 impl AdmittedJoinIdentity {
@@ -674,7 +691,27 @@ pub(crate) fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     }
 }
 
+/// Whether `evidence` is what `offered`'s confirmation policy asks for.
+/// Minting the grant that binds it to one delivery is
+/// [`CapnpBrokerState::confirmation_token`]'s job.
+fn confirmation_satisfied(
+    offered: &PublishedAction,
+    evidence: Option<&tilo_actions::remote::Confirmation>,
+) -> bool {
+    use tilo_actions::remote::Confirmation;
+    match (&offered.contract.advertised_confirmation(), evidence) {
+        (tilo_actions::ConfirmationPolicy::None, _)
+        | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => true,
+        (
+            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
+            Some(Confirmation::Phrase(phrase)),
+        ) => phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected,
+        _ => false,
+    }
+}
+
 /// The capability verb an action's declared permission requires, if any.
+/// The one mapping every admission and catalogue check uses.
 fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
     match requirement {
         tilo_actions::PermissionRequirement::None => None,
@@ -877,7 +914,7 @@ enum ContextEnvelope {
 }
 
 /// Input contract published for one live application action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PublishedInput {
     None,
     Text {
@@ -888,7 +925,7 @@ pub enum PublishedInput {
 }
 
 /// One inert operation published by a live application connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedAction {
     pub resource: String,
     pub action: String,
@@ -1790,9 +1827,9 @@ pub struct CapnpBrokerState {
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Monotonic generation for shell-side retained action projections.
     surface_generation: AtomicU64,
-    /// Last safe launchable/durable projection per app and workspace. This is
-    /// session catalogue state, never an executable capability by itself.
-    archived_surfaces: Mutex<HashMap<(String, String, String), PublishedSurface>>,
+    /// Last launchable projection per app, workspace and record, kept across
+    /// restarts. Catalogue state, never an executable capability by itself.
+    launchable: launchable::LaunchableCatalogue,
     /// Pull-only, revisioned directories owned by currently connected apps.
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
@@ -1817,6 +1854,20 @@ pub struct CapnpBrokerState {
     /// Remote-action invocation ids to broker jobs, shared by every caller
     /// path so a retry is idempotent whichever way it arrives.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
+    /// Shortcut runs the door finished, until history records them.
+    shortcut_runs: crate::shell::automation_host::ShortcutRuns,
+    /// What each application declared it may do on the action door under
+    /// its own identity.
+    app_action_access: std::sync::RwLock<crate::shell::app_action_access::AccessResolver>,
+    /// Who is asked before an application uses another application's
+    /// action it holds no grant for. Nobody, until the compositor installs
+    /// its sheet: such a request is then refused.
+    app_action_consent: std::sync::RwLock<
+        Option<Arc<dyn crate::shell::app_action_consent::AppActionConsentPrompter>>,
+    >,
+    /// Applications with a grant question on screen, by room: one at a
+    /// time each, so an app cannot bury the person in sheets.
+    app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2285,6 +2336,19 @@ fn apply_permission_profile_operation(
             for capability in capabilities {
                 tree.doc_insert_capability(workspace_id, &capability);
             }
+        }
+        operation @ (crate::shell::workspace_settings::PermissionProfileOperation::GrantAppAction {
+            ..
+        }
+        | crate::shell::workspace_settings::PermissionProfileOperation::RevokeAppAction {
+            ..
+        }) => {
+            crate::shell::workspace_settings::apply_app_action_operation(
+                tree,
+                workspace_id,
+                caller,
+                &operation,
+            )?;
         }
     }
     Ok(())
@@ -2916,7 +2980,7 @@ impl CapnpBrokerState {
                 replay: std::sync::OnceLock::new(),
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
-                archived_surfaces: Mutex::new(HashMap::new()),
+                launchable: launchable::LaunchableCatalogue::new(),
                 action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
                 action_directory_roots: Mutex::new(HashMap::new()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
@@ -2932,6 +2996,12 @@ impl CapnpBrokerState {
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
+                shortcut_runs: crate::shell::automation_host::ShortcutRuns::default(),
+                app_action_access: std::sync::RwLock::new(
+                    crate::shell::app_action_access::installed_resolver(),
+                ),
+                app_action_consent: std::sync::RwLock::new(None),
+                app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
@@ -3048,14 +3118,13 @@ impl CapnpBrokerState {
             })
             .collect::<std::collections::HashSet<_>>();
         let mut result = live;
-        if let Ok(archived) = self.archived_surfaces.lock() {
-            result.extend(
-                archived
-                    .iter()
-                    .filter(|(key, _)| !live_keys.contains(*key))
-                    .map(|(_, surface)| surface.clone()),
-            );
-        }
+        result.extend(self.launchable.surfaces().into_iter().filter(|surface| {
+            !live_keys.contains(&(
+                surface.app_id.clone(),
+                surface.route.cluster_id.clone(),
+                surface.route.record_id.clone(),
+            ))
+        }));
         result
     }
 
@@ -3393,11 +3462,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 capnp::Error::failed("the application workspace is no longer hosted".into())
             })?;
-        let caller = if actor.is_agent {
-            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            workspace.actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(workspace);
         let allowed = workspace.decide(
             &caller,
             &ResourceRef::Action {
@@ -3441,12 +3506,7 @@ impl CapnpBrokerState {
             .iter()
             .position(|workspace| workspace.room.to_string() == cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if actor.is_agent {
-            tree.desktop.workspaces[workspace_index]
-                .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(&tree.desktop.workspaces[workspace_index]);
         let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
             &tree.desktop.workspaces[workspace_index],
             true,
@@ -3608,15 +3668,15 @@ impl CapnpBrokerState {
         actor: &str,
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::{ActionHostError, Confirmation};
-        match (&offered.contract.advertised_confirmation(), evidence) {
-            (tilo_actions::ConfirmationPolicy::None, _) => return Ok(None),
-            (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => {}
-            (
-                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
-                Some(Confirmation::Phrase(phrase)),
-            ) if phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected => {}
-            _ => return Err(ActionHostError::ConfirmationRequired),
+        use tilo_actions::remote::ActionHostError;
+        if matches!(
+            offered.contract.advertised_confirmation(),
+            tilo_actions::ConfirmationPolicy::None
+        ) {
+            return Ok(None);
+        }
+        if !confirmation_satisfied(offered, evidence) {
+            return Err(ActionHostError::ConfirmationRequired);
         }
         let unavailable = || ActionHostError::Unavailable {
             reason: "the confirmation registry is unavailable".into(),
@@ -3752,11 +3812,7 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if actor.is_agent {
-            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            workspace.actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(workspace);
         let target = ResourceRef::Action {
             app: offered.0.app_id.clone(),
             action: offered.1.action.clone(),
@@ -3766,15 +3822,9 @@ impl CapnpBrokerState {
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
-        let verb = match offered.1.contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| workspace.decide(&caller, &target, verb) != CapDecision::Allow) {
+        if permission_verb(offered.1.contract.permission)
+            .is_some_and(|verb| workspace.decide(&caller, &target, verb) != CapDecision::Allow)
+        {
             return Err("the caller is not allowed to invoke that application action".into());
         }
         drop(tree);
@@ -4686,6 +4736,7 @@ impl CapnpBrokerState {
             }
             CollabEvent::ScrollbackBatch { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
+            | CollabEvent::ChannelAccess { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::Inspection { .. }
@@ -5205,6 +5256,51 @@ fn nearby_transfer_reply(
     Promise::ok(())
 }
 
+impl CapnpChannelHandle {
+    /// Answer an application's invocation once the person has answered
+    /// whether it may: denied, refused; allowed, recorded and served, and a
+    /// grant given once removed as soon as the call is decided.
+    fn serve_after_consent(
+        &self,
+        consent: app_consent::PendingConsent,
+        host: crate::shell::remote_actions::BrokerActionHost,
+        caller: tilo_actions::remote::Caller,
+        message: tilo_actions::remote::RemoteActionMessage,
+        mut results: channel_handle::RemoteActionResults,
+    ) -> Promise<(), capnp::Error> {
+        use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse, serve};
+        let state = Arc::clone(&self.state);
+        Promise::from_future(async move {
+            let mut consent = consent;
+            let answer = (&mut consent.answer)
+                .await
+                .unwrap_or(crate::shell::app_action_consent::AppActionConsent::Deny);
+            state.finish_app_action_consent(&consent);
+            let reply = match state.record_app_action_grant(&consent, answer) {
+                None => refuse(&message, ActionHostError::NotPermitted),
+                Some(grant) => {
+                    let answered = match serve(&host, &caller, message) {
+                        Some(answer) => answer.await,
+                        None => None,
+                    };
+                    if grant.consumed_on_use {
+                        state.consume_app_action_grant(&grant);
+                    }
+                    answered
+                }
+            };
+            let reply = reply.ok_or_else(|| {
+                capnp::Error::failed("the action host dropped the request".into())
+            })?;
+            let bytes = RemoteActionFrame::new(reply)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
@@ -5213,7 +5309,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::RemoteActionParams,
         mut results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
-        use tilo_actions::remote::{RemoteActionFrame, serve};
+        use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage, serve};
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -5232,12 +5328,76 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let caller = current.caller(&self.route().cluster_id);
+        let route = self.route();
+        let person = current.caller(&route.cluster_id);
+        let person_caller = person.clone();
+        // A delegated agent is its own principal already; any other
+        // connection is an application, which acts as itself.
+        let caller = if current.agent_id.is_some() {
+            person
+        } else {
+            let app_id = self
+                .launch
+                .as_ref()
+                .map_or(route.app_id.as_str(), |launch| launch.app_id.as_str());
+            match self.state.app_door(&person, app_id, &request.message) {
+                Ok(caller) => caller,
+                Err(refusal) => {
+                    let bytes = match RemoteActionFrame::new(*refusal).encode() {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                    };
+                    results.get().set_frame(&bytes);
+                    return Promise::ok(());
+                }
+            }
+        };
         let host = crate::shell::remote_actions::BrokerActionHost::for_connection(
             crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(&self.state)),
             self.peer_id,
             self.launch.clone(),
         );
+        // An application reaching for another app's action it holds no
+        // grant for: the person using it is asked first, or it is refused.
+        if let (
+            tilo_actions::remote::CallerPrincipal::App(app_id),
+            RemoteActionMessage::Invoke(invoke),
+        ) = (caller.principal(), &request.message)
+        {
+            match self
+                .state
+                .app_action_consent(&person_caller, app_id, invoke)
+            {
+                app_consent::ConsentStep::Serve => {}
+                app_consent::ConsentStep::Refuse => {
+                    let refused =
+                        RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                            invocation: invoke.invocation,
+                            status: tilo_actions::remote::ReceiptStatus::Rejected {
+                                error: tilo_actions::remote::ActionHostError::NotPermitted,
+                            },
+                        });
+                    return match RemoteActionFrame::new(refused).encode() {
+                        Ok(bytes) => {
+                            results.get().set_frame(&bytes);
+                            Promise::ok(())
+                        }
+                        Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
+                    };
+                }
+                app_consent::ConsentStep::Ask(consent) => {
+                    return self.serve_after_consent(
+                        consent,
+                        host,
+                        caller,
+                        request.message,
+                        results,
+                    );
+                }
+            }
+        }
         let Some(answer) = serve(&host, &caller, request.message) else {
             return Promise::err(capnp::Error::failed(
                 "only remote-action requests are answered".into(),
@@ -6570,36 +6730,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 actions,
                 live: true,
             };
-            let archived_actions = surface
-                .actions
-                .iter()
-                .filter(|action| {
-                    !matches!(
-                        action.contract.discovery,
-                        tilo_actions::DiscoveryScope::Live
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let archive_key = (
-                surface.app_id.clone(),
-                surface.route.cluster_id.clone(),
-                surface.route.record_id.clone(),
-            );
-            if let Ok(mut archived) = state.archived_surfaces.lock() {
-                if archived_actions.is_empty() {
-                    archived.remove(&archive_key);
-                } else {
-                    archived.insert(
-                        archive_key,
-                        PublishedSurface {
-                            actions: archived_actions,
-                            live: false,
-                            ..surface.clone()
-                        },
-                    );
-                }
-            }
+            state.launchable.retain(&surface);
             state
                 .surfaces
                 .lock()
@@ -7459,6 +7590,77 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(_) => {
                 return Promise::err(capnp::Error::failed(
                     "Wi-Fi continuity reply exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        results.get().set_reply_json(&reply);
+        Promise::ok(())
+    }
+
+    fn speaker_command(
+        self: Rc<Self>,
+        params: channel_handle::SpeakerCommandParams,
+        mut results: channel_handle::SpeakerCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let route = self.route();
+        if route.app_id != "so.tilo.settings" {
+            return Promise::err(capnp::Error::failed(
+                "speaker groups are managed only by the certified Settings application".into(),
+            ));
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "speaker command app id must match the certified connection route".into(),
+            ));
+        }
+        let bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= runtime_collab::MAX_SPEAKER_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker command exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command = match serde_json::from_slice::<runtime_collab::SpeakerCommand>(bytes) {
+            Ok(command) if command.valid() => command,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker command is structurally invalid".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let Some(network) = self.state.workspace_control_network() else {
+            return Promise::err(capnp::Error::failed(
+                "certified personal-device network is unavailable".into(),
+            ));
+        };
+        let reply = crate::shell::speaker_settings::handle(&network, command);
+        let reply = match serde_json::to_vec(&reply) {
+            Ok(reply) if reply.len() <= runtime_collab::MAX_SPEAKER_WIRE_BYTES => reply,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker reply exceeds the local protocol bound".into(),
                 ));
             }
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
@@ -8847,6 +9049,9 @@ pub fn spawn(
     );
     if let Some(network) = workspace_control_network.as_ref() {
         state.attach_workspace_control_network(network);
+    }
+    if let Some(path) = launchable::LaunchableCatalogue::session_path() {
+        state.launchable.persist_at(&path);
     }
     fanout.attach_capnp(Arc::clone(&state));
 
@@ -11921,28 +12126,42 @@ pub(crate) mod tests {
             }],
             live: false,
         };
-        state.archived_surfaces.lock().expect("archive").insert(
-            (
-                launchable.app_id.clone(),
-                launchable.route.cluster_id.clone(),
-                launchable.route.record_id.clone(),
-            ),
-            launchable,
-        );
+        state.launchable.retain(&launchable);
         state.surfaces.lock().expect("surfaces").remove(&7);
         let archived = state.published_surfaces();
         assert_eq!(archived.len(), 1);
         assert!(!archived[0].live);
         assert_eq!(archived[0].actions[0].action, "new-window");
+        let offered = catalogue_text(
+            &state,
+            &tilo_actions::remote::Caller::local_person("owner")
+                .in_room(&archived[0].route.cluster_id),
+        );
+        assert!(
+            offered.contains("new-window")
+                && offered.contains(&launchable::launchable_provider(&archived[0])),
+            "a closed app's launchable action is offered under a provider that launches it"
+        );
         assert!(
             !catalogue_text(
                 &state,
-                &tilo_actions::remote::Caller::local_person("owner")
+                &tilo_actions::remote::Caller::local_person("stranger")
                     .in_room(&archived[0].route.cluster_id),
             )
             .contains("new-window"),
-            "archived launchable descriptors are not directly invokable through this protocol"
+            "a caller who may not launch the app is not offered its launchable actions"
         );
+    }
+
+    #[test]
+    fn permission_verb_maps_every_requirement_once() {
+        use tilo_actions::PermissionRequirement as Requirement;
+        assert_eq!(permission_verb(Requirement::None), None);
+        assert_eq!(permission_verb(Requirement::Read), Some(Verb::Read));
+        assert_eq!(permission_verb(Requirement::Comment), Some(Verb::Comment));
+        assert_eq!(permission_verb(Requirement::Write), Some(Verb::Write));
+        assert_eq!(permission_verb(Requirement::Invite), Some(Verb::Invite));
+        assert_eq!(permission_verb(Requirement::Admin), Some(Verb::Admin));
     }
 
     /// The catalogue `caller` is offered, as searchable text.

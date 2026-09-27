@@ -42,10 +42,10 @@ Before enabling the unfinished features, delivery still requires:
 - Completed synchronization orchestration and recovery, native filesystem
   qualification, and reviewed first-login copying across the Full-OS reboot.
 
-The [September 22 installer-release run](https://code.podesta.ai/qos/qos/actions/runs/17758)
+The [September 22 installer-release run](https://code.tilo.so/tilo/tilo/actions/runs/17758)
 still refused to build installation media because it had no signed,
 digest-pinned multi-architecture OS image. The earlier
-[successful ARM development finalization](https://code.podesta.ai/qos/qos/actions/runs/12058)
+[successful ARM development finalization](https://code.tilo.so/tilo/tilo/actions/runs/12058)
 does not satisfy that release input or establish USB-free boot support.
 
 The pending Connected history implementation is also failing its maximum

@@ -68,7 +68,12 @@ impl Cli {
                     name: slot,
                     slot_flag,
                     ..
-                },
+                }
+                | SlotCommand::Apps(SlotAppsCommand::Install {
+                    name: slot,
+                    slot_flag,
+                    ..
+                }),
             ),
         ) = &mut self.command
         {
@@ -142,9 +147,9 @@ pub enum Command {
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
     },
-    /// Type, press keys, move and click on a headful slot's own seat (real libinput path).
+    /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
-        after_help = "Examples:\n  tilo-vm input key ctrl+alt+t\n  tilo-vm input key super Return\n  tilo-vm input type 'hello world'\n  tilo-vm input move 400 300\n  tilo-vm input click left --at 400 300\n  tilo-vm input --slot review-b click right\n\nHeadless slots have no seat: drive them with tilo-vm control."
+        after_help = "Examples:\n  tilo-vm input key ctrl+alt+t\n  tilo-vm input key super Return\n  tilo-vm input type 'hello world'\n  tilo-vm input move 400 300\n  tilo-vm input click left --at 400 300\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n  tilo-vm input pen drag 100 100 500 300\n  tilo-vm input gamepad press a\n  tilo-vm input gamepad stick left 0 -100\n  tilo-vm input --slot review-b click right\n\nEvery device is a uinput device plugged into the slot's seat, so the\ncompositor gets it through the kernel like real hardware (libinput; the\nseat's evdev access for game controllers). Keyboard and pointer exist from\nthe first input; the touchscreen, pen and gamepad appear the first time a\ncommand uses them. Headless slots have no seat: drive them with tilo-vm\ncontrol."
     )]
     Input {
         /// The slot whose seat gets the input (default: your slot).
@@ -302,7 +307,10 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
                 )
                 | Command::Slot(
-                    SlotCommand::List | SlotCommand::Show { .. } | SlotCommand::Exec { .. }
+                    SlotCommand::List
+                        | SlotCommand::Show { .. }
+                        | SlotCommand::Exec { .. }
+                        | SlotCommand::Apps(SlotAppsCommand::List)
                 )
                 | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
                     dry_run: true,
@@ -360,12 +368,14 @@ pub enum InputCommand {
         /// The text to type.
         text: String,
     },
-    /// Move the pointer to output pixel X, Y.
-    #[command(after_help = "Examples:\n  tilo-vm input move 400 300")]
+    /// Move the pointer to desktop pixel X, Y.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input move 400 300\n\nOn a slot with one output, X and Y are that output's pixels. On a slot made\nwith --outputs they are logical desktop pixels, outputs left to right: with\n2560x1600@2,1920x1080 the second monitor starts at x 1280."
+    )]
     Move {
-        /// Pixels from the output's left edge.
+        /// Pixels from the desktop's left edge.
         x: u32,
-        /// Pixels from the output's top edge.
+        /// Pixels from the desktop's top edge.
         y: u32,
     },
     /// Click a button (left, right, middle), optionally at X, Y.
@@ -379,6 +389,154 @@ pub enum InputCommand {
         /// Click at output pixel X, Y (default: where the pointer is).
         #[arg(long, num_args = 2, value_names = ["X", "Y"])]
         at: Option<Vec<u32>>,
+    },
+    /// Touchscreen gestures: tap, hold (long-press), drag, pinch.
+    #[command(
+        subcommand,
+        after_help = "Examples:\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch hold 400 300\n  tilo-vm input touch drag 400 600 400 100\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n\nX and Y are pixels of the slot's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
+    )]
+    Touch(TouchCommand),
+    /// Pen (stylus) on the screen: tap, drag.
+    #[command(
+        subcommand,
+        after_help = "Examples:\n  tilo-vm input pen tap 400 300\n  tilo-vm input pen drag 100 100 500 300 --pressure 80\n\nX and Y are pixels of the slot's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
+    )]
+    Pen(PenCommand),
+    /// Game controller: buttons, d-pad, sticks.
+    #[command(subcommand)]
+    Gamepad(GamepadCommand),
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum TouchCommand {
+    /// One finger taps X, Y.
+    #[command(after_help = "Examples:\n  tilo-vm input touch tap 400 300")]
+    Tap {
+        /// Pixels from the output's left edge.
+        x: u32,
+        /// Pixels from the output's top edge.
+        y: u32,
+    },
+    /// One finger presses X, Y and stays down (long-press).
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touch hold 400 300\n  tilo-vm input touch hold 400 300 --duration 1500"
+    )]
+    Hold {
+        /// Pixels from the output's left edge.
+        x: u32,
+        /// Pixels from the output's top edge.
+        y: u32,
+        /// How long the finger stays down, in milliseconds.
+        #[arg(long, default_value_t = 800)]
+        duration: u32,
+    },
+    /// One finger drags from X1, Y1 to X2, Y2 (swipe, scroll, move).
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touch drag 400 600 400 100\n  tilo-vm input touch drag 0 400 600 400 --duration 150   # fast edge swipe"
+    )]
+    Drag {
+        /// Start, pixels from the left edge.
+        x1: u32,
+        /// Start, pixels from the top edge.
+        y1: u32,
+        /// End, pixels from the left edge.
+        x2: u32,
+        /// End, pixels from the top edge.
+        y2: u32,
+        /// How long the movement takes, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        duration: u32,
+    },
+    /// Two fingers on a horizontal line through X, Y spread (zoom in) or close (zoom out).
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touch pinch 640 400                        # zoom in: 100 -> 300 px apart\n  tilo-vm input touch pinch 640 400 --from 400 --to 100    # zoom out"
+    )]
+    Pinch {
+        /// Centre between the fingers.
+        x: u32,
+        /// Pixels from the output's top edge.
+        y: u32,
+        /// Finger distance at the start, in pixels.
+        #[arg(long, default_value_t = 100)]
+        from: u32,
+        /// Finger distance at the end, in pixels.
+        #[arg(long, default_value_t = 300)]
+        to: u32,
+        /// How long the pinch takes, in milliseconds.
+        #[arg(long, default_value_t = 400)]
+        duration: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PenCommand {
+    /// The pen touches X, Y and lifts.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input pen tap 400 300\n  tilo-vm input pen tap 400 300 --pressure 90"
+    )]
+    Tap {
+        /// Pixels from the output's left edge.
+        x: u32,
+        /// Pixels from the output's top edge.
+        y: u32,
+        /// Tip pressure, 1-100 percent.
+        #[arg(long, default_value_t = 50)]
+        pressure: u8,
+    },
+    /// The pen draws a line from X1, Y1 to X2, Y2.
+    #[command(after_help = "Examples:\n  tilo-vm input pen drag 100 100 500 300")]
+    Drag {
+        /// Start, pixels from the left edge.
+        x1: u32,
+        /// Start, pixels from the top edge.
+        y1: u32,
+        /// End, pixels from the left edge.
+        x2: u32,
+        /// End, pixels from the top edge.
+        y2: u32,
+        /// How long the stroke takes, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        duration: u32,
+        /// Tip pressure, 1-100 percent.
+        #[arg(long, default_value_t = 50)]
+        pressure: u8,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GamepadCommand {
+    /// Press and release buttons in order; `+` holds several at once.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input gamepad press a\n  tilo-vm input gamepad press guide           # quick settings\n  tilo-vm input gamepad press guide+rb b\n  tilo-vm input gamepad press rt              # triggers pull fully\n\nNames are the Xbox-style printed legends: a b x y lb rb lt rt start select\n(back) guide (home) l3 r3, the d-pad up down left right, and south east west\nnorth for the positional buttons."
+    )]
+    Press {
+        /// Buttons or combos like a, guide+lb, up.
+        #[arg(required = true)]
+        combos: Vec<String>,
+    },
+    /// Press d-pad directions in order.
+    #[command(after_help = "Examples:\n  tilo-vm input gamepad dpad down down right")]
+    Dpad {
+        /// up, down, left or right.
+        #[arg(required = true)]
+        directions: Vec<String>,
+    },
+    /// Push a stick to X, Y percent (-100..100, +Y is down), hold, let go.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input gamepad stick left 0 -100               # up\n  tilo-vm input gamepad stick right 100 0 --duration 900"
+    )]
+    Stick {
+        /// left or right.
+        stick: String,
+        /// -100 (left) to 100 (right).
+        #[arg(allow_negative_numbers = true)]
+        x: i8,
+        /// -100 (up) to 100 (down).
+        #[arg(allow_negative_numbers = true)]
+        y: i8,
+        /// How long the stick is held, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        duration: u32,
     },
 }
 
@@ -448,7 +606,7 @@ pub enum VmCommand {
     },
     /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
+        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
     )]
     Upgrade(UpgradeArgs),
     /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
@@ -597,7 +755,7 @@ pub struct UpgradeArgs {
 pub enum SlotCommand {
     /// Create a slot (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful"
+        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
         /// The slot (default: your slot).
@@ -611,6 +769,15 @@ pub enum SlotCommand {
         /// Own virtual display and seat: the real DRM and input paths.
         #[arg(long)]
         headful: bool,
+        /// Headful only: virtual monitors left to right, each width x height with an optional @scale, e.g. 2560x1600@2,1920x1080.
+        #[arg(
+            long,
+            requires = "headful",
+            value_name = "LIST",
+            value_delimiter = ',',
+            num_args = 1
+        )]
+        outputs: Vec<tilo_vm_protocol::OutputSpec>,
     },
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
@@ -652,6 +819,9 @@ pub enum SlotCommand {
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
     },
+    /// Third-party apps for checking desktop features: X11 apps, GTK, dialogs, tray, MIME handlers.
+    #[command(subcommand)]
+    Apps(SlotAppsCommand),
     /// Remove a slot: its session, user and generations (layers stay until gc).
     #[command(
         after_help = "Examples:\n  tilo-vm slot rm review-a\n  tilo-vm slot rm --slot review-a"
@@ -662,6 +832,30 @@ pub enum SlotCommand {
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SlotAppsCommand {
+    /// List the app sets and what each app checks.
+    #[command(after_help = "Examples:\n  tilo-vm slot apps list\n  tilo-vm slot apps list --json")]
+    List,
+    /// Install an app set with the VM's package manager, then restart the slot's session so it sees it.
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot apps install --set verification\n  tilo-vm slot apps install --set verification --slot review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every slot on the VM can use them\nafter its session restarts; this command restarts the slot's session.\n\nThe sets and their apps are listed by tilo-vm slot apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
+    )]
+    Install {
+        /// The slot whose session restarts to see the apps (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+        /// The app set to install (tilo-vm slot apps list).
+        #[arg(long, value_name = "SET")]
+        set: String,
+        /// Seconds before the install is stopped.
+        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        timeout: u64,
     },
 }
 
@@ -699,6 +893,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outputs_need_a_headful_slot_and_parse_left_to_right() {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--outputs",
+            "2560x1600@2,1920x1080",
+        ])
+        .unwrap();
+        let Some(Command::Slot(SlotCommand::Create { outputs, .. })) = cli.command else {
+            panic!("slot create did not parse");
+        };
+        assert_eq!(
+            tilo_vm_protocol::display::format_outputs(&outputs),
+            "2560x1600@2,1920x1080@1"
+        );
+        assert!(
+            Cli::try_parse_from(["tilo-vm", "slot", "create", "--outputs", "800x600"]).is_err()
+        );
+        let error = Cli::try_parse_from([
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--outputs",
+            "800x600@9",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("outside 0.5 to 4"), "{error}");
+    }
+
+    #[test]
     fn every_slot_command_takes_the_slot_flag() {
         for args in [
             &["tilo-vm", "rollback", "--slot", "a"][..],
@@ -711,6 +939,9 @@ mod tests {
             &["tilo-vm", "slot", "rm", "--slot", "a"],
             &["tilo-vm", "slot", "show", "--slot", "a"],
             &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
+            &[
+                "tilo-vm", "slot", "apps", "install", "--set", "v", "--slot", "a",
+            ],
             &["tilo-vm", "slot", "show", "a"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap().normalized();
@@ -727,7 +958,8 @@ mod tests {
                         | SlotCommand::Restart { name: slot, .. }
                         | SlotCommand::Rm { name: slot, .. }
                         | SlotCommand::Show { name: slot, .. }
-                        | SlotCommand::Exec { name: slot, .. },
+                        | SlotCommand::Exec { name: slot, .. }
+                        | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
                     ),
                 ) => slot,
                 other => panic!("{other:?}"),

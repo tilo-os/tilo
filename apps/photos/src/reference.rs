@@ -34,7 +34,8 @@
 //! Inspection asks it: `PhotosApp` answers [`ui::widget::Widget::referent`]
 //! with itself, so a node picked on the photo canvas carries this address in
 //! its inspection answer. The compose surface that would raise it on a
-//! right-click ([`ui::widget::RemarkCompose`]) asks the same trait.
+//! right-click (`ui::widget::RemarkCompose`) has not landed in the shared
+//! toolkit; it will ask the same trait.
 
 use automerge::AutoCommit;
 

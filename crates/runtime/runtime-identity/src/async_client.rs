@@ -100,7 +100,7 @@ impl AsyncBrokerSigningIdentity {
             wire::Response::Denied(reason) | wire::Response::Error(reason) => {
                 Err(permission_denied(reason))
             }
-            wire::Response::Signature(_) => {
+            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => {
                 identity.poison();
                 Err(invalid_data(
                     "identity broker returned an invalid metadata response",
@@ -187,6 +187,33 @@ impl AsyncBrokerSigningIdentity {
             unsigned_op: unsigned_op.to_vec(),
         })
         .await
+    }
+
+    /// Ask the host for the content keys of one document route.
+    ///
+    /// # Errors
+    /// Returns a broker refusal or a bounded fail-closed transport error.
+    pub async fn channel_keys(
+        &mut self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<wire::ChannelKeysReply, NotAvailable> {
+        let response = self
+            .exchange(&wire::Request::ChannelKeys {
+                workspace_id: workspace_id.to_owned(),
+                app_id: app_id.to_owned(),
+                record_id: record_id.to_owned(),
+                known_generation,
+            })
+            .await?;
+        let reply = crate::client::channel_keys_reply(response);
+        if matches!(&reply, Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::InvalidData)
+        {
+            self.poison();
+        }
+        reply
     }
 
     async fn signature(&mut self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {

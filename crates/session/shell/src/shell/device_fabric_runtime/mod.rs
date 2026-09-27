@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use getrandom::{
@@ -39,7 +39,7 @@ use crate::shell::device_fabric::{
     MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalDisplayMessage,
     PersonalFabricAction, RoamingSetting,
 };
-use crate::shell::network::ShellNetwork;
+use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
 
 type ProductionGamepadFactory =
     os_actions::LinuxVirtualGamepadFactory<os_actions::UinputGamepadDeviceProvider>;
@@ -973,6 +973,9 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
 struct DeviceHealthRuntimeState {
     tracker: crate::shell::spatial_calibration::DeviceHealthTracker,
     last_probe: Option<Instant>,
+    /// Live [`FabricClockSync`] handles per peer.
+    clock_sync_holders: BTreeMap<crate::shell::personal_continuity::DeviceId, usize>,
+    last_clock_sync_probe: Option<Instant>,
     local_power: Option<(
         Instant,
         crate::shell::spatial_calibration::DevicePower,
@@ -983,6 +986,69 @@ struct DeviceHealthRuntimeState {
 fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
     static STATE: OnceLock<Mutex<DeviceHealthRuntimeState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(DeviceHealthRuntimeState::default()))
+}
+
+/// Keeps one peer's clock estimate fresh: while any handle for a peer is
+/// alive, that peer is probed at
+/// [`CLOCK_SYNC_PROBE_INTERVAL`](crate::shell::spatial_calibration::CLOCK_SYNC_PROBE_INTERVAL)
+/// instead of the ordinary health cadence. Dropping the last handle returns
+/// it to the ordinary cadence.
+#[must_use = "the faster probe cadence lasts only while the handle is held"]
+#[derive(Debug)]
+pub struct FabricClockSync {
+    peer: crate::shell::personal_continuity::DeviceId,
+}
+
+impl FabricClockSync {
+    #[must_use]
+    pub fn peer(&self) -> &crate::shell::personal_continuity::DeviceId {
+        &self.peer
+    }
+
+    /// The peer's current clock model; see [`fabric_peer_clock`].
+    #[must_use]
+    pub fn estimate(&self) -> Option<crate::shell::fabric_clock::ClockEstimate> {
+        fabric_peer_clock(&self.peer)
+    }
+}
+
+impl Drop for FabricClockSync {
+    fn drop(&mut self) {
+        if let Ok(mut state) = device_health_state().lock()
+            && let Some(holders) = state.clock_sync_holders.get_mut(&self.peer)
+        {
+            *holders = holders.saturating_sub(1);
+            if *holders == 0 {
+                state.clock_sync_holders.remove(&self.peer);
+            }
+        }
+    }
+}
+
+/// Probe `peer` fast enough to keep its clock synchronised for as long as
+/// the returned handle lives.
+pub fn hold_fabric_clock_sync(
+    peer: crate::shell::personal_continuity::DeviceId,
+) -> FabricClockSync {
+    if let Ok(mut state) = device_health_state().lock() {
+        let holders = state.clock_sync_holders.entry(peer.clone()).or_default();
+        *holders = holders.saturating_add(1);
+    }
+    FabricClockSync { peer }
+}
+
+/// The certified peer's clock relative to [`fabric_monotonic_us`], or `None`
+/// before any health probe to it has completed.
+#[must_use]
+pub fn fabric_peer_clock(
+    peer: &crate::shell::personal_continuity::DeviceId,
+) -> Option<crate::shell::fabric_clock::ClockEstimate> {
+    let now_us = fabric_monotonic_us();
+    device_health_state()
+        .lock()
+        .ok()?
+        .tracker
+        .clock(peer, now_us)
 }
 
 fn spatial_calibration_state()
@@ -1471,6 +1537,10 @@ impl DeviceFabricRuntime {
             policy.permits(ContinuityCapability::Media),
             self.local_app_focus.as_ref(),
         );
+        crate::shell::speaker_group_runtime::pump(
+            network,
+            policy.permits(ContinuityCapability::Media),
+        );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         if policy.permits(ContinuityCapability::FileTransfer) {
@@ -1698,7 +1768,11 @@ impl DeviceFabricRuntime {
         prune_spatial_leases(network);
         self.remote_capture.drain_pending_actions(network);
         for received in network.take_personal_fabric_actions() {
-            let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
+            let crate::shell::network::ReceivedPersonalFabricAction {
+                envelope,
+                route,
+                received_monotonic_us,
+            } = received;
             if !network.personal_route_is_current(&route) {
                 network.revoke_queued_personal_action_authority(&envelope);
                 continue;
@@ -1710,7 +1784,10 @@ impl DeviceFabricRuntime {
             if crate::shell::remote_audio::handle_action(network, &envelope) {
                 continue;
             }
-            if handle_device_health_action(network, &envelope) {
+            if crate::shell::speaker_group_runtime::handle_action(network, &envelope) {
+                continue;
+            }
+            if handle_device_health_action(network, &envelope, received_monotonic_us) {
                 continue;
             }
             if self
@@ -1721,7 +1798,11 @@ impl DeviceFabricRuntime {
             }
             if remote_capture::RemoteCaptureIntegration::handles(&envelope.action) {
                 self.remote_capture.handle_action(
-                    crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
+                    crate::shell::network::ReceivedPersonalFabricAction {
+                        envelope,
+                        route,
+                        received_monotonic_us,
+                    },
                 );
                 continue;
             }
@@ -3179,10 +3260,11 @@ fn handle_nearby_drop_action(
 fn handle_device_health_action(
     network: &ShellNetwork,
     envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    received_monotonic_us: u64,
 ) -> bool {
     let now = Instant::now();
     match &envelope.action {
-        PersonalFabricAction::DeviceHealthProbe { nonce } => {
+        PersonalFabricAction::DeviceHealthProbe { nonce, sent_us } => {
             let Some((power, energy_saver)) = device_health_state()
                 .lock()
                 .ok()
@@ -3195,6 +3277,9 @@ fn handle_device_health_action(
                 PersonalFabricAction::DeviceHealthReport {
                     report: crate::shell::spatial_calibration::DeviceHealthReport {
                         probe_nonce: *nonce,
+                        probe_sent_us: *sent_us,
+                        received_us: received_monotonic_us,
+                        replied_us: fabric_monotonic_us().max(received_monotonic_us),
                         power,
                         energy_saver,
                     },
@@ -3204,12 +3289,53 @@ fn handle_device_health_action(
         }
         PersonalFabricAction::DeviceHealthReport { report } => {
             if let Ok(mut state) = device_health_state().lock() {
-                let _ = state.tracker.accept_report(&envelope.source, *report, now);
+                let _ = state.tracker.accept_report(
+                    &envelope.source,
+                    *report,
+                    now,
+                    received_monotonic_us,
+                );
             }
             true
         }
         _ => false,
     }
+}
+
+/// Every online peer on the ordinary health cadence, and in between only the
+/// peers whose clock someone holds in sync, on the faster cadence.
+fn health_probe_targets(
+    state: &mut DeviceHealthRuntimeState,
+    online: Vec<crate::shell::personal_continuity::DeviceId>,
+    now: Instant,
+) -> Vec<crate::shell::personal_continuity::DeviceId> {
+    let due = |last: Option<Instant>, interval: Duration| {
+        last.is_none_or(|sampled| {
+            now.checked_duration_since(sampled)
+                .is_none_or(|age| age >= interval)
+        })
+    };
+    if due(
+        state.last_probe,
+        crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL,
+    ) {
+        state.last_probe = Some(now);
+        state.last_clock_sync_probe = Some(now);
+        return online;
+    }
+    if state.clock_sync_holders.is_empty()
+        || !due(
+            state.last_clock_sync_probe,
+            crate::shell::spatial_calibration::CLOCK_SYNC_PROBE_INTERVAL,
+        )
+    {
+        return Vec::new();
+    }
+    state.last_clock_sync_probe = Some(now);
+    online
+        .into_iter()
+        .filter(|peer| state.clock_sync_holders.contains_key(peer))
+        .collect()
 }
 
 fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
@@ -3234,30 +3360,29 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
             return;
         };
         state.tracker.retain_peers(|peer| all_peers.contains(peer));
-        if state.last_probe.is_some_and(|sampled| {
-            now.checked_duration_since(sampled)
-                .is_some_and(|age| age < crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL)
-        }) {
-            return;
-        }
-        state.last_probe = Some(now);
-        for peer in online {
+        for peer in health_probe_targets(&mut state, online, now) {
             let mut nonce = [0; 16];
             while nonce == [0; 16] {
                 UnwrapErr(SysRng).fill_bytes(&mut nonce);
             }
-            if state.tracker.begin_probe(peer.clone(), nonce, now) {
-                probes.push((peer, nonce));
-            }
+            probes.push((peer, nonce));
         }
     }
     for (peer, nonce) in probes {
-        if network
-            .send_personal_fabric_action(&peer, PersonalFabricAction::DeviceHealthProbe { nonce })
-            .is_err()
+        let sent_us = fabric_monotonic_us();
+        let begun = device_health_state()
+            .lock()
+            .is_ok_and(|mut state| state.tracker.begin_probe(peer.clone(), nonce, now, sent_us));
+        if begun
+            && network
+                .send_personal_fabric_action(
+                    &peer,
+                    PersonalFabricAction::DeviceHealthProbe { nonce, sent_us },
+                )
+                .is_err()
             && let Ok(mut state) = device_health_state().lock()
         {
-            state.tracker.forget_peer(&peer);
+            state.tracker.abandon_probe(&peer, nonce);
         }
     }
 }
@@ -3312,7 +3437,16 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteAudioDecision { .. }
         | PersonalFabricAction::RemoteAudioFrame { .. }
         | PersonalFabricAction::RemoteAudioStop { .. }
+        | PersonalFabricAction::RemoteAudioKeepalive { .. }
         | PersonalFabricAction::RemoteAudioCancel { .. }
+        | PersonalFabricAction::SpeakerGroupInvite { .. }
+        | PersonalFabricAction::SpeakerGroupDecision { .. }
+        | PersonalFabricAction::SpeakerGroupLeave { .. }
+        | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
+        | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
+        | PersonalFabricAction::SpeakerGroupSessionStop { .. }
+        | PersonalFabricAction::SpeakerIdentify { .. }
+        | PersonalFabricAction::SpeakerSweep { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -4493,6 +4627,21 @@ pub fn authorize_remote_audio(
     crate::shell::remote_audio::authorize(network, session_id, approved)
 }
 
+/// Choose which part of an inbound remote-audio route's stereo stream this
+/// device plays, e.g. one side of a stereo pair formed with another device.
+///
+/// # Errors
+///
+/// Returns an error for disabled policy, a stale route, or a playback stream
+/// that cannot restart.
+pub fn set_remote_audio_role(
+    session_id: [u8; 16],
+    role: media::sync_playout::ChannelRole,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::remote_audio::set_role(session_id, role)
+}
+
 /// Stop an active remote-audio route and revoke its target-issued capability.
 ///
 /// # Errors
@@ -4508,6 +4657,62 @@ pub fn remote_audio_view(
     focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
 ) -> crate::shell::remote_audio::RemoteAudioView {
     crate::shell::remote_audio::snapshot(focus)
+}
+
+/// Route one live-audio picker source to a speaker group instead of a
+/// single device. Each member admits the session under its own consent.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled, the group is not
+/// available, or none of its speakers is ready.
+pub fn request_speaker_group_audio(
+    network: &ShellNetwork,
+    source_token: u64,
+    group: crate::shell::speaker_group::SpeakerGroupId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::speaker_group_runtime::start_session(
+        network,
+        group,
+        crate::shell::speaker_group_runtime::GroupAudioSource::PickerToken(source_token),
+    )
+}
+
+/// Play one local media session on a speaker group. The media keeps
+/// decoding here; only its sound moves to the group.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled, the session is not
+/// playing here, or the group is not available.
+pub fn play_media_on_speaker_group(
+    network: &ShellNetwork,
+    session_id: &str,
+    group: crate::shell::speaker_group::SpeakerGroupId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    if !media::handoff::playback_sessions()
+        .iter()
+        .any(|session| session.id == session_id)
+    {
+        return Err("that media session is no longer available".into());
+    }
+    crate::shell::speaker_group_runtime::start_session(
+        network,
+        group,
+        crate::shell::speaker_group_runtime::GroupAudioSource::MediaSession(session_id.into()),
+    )
+}
+
+/// Guard for every speaker-group edit and consent: all of it is media
+/// continuity.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled on this device.
+pub fn require_speaker_groups() -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)
 }
 
 /// Send one file or folder to an authenticated exact target. Files up to
@@ -5337,6 +5542,36 @@ fn active_spatial_control_devices(
     )
 }
 
+/// The person's certified devices as the personal fabric sees them, for
+/// running each of their schedules on one device.
+pub struct FabricDeviceDirectory {
+    network: Arc<ShellNetwork>,
+}
+
+impl FabricDeviceDirectory {
+    #[must_use]
+    pub fn new(network: Arc<ShellNetwork>) -> Self {
+        Self { network }
+    }
+}
+
+impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirectory {
+    fn personal_devices(&self) -> crate::shell::automation_triggers::PersonalDevices {
+        crate::shell::automation_triggers::PersonalDevices {
+            local: self
+                .network
+                .local_device_fabric_identity()
+                .map(|(device, _)| device.as_str().to_string()),
+            online: self
+                .network
+                .device_fabric()
+                .online_devices()
+                .map(|presence| presence.device.as_str().to_string())
+                .collect(),
+        }
+    }
+}
+
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
@@ -5346,7 +5581,8 @@ fn active_spatial_control_devices(
 )]
 pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
     use crate::shell::overlay_host::{
-        DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaOutputView,
+        DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaInputView,
+        LocalMediaOutputView,
     };
 
     let policy = ContinuityPolicySnapshot::load();
@@ -5415,7 +5651,25 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         Vec::new()
     };
 
-    let mut local_outputs = media::audio::enumerate()
+    let graph = media::audio::enumerate();
+    let mut local_inputs = graph
+        .sources
+        .iter()
+        .map(|source| LocalMediaInputView {
+            node_id: source.id,
+            label: source.description.clone(),
+            is_default: source.is_default,
+            level_percent: source.volume.map(input_level_percent),
+            muted: source.muted.unwrap_or(false),
+        })
+        .collect::<Vec<_>>();
+    local_inputs.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let mut local_outputs = graph
         .sinks
         .into_iter()
         .map(|sink| LocalMediaOutputView {
@@ -5462,7 +5716,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             }
         }
         if policy.permits(ContinuityCapability::Media) {
-            for route in crate::shell::remote_audio::snapshot(None).routes {
+            for route in crate::shell::remote_audio::active_routes() {
                 let count = route_counts.entry(route.peer).or_default();
                 *count = count.saturating_add(1);
             }
@@ -5524,8 +5778,14 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         local_media,
         media_handoffs: media_handoff_status_views(network),
         local_outputs,
+        local_inputs,
         transfers,
         remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
+        speaker_groups: if policy.permits(ContinuityCapability::Media) {
+            crate::shell::speaker_group_runtime::view(network)
+        } else {
+            crate::shell::speaker_group_runtime::SpeakerGroupsView::default()
+        },
         device_health,
         calibration_proposals,
         revertible_calibrations,
@@ -5554,6 +5814,89 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
     control.set_default_sink(node_id)?;
     for stream in graph.playback_streams {
         control.route_stream(stream.id, target_serial)?;
+    }
+    Ok(())
+}
+
+/// An input level in `0.0..=1.0` as a whole percentage.
+#[must_use]
+pub fn input_level_percent(level: f32) -> u8 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the level is clamped to 0..=1 first, so the percentage is 0..=100"
+    )]
+    let percent = (level.clamp(0.0, 1.0) * 100.0).round() as u8;
+    percent
+}
+
+/// How far one step of the input level moves.
+const INPUT_LEVEL_STEP: f32 = 0.05;
+
+/// Record from one currently enumerated input from now on: make it the
+/// default source and move every running capture stream onto it.
+///
+/// # Errors
+///
+/// Returns an error if the input disappeared or `PipeWire` rejects any graph
+/// edit. The node id is resolved against a fresh graph before it is used.
+pub fn select_local_input(node_id: u32) -> Result<(), String> {
+    let graph = media::audio::enumerate();
+    let source = graph
+        .sources
+        .iter()
+        .find(|source| source.id == node_id)
+        .ok_or_else(|| "that input is no longer connected".to_string())?;
+    let target_serial = source.serial;
+    let control = media::audio::real_control();
+    control.set_default_source(node_id)?;
+    for stream in graph.record_streams {
+        control.route_stream(stream.id, target_serial)?;
+    }
+    Ok(())
+}
+
+/// The input level one step up or down from `current`, within `0..=1`.
+#[must_use]
+pub fn stepped_input_level(current: Option<f32>, raise: bool) -> f32 {
+    let current = current.unwrap_or(0.0);
+    let next = if raise {
+        current + INPUT_LEVEL_STEP
+    } else {
+        current - INPUT_LEVEL_STEP
+    };
+    ((next / INPUT_LEVEL_STEP).round() * INPUT_LEVEL_STEP).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+#[test]
+fn input_level_steps_snap_to_the_grid_and_stay_in_range() {
+    assert!((stepped_input_level(Some(0.62), true) - 0.65).abs() < 1e-6);
+    assert!((stepped_input_level(Some(0.62), false) - 0.55).abs() < 1e-6);
+    assert!((stepped_input_level(Some(0.99), true) - 1.0).abs() < 1e-6);
+    assert!(stepped_input_level(Some(0.01), false).abs() < 1e-6);
+    assert!((stepped_input_level(None, true) - 0.05).abs() < 1e-6);
+    assert_eq!(input_level_percent(0.625), 63);
+    assert_eq!(input_level_percent(7.0), 100);
+}
+
+/// Raise or lower one input's level by a step. Raising a muted input unmutes
+/// it: reaching for "louder" means "let them hear me".
+///
+/// # Errors
+///
+/// Returns an error if the input disappeared or `wpctl` rejects the change.
+pub fn step_input_level(node_id: u32, raise: bool) -> Result<(), String> {
+    let graph = media::audio::enumerate();
+    let source = graph
+        .sources
+        .iter()
+        .find(|source| source.id == node_id)
+        .ok_or_else(|| "that input is no longer connected".to_string())?;
+    let control = media::audio::real_control();
+    control.set_node_volume(node_id, stepped_input_level(source.volume, raise))?;
+    if raise && source.muted == Some(true) {
+        control.set_node_mute(node_id, false)?;
     }
     Ok(())
 }
@@ -7009,6 +7352,12 @@ fn build_local_snapshot(
         settings,
         wifi,
         display,
+        speakers: crate::shell::speaker_group_runtime::authored_state(
+            device,
+            previous.map(|state| &state.speakers),
+            stamp,
+            policy.permits(ContinuityCapability::Media),
+        ),
     };
     preserve_unchanged_stamps(&mut snapshot, previous);
     snapshot
@@ -7030,6 +7379,7 @@ fn policy_capabilities(
         roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
         secret_store: policy.permits(ContinuityCapability::WifiSettings),
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
+        audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
 }
 
@@ -7084,6 +7434,12 @@ fn stamp_snapshot(snapshot: &mut DeviceFabricSnapshot, stamp: &FabricStamp, now_
     }
     if let Some(display) = snapshot.display.as_mut() {
         display.stamp = stamp.clone();
+    }
+    for item in &mut snapshot.speakers.groups {
+        item.stamp = stamp.clone();
+    }
+    for item in &mut snapshot.speakers.memberships {
+        item.stamp = stamp.clone();
     }
 }
 
@@ -7687,6 +8043,56 @@ mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
 
+    #[test]
+    fn clock_sync_holders_get_the_fast_cadence_between_health_rounds() {
+        let speaker = DeviceId::new("clock-speaker").unwrap();
+        let tablet = DeviceId::new("clock-tablet").unwrap();
+        let online = || vec![speaker.clone(), tablet.clone()];
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut state = DeviceHealthRuntimeState::default();
+        assert_eq!(health_probe_targets(&mut state, online(), at(0)), online());
+        assert!(health_probe_targets(&mut state, online(), at(300)).is_empty());
+        state.clock_sync_holders.insert(speaker.clone(), 1);
+        assert_eq!(
+            health_probe_targets(&mut state, online(), at(300)),
+            vec![speaker.clone()]
+        );
+        assert!(health_probe_targets(&mut state, online(), at(400)).is_empty());
+        assert_eq!(
+            health_probe_targets(&mut state, online(), at(550)),
+            vec![speaker.clone()]
+        );
+        assert_eq!(
+            health_probe_targets(&mut state, online(), at(10_000)),
+            online()
+        );
+        state.clock_sync_holders.clear();
+        assert!(health_probe_targets(&mut state, online(), at(10_500)).is_empty());
+    }
+
+    #[test]
+    fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
+        let peer = DeviceId::new("clock-handle-peer").unwrap();
+        let holders = || {
+            device_health_state()
+                .lock()
+                .unwrap()
+                .clock_sync_holders
+                .get(&peer)
+                .copied()
+        };
+        let first = hold_fabric_clock_sync(peer.clone());
+        let second = hold_fabric_clock_sync(peer.clone());
+        assert_eq!(holders(), Some(2));
+        drop(first);
+        assert_eq!(holders(), Some(1));
+        assert_eq!(second.peer(), &peer);
+        assert!(second.estimate().is_none());
+        drop(second);
+        assert_eq!(holders(), None);
+    }
+
     fn provenance_snapshot(
         device: DeviceId,
         label: &str,
@@ -7721,6 +8127,7 @@ mod tests {
                 .collect(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -8619,6 +9026,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         };
         let stamp = FabricStamp { counter: 9, device };
         stamp_snapshot(&mut snapshot, &stamp, 42);
@@ -8654,6 +9062,7 @@ mod tests {
             }],
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         };
         let next_stamp = FabricStamp { counter: 9, device };
         let applied_remote = BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);

@@ -485,10 +485,22 @@ pub fn spawn_with_agent_actions(
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();
-    shell::shell::collab_broker::spawn_native_harness(
+    let broker = shell::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         tree.shared(),
         trusted_devices,
     )
-    .expect("bind the typed collaboration service")
+    .expect("bind the typed collaboration service");
+    // The fixture apps read the catalogue to see their own publication land,
+    // as an app declaring `[actions] query` may.
+    broker
+        .app_action_broker()
+        .expect("the harness serves actions")
+        .set_app_action_access(std::sync::Arc::new(|_: &str| {
+            shell::shell::app_action_access::ActionAccess {
+                query: true,
+                invoke: false,
+            }
+        }));
+    broker
 }

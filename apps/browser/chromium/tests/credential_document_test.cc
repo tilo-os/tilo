@@ -2,22 +2,22 @@
 #include <cassert>
 #include <chrono>
 
-using qos::CredentialDocument;
-using qos::CredentialIdentity;
-using qos::CredentialOperation;
+using tilo::CredentialDocument;
+using tilo::CredentialIdentity;
+using tilo::CredentialOperation;
 
 static CredentialIdentity Document() {
   return {7, "main-frame", "https://example.com", "renderer-context-1", 1};
 }
 
 int main() {
-  assert(qos::ValidCredentialCounter("1"));
-  assert(qos::ValidCredentialCounter("9007199254740991"));
+  assert(tilo::ValidCredentialCounter("1"));
+  assert(tilo::ValidCredentialCounter("9007199254740991"));
   for(const auto* invalid:{"", "0", "01", "-1", "1.0", "1x", "9007199254740992", "99999999999999999999"})
-    assert(!qos::ValidCredentialCounter(invalid));
+    assert(!tilo::ValidCredentialCounter(invalid));
   const auto now = CredentialDocument::Clock::now();
   const auto document = Document();
-  qos::CredentialHandshake handshake;
+  tilo::CredentialHandshake handshake;
   handshake.Offer(document);
   auto prior = document;
   prior.generation++;

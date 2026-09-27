@@ -78,6 +78,9 @@ use crate::compositor::surface_readback::{
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
+mod sheets;
+pub use sheets::{PointRoute, SheetLink};
+
 /// Wayland `wl_surface` protocol id, widened — same key space the rest of the compositor uses for foreign surfaces.
 pub type SurfaceId = u64;
 
@@ -365,10 +368,17 @@ struct ForeignEntry {
     seq: u64,
     /// Human-readable reason the last capture failed, drawn on the tile so an unsupported buffer is visible, not silently blank.
     last_error: Option<String>,
-    /// The tab's on-screen rectangle in physical pixels, published by `apply_layout`; `None` until laid out.
+    /// The tab's rectangle in the logical desktop, published by `apply_layout`; `None` until laid out.
     placement: Option<Rect>,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
+    /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
+    configured_extent: Option<(f64, f64)>,
+    /// The client's `xdg_toplevel.set_min_size`/`set_max_size`, logical pixels; `0` on an axis leaves it unconstrained.
+    min_size: (i32, i32),
+    max_size: (i32, i32),
+    /// What the client declared its window to be with `xdg_surface.set_window_geometry` — everything outside it is shadow or resize border, which a tile never shows.
+    geometry: Option<WindowGeometry>,
     /// When this surface was first heard of (toplevel adoption) — start of the window [`ForeignFrameStore::mark_presented`] waits before giving up.
     first_seen: Instant,
     /// Whether the client has committed a non-null buffer. This is deliberately
@@ -402,6 +412,10 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             configured: None,
+            configured_extent: None,
+            min_size: (0, 0),
+            max_size: (0, 0),
+            geometry: None,
             first_seen: Instant::now(),
             mapped: false,
             presented: false,
@@ -411,6 +425,112 @@ impl ForeignEntry {
             ready_captures: HashMap::new(),
         }
     }
+}
+
+/// A toplevel's declared window geometry together with what it takes to
+/// find that rectangle in the buffer: geometry is in surface-local logical
+/// pixels, the buffer is in its own, and the two differ by the viewport
+/// destination (fractional scaling) or else the integer buffer scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    /// `wp_viewport.set_destination`, when the client uses one.
+    pub logical_size: Option<(i32, i32)>,
+    /// `wl_surface.set_buffer_scale`.
+    pub buffer_scale: i32,
+}
+
+impl WindowGeometry {
+    /// The declared window as a `(x, y, width, height)` crop of a
+    /// `buffer_w`×`buffer_h` buffer, or `None` when it covers the whole buffer
+    /// or does not describe any part of it.
+    fn crop(&self, buffer_w: u32, buffer_h: u32) -> Option<(u32, u32, u32, u32)> {
+        if self.width <= 0 || self.height <= 0 || buffer_w == 0 || buffer_h == 0 {
+            return None;
+        }
+        let fallback = f64::from(self.buffer_scale.max(1));
+        let (factor_x, factor_y) = match self.logical_size {
+            Some((lw, lh)) if lw > 0 && lh > 0 => (
+                f64::from(buffer_w) / f64::from(lw),
+                f64::from(buffer_h) / f64::from(lh),
+            ),
+            _ => (fallback, fallback),
+        };
+        let (x0, x1) = crop_span(self.x, self.width, factor_x, buffer_w);
+        let (y0, y1) = crop_span(self.y, self.height, factor_y, buffer_h);
+        let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+        if w == 0 || h == 0 || (w, h) == (buffer_w, buffer_h) {
+            return None;
+        }
+        Some((x0, y0, w, h))
+    }
+}
+
+/// One axis of [`WindowGeometry::crop`]: the logical `origin..origin+extent`
+/// in buffer pixels, clamped to the buffer.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "both ends are rounded and clamped into [0, limit] with limit a u32, so neither \
+              cast truncates a fraction, loses a sign or wraps"
+)]
+fn crop_span(origin: i32, extent: i32, factor: f64, limit: u32) -> (u32, u32) {
+    let limit = f64::from(limit);
+    let start = (f64::from(origin) * factor).round().clamp(0.0, limit);
+    let end = (f64::from(origin.saturating_add(extent)) * factor)
+        .round()
+        .clamp(start, limit);
+    (start as u32, end as u32)
+}
+
+impl ForeignEntry {
+    /// The part of the buffer that is the window: the declared geometry when
+    /// there is one, otherwise all of it. `(x, y, width, height)` in buffer pixels.
+    fn content(&self) -> (u32, u32, u32, u32) {
+        self.geometry
+            .and_then(|geometry| geometry.crop(self.width, self.height))
+            .unwrap_or((0, 0, self.width, self.height))
+    }
+
+    /// Where in `tile` the window belongs: all of it, unless the client's
+    /// maximum size kept it smaller, in which case it sits centred.
+    fn target_box(&self, tile: Rect) -> Rect {
+        let Some((w, h)) = self.configured_extent else {
+            return tile;
+        };
+        // Rounding between logical and physical pixels leaves up to a pixel of
+        // disagreement with an unconstrained tab; that is not a smaller window.
+        if w >= tile.width() - 1.0 && h >= tile.height() - 1.0 {
+            return tile;
+        }
+        let (w, h) = (w.min(tile.width()), h.min(tile.height()));
+        let x = tile.x0 + ((tile.width() - w) / 2.0).round();
+        let y = tile.y0 + ((tile.height() - h) / 2.0).round();
+        Rect::new(x, y, x + w, y + h)
+    }
+}
+
+/// Copy the `(x, y, w, h)` region out of a row-major RGBA frame.
+fn crop_rgba(rgba: &[u8], width: u32, (x, y, w, h): (u32, u32, u32, u32)) -> Vec<u8> {
+    let stride = usize::try_from(width)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(4);
+    let row_bytes = usize::try_from(w).unwrap_or(usize::MAX).saturating_mul(4);
+    let left = usize::try_from(x).unwrap_or(usize::MAX).saturating_mul(4);
+    let mut out = Vec::with_capacity(row_bytes.saturating_mul(usize::try_from(h).unwrap_or(0)));
+    for row in y..y.saturating_add(h) {
+        let start = usize::try_from(row)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(stride)
+            .saturating_add(left);
+        if let Some(line) = rgba.get(start..start.saturating_add(row_bytes)) {
+            out.extend_from_slice(line);
+        }
+    }
+    out
 }
 
 /// A copy of a surface's most recent frame, handed to the render side.
@@ -501,6 +621,8 @@ pub struct ChildFrame {
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
+    /// Transient toplevels drawn on their parent's tile, bottom to top.
+    sheets: Mutex<Vec<SheetLink>>,
     /// Total completed buffer imports, of any route. A dmabuf import costs a
     /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
     /// paint only reads the latest completed pixels.
@@ -1209,14 +1331,21 @@ impl ForeignFrameStore {
             tree.retain(|child| child.surface != id);
         }
         drop(children);
+        self.detach_sheet(id);
         #[cfg(target_os = "linux")]
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
             worker.forget_surface(id);
         }
     }
 
-    /// Current frame counter for `id`; `0` when nothing has landed.
+    /// Current frame counter for `id`, its subsurfaces and the sheets on
+    /// its tile; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
+        self.surface_and_children_seq(id)
+            .wrapping_add(self.sheets_seq(id))
+    }
+
+    fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
         let children = self
             .children
             .lock()
@@ -1253,6 +1382,7 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
+        let content = e.content();
         let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
             None
         } else {
@@ -1284,7 +1414,57 @@ impl ForeignFrameStore {
             snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
         }
         drop(guard);
+        // Subsurfaces are positioned against the whole buffer, so the window
+        // is cut out only after they are composited onto it.
+        if content != (0, 0, snapshot.width, snapshot.height) {
+            snapshot.rgba = crop_rgba(&snapshot.rgba, snapshot.width, content);
+            snapshot.width = content.2;
+            snapshot.height = content.3;
+        }
         Some(snapshot)
+    }
+
+    /// Record the client's declared window geometry (`None` clears it), read
+    /// from the state each commit applied.
+    pub fn note_window_geometry(&self, id: SurfaceId, geometry: Option<WindowGeometry>) {
+        self.with_entry(id, |e| e.geometry = geometry);
+    }
+
+    /// Record the client's minimum and maximum size (logical pixels, `0` for
+    /// unconstrained); the next [`Self::take_pending_configure`] honours them.
+    pub fn note_size_limits(&self, id: SurfaceId, min: (i32, i32), max: (i32, i32)) {
+        self.with_entry(id, |e| {
+            e.min_size = min;
+            e.max_size = max;
+        });
+    }
+
+    /// The box inside `tile` that `id`'s window is drawn into: the whole tile,
+    /// or a centred box when the client's maximum size keeps it smaller.
+    pub fn target_box(&self, id: SurfaceId, tile: Rect) -> Rect {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).map_or(tile, |e| e.target_box(tile))
+    }
+
+    /// The point surface-local `(0, 0)` lands on when `id` is shown in
+    /// `tile` — the origin every pointer and touch coordinate for it is
+    /// measured from. Drawing puts the window's geometry at the corner of
+    /// [`Self::target_box`], so the surface origin is that corner less the
+    /// geometry's offset into the buffer (its shadow, say).
+    pub fn surface_origin(&self, id: SurfaceId, tile: Rect) -> (f64, f64) {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let placed = guard.get(&id).map(|e| (e.target_box(tile), e.content()));
+        drop(guard);
+        let Some((target, (x, y, _, _))) = placed else {
+            return (tile.x0, tile.y0);
+        };
+        (target.x0 - f64::from(x), target.y0 - f64::from(y))
     }
 
     pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
@@ -1327,7 +1507,8 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
-        let size = (e.width > 0 && e.height > 0).then_some((e.width, e.height));
+        let (_, _, w, h) = e.content();
+        let size = (w > 0 && h > 0).then_some((w, h));
         drop(guard);
         size
     }
@@ -1436,34 +1617,29 @@ impl ForeignFrameStore {
 
     /// The size the client should be configured to, in surface-local (logical)
     /// pixels, **iff** it differs from the last sent — records the value as sent so an unchanged layout returns `None`.
+    ///
+    /// The tab is laid out in the logical desktop, so its size is the
+    /// configure as is; the display's scale reaches the client separately,
+    /// as its preferred `wp_fractional_scale`.
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "every cast to u32/i32 below is preceded by a .clamp(..) into that type's \
-                  range and a .round(), so none truncates a fraction, loses a sign, or wraps \
-                  out of range"
+        reason = "each value is .round()-ed and .clamp()-ed into i32's range first"
     )]
-    pub fn take_pending_configure(&self, id: SurfaceId, scale: f64) -> Option<(i32, i32)> {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
+    pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
             let rect = e.placement?;
-            let w_px = rect.width().round().clamp(0.0, f64::from(u32::MAX)) as u32;
-            let h_px = rect.height().round().clamp(0.0, f64::from(u32::MAX)) as u32;
-            if w_px == 0 || h_px == 0 {
+            let logical = (
+                rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+                rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+            );
+            if logical.0 == 0 || logical.1 == 0 {
                 return None;
             }
             let logical = (
-                (f64::from(w_px) / scale)
-                    .round()
-                    .clamp(1.0, f64::from(i32::MAX)) as i32,
-                (f64::from(h_px) / scale)
-                    .round()
-                    .clamp(1.0, f64::from(i32::MAX)) as i32,
+                honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
+                honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
             );
+            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
             if e.configured == Some(logical) {
                 return None;
             }
@@ -1495,7 +1671,11 @@ impl ForeignFrameStore {
             }
             let waited = e.first_seen.elapsed();
             let backstop = waited >= PRESENT_GRACE;
-            if e.last_error.is_none() && !fills(e.width, e.height, tile) && !backstop {
+            let (_, _, content_w, content_h) = e.content();
+            if e.last_error.is_none()
+                && !fills(content_w, content_h, e.target_box(tile))
+                && !backstop
+            {
                 return false;
             }
             e.presented = true;
@@ -1567,6 +1747,15 @@ fn fills(w: u32, h: u32, tile: Rect) -> bool {
         && (at_least(bw, tile.width()) || at_least(bh, tile.height()))
 }
 
+/// One axis of a configure size, kept within the client's `min`..`max`
+/// (either `0` when that side is unconstrained). A maximum below the tab
+/// wins — the window is then shown centred — and a minimum above it wins
+/// too, the oversized frame being scaled down into the tab.
+fn honour_size_limits(tab: i32, min: i32, max: i32) -> i32 {
+    let capped = if max > 0 { tab.min(max) } else { tab };
+    if min > 0 { capped.max(min) } else { capped }
+}
+
 /// How far a buffer may disagree with its tab and still be the same size. See [`fills`].
 const FIT_TOLERANCE: f64 = 0.005;
 
@@ -1582,6 +1771,8 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     cached_seq: u64,
+    /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
+    sheet_images: Vec<(SheetLink, ImageData)>,
     /// Layout moved or resized the client since the last composed frame.
     /// Even when the client has not committed new pixels yet, the retained
     /// scene must be rebuilt so its cached image is drawn into the new rect.
@@ -1604,6 +1795,7 @@ impl ForeignSurfaceWidget {
             rect: Rect::ZERO,
             cached: None,
             cached_seq: 0,
+            sheet_images: Vec::new(),
             placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
@@ -1694,6 +1886,7 @@ impl ForeignSurfaceWidget {
         }
         self.cached_seq = seq;
         self.cached = surface_image(self.surface_id);
+        self.sheet_images = sheet_images(self.surface_id);
         true
     }
 
@@ -1733,24 +1926,47 @@ fn fit_into(rect: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
     Some(Rect::new(rect.x0, rect.y0, rect.x0 + dw, rect.y0 + dh))
 }
 
+/// Destination rect for `surface_id`'s image when its tile is `tile`: fitted
+/// into the whole tile, or into its centred box when the window's maximum
+/// size keeps it smaller than the tab; `surface_origin` shifts input to match.
+fn fit_surface(surface_id: SurfaceId, tile: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+    if tile.width() <= 0.0 || tile.height() <= 0.0 {
+        return None;
+    }
+    fit_into(store().target_box(surface_id, tile), img_w, img_h)
+}
+
 /// The latest frame of `surface_id` (subsurfaces composited) as an image
 /// the scene can draw, or `None` before its first commit.
 pub fn surface_image(surface_id: SurfaceId) -> Option<ImageData> {
-    let frame = store().snapshot(surface_id)?;
-    Some(ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    })
+    store().snapshot(surface_id).map(frame_image)
+}
+
+/// The drawn transient sheets on `root`'s tile, bottom to top, as images
+/// the scene can draw.
+pub fn sheet_images(root: SurfaceId) -> Vec<(SheetLink, ImageData)> {
+    store()
+        .sheets_over(root)
+        .into_iter()
+        .filter_map(|link| Some((link, surface_image(link.surface)?)))
+        .collect()
+}
+
+/// A client surface as its tile paints it: the window's own frame, the
+/// sheets drawn on it, and whether the buffer carries its own silhouette.
+pub struct TileSurface<'a> {
+    pub id: SurfaceId,
+    pub image: &'a ImageData,
+    pub sheets: &'a [(SheetLink, ImageData)],
+    pub preserve_transparency: bool,
 }
 
 /// Paint a client's pixels the way its tile shows them, and nothing else:
-/// fitted into `rect` from the top-left, over the neutral surface backdrop
-/// and inside the tile's rounded corners, or bare when the buffer carries
-/// its own silhouette (`preserve_transparency`).
+/// fitted into `rect` (or the window's centred box) from the top-left, over
+/// the neutral surface backdrop and inside the tile's rounded corners, or
+/// bare when the buffer carries its own silhouette; then the window's sheets
+/// over it, a modal one behind the scrim that shows the window it blocks as
+/// inactive.
 ///
 /// This is the one definition of what an app's surface looks like. The tile
 /// draws it and then adds shell chrome on top (collaboration overlays);
@@ -1759,12 +1975,12 @@ pub fn surface_image(surface_id: SurfaceId) -> Option<ImageData> {
 pub fn paint_tile_surface(
     scene: &mut Scene,
     transform: Affine,
-    image: &ImageData,
+    surface: &TileSurface<'_>,
     rect: Rect,
     theme: &Theme,
-    preserve_transparency: bool,
 ) -> bool {
-    let Some(dst) = fit_into(rect, image.width, image.height) else {
+    let image = surface.image;
+    let Some(dst) = fit_surface(surface.id, rect, image.width, image.height) else {
         return false;
     };
     let sx = dst.width() / f64::from(image.width);
@@ -1772,7 +1988,7 @@ pub fn paint_tile_surface(
     let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
     let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
     let pixels = Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height));
-    if preserve_transparency {
+    if surface.preserve_transparency {
         // The app buffer already carries the shared floating chrome's
         // soft silhouette. Drawing it directly preserves transparent
         // corners and prevents a second radius/backdrop from making
@@ -1797,8 +2013,64 @@ pub fn paint_tile_surface(
         &clip,
     );
     scene.fill(Fill::NonZero, brush_transform, &brush, None, &pixels);
+    paint_sheets(scene, transform, surface, rect, dst, theme);
     scene.pop_layer();
     true
+}
+
+/// Paint `surface`'s sheets over its image, drawn into `dst` on the tile
+/// `rect`: each centred where [`ForeignFrameStore::sheet_rect_in_root`]
+/// puts it, a modal one behind the OS scrim.
+fn paint_sheets(
+    scene: &mut Scene,
+    transform: Affine,
+    surface: &TileSurface<'_>,
+    rect: Rect,
+    dst: Rect,
+    theme: &Theme,
+) {
+    let sx = dst.width() / f64::from(surface.image.width.max(1));
+    let sy = dst.height() / f64::from(surface.image.height.max(1));
+    for (link, sheet) in surface.sheets {
+        if link.modal {
+            crate::shell::overlay_host::fill_scrim(
+                scene,
+                transform,
+                rect,
+                crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
+                theme,
+            );
+        }
+        let Some(local) = store().sheet_rect_in_root(surface.id, link.surface) else {
+            continue;
+        };
+        let at = translated_and_scaled(
+            transform,
+            dst.x0 + local.x0 * sx,
+            dst.y0 + local.y0 * sy,
+            sx,
+            sy,
+        );
+        scene.fill(
+            Fill::NonZero,
+            at,
+            &ImageBrush::new(sheet.clone()),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
+        );
+    }
+}
+
+/// A captured frame as a GPU-uploadable image.
+fn frame_image(frame: FrameSnapshot) -> ImageData {
+    ImageData {
+        data: Blob::new(std::sync::Arc::new(frame.rgba)),
+        format: ImageFormat::Rgba8,
+        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: frame.width,
+        height: frame.height,
+    }
 }
 
 /// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
@@ -1933,10 +2205,14 @@ impl Widget for ForeignSurfaceWidget {
             && paint_tile_surface(
                 scene,
                 transform,
-                image,
+                &TileSurface {
+                    id: self.surface_id,
+                    image,
+                    sheets: &self.sheet_images,
+                    preserve_transparency: self.preserve_transparency,
+                },
                 self.rect,
                 theme,
-                self.preserve_transparency,
             )
         {
             // Shell chrome over the app's pixels: never part of what a
@@ -2275,8 +2551,31 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        if let Some((w, h)) = store().take_pending_configure(id, state.surface_scale(id)) {
-            configure_to(&toplevel, w, h);
+        if store().is_sheet(id) {
+            // A sheet sizes itself; its bounds were staged when it attached.
+            if !toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+                sent = sent.saturating_add(1);
+            }
+            continue;
+        }
+        let (min, max) =
+            smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                let mut cached = states
+                    .cached_state
+                    .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+                let current = cached.current();
+                let limits = (
+                    (current.min_size.w, current.min_size.h),
+                    (current.max_size.w, current.max_size.h),
+                );
+                drop(cached);
+                limits
+            });
+        store().note_size_limits(id, min, max);
+        let tiled = !state.is_floating_toplevel(id);
+        if let Some((w, h)) = store().take_pending_configure(id) {
+            configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -2294,7 +2593,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h);
+        configure_to(&toplevel, w, h, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -2313,9 +2612,25 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32) {
+fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
+        // A tile has a neighbour or the screen edge on every side. Saying so
+        // is what makes a toolkit drop the shadow, rounded corners and resize
+        // borders it would otherwise draw inside the tile.
+        for edge in [
+            Xdg::TiledLeft,
+            Xdg::TiledRight,
+            Xdg::TiledTop,
+            Xdg::TiledBottom,
+        ] {
+            if tiled {
+                pending.states.set(edge);
+            } else {
+                pending.states.unset(edge);
+            }
+        }
     });
     toplevel.send_configure();
 }
@@ -2327,18 +2642,14 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32) {
 /// chrome around a strip. Not what layout would have given — it declined — but a size the window can honestly render at, close enough that a later correction is small.
 #[cfg(target_os = "linux")]
 fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) {
-    let scale = if state.scale.is_finite() && state.scale > 0.0 {
-        state.scale
-    } else {
-        1.0
-    };
+    // `output_size` is the logical desktop, the unit a configure is in.
     let (out_w, out_h) = state.output_size;
     #[allow(
         clippy::cast_possible_truncation,
         reason = "clamped to [1.0, i32::MAX] and .round()-ed first, so the cast to i32 never \
                   truncates a fraction or wraps out of range"
     )]
-    let logical = |px: f64| (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32;
+    let logical = |px: f64| px.round().clamp(1.0, f64::from(i32::MAX)) as i32;
     let chrome_w = f64::from(crate::shell::sidebar_wheel_disc::SIDEBAR_RESERVE_PX);
     let chrome_h =
         f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
@@ -2365,7 +2676,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
         let id = crate::compositor::state::surface_id(surface);
         let visible_tab = {
             let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, id)
+            is_visible_tab(&tree, store().sheet_root(id))
         };
         if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
             continue;
@@ -2868,6 +3179,153 @@ mod tests {
         store().forget(id);
     }
 
+    /// A `w`x`h` opaque RGBA frame whose neighbouring pixels differ.
+    fn numbered_frame(w: u32, h: u32) -> Vec<u8> {
+        (0..w.saturating_mul(h))
+            .flat_map(|i| {
+                let v = u8::try_from(i % 251).expect("fits");
+                [v, v, v, 255]
+            })
+            .collect()
+    }
+
+    fn geometry(x: i32, y: i32, width: i32, height: i32) -> WindowGeometry {
+        WindowGeometry {
+            x,
+            y,
+            width,
+            height,
+            logical_size: None,
+            buffer_scale: 1,
+        }
+    }
+
+    /// A toolkit drawing its own shadow commits a buffer bigger than its
+    /// window and says where the window is. The tile shows that rectangle —
+    /// shadow and resize border are not part of a tiled window.
+    #[test]
+    fn a_declared_window_geometry_crops_the_frame_to_the_window() {
+        let id = sid(60);
+        store().forget(id);
+        let (w, h) = (20u32, 16u32);
+        let rgba = numbered_frame(w, h);
+        store().publish_rgba(id, &rgba, w, h);
+        store().note_window_geometry(id, Some(geometry(3, 2, 12, 10)));
+
+        let frame = store().snapshot(id).expect("frame");
+        assert_eq!((frame.width, frame.height), (12, 10));
+        assert_eq!(store().frame_size(id), Some((12, 10)));
+        for row in 0..10u32 {
+            for col in 0..12u32 {
+                let src = usize::try_from(((row + 2) * w + col + 3) * 4).expect("index");
+                let dst = usize::try_from((row * 12 + col) * 4).expect("index");
+                assert_eq!(
+                    frame.rgba[dst..dst + 4],
+                    rgba[src..src + 4],
+                    "cropped pixel ({col}, {row}) must be buffer pixel ({}, {})",
+                    col + 3,
+                    row + 2,
+                );
+            }
+        }
+
+        store().note_window_geometry(id, None);
+        let whole = store().snapshot(id).expect("frame");
+        assert_eq!(
+            (whole.width, whole.height),
+            (w, h),
+            "clearing geometry shows it all"
+        );
+        store().forget(id);
+    }
+
+    /// Geometry is logical; a scaled buffer holds it at the buffer scale, or
+    /// at whatever ratio the viewport destination sets for fractional scaling.
+    #[test]
+    fn window_geometry_is_found_in_scaled_buffers() {
+        let integer = WindowGeometry {
+            buffer_scale: 2,
+            ..geometry(10, 5, 100, 80)
+        };
+        assert_eq!(integer.crop(240, 180), Some((20, 10, 200, 160)));
+
+        let fractional = WindowGeometry {
+            logical_size: Some((120, 90)),
+            ..geometry(10, 5, 100, 80)
+        };
+        assert_eq!(fractional.crop(180, 135), Some((15, 8, 150, 120)));
+
+        assert_eq!(
+            geometry(0, 0, 120, 90).crop(120, 90),
+            None,
+            "geometry covering the whole buffer is no crop"
+        );
+        assert_eq!(
+            geometry(500, 500, 10, 10).crop(120, 90),
+            None,
+            "geometry outside the buffer must not blank the window"
+        );
+    }
+
+    /// Pixels are drawn with the window geometry at the tile corner, so input
+    /// must put surface-local `(x, y)` of the geometry corner at that corner too.
+    #[test]
+    fn input_origin_follows_the_window_geometry_offset() {
+        let id = sid(61);
+        store().forget(id);
+        let tile = Rect::new(100.0, 50.0, 300.0, 250.0);
+        store().publish_rgba(id, &numbered_frame(240, 240), 240, 240);
+        assert_eq!(store().surface_origin(id, tile), (100.0, 50.0));
+        store().note_window_geometry(id, Some(geometry(20, 20, 200, 200)));
+        assert_eq!(
+            store().surface_origin(id, tile),
+            (80.0, 30.0),
+            "the shadow's 20px lie left of and above the tile, out of sight"
+        );
+        let dst = fit_surface(id, tile, 200, 200).expect("fit");
+        assert_eq!(
+            (dst.x0 - 80.0, dst.y0 - 30.0),
+            (20.0, 20.0),
+            "the painted geometry corner is surface-local (20, 20)"
+        );
+        store().forget(id);
+    }
+
+    /// A window that may not grow as big as its tab is configured to its
+    /// maximum and shown centred, and input follows it there.
+    #[test]
+    fn a_maximum_size_below_the_tab_centres_the_window() {
+        let id = sid(62);
+        store().forget(id);
+        let tile = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        store().note_placement(id, tile);
+        store().note_size_limits(id, (0, 0), (600, 0));
+        assert_eq!(store().take_pending_configure(id), Some((600, 800)));
+        let target = store().target_box(id, tile);
+        assert_eq!(target, Rect::new(300.0, 0.0, 900.0, 800.0));
+
+        store().publish_rgba(id, &vec![0; 600 * 800 * 4], 600, 800);
+        assert_eq!(
+            fit_surface(id, tile, 600, 800),
+            Some(target),
+            "drawn 1:1 in its centred box, not stretched across the tab"
+        );
+        assert_eq!(store().surface_origin(id, tile), (300.0, 0.0));
+        assert!(
+            store().mark_presented(id, tile),
+            "a frame answering the clamped configure is the window's answer"
+        );
+
+        store().note_size_limits(id, (1400, 0), (0, 0));
+        assert_eq!(
+            store().take_pending_configure(id),
+            Some((1400, 800)),
+            "a minimum above the tab is honoured too"
+        );
+        assert_eq!(store().target_box(id, tile), tile);
+        store().forget(id);
+    }
+
     /// `fills` is what the gate is made of; the grace period is what
     /// stops it stranding a window — both asserted directly since the ten-second wait isn't something a test can sit through.
     #[test]
@@ -2983,31 +3441,18 @@ mod tests {
     fn pending_configure_fires_once_per_size_change() {
         let id = sid(4);
         store().forget(id);
-        assert_eq!(store().take_pending_configure(id, 1.0), None);
+        assert_eq!(store().take_pending_configure(id), None);
 
         store().note_placement(id, Rect::new(0.0, 0.0, 1200.0, 800.0));
-        assert_eq!(store().take_pending_configure(id, 1.0), Some((1200, 800)));
+        assert_eq!(store().take_pending_configure(id), Some((1200, 800)));
         assert_eq!(
-            store().take_pending_configure(id, 1.0),
+            store().take_pending_configure(id),
             None,
             "an unchanged layout must not re-send a configure every frame"
         );
 
         store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
-        assert_eq!(store().take_pending_configure(id, 1.0), Some((600, 400)));
-        store().forget(id);
-    }
-
-    #[test]
-    fn pending_configure_divides_physical_pixels_by_scale() {
-        let id = sid(5);
-        store().forget(id);
-        store().note_placement(id, Rect::new(0.0, 0.0, 2400.0, 1600.0));
-        assert_eq!(
-            store().take_pending_configure(id, 2.0),
-            Some((1200, 800)),
-            "the configure carries surface-local (logical) size, not physical px"
-        );
+        assert_eq!(store().take_pending_configure(id), Some((600, 400)));
         store().forget(id);
     }
 
@@ -3594,7 +4039,10 @@ mod tests {
     /// layer, so using that primitive here covers their shared durable
     /// transaction while `strip_navigation` checks both actual event routes.
     #[test]
-    #[serial_test::serial(launch_events)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one lifecycle, interleaved step by step, is the property under test"
+    )]
     fn deterministic_layout_lifecycle_survives_interleaved_mutations() {
         use crate::shell::state::AppKind;
         use crate::shell::tab_binding::{

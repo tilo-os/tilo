@@ -27,6 +27,7 @@ compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 lan-pairing = { max-threads = 1 }
+imager-durable-disk = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
@@ -104,3 +105,15 @@ test-group = "lan-pairing"
 [[profile.ci.overrides]]
 filter = 'package(tilo-relay) and (test(nearby_) or test(personal_device_process::))'
 test-group = "lan-pairing"
+
+# The imager's migration, cache and download tests fsync journals and
+# payloads on the real disk that CI qualifies for them. Dozens at once queue
+# behind each other's flushes until their worker deadlines expire, so they
+# share a cap.
+[[profile.default.overrides]]
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
+test-group = "imager-durable-disk"
+
+[[profile.ci.overrides]]
+filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
+test-group = "imager-durable-disk"

@@ -8,7 +8,7 @@
 #include <cstring>
 #include <iostream>
 
-namespace qos {
+namespace tilo {
 inline std::string ScriptSource(const std::vector<CefString>& scripts) {
   auto list=CefListValue::Create();for(size_t i=0;i<scripts.size();++i) list->SetString(i,scripts[i]);
   auto value=CefValue::Create();value->SetList(list);
@@ -18,9 +18,9 @@ inline std::string ScriptSource(const std::vector<CefString>& scripts) {
   // bodies directly: page eval() is subject to CSP on already loaded documents.
   auto signature=CefValue::Create();signature->SetString(json);
   const auto quoted=CefWriteJSON(signature,JSON_WRITER_DEFAULT).ToString();
-  const std::string marker="window[Symbol.for('qos.documentScripts')]";
+  const std::string marker="window[Symbol.for('tilo.documentScripts')]";
   std::string source="if((location.protocol==='http:'||location.protocol==='https:')&&"+marker+"!=="+quoted+"){"+marker+"="+quoted+";\n";
-  for(const auto& script:scripts) source+="try {\n"+script.ToString()+"\n} catch(qosScriptError) { console.error('qOS document script failed',qosScriptError); }\n";
+  for(const auto& script:scripts) source+="try {\n"+script.ToString()+"\n} catch(tiloScriptError) { console.error('Tilo document script failed',tiloScriptError); }\n";
   return source+"}";
 }
 // Supplemental blocking scripts have the same top-level-origin policy as the
@@ -29,7 +29,7 @@ inline std::string ScriptSource(const std::vector<CefString>& scripts) {
 inline std::string BlockingScriptSource(const std::vector<CefString>& scripts,bool enabled,const std::set<std::string>& exceptions) {
   auto origins=CefListValue::Create();for(const auto& origin:exceptions)origins->SetString(origins->GetSize(),origin);auto value=CefValue::Create();value->SetList(origins);
   std::string source="(()=>{const a=location.ancestorOrigins;const o=a&&a.length?a[a.length-1]:location.origin;if("+std::string(enabled?"true":"false")+"&&!"+CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString()+".includes(o)){";
-  for(const auto& script:scripts)source+="try{\n"+script.ToString()+"\n}catch(qosBlockingScriptError){}\n";
+  for(const auto& script:scripts)source+="try{\n"+script.ToString()+"\n}catch(tiloBlockingScriptError){}\n";
   return source+"}})()";
 }
 class DocumentScripts final : public CefDevToolsMessageObserver {
@@ -59,9 +59,9 @@ class DocumentScripts final : public CefDevToolsMessageObserver {
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override { if(browser_ && pending_) { pending_=0;failure_(); } }
  private:
   void Trace(const char* stage,int id) const {
-    const char* trace=std::getenv("QOS_WEBVIEW_PROFILE");
+    const char* trace=std::getenv("TILO_WEBVIEW_PROFILE");
     if(trace && std::strcmp(trace,"trace")==0)
-      std::cerr<<"qos-script-registration "<<stage<<" id="<<id<<" pending="<<pending_<<" enabling="<<enabling_<<"\n";
+      std::cerr<<"tilo-script-registration "<<stage<<" id="<<id<<" pending="<<pending_<<" enabling="<<enabling_<<"\n";
   }
   void Start() {
     if(!browser_ || desired_==installed_) { if(browser_) ready_();return; }

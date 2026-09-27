@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction};
+use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
 use crate::apply::{Apply, SessionProcess};
 use crate::boot::Boot;
@@ -232,7 +232,7 @@ impl Apply for SystemdApply {
         .map(drop)
     }
 
-    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError> {
+    fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
         // The configfs device, the logind seat and the uinput `phys` tag share
         // one name; the shipped 72-vkms-seat.rules maps the card to the seat.
         let seat = format!("seat-{slot}");
@@ -242,7 +242,8 @@ impl Apply for SystemdApply {
                 "modprobe vkms",
                 Command::new("modprobe").args(["vkms", "create_default_dev=0"]),
             )?;
-            vkms_create(&device).map_err(DaemonError::io(format!("create vkms device {seat}")))?;
+            vkms_create(&device, connectors)
+                .map_err(DaemonError::io(format!("create vkms device {seat}")))?;
             run("udevadm settle", Command::new("udevadm").arg("settle"))?;
         }
         if vkms_card(&seat).is_none() {
@@ -252,6 +253,35 @@ impl Apply for SystemdApply {
             });
         }
         Ok(seat)
+    }
+
+    fn apply_display(
+        &mut self,
+        _slot: &str,
+        user: &str,
+        outputs: &[OutputSpec],
+    ) -> Result<String, DaemonError> {
+        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "tilo-vmd display-apply".into(),
+            detail: format!("no user {user}"),
+        })?;
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
+        // The session's own environment: the settings file under HOME, the
+        // compositor's display-state.json under XDG_RUNTIME_DIR.
+        run(
+            "tilo-vmd display-apply",
+            Command::new("runuser")
+                .args(["-u", user, "--", "env"])
+                .arg(format!("HOME={home}"))
+                .arg(format!("USER={user}"))
+                .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
+                .arg(exe)
+                .arg("display-apply")
+                .arg("--outputs")
+                .arg(tilo_vm_protocol::display::format_outputs(outputs)),
+        )
+        .map(|out| out.trim().to_owned())
     }
 
     fn release_seat(&mut self, _slot: &str, seat: &str) -> Result<(), DaemonError> {
@@ -422,15 +452,16 @@ impl Apply for SystemdApply {
         &mut self,
         slot: &str,
         seat: &str,
+        geometry: Option<input::Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
         let socket = input::socket_path(slot);
         let reply = match input::send(&socket, actions) {
-            Ok(reply) if reply.seat == seat => reply,
+            Ok(reply) if reply.seat == seat && reply.geometry == geometry => reply,
             // Not running yet, or its devices belong to the seat the slot had
             // before a seat0 claim or release: (re)create them.
             _ => {
-                start_input_server(slot, seat, &socket)?;
+                start_input_server(slot, seat, geometry, &socket)?;
                 input::send(&socket, actions).map_err(|e| DaemonError::Apply {
                     step: format!("send input to {}", input::unit_name(slot)),
                     detail: e.to_string(),
@@ -579,22 +610,34 @@ fn make_tree_readable(_dir: &Path) -> Result<(), DaemonError> {
 
 /// Start `tilo-vmd input-serve` for `slot` as a transient unit and wait
 /// until its socket answers and udev has handed the devices to the seat.
-fn start_input_server(slot: &str, seat: &str, socket: &Path) -> Result<(), DaemonError> {
+fn start_input_server(
+    slot: &str,
+    seat: &str,
+    geometry: Option<input::Geometry>,
+    socket: &Path,
+) -> Result<(), DaemonError> {
     let unit = input::unit_name(slot);
     let _ = Command::new("systemctl").args(["stop", &unit]).output();
     let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
-    run(
-        &format!("systemd-run --unit {unit}"),
-        Command::new("systemd-run")
-            .arg(format!("--unit={unit}"))
-            .args(["--collect", "--quiet"])
-            .arg(format!(
-                "--description=tilo-vm input devices for slot {slot}"
-            ))
-            .arg(exe)
-            .args(["input-serve", "--seat", seat, "--socket"])
-            .arg(socket),
-    )?;
+    let mut command = Command::new("systemd-run");
+    command
+        .arg(format!("--unit={unit}"))
+        .args(["--collect", "--quiet"])
+        .arg(format!(
+            "--description=tilo-vm input devices for slot {slot}"
+        ))
+        .arg(exe)
+        .args(["input-serve", "--seat", seat, "--socket"])
+        .arg(socket);
+    if let Some(input::Geometry {
+        desktop: (width, height),
+        touch: (touch_width, touch_height),
+    }) = geometry
+    {
+        command.arg(format!("--extent={width}x{height}"));
+        command.arg(format!("--touch-extent={touch_width}x{touch_height}"));
+    }
+    run(&format!("systemd-run --unit {unit}"), &mut command)?;
     for _ in 0..100 {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             // New input devices reach the compositor via udev and libinput.
@@ -663,36 +706,31 @@ fn proc_field(pid: u32, field: &str) -> Option<String> {
         .map(|v| v.trim().to_owned())
 }
 
-/// Connectors per card. Fixed at creation: vkms refuses topology changes
-/// while a device is enabled, so hotplug means toggling a connector's
-/// `status` between connected (1) and disconnected (2).
-const VKMS_CONNECTORS: u32 = 1;
-
-/// One primary plane, CRTC and encoder, and [`VKMS_CONNECTORS`] connectors;
-/// spare connectors start disconnected. Link targets must be absolute.
-fn vkms_create(device: &Path) -> std::io::Result<()> {
-    for dir in ["", "planes/p0", "crtcs/c0", "encoders/e0"] {
-        fs::create_dir(device.join(dir))?;
-    }
-    fs::write(device.join("planes/p0/type"), "1")?;
-    symlink(
-        &device.join("crtcs/c0"),
-        &device.join("planes/p0/possible_crtcs/c0"),
-    )?;
-    symlink(
-        &device.join("crtcs/c0"),
-        &device.join("encoders/e0/possible_crtcs/c0"),
-    )?;
-    for index in 0..VKMS_CONNECTORS {
-        let connector = device.join(format!("connectors/n{index}"));
-        fs::create_dir(&connector)?;
-        symlink(
-            &device.join("encoders/e0"),
-            &connector.join("possible_encoders/e0"),
-        )?;
-        if index > 0 {
-            fs::write(connector.join("status"), "2")?;
+/// One independent output per connector: each gets its own primary plane,
+/// CRTC and encoder, so every output can run its own mode. The topology is
+/// fixed at creation: vkms refuses changes while a device is enabled, so
+/// hotplug means toggling a connector's `status` between connected (1) and
+/// disconnected (2). vkms names the connectors `Virtual-1`, `Virtual-2`, ...
+/// in this order. Link targets must be absolute.
+fn vkms_create(device: &Path, connectors: u32) -> std::io::Result<()> {
+    fs::create_dir(device)?;
+    for index in 0..connectors.max(1) {
+        let (plane, crtc, encoder, connector) = (
+            device.join(format!("planes/p{index}")),
+            device.join(format!("crtcs/c{index}")),
+            device.join(format!("encoders/e{index}")),
+            device.join(format!("connectors/n{index}")),
+        );
+        for dir in [&plane, &crtc, &encoder, &connector] {
+            fs::create_dir(dir)?;
         }
+        fs::write(plane.join("type"), "1")?;
+        symlink(&crtc, &plane.join(format!("possible_crtcs/c{index}")))?;
+        symlink(&crtc, &encoder.join(format!("possible_crtcs/c{index}")))?;
+        symlink(
+            &encoder,
+            &connector.join(format!("possible_encoders/e{index}")),
+        )?;
     }
     fs::write(device.join("enabled"), "1")
 }
