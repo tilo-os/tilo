@@ -797,6 +797,7 @@ pub fn decide_actor(
         }
     }
 
+    restricted |= crate::foreign_device::exceeds_ceiling(actor, required);
     let allowed = (base_role_allows || granted) && !restricted;
     if allowed {
         CapDecision::Allow

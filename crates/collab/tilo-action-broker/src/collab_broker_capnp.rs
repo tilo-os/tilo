@@ -76,7 +76,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
-use collab_types::foreign_device::foreign_device_role;
+use collab_types::foreign_device::{foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
 use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 
@@ -459,6 +459,8 @@ struct AdmittedJoinIdentity {
 pub struct BrokerActor {
     id: String,
     is_agent: bool,
+    /// A person acting from a device whose certificate marks it foreign.
+    foreign: bool,
 }
 
 impl BrokerActor {
@@ -467,6 +469,7 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: false,
+            foreign: false,
         }
     }
 
@@ -475,6 +478,15 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: true,
+            foreign: false,
+        }
+    }
+
+    /// The person `cert` certifies, acting from that certificate's device.
+    fn for_certificate(cert: &tilo_user_identity::DeviceCert) -> Self {
+        Self {
+            foreign: cert.capabilities.foreign,
+            ..Self::person(principal_id_for_root(cert.user_public_key))
         }
     }
 
@@ -499,19 +511,35 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            workspace.actor_for_person_at(&self.id, now)
+            let person = workspace.actor_for_person_at(&self.id, now);
+            capped_if_foreign(person, self.foreign, workspace, now)
         }
+    }
+}
+
+/// `actor`, held to `workspace`'s foreign-device cap when it acts from a
+/// foreign device.
+fn capped_if_foreign(
+    actor: Actor,
+    foreign: bool,
+    workspace: &tilo_desktop_model::Workspace,
+    now: u64,
+) -> Actor {
+    if foreign {
+        on_foreign_device(actor, &workspace.capabilities, now)
+    } else {
+        actor
     }
 }
 
 impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
-        BrokerActor {
-            id: self.agent_id.as_ref().map_or_else(
-                || self.principal_id.clone(),
-                |agent| format!("agent:{agent}"),
-            ),
-            is_agent: self.agent_id.is_some(),
+        match &self.agent_id {
+            Some(agent) => BrokerActor::agent(format!("agent:{agent}")),
+            None => BrokerActor {
+                foreign: self.verified.foreign,
+                ..BrokerActor::person(self.principal_id.clone())
+            },
         }
     }
 
@@ -524,12 +552,13 @@ impl AdmittedJoinIdentity {
         .in_room(room)
     }
 
-    fn policy_actor(&self, room: &str) -> Actor {
-        match &self.agent_id {
-            Some(agent) => Actor::agent(agent),
-            None => Actor::person(Some(self.role), self.principal_id.clone()),
+    fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
+        let room = workspace.room.to_string();
+        if let Some(agent) = &self.agent_id {
+            return Actor::agent(agent).in_room(room);
         }
-        .in_room(room.to_string())
+        let person = Actor::person(Some(self.role), self.principal_id.clone()).in_room(room);
+        capped_if_foreign(person, self.verified.foreign, workspace, now)
     }
 }
 
@@ -3661,14 +3690,7 @@ impl CapnpBrokerState {
     )]
     #[cfg(test)]
     fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(
-            cluster_id,
-            &BrokerActor {
-                id: actor.to_string(),
-                is_agent: false,
-            },
-            None,
-        )
+        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor), None)
     }
 
     #[allow(
@@ -4005,10 +4027,7 @@ impl CapnpBrokerState {
             resource,
             action,
             argument,
-            &BrokerActor {
-                id: actor.to_string(),
-                is_agent: false,
-            },
+            &BrokerActor::person(actor),
             confirmation_token,
             None,
         )
@@ -4935,10 +4954,7 @@ impl CapnpBrokerState {
             resource,
             action,
             argument,
-            &BrokerActor {
-                id: run.agent_id,
-                is_agent: true,
-            },
+            &BrokerActor::agent(run.agent_id),
             None,
             Some(run.action_context),
         )
@@ -5204,7 +5220,7 @@ impl CapnpBrokerState {
         let mut current = admitted.clone();
         current.role = role;
         let actor = current
-            .policy_actor(&route.cluster_id)
+            .policy_actor(workspace, now)
             .with_principal(Principal::App(route.app_id.clone()));
         let resource = ResourceRef::Artifact {
             app: Some(route.app_id.clone()),
@@ -8052,11 +8068,11 @@ impl channel_handle::Server for CapnpChannelHandle {
             };
             let workspace = workspace.clone();
             drop(tree);
-            let caller = current.policy_actor(&self.route().cluster_id);
             let now = match self.state.policy_now_ns() {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
+            let caller = current.policy_actor(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -12233,6 +12249,49 @@ pub mod tests {
     }
 
     #[test]
+    fn a_foreign_device_is_refused_actions_above_the_workspace_cap() {
+        use tilo_actions::PermissionRequirement::{Admin, Invite, Write};
+        let root = SigningKey::from_bytes(&[24; 32]);
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
+        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        let room = workspace.room.to_string();
+        let route = CrdtRoute::cluster(room.clone());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        let foreign = VerifiedJoinIdentity {
+            foreign: true,
+            ..verified_device(&root)
+        };
+        let foreign = admit_verified_join(&tree, &route, foreign).unwrap();
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let authorize = |admitted: &AdmittedJoinIdentity, permission| {
+            state.authorize_invocation_permission(
+                &room,
+                "so.tilo.settings",
+                "workspace.rename",
+                permission,
+                &admitted.broker_actor(),
+                0,
+            )
+        };
+
+        for permission in [Admin, Invite, Write] {
+            authorize(&native, permission).unwrap();
+        }
+        assert!(authorize(&foreign, Admin).is_err());
+        assert!(authorize(&foreign, Invite).is_err());
+        authorize(&foreign, Write).unwrap();
+    }
+
+    #[test]
     fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
@@ -12319,7 +12378,7 @@ pub mod tests {
         assert_eq!(admitted.role, CapRole::Commenter);
         assert!(
             admitted
-                .policy_actor(&route.cluster_id)
+                .policy_actor(&tree.workspaces[0], 0)
                 .principals
                 .contains(&Principal::Agent("scribe".into()))
         );
@@ -13119,10 +13178,7 @@ pub mod tests {
             );
         }
         drop(surfaces);
-        let actor = BrokerActor {
-            id: "owner".into(),
-            is_agent: false,
-        };
+        let actor = BrokerActor::person("owner");
         let full: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &actor, None)
@@ -13158,10 +13214,7 @@ pub mod tests {
             scoped["surfaces"][0]["actions"].as_array().unwrap().len(),
             1
         );
-        let denied = BrokerActor {
-            id: "stranger".into(),
-            is_agent: false,
-        };
+        let denied = BrokerActor::person("stranger");
         let denied: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &denied, Some(&scope))
