@@ -453,7 +453,6 @@ portal-network-cert-system-domain = Das Zertifikat des Netzwerks wird mit den ve
 portal-network-cert-unchecked = Das Zertifikat des Netzwerks wird nicht geprüft. Fahre nur in einem Netzwerk fort, dem du vertraust.
 
 # Obere Leiste
-topbar-workspace-name-tooltip = Arbeitsbereichseinstellungen öffnen
 topbar-clocks-notification-title = Uhren
 topbar-clocks-notification-body = Die Zeit ist abgelaufen
 
