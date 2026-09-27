@@ -1549,22 +1549,24 @@ impl ControlState for FrameBuilderControlState<'_> {
         // A pointer is not a roster — different questions. Derived from
         // `collaborator_roster_rows` rather than re-walked, so reads can't drift from what a person sees.
         let chrome = self.fb.chrome();
-        let roster: Vec<serde_json::Value> =
-            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "label": row.label,
-                        "role": row.role,
-                        // Kept separate from the label, same as the panel: inferring which of
-                        // these is a person from the label alone is the one mistake to avoid.
-                        "is_agent": row.is_agent,
-                        // Named but not arrived — the one thing a harness watching a join needs,
-                        // and what a screenshot of a dimmed row can't be asserted on.
-                        "invited": row.invited,
-                    })
-                })
-                .collect();
+        let roster: Vec<serde_json::Value> = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.tree().desktop,
+            &crate::shell::state::local_user_id(),
+        )
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "label": row.label,
+                "role": row.role,
+                // Kept separate from the label, same as the panel: inferring which of
+                // these is a person from the label alone is the one mistake to avoid.
+                "is_agent": row.is_agent,
+                // Named but not arrived — the one thing a harness watching a join needs,
+                // and what a screenshot of a dimmed row can't be asserted on.
+                "invited": row.invited,
+            })
+        })
+        .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
@@ -1969,7 +1971,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "title": n.title,
                 "body": n.body,
                 "severity": format!("{:?}", n.severity),
-                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+                "persistent": n.dismiss_after >= tilo_desktop::notifications::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
@@ -2022,7 +2024,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     .tree()
                     .desktop.active_workspace()
                     .and_then(|ws| {
-                        crate::shell::workspace_settings::draft_subject(
+                        tilo_desktop::workspace_settings::draft_subject(
                             ws,
                             &chrome.ws_grant_draft,
                         )
@@ -2423,11 +2425,11 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             state.cancel_host_launch_activation(&token);
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
-                    crate::shell::notification::Notification::new(
+                    tilo_desktop::notifications::Notification::new(
                         crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                     .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
@@ -5835,7 +5837,7 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
-    if let Some(store) = crate::shell::emoji_picker::RecentsStore::for_user() {
+    if let Some(store) = crate::shell::emoji_recents::FileRecentsStore::for_user() {
         frame_builder.host_mut().attach_emoji_recents_store(store);
     }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();

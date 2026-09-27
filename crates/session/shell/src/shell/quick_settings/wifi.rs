@@ -21,7 +21,7 @@ use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::quick_settings::WifiNetwork;
 use crate::shell::quick_settings::WifiPasswordPrompt;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, LIST_TOP, PANEL_PAD, RELATED_GAP,
     ROW_HEIGHT, STATUS_DOT, TOGGLE_H, TOGGLE_W, centred_text_top, leading_glyph, paint_control,
     trailing_dot_center, trailing_status_glyph, trailing_toggle, type_size,

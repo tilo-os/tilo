@@ -2148,8 +2148,10 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dav",
+ "percent-encoding",
  "serde",
  "serde_json",
  "test-http",
@@ -2164,6 +2166,7 @@ dependencies = [
 name = "cloud-source-dropbox"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
@@ -2182,6 +2185,7 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-gdrive",
  "md-5",
@@ -2202,6 +2206,7 @@ name = "cloud-source-icloud"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-icloud",
  "getrandom 0.4.3",
@@ -2227,8 +2232,10 @@ name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-onedrive",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
@@ -2566,7 +2573,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "containers",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3921,6 +3927,7 @@ dependencies = [
  "chrono",
  "feed-rs",
  "hex",
+ "quick-xml 0.41.0",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -4955,9 +4962,9 @@ checksum = "f2e102e6eb644d3e0b186fc161e4460417880a0a0b87d235f2e5b8fb30f2e9e0"
 
 [[package]]
 name = "glifo"
-version = "0.1.1"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d99fc21d493812643aae86d53b7bbd02f376434a90317e8a790bc209fdd6605e"
+checksum = "ae9d48c6d81526ad2f9d5d6e5fddf5f6949ffbc46fcac0db0d061a6e65097019"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -4967,7 +4974,7 @@ dependencies = [
  "png",
  "skrifa 0.42.1",
  "smallvec",
- "vello_common 0.0.9",
+ "vello_common",
 ]
 
 [[package]]
@@ -5775,6 +5782,15 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "libc",
+ "workspace-hack",
+]
+
+[[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
  "workspace-hack",
 ]
 
@@ -7287,16 +7303,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
@@ -7433,6 +7439,18 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "launcher-macos"
+version = "0.1.0"
+dependencies = [
+ "launcher",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -8347,7 +8365,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.0",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand 0.10.1",
@@ -8861,8 +8879,6 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
- "qdoc",
- "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8872,7 +8888,6 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
- "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "url",
@@ -11801,10 +11816,12 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "app-cli",
  "app-host",
+ "async-imap",
  "atomic-file",
  "chrono-tz",
  "cli",
@@ -11831,6 +11848,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-ui",
@@ -13020,6 +13038,7 @@ dependencies = [
  "os-actions",
  "package-store",
  "parking_lot",
+ "percent-encoding",
  "pipewire",
  "pollster",
  "postcard",
@@ -13027,6 +13046,7 @@ dependencies = [
  "qcms",
  "qdoc",
  "qdoc-codecs",
+ "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13071,6 +13091,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -13082,6 +13103,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-runtime",
  "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -13094,6 +13116,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tts",
+ "url",
  "uuid",
  "vello",
  "vello_encoding",
@@ -13971,6 +13994,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -14790,6 +14814,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "reqwest",
  "roxmltree 0.20.0",
  "test-http",
@@ -14837,13 +14862,18 @@ dependencies = [
  "blake3",
  "chat",
  "collab-types",
+ "desktop-policy",
+ "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
+ "hex",
  "notes",
  "serde",
  "serde_json",
  "taffy",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-resource",
@@ -14864,6 +14894,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-test-env",
+ "url",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -14980,6 +15011,35 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15398,6 +15458,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-runtime"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "libc",
+ "runtime-fs",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-seal"
 version = "0.1.0"
 dependencies = [
@@ -15625,6 +15706,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17166,23 +17248,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_common"
-version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19d672facaa2d697285a786cd9d44d614cd2ce54cdc022504bf339f8fff3b750"
-dependencies = [
- "bytemuck",
- "fearless_simd",
- "guillotiere",
- "hashbrown 0.17.1",
- "log",
- "peniko",
- "png",
- "smallvec",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "vello_cpu"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17192,7 +17257,7 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "png",
- "vello_common 0.0.8",
+ "vello_common",
 ]
 
 [[package]]
@@ -17276,7 +17341,6 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "vello",
- "video-player",
  "winit",
  "workspace-hack",
 ]
@@ -17802,7 +17866,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
@@ -18409,6 +18473,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest",
  "serde",

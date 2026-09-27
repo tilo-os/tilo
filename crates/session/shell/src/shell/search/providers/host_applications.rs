@@ -12,7 +12,6 @@
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
 use crate::shell::i18n::{t, t_args};
-use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -22,6 +21,7 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 use ui::search::{FieldWeight, RankField};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].

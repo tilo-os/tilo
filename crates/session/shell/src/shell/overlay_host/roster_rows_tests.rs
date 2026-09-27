@@ -29,7 +29,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
         tree.desktop
             .collaborators
             .push(Collaborator::new("xaver", "Xaver"));
-        let rows = collaborator_roster_rows(&tree);
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &tree.desktop,
+            &crate::shell::state::local_user_id(),
+        );
         assert_eq!(rows.len(), 1, "only the peer is here: {rows:?}");
         assert!(!rows[0].is_agent);
         assert_eq!(rows[0].label, "Xaver");
@@ -58,7 +61,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
             .expect("the owner may admit an agent");
         }
 
-        let rows = collaborator_roster_rows(&tree);
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &tree.desktop,
+            &crate::shell::state::local_user_id(),
+        );
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label, "Xaver");
         assert!(!rows[0].is_agent, "a peer must never be tagged as an agent");
@@ -80,7 +86,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
             ws.collaborators.push(Collaborator::new("peer@9", "scribe"));
         }
 
-        let rows = collaborator_roster_rows(&tree);
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &tree.desktop,
+            &crate::shell::state::local_user_id(),
+        );
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label, "scribe");
         assert!(
@@ -121,7 +130,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
             ws.collaborators.push(Collaborator::new("peer@9", "scribe"));
         }
 
-        let rows = collaborator_roster_rows(&tree);
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &tree.desktop,
+            &crate::shell::state::local_user_id(),
+        );
         assert_eq!(rows.len(), 3, "{rows:?}");
         assert_eq!(
             rows[0].role, None,

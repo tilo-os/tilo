@@ -452,7 +452,17 @@ fn table_context_commands_edit_only_the_current_table() {
             let canonical_source = app.main_panel_mut().editor().blocks()[0].text().to_owned();
             let changed = canonical_source.replace("| Before |\n", "");
             assert_ne!(changed, canonical_source);
-            crate::component_support::replace_block_text(&mut state.doc, page, &id, &changed);
+            notes::doc::NotesDoc::apply_block_ops(
+                &mut state.doc,
+                page,
+                &[ui::widget::BlockEditOp::TextSplice {
+                    block_id: id.clone(),
+                    start: 0,
+                    end: canonical_source.len(),
+                    text: changed.clone(),
+                }],
+            )
+            .unwrap();
             let (tree, node) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
             assert_eq!(
                 app.main_panel_mut().editor().focused_table_cell(),

@@ -70,27 +70,10 @@ ARG TILO_WITH_WINDOWS=1
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
 ARG TILO_WITH_BROWSER=1
-# Where the Rust compiler comes from: a registry.tilo.so/tilo/tilo-builder
-# index, pinned by digest, the same one os/Containerfile.dev and the CI check
-# lanes compile with. .forgejo/workflows/build-builder-image.yml installs the
-# channel rust-toolchain.toml names into it for both architectures, and the
-# builder stage takes exactly that channel out of it and fails when the image
-# lacks it. Not Fedora's rust package: its version moves whenever the RPM
-# snapshot is refreshed, and a different compiler emits different code, so
-# the tapps this image packs came out ~1.7 MB larger each than what rcargo and
-# CI measure. The runtime dylib, its libstd and every thin app are linked
-# with -C prefer-dynamic, so all of them must come from this one compiler.
-ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
-FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
-
-# The toolchain pin alone, so the builder's toolchain layer is keyed on it and
-# not on the whole workspace.
-FROM scratch AS rust-toolchain-pin
-COPY rust-toolchain.toml /
 
 # Public trust parsing is a build-only operation. The pinned base supplies the
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
@@ -344,8 +327,8 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder
 
-# The C toolchain and -devel deps the workspace's *-sys crates link or build
-# against (the Rust compiler is the pinned release, installed below). Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
+# Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
+# against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
@@ -369,7 +352,7 @@ FROM ${BASE_REF} AS builder
 #     flite; shell links the same engine when the browser is built, because
 #     both share one Cargo invocation.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        sccache capnproto \
+        rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
         libxkbcommon-devel wayland-devel \
@@ -385,30 +368,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
-
-# The Rust release rust-toolchain.toml pins, out of RUST_TOOLCHAIN_IMAGE (top of
-# file), linked into /usr/local/bin. No rustup: nothing here switches
-# toolchains, and a proxy that read rust-toolchain.toml would try to download.
-RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
-    --mount=type=bind,from=rust-toolchain-pin,source=/rust-toolchain.toml,target=/run/tilo-rust-toolchain.toml,ro \
-    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' /run/tilo-rust-toolchain.toml)" \
-    && [ -n "$channel" ] \
-    && toolchain="$channel-$(uname -m)-unknown-linux-gnu" \
-    && if [ ! -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ]; then \
-         printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain, which rust-toolchain.toml pins (it has: %s).\n' \
-           "$toolchain" "$(ls /run/tilo-rust-toolchains | tr '\n' ' ')" >&2; \
-         printf 'Pin a tilo-builder index built from this rust-toolchain.toml (build-builder-image.yml tags it %s).\n' \
-           "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cp -a "/run/tilo-rust-toolchains/$toolchain" /usr/local/lib/rust-toolchain \
-    && for tool in /usr/local/lib/rust-toolchain/bin/*; do ln -s "$tool" "/usr/local/bin/${tool##*/}"; done \
-    && actual="$(rustc --version | awk '{print $2}')" \
-    && if [ "$actual" != "$channel" ]; then \
-         printf 'the image builder compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cargo --version
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image
@@ -875,7 +834,7 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the 5 MiB application wire limit.
+# A full WPE browser is much larger than the application wire limit.
 # Keep its executable in a separately signed runtime and package only a tiny
 # entrypoint. This leaves the canonical app-size policy intact while giving
 # the browser the same app-store and sandbox route as every other app. The

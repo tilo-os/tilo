@@ -579,7 +579,7 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
 /// Every surface that can open a file reports through here — silent
 /// failure is indistinguishable from a broken desktop.
 pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: Option<&str>) {
-    use crate::shell::notification::{Notification, NotificationSeverity};
+    use tilo_desktop::notifications::{Notification, NotificationSeverity};
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().to_string(),

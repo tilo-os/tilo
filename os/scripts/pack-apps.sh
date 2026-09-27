@@ -28,8 +28,10 @@
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
-#   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical 5 MiB
-#                  application-format ceiling and may only be made stricter
+#   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical
+#                  application-format ceiling (the byte count in
+#                  crates/packaging/tilo-app-package/max-app-bytes, which the
+#                  Rust package checks compile in) and may only be made stricter
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -75,16 +77,20 @@ SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 TAPP_DIR="${TAPP_DIR:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
-POLICY_MAX_TAPP_BYTES=5242880
-MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
-
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
+
+SIZE_POLICY="$(dirname "${BASH_SOURCE[0]}")/../../crates/packaging/tilo-app-package/max-app-bytes"
+POLICY_MAX_TAPP_BYTES="$(cat "$SIZE_POLICY" 2>/dev/null)" \
+    || die "cannot read the application size policy at $SIZE_POLICY"
+[[ "$POLICY_MAX_TAPP_BYTES" =~ ^[1-9][0-9]*$ ]] \
+    || die "$SIZE_POLICY must hold a positive byte count"
+MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
 
 [[ "$MAX_TAPP_BYTES" =~ ^[0-9]+$ ]] \
     || die "MAX_TAPP_BYTES must be an integer"
 (( MAX_TAPP_BYTES <= POLICY_MAX_TAPP_BYTES )) \
-    || die "MAX_TAPP_BYTES cannot exceed the 5 MiB application policy"
+    || die "MAX_TAPP_BYTES cannot exceed the $POLICY_MAX_TAPP_BYTES-byte application policy"
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"

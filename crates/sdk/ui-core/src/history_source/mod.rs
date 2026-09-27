@@ -529,8 +529,14 @@ fn patch_summary(
     let mut fields = 0usize;
     let mut field_deleted = 0usize;
     let mut marks = 0usize;
+    let mut field_paths: Vec<String> = Vec::new();
 
     for p in &patches {
+        if let Some(path) = field_path(p)
+            && !field_paths.contains(&path)
+        {
+            field_paths.push(path);
+        }
         let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
         match &p.action {
             PatchAction::SpliceText { value, .. } => {
@@ -580,24 +586,66 @@ fn patch_summary(
             delta,
         );
     }
-    if field_deleted > 0 && fields == 0 {
+    if (fields > 0 || field_deleted > 0)
+        && let Some((first, rest)) = field_paths.split_first()
+    {
+        let removed = fields == 0;
+        let class = if removed {
+            OpClass::Tombstone
+        } else {
+            OpClass::EditMeta
+        };
         return (
-            plural_signed(negative_count(field_deleted), "field"),
-            OpClass::Tombstone,
+            edited_fields_label(first, rest.len(), removed),
+            class,
             delta,
         );
     }
-    if fields > 0 || field_deleted > 0 {
-        return (
-            plural(fields.saturating_add(field_deleted), "field"),
-            OpClass::EditMeta,
-            delta,
-        );
+    if fields > 0 {
+        return (plural(fields, "field"), OpClass::EditMeta, delta);
     }
     if marks > 0 {
         return (plural(marks, "formatting change"), OpClass::EditMeta, delta);
     }
     (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
+}
+
+/// The dotted document path of the map entry `patch` writes, such as
+/// `settings.theme`. Sequence positions are omitted: an index names where a
+/// value sat, not what it is.
+fn field_path(patch: &automerge::Patch) -> Option<String> {
+    let leaf = match &patch.action {
+        PatchAction::PutMap { key, .. }
+        | PatchAction::DeleteMap { key }
+        | PatchAction::Increment {
+            prop: automerge::Prop::Map(key),
+            ..
+        } => key.clone(),
+        _ => return None,
+    };
+    let mut parts: Vec<&str> = patch
+        .path
+        .iter()
+        .filter_map(|(_, prop)| match prop {
+            automerge::Prop::Map(key) => Some(key.as_str()),
+            automerge::Prop::Seq(_) => None,
+        })
+        .collect();
+    parts.push(&leaf);
+    Some(parts.join("."))
+}
+
+/// "Edited title" / "Edited title and 2 more", or "Removed …" when the change
+/// only deleted entries.
+fn edited_fields_label(path: &str, more: usize, removed: bool) -> String {
+    crate::i18n::I18nManager::format(
+        if removed {
+            "history-removed-field"
+        } else {
+            "history-edited-field"
+        },
+        &[("path", path.into()), ("more", more.into())],
+    )
 }
 
 fn plural(n: usize, noun: &str) -> String {

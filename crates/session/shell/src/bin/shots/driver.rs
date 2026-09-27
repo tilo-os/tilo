@@ -2138,7 +2138,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         // Backdate `created_at` past the slide-in window: at t=0 a
         // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
         // pushes it entirely off-screen-right.
@@ -2170,7 +2170,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications_one(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2185,7 +2185,7 @@ impl ShellDriver {
     }
 
     fn scene_notifications_dnd(&mut self) {
-        use shell::shell::notification::{Notification, NotificationSeverity};
+        use tilo_desktop::notifications::{Notification, NotificationSeverity};
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);

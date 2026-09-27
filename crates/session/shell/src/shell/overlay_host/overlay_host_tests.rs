@@ -3,6 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
+use automerge::{ReadDoc as _, ScalarValue, Value};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -469,7 +470,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert_eq!(
             notice.severity,
-            crate::shell::notification::NotificationSeverity::Error
+            tilo_desktop::notifications::NotificationSeverity::Error
         );
         assert_eq!(
             notice.dismiss_after,
@@ -976,7 +977,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 workspace.set_owner(local_user);
             }
             chrome.overlays.ws_settings = true;
-            chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
+            chrome.ws_settings_tab = tilo_desktop::workspace_settings::WsTab::Members;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }

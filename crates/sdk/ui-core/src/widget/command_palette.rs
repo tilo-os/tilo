@@ -251,23 +251,28 @@ impl CommandEntry {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.label(platform))
-            .or_else(|| self.keybinding.clone())
+            .or_else(|| self.free_text_keycaps().map(|caps| caps.join("+")))
     }
 
     fn keycap_labels(&self, platform: PlatformConventions) -> Option<Vec<String>> {
         self.shortcut
             .as_ref()
             .map(|shortcut| shortcut.keycap_labels(platform))
-            .or_else(|| {
-                self.keybinding.as_ref().map(|binding| {
-                    binding
-                        .split('+')
-                        .map(str::trim)
-                        .filter(|part| !part.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-            })
+            .or_else(|| self.free_text_keycaps())
+    }
+
+    /// A free-text keybinding (`Super+H`), one cap per `+`-separated part,
+    /// each in the legends of the active keyboard layout.
+    fn free_text_keycaps(&self) -> Option<Vec<String>> {
+        let keycaps = crate::keycaps::active();
+        self.keybinding.as_ref().map(|binding| {
+            binding
+                .split('+')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| keycaps.token(part))
+                .collect()
+        })
     }
 
     #[must_use]

@@ -15,8 +15,8 @@ use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
-use shell::shell::overview::OverviewView;
 use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_desktop::overview::OverviewView;
 
 /// Caller-supplied workspace id, so each test keeps a stable shape
 /// without minting fresh monotonic ids.
@@ -46,9 +46,9 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
         tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut ov = OverviewView::new();
-        ov.sync(&tree);
+        ov.sync(&tree.desktop);
         assert_eq!(ov.card_count(), 2);
-        ov.click_card(1, &mut tree);
+        ov.click_card(1, &mut tree.desktop);
         assert_eq!(tree.desktop.active, b_id);
     }
 
@@ -101,7 +101,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_general_edits_name_and_removes_collaborator`.
     {
         use shell::shell::state::{Collaborator, Workspace, WorkspaceId};
-        use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
+        use tilo_desktop::workspace_settings::{WorkspaceSettings, WsTab};
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.collaborators = vec![
             Collaborator::new("u1", "Ada"),
@@ -121,7 +121,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         // What a member may do is the verb on their membership capability,
         // and that is what the Members pane renders.
         use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
-        use shell::shell::workspace_settings::{WsTab, members_pane_rows};
+        use tilo_desktop::workspace_settings::{WsTab, members_pane_rows};
         let host_str = "host".to_string();
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
@@ -132,7 +132,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         )
         .expect("the owner may write a membership");
 
-        let mut modal = shell::shell::workspace_settings::WorkspaceSettings::new(ws.id);
+        let mut modal = tilo_desktop::workspace_settings::WorkspaceSettings::new(ws.id);
         modal.set_tab(WsTab::Members);
         assert_eq!(modal.active_tab(), WsTab::Members);
 
@@ -151,7 +151,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         use shell::shell::state::{
             CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
         };
-        use shell::shell::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
+        use tilo_desktop::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
         let host_str = "host".to_string();
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
@@ -166,11 +166,11 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         )
         .expect("the owner may grant");
 
-        let mut modal = shell::shell::workspace_settings::WorkspaceSettings::new(ws.id);
+        let mut modal = tilo_desktop::workspace_settings::WorkspaceSettings::new(ws.id);
         modal.set_tab(WsTab::Permissions);
 
         let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
-        let layout = permissions_pane_layout(&ws, pane);
+        let layout = permissions_pane_layout(&ws, pane, &shell::shell::launcher::ShellApps);
         assert_eq!(
             layout.rows.len(),
             1,
