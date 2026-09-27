@@ -161,7 +161,7 @@ async fn offered_grants(
     documents: &mut mpsc::Receiver<PendingHostDocument>,
     network: &mut mpsc::Receiver<NeighbourMsg>,
 ) -> Vec<GrantAction> {
-    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     loop {
         let publication = workers.publications().unwrap();
         if publication.ready {

@@ -426,12 +426,13 @@ async fn started(
             attempt < 8 && error.contains("Address already in use"),
             "server stopped before Ready: {error}"
         );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the server never published its Ready record"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        attempt += 1;
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        crate::https_owner::serve::tests::assign_free_origin(Path::new(
+            json["transport_config"].as_str().unwrap(),
+        ));
+    };
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(ready).unwrap()).unwrap();
     assert_eq!(record["capabilities"], PRODUCT_DATA_V1);
     (stop, server, record["origin"].as_str().unwrap().to_owned())
