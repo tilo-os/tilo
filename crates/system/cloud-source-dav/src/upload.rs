@@ -117,7 +117,24 @@ impl UploadSession for SinglePut {
         if self.offset < self.size {
             return Err(Error::InvalidResponse("upload finished early"));
         }
-        self.source.stat(&self.id)
+        let mut item = self.source.stat(&self.id)?;
+        if self.source.config.is_nextcloud()
+            && matches!(&self.condition, Condition::Match(Some(before)) if item.revision.as_ref() == Some(before))
+        {
+            // Nextcloud's file cache can report the old metadata immediately
+            // after a successful overwrite. Its GET path notices a changed
+            // on-disk size and refreshes that cache before serving the file.
+            // Do not hand the old revision back to a caller as the new one.
+            drop(self.source.read(&self.id, Some(0..1), None)?);
+            item = self.source.stat(&self.id)?;
+            if matches!(&self.condition, Condition::Match(Some(before)) if item.revision.as_ref() == Some(before))
+            {
+                return Err(Error::InvalidResponse(
+                    "stale Nextcloud revision after overwrite",
+                ));
+            }
+        }
+        Ok(item)
     }
 
     fn abort(self: Box<Self>) -> Result<()> {

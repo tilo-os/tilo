@@ -132,7 +132,6 @@ const FOOTER_TOP: f64 = 14.0;
 const FOOTER_MIN_H: f64 = 36.0;
 /// Height of the heading band (title + subtitle) above the first card row.
 const HEADING_BAND: f64 = 90.0;
-const KEYBOARD_HINT: &str = "Arrow keys move  ·  Enter opens  ·  Super+N shows every app";
 
 impl CollaborationLaunchpad {
     pub(crate) fn new() -> Self {
@@ -340,7 +339,11 @@ impl Widget for CollaborationLaunchpad {
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
-        let (_, hint_h) = text.measure(KEYBOARD_HINT, caption, None);
+        let (_, hint_h) = text.measure(
+            &crate::shell::i18n::t("launchpad-keyboard-hint"),
+            caption,
+            None,
+        );
         self.hint_line_h = f64::from(hint_h);
         self.card_rects = Self::card_geometry(self.rect).0;
         // Leave the persistent help affordance its bottom band on laptops.
@@ -372,7 +375,7 @@ impl Widget for CollaborationLaunchpad {
         );
         let (_, title_h) = text.measure(&title, heading, None);
         let subtitle = text.elide_to_width(
-            "Choose how to begin. Workspace content syncs; your layout and controls stay local.",
+            &crate::shell::i18n::t("launchpad-subtitle"),
             small,
             panel_width as f32,
         );
@@ -475,7 +478,11 @@ impl Widget for CollaborationLaunchpad {
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
-            let hint = text.elide_to_width(KEYBOARD_HINT, caption, hint_width);
+            let hint = text.elide_to_width(
+                &crate::shell::i18n::t("launchpad-keyboard-hint"),
+                caption,
+                hint_width,
+            );
             // The button is centred on this line (`app_button_rect`), so the
             // hint stays where it was and the pair share one centre.
             text.draw_text(

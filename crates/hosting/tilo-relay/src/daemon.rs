@@ -2888,7 +2888,7 @@ mod tests {
             let relay = Relay::start(
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
-                    full_replica_status: status_path,
+                    full_replica_status: status_path.clone(),
                     device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     ..RelayConfig::default()
@@ -2898,6 +2898,9 @@ mod tests {
             .await
             .unwrap();
 
+            // The full replica heartbeats its status; a proof counts only while
+            // fresh, so beat again now that the relay has started.
+            fs::full_replica::save_status(&status_path, &status).unwrap();
             let profile = relay.handle().mesh_profile();
             let wire = serde_json::to_vec(&profile).unwrap();
             let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
@@ -2974,7 +2977,7 @@ mod tests {
             let relay = Relay::start(
                 RelayConfig {
                     state_root: temp.path().join("relay"),
-                    full_replica_status: status_path,
+                    full_replica_status: status_path.clone(),
                     home_peer_bundle: bundle_path,
                     device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
@@ -3004,6 +3007,9 @@ mod tests {
                 "relay transport discovery must not collide with the filesystem node"
             );
             let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            // The full replica heartbeats its status; a proof counts only while
+            // fresh, so beat again now that the relay has started.
+            fs::full_replica::save_status(&status_path, &status).unwrap();
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),

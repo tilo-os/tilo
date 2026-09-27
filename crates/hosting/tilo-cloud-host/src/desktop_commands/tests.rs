@@ -1,5 +1,6 @@
 //! The Cloud Store owner opens applications for people and agent tasks.
 use super::*;
+use tilo_desktop_model::commands::TabLocation;
 use tilo_peer_state::desktop_command::{BoundCommand, CommandSource};
 
 fn request(store: &Store, caller: &DeviceCert, command: DesktopCommand) -> OwnerCommitRequest {
@@ -609,12 +610,8 @@ fn an_open_publishes_one_covered_checkpoint_members_admit() {
 #[test]
 fn every_openable_application_opens_and_closes_once() {
     let (_directory, _owner, mut store, caller) = owner_store();
-    for (app, _) in openable_applications() {
-        let open = request(
-            &store,
-            &caller,
-            DesktopCommand::OpenApp { app: app.clone() },
-        );
+    for OpenableApp { app_id: app, .. } in Installed.openable() {
+        let open = request(&store, &caller, DesktopCommand::OpenApp { app: app.into() });
         let before = store.state.outbox.len();
         let opened = succeeded(store.desktop_command_update(&open, None).unwrap());
         let [window] = opened.opened.as_slice() else {

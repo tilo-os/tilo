@@ -21,6 +21,7 @@ use tilo_desktop::{
     intents::{DesktopIntent, LocalViewIntent},
     resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest},
 };
+use tilo_desktop_model::apps::{AppCatalogue as _, OpenableApp};
 use tilo_desktop_model::*;
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
@@ -1082,9 +1083,10 @@ impl DesktopRoot {
                         .iter()
                         .find(|v| v.id == g)
                 });
-            let applications = desktop::installed_applications()
-                .iter()
-                .map(|definition| json!({"id":definition.app_id,"label":definition.title}))
+            let applications = desktop::Bundled
+                .openable()
+                .into_iter()
+                .map(|entry| json!({"id":entry.app_id,"label":entry.title}))
                 .collect::<Vec<_>>();
             let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next {
@@ -1679,8 +1681,11 @@ impl DesktopRoot {
         }
         // The one open for people and agents (`desktop:app:<id>#open` is the
         // same command): placement-independent, placed by the owner's turn.
-        for definition in desktop::installed_applications() {
-            let (app, label) = (definition.app_id, definition.title);
+        for OpenableApp {
+            app_id: app,
+            title: label,
+        } in desktop::Bundled.openable()
+        {
             add(
                 format!("open-{app}"),
                 format!("Open {label}"),

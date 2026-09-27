@@ -110,7 +110,7 @@ fn move_tab(
 ) -> Result<(), ActionError> {
     tab_in_group(chrome, expected_group, tab_id)?;
     crate::shell::window_actions::move_tab_to_workspace(&mut chrome.borrow_mut(), tab_id, target)
-        .map_err(|err| ActionError::Refused(err.user_message().to_string()))
+        .map_err(|err| ActionError::Refused(err.user_message()))
 }
 
 /// Closes every tab and remembers the group as one close, so a single

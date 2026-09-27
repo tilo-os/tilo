@@ -40,14 +40,15 @@ impl GlobalSearch {
 
     pub fn seed_default_commands(&mut self) {
         let defaults: &[(&str, &str)] = &[
-            ("ws.create", "Create Workspace"),
-            ("ws.rename", "Rename Workspace"),
-            ("ws.switch", "Switch Workspace…"),
-            ("settings.open", "Open Settings"),
-            ("file.open", "Open File"),
+            ("ws.create", "global-search-create-workspace"),
+            ("ws.rename", "global-search-rename-workspace"),
+            ("ws.switch", "global-search-switch-workspace"),
+            ("settings.open", "global-search-open-settings"),
+            ("file.open", "global-search-open-file"),
         ];
-        for (id, label) in defaults {
-            self.palette.push(CommandEntry::new(*id, *label));
+        for (id, key) in defaults {
+            self.palette
+                .push(CommandEntry::new(*id, crate::shell::i18n::t(key)));
         }
     }
 

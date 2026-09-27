@@ -18,9 +18,9 @@ crate, tokio by feature unification — so the rule is on its own edges.)
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for the host and for ``wasm32-unknown-unknown``, so a
 default feature that pulls a host stack into a shared dependency is caught
-too. Resolving a graph does not need the wasm32 target installed. The
-workspace-hack is pruned: it unifies the workspace's features for every
-member (iroh included), which is not a dependency the desktop uses.
+too. The generated ``workspace-hack`` crate only unifies compilation features;
+prune its artificial edges while retaining all real paths to forbidden stacks.
+Resolving a graph does not need the wasm32 target installed.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WASM = "wasm32-unknown-unknown"
-HACK = "workspace-hack"
 
 
 @dataclass(frozen=True)
@@ -78,7 +77,6 @@ def reached_packages(
     target: str | None = None,
     depth: int | None = None,
     root: Path = ROOT,
-    prune: tuple[str, ...] = (),
 ) -> set[str]:
     command = [
         "cargo",
@@ -93,20 +91,18 @@ def reached_packages(
         "--format",
         "{p}",
     ]
+    # desktop-model excludes the hack entirely; cargo tree rejects pruning a
+    # package absent from its graph. Only the drawn desktop needs this filter.
+    if package == "tilo-desktop":
+        command += ["--prune", "workspace-hack"]
     if target:
         command += ["--target", target]
     if depth is not None:
         command += ["--depth", str(depth)]
-    for pruned in prune:
-        command += ["--prune", pruned]
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"cargo tree failed:\n{result.stderr}")
-    packages = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
-    # Cargo rejects pruning a package the graph does not contain.
-    if HACK in packages and HACK not in prune:
-        return reached_packages(package, target, depth, root, prune + (HACK,))
-    return packages
+    return {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
 
 
 def violations(boundary: Boundary, target: str | None) -> list[str]:
