@@ -13117,7 +13117,6 @@ dependencies = [
  "thumbnail",
  "tilo-action-broker",
  "tilo-actions",
- "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-isolate",
@@ -13131,6 +13130,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -15121,6 +15121,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-installed-apps"
+version = "0.1.0"
+dependencies = [
+ "desktop-policy",
+ "launcher",
+ "package-store",
+ "tempfile",
+ "tilo-app-package",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [
@@ -15542,8 +15554,13 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
  "fs",
+ "launcher",
+ "launcher-macos",
  "libc",
+ "package-store",
  "runtime-fs",
  "runtime-identity",
  "serde",
@@ -15551,9 +15568,11 @@ dependencies = [
  "tempfile",
  "tilo-action-broker",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
