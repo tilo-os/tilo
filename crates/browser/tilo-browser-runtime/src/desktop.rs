@@ -1,6 +1,8 @@
 //! Admitted canonical desktop requirements and retained portable host.
 use automerge::{ROOT, ReadDoc};
 use std::collections::BTreeMap;
+#[cfg(any(target_arch = "wasm32", test))]
+use tilo_desktop_model::apps::{AppCatalogue, OpenableApp};
 use tilo_desktop_model::{DesktopTree, RoomId};
 use tilo_peer_state::StatePeer;
 use ui::application::ApplicationDefinition;
@@ -13,6 +15,23 @@ pub(crate) fn installed_applications() -> [&'static ApplicationDefinition; 4] {
         notes::definition(),
         calculator::definition(),
     ]
+}
+/// The apps bundled into the browser runtime, as the desktop lists and
+/// validates opens.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) struct Bundled;
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl AppCatalogue for Bundled {
+    fn openable(&self) -> Vec<OpenableApp> {
+        installed_applications()
+            .into_iter()
+            .map(|definition| OpenableApp {
+                app_id: definition.app_id,
+                title: definition.title,
+            })
+            .collect()
+    }
 }
 /// Resolve an app id to its installed definition.
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {

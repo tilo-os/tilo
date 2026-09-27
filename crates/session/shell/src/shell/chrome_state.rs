@@ -297,7 +297,7 @@ impl SearchScopeText for SearchScope {
 }
 
 /// Normally decided by
-/// [`crate::shell::placement::placement_for_new_window`].
+/// [`crate::shell::placement::placement_for`].
 /// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
 /// sets — one-shot, cleared on palette close, so a later launch is
 /// never silently aimed at a stale group.
@@ -730,7 +730,7 @@ pub struct ChromeState {
     wheel_summon: Option<vello::kurbo::Point>,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
-    strip_viewport: Option<crate::shell::placement::StripViewport>,
+    strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
     /// Logical desktop bounds from the overlay host's latest layout pass.
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
@@ -885,11 +885,14 @@ impl ChromeState {
 
     /// Called once per layout pass by the overlay host, so the
     /// placement rule can read the active strip's layout.
-    pub fn set_strip_viewport(&mut self, viewport: Option<crate::shell::placement::StripViewport>) {
+    pub fn set_strip_viewport(
+        &mut self,
+        viewport: Option<tilo_desktop_model::commands::StripViewport>,
+    ) {
         self.strip_viewport = viewport;
     }
 
-    pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
+    pub fn strip_viewport(&self) -> Option<&tilo_desktop_model::commands::StripViewport> {
         self.strip_viewport.as_ref()
     }
 
