@@ -7,8 +7,10 @@ license.workspace = true
 description = "OneDrive, OneDrive for Business and SharePoint document libraries as a cloud-source provider over Microsoft Graph: delta feed, ranged reads, upload sessions, versions, share links."
 
 [dependencies]
+chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
 base64.workspace = true
+percent-encoding.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -46,13 +46,34 @@ pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
         .collect()
 }
 
+/// The legends printed on the keys of the layout the keyboard is typing
+/// with, which the page names keys and modifiers in.
+fn active_keycaps() -> ui::Keycaps {
+    let config = settings_store::hardware::RichInputConfig::from_section(
+        &settings_store::load_section("input"),
+    );
+    config
+        .sources()
+        .into_iter()
+        .nth(config.active_layout_index())
+        .map_or(ui::Keycaps::US, |source| {
+            ui::Keycaps::from_xkb(&source.layout, source.variant.as_deref().unwrap_or(""))
+        })
+}
+
+/// `chord` as the active layout's keycaps spell it (`Strg+Umschalt+T` on a
+/// German layout). The stored chord stays canonical.
+fn chord_label(chord: &KeyChord) -> String {
+    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
 fn chords_text(chords: &[KeyChord]) -> String {
     if chords.is_empty() {
         return t("settings-shortcut-unassigned");
     }
     chords
         .iter()
-        .map(KeyChord::display)
+        .map(chord_label)
         .collect::<Vec<_>>()
         .join("  /  ")
 }
@@ -98,6 +119,7 @@ pub struct ShortcutPane {
 
 impl Default for ShortcutPane {
     fn default() -> Self {
+        ui::keycaps::set_active(active_keycaps());
         let config = ShortcutConfig::load();
         let desktop_controls = settings_store::hardware::DesktopControlsConfig::load();
         let last_text = config
@@ -149,7 +171,7 @@ impl ShortcutPane {
                 .config
                 .actions
                 .iter()
-                .map(|bound| crate::widgets::value_row(&bound.label, &bound.chord.display()))
+                .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
                 .collect();
             actions.push(crate::widgets::caption(&t(
                 "settings-shortcuts-actions-caption",

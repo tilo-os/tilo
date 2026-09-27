@@ -19,6 +19,9 @@ Local patch (additive only, no behaviour change for existing callers):
   dispatcher reads the first request stream to tell them apart and hands
   WebTransport CONNECTs to this crate unchanged.
 - `src/settings.rs`: crate-private `Settings::from_streams` used by the above.
+- `Cargo.toml` (and `Cargo.toml.orig`): `kio` 0.6 instead of 0.5.4, the
+  version `moq-net` uses, so the workspace builds one kio. The crate uses none
+  of the APIs 0.6 removed.
 
 The workspace root selects this copy with its `[patch.crates-io]` entry and
 excludes it from workspace membership. Keep any future source change explicit
