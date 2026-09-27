@@ -1510,7 +1510,15 @@ impl ChromeState {
             .get(&settings_store::hardware::ShortcutAction::ReopenClosedTab)
             .map_or_else(
                 || t("tab-closed-undo-hint-unbound"),
-                |chord| t_args("tab-closed-undo-hint", &[("chord", chord.display().into())]),
+                |chord| {
+                    t_args(
+                        "tab-closed-undo-hint",
+                        &[(
+                            "chord",
+                            crate::shell::keyboard_shortcuts::chord_text(chord).into(),
+                        )],
+                    )
+                },
             );
         let serial = self.closed_tabs.push(entry);
         let mut toast = Notification::new(heading, hint)

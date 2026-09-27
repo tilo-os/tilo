@@ -113,29 +113,26 @@ impl Shortcut {
         }
     }
 
-    /// Labels to paint as individual physical-looking caps.
+    /// Labels to paint as individual physical-looking caps, in the legends
+    /// of the active keyboard layout ([`crate::keycaps::active`]).
     pub fn keycap_labels(&self, conventions: PlatformConventions) -> Vec<String> {
-        let mut parts = Vec::with_capacity(4);
-        if self.command {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⌘".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Ctrl".to_owned(),
-            });
-        }
-        if self.alt {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⌥".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Alt".to_owned(),
-            });
-        }
-        if self.shift {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⇧".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Shift".to_owned(),
-            });
-        }
-        parts.push(self.key.clone());
-        parts
+        use crate::input::KeyboardModifier;
+        let keycaps = crate::keycaps::active();
+        let keycaps = if conventions.platform() == Platform::MacOs {
+            keycaps.on_family(crate::interaction::KeyboardFamily::Apple)
+        } else {
+            keycaps
+        };
+        [
+            (self.command, KeyboardModifier::Command),
+            (self.alt, KeyboardModifier::Alt),
+            (self.shift, KeyboardModifier::Shift),
+        ]
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .map(|(_, modifier)| keycaps.modifier(modifier).to_owned())
+        .chain(std::iter::once(self.key.clone()))
+        .collect()
     }
 }
 
