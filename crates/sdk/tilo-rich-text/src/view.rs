@@ -28,11 +28,7 @@ impl RichTextView {
     /// An empty view with compact paragraph spacing, for rows and bubbles.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_editor(
-            BlockEditor::new()
-                .with_wrap_lines(true)
-                .with_compact_paragraph_spacing(true),
-        )
+        Self::with_editor(crate::compact_editor())
     }
 
     /// A view drawn by `editor`, configured by the caller; it is made read

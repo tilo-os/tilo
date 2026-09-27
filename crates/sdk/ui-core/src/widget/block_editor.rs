@@ -545,6 +545,10 @@ pub struct BlockEditor {
     stack_measures: usize,
     /// Shows its blocks without taking input: a message or comment as sent.
     read_only: bool,
+    /// Whether blocks show a drag handle beside them (off in a composer).
+    block_handles: bool,
+    /// The colours mentions are painted in, from the owning model.
+    mention_paint: Option<crate::widget::marks::MentionPaint>,
     #[cfg(test)]
     painted_blocks: usize,
     dirty: bool,
@@ -704,6 +708,8 @@ impl BlockEditor {
             #[cfg(test)]
             stack_measures: 0,
             read_only: false,
+            block_handles: true,
+            mention_paint: None,
             #[cfg(test)]
             painted_blocks: 0,
             dirty: true,
@@ -1192,6 +1198,99 @@ impl BlockEditor {
     pub fn with_read_only(mut self, read_only: bool) -> Self {
         self.set_read_only(read_only);
         self
+    }
+
+    /// Show or hide the drag handle beside each block. A composer or a
+    /// read-only row has none: its blocks are not rearranged by dragging.
+    #[must_use]
+    pub fn with_block_handles(mut self, shown: bool) -> Self {
+        self.block_handles = shown;
+        self
+    }
+
+    /// Paint mentions in the colours `paint` gives each participant.
+    pub fn set_mention_paint(&mut self, paint: Option<crate::widget::marks::MentionPaint>) {
+        for block in &mut self.blocks {
+            block.line.set_mention_paint(paint.clone());
+        }
+        self.mention_paint = paint;
+        self.dirty = true;
+    }
+
+    /// The colours mentions are painted in, if the owner set them.
+    pub(crate) fn mention_paint(&self) -> Option<&crate::widget::marks::MentionPaint> {
+        self.mention_paint.as_ref()
+    }
+
+    /// Put `text` at the caret of the focused block, replacing a selection
+    /// within it: an emoji picked from a menu, a pasted snippet. Returns
+    /// whether there was a block to put it in.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        self.insert_marked(text, None, "")
+    }
+
+    /// Put a mention of the participant `id`, shown as `label` (`@Ada`), at
+    /// the caret of the focused block, followed by a space. The label is one
+    /// marked run, so it reads back as a reference, not as text that happens
+    /// to start with `@`.
+    pub fn insert_mention(&mut self, id: &str, label: &str) -> bool {
+        self.insert_marked(label, Some(Mark::Mention(id.to_owned())), " ")
+    }
+
+    /// The focused block's text before the caret: what an autocomplete
+    /// reads its query from (`@ad` while a mention is typed).
+    #[must_use]
+    pub fn text_before_caret(&self) -> Option<&str> {
+        let block = self.focused.and_then(|index| self.blocks.get(index))?;
+        let text = block.line.value();
+        text.get(..block.line.cursor_pos().min(text.len()))
+    }
+
+    /// Select the `bytes` before the caret in the focused block, so the next
+    /// insertion replaces them (the typed `@ad` a picked mention replaces).
+    pub fn select_before_caret(&mut self, bytes: usize) {
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return;
+        };
+        let caret = block.line.cursor_pos().min(block.line.value().len());
+        let start = clamp_char_boundary(block.line.value(), caret.saturating_sub(bytes));
+        block.line.inner_mut().set_selection(start, caret);
+        self.dirty = true;
+    }
+
+    fn insert_marked(&mut self, text: &str, mark: Option<Mark>, after: &str) -> bool {
+        if text.is_empty() || self.read_only {
+            return false;
+        }
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return false;
+        };
+        let line = &mut block.line;
+        let value = line.value().to_owned();
+        let (start, end) = line
+            .selection_range()
+            .filter(|(start, end)| start < end)
+            .unwrap_or_else(|| {
+                let at = line.cursor_pos().min(value.len());
+                (at, at)
+            });
+        let (start, end) = (
+            clamp_char_boundary(&value, start),
+            clamp_char_boundary(&value, end.max(start)),
+        );
+        let mut next = value;
+        next.replace_range(start..end, &format!("{text}{after}"));
+        let inserted = text.len().saturating_add(after.len());
+        let mut spans = line.marks().to_vec();
+        crate::widget::marks::shift_after_edit(&mut spans, start, inserted, end - start);
+        if let Some(mark) = mark {
+            spans.push(MarkSpan::new(start..start.saturating_add(text.len()), mark));
+        }
+        line.set_text(&next);
+        line.set_marks(spans);
+        line.set_cursor_pos(start.saturating_add(inserted));
+        self.dirty = true;
+        true
     }
 
     /// Stop or resume taking input and focus.
@@ -2568,6 +2667,9 @@ impl BlockEditor {
     /// block itself is that tall — never taller than the block, or two
     /// single-line paragraphs would share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
+        if !self.block_handles || self.read_only {
+            return None;
+        }
         let block = self.blocks.get(index)?;
         let line = self.block_paint_rect(index)?;
         let leading_edge = line.x0;
