@@ -4405,9 +4405,11 @@ fn outcome_path(outcome: DevCandidate) -> PathBuf {
     }
 }
 
+/// Wait for a file a spawned child writes. The deadline only bounds a child
+/// that never writes it; a loaded runner can take seconds to start one.
 #[cfg(unix)]
 fn wait_for_file(path: &Path) {
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(30)) else {
         panic!("clock cannot represent the wait deadline");
     };
     while Instant::now() < deadline {
