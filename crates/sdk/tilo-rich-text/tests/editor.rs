@@ -135,6 +135,22 @@ fn bold_typed_after_ctrl_b_is_stored_as_a_mark() {
 }
 
 #[test]
+fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
+    let mut app = open();
+    app.harness().type_text("first");
+    app.harness().key("Enter");
+    app.harness().type_text("second");
+    app.harness().set_modifiers(&["alt".into()]);
+    app.harness().key("ArrowUp");
+    app.harness().set_modifiers(&[]);
+    assert_eq!(paragraphs(&app), ["second", "first"]);
+    let last = app.versions().pop().unwrap();
+    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["first", "second"]);
+}
+
+#[test]
 fn a_viewer_is_refused_and_the_document_is_untouched() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<Document>::with_role(Role::Viewer).unwrap();
