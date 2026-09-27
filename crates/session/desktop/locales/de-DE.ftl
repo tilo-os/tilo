@@ -450,3 +450,56 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+
+# Notifications: banner stack and notification centre
+drill-in-back = Zurück
+a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
+a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
+a11y-notifications-list = Aufbewahrte Benachrichtigungen
+a11y-notifications-clear = Alle Benachrichtigungen löschen
+a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
+a11y-notifications-cleared = Benachrichtigungen gelöscht
+a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
+a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
+a11y-notifications = Benachrichtigungen
+notification-center-title = Benachrichtigungen
+notification-center-empty = Keine neuen Benachrichtigungen
+notification-center-cleared = Benachrichtigungen gelöscht
+notification-center-clear-all = Alle löschen
+notification-center-position = Neueste { $first }–{ $last } von { $total }
+notification-center-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+notification-center-newer = ↑ Neuere
+notification-center-at-newest = Neueste erreicht
+notification-center-older = ↓ Ältere
+notification-center-at-oldest = Älteste erreicht
+history-severity-info = Information
+history-severity-warning = Warnung
+history-severity-error = Fehler
+history-source-system = System
+history-notification-description = { $severity }. Von { $source }. { $time }
+history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
+        [yes] Einklappen
+       *[no] Ausklappen
+    }, Entf, um alle zu verwerfen.
+notification-center-dismiss-all = Alle von { $app } verwerfen
+notification-center-dismiss = Verwerfen
+notification-center-hand-to = An { $agent } übergeben
+notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
+notification-center-group-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
+notification-lock-count = { $count ->
+    [one] 1 Benachrichtigung
+   *[other] { $count } Benachrichtigungen
+}
+notification-dnd-held = { $status } · { $count } zurückgehalten
+notification-stack-a11y = Benachrichtigungen
+notification-group-system = System
+notification-center-undo = Rückgängig
+notification-app-failed-title = Eine App konnte nicht geöffnet werden
+notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar

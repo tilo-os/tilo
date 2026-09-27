@@ -1969,7 +1969,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "title": n.title,
                 "body": n.body,
                 "severity": format!("{:?}", n.severity),
-                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+                "persistent": n.dismiss_after >= tilo_desktop::notifications::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
@@ -2423,11 +2423,11 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             state.cancel_host_launch_activation(&token);
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
-                    crate::shell::notification::Notification::new(
+                    tilo_desktop::notifications::Notification::new(
                         crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                     .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );

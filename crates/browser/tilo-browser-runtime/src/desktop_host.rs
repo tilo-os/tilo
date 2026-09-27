@@ -73,6 +73,9 @@ pub(crate) struct DesktopHandle {
     pub records: Rc<RefCell<BTreeMap<(String, String), OwnedRecord>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     pub errors: Rc<RefCell<Vec<String>>>,
+    /// The desktop's own notices, shown as banners and kept in the
+    /// notification centre.
+    pub notifications: Rc<crate::desktop_notifications::BrowserNotifications>,
     pub session_requests:
         Rc<RefCell<Vec<(uuid::Uuid, tilo_desktop_model::commands::BoundCommand)>>>,
     inbox: Rc<RefCell<Option<(Admission, ui::permissions::PermissionContext)>>>,
@@ -561,6 +564,9 @@ pub(crate) struct DesktopRoot {
     pending_view_request: Option<activity::WorkspaceViewRequest>,
     surface_node: Option<NodeId>,
     activity_node: Option<NodeId>,
+    notification_node: Option<NodeId>,
+    /// The banner stack and, from the top bar, the notification centre.
+    notification_layer: crate::desktop_notifications::NotificationLayer,
     surface: DesktopSurface,
     handle: DesktopHandle,
     resolver: ApplicationCatalogTileResolver<Contexts>,
@@ -718,6 +724,7 @@ impl DesktopRoot {
             records: Rc::default(),
             images: Rc::default(),
             errors: Rc::default(),
+            notifications: Rc::default(),
             session_requests: Rc::default(),
             inbox: Rc::default(),
             navigation: Rc::new(RefCell::new(serde_json::Value::Null)),
@@ -781,6 +788,10 @@ impl DesktopRoot {
             pending_view_request: None,
             surface_node: None,
             activity_node: None,
+            notification_node: None,
+            notification_layer: crate::desktop_notifications::NotificationLayer::new(
+                handle.notifications.clone(),
+            ),
             surface,
             handle: handle.clone(),
             resolver,
@@ -827,6 +838,13 @@ impl DesktopRoot {
     fn collect_failures(&mut self) {
         for error in self.surface.take_setup_failures() {
             self.handle.errors.borrow_mut().push(error.to_string());
+            self.handle.notifications.post(
+                tilo_desktop::notifications::Notification::new(
+                    tilo_desktop::i18n::t("notification-app-failed-title"),
+                    error.to_string(),
+                )
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+            );
             self.failures.push(error);
         }
     }
@@ -1127,8 +1145,15 @@ impl DesktopRoot {
             "playing":activity.pane.replay_is_playing(),
             "coverage":if activity.pane.feed_coverage().is_complete() { "complete" } else { "partial" }
         })).unwrap_or(serde_json::Value::Null);
+        let notifications = {
+            let log =
+                tilo_desktop::notifications::NotificationHost::log(&*self.handle.notifications);
+            json!({"banners":log.active().len(),"retained":log.history().len(),
+                "centerOpen":self.notification_layer.center_open()})
+        };
         for (key, value) in [
             ("capabilities", capabilities),
+            ("notifications", notifications),
             ("workspaceActivity", activity),
             (
                 "workspaceActivityCloseReason",
@@ -1514,11 +1539,26 @@ impl DesktopRoot {
                 tilo_desktop::chrome::ChromeIntent::SwitchWorkspace(delta) => {
                     Self::switch_workspace(&self.handle, &mut tree, delta);
                 }
-                _ => self
-                    .handle
-                    .errors
-                    .borrow_mut()
-                    .push("This desktop service is not available in this peer yet".into()),
+                // The browser has no Quick Settings; its top-bar control opens
+                // the notification centre.
+                tilo_desktop::chrome::ChromeIntent::ToggleQuickSettings => {
+                    self.notification_layer.toggle_center();
+                }
+                tilo_desktop::chrome::ChromeIntent::ShowQuickSettings => {
+                    self.notification_layer.show_center();
+                }
+                _ => {
+                    self.handle
+                        .errors
+                        .borrow_mut()
+                        .push("This desktop service is not available in this peer yet".into());
+                    self.handle
+                        .notifications
+                        .post(tilo_desktop::notifications::Notification::new(
+                            tilo_desktop::i18n::t("notification-service-unavailable"),
+                            "",
+                        ));
+                }
             }
         }
         let mut sink = BrowserCommands {
@@ -1974,7 +2014,8 @@ impl Widget for DesktopRoot {
             changed |= self.reconcile();
         }
         let updated = self.surface.update(doc, path);
-        changed || updated
+        let notices = self.notification_layer.tick();
+        changed || updated || notices
     }
     fn needs_redraw(&self) -> bool {
         // Composition consumes structural dirtiness before a queued navigation
@@ -1984,6 +2025,7 @@ impl Widget for DesktopRoot {
             || (self.activity.is_some() && !self.handle.history_available.get())
             || self.handle.inbox.borrow().is_some()
             || self.activity.as_ref().is_some_and(Widget::needs_redraw)
+            || self.notification_layer.needs_redraw()
             || self.surface.needs_redraw()
     }
     fn build_layout(
@@ -1998,37 +2040,33 @@ impl Widget for DesktopRoot {
             .activity
             .as_mut()
             .map(|activity| activity.build_layout(tree, theme, map));
-        if let Some(activity) = self.activity_node {
-            tree.new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let notifications = self.notification_layer.build_layout(tree, theme, map);
+        self.notification_node = Some(notifications);
+        let children: Vec<NodeId> = self
+            .activity_node
+            .into_iter()
+            .chain([surface, notifications])
+            .collect();
+        tree.new_with_children(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
                 },
-                &[activity, surface],
-            )
-            .unwrap()
-        } else {
-            tree.new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[surface],
-            )
-            .unwrap()
-        }
+                ..Default::default()
+            },
+            &children,
+        )
+        .unwrap()
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.surface
             .apply_layout(tree, self.surface_node.unwrap_or(node), origin);
         if let (Some(activity), Some(node)) = (&mut self.activity, self.activity_node) {
             activity.apply_layout(tree, node, origin);
+        }
+        if let Some(node) = self.notification_node {
+            self.notification_layer.apply_layout(tree, node, origin);
         }
     }
     fn draw(
@@ -2040,6 +2078,9 @@ impl Widget for DesktopRoot {
         presence: &PresenceCtx,
     ) {
         self.surface.draw(scene, transform, text, theme, presence);
+        // Above the desktop, below the History modal.
+        self.notification_layer
+            .draw(scene, transform, text, theme, presence);
         if let Some(activity) = &mut self.activity {
             activity.draw(scene, transform, text, theme, presence);
         }
@@ -2072,6 +2113,20 @@ impl Widget for DesktopRoot {
             );
             return;
         }
+        self.notification_layer.handle_event(
+            event,
+            scale,
+            modifiers,
+            doc,
+            path,
+            handled,
+            focus,
+            self.notification_node.unwrap_or(node),
+            tree,
+        );
+        if *handled {
+            return;
+        }
         self.surface.handle_event(
             event, scale, modifiers, doc, path, handled, focus, node, tree,
         );
@@ -2088,14 +2143,14 @@ impl Widget for DesktopRoot {
         if let Some(activity) = &self.activity {
             vec![activity]
         } else {
-            vec![&self.surface]
+            vec![&self.surface, &self.notification_layer]
         }
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if let Some(activity) = &mut self.activity {
             vec![activity]
         } else {
-            vec![&mut self.surface]
+            vec![&mut self.surface, &mut self.notification_layer]
         }
     }
     fn name(&self) -> &str {
