@@ -1106,10 +1106,10 @@ impl KeyboardInputSource {
 /// the primary (first) keyboard layout of the source list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InputMethodEngine {
-    /// Simplified Chinese, Pinyin.
-    Pinyin,
-    /// Japanese, Mozc.
-    Mozc,
+    /// Simplified Chinese, Rime with its Pinyin schema.
+    Rime,
+    /// Japanese, Anthy.
+    Anthy,
     /// Korean, Hangul.
     Hangul,
 }
@@ -1119,18 +1119,18 @@ pub enum InputMethodEngine {
 pub const INPUT_METHOD_SOURCE_PREFIX: &str = "ime/";
 
 impl InputMethodEngine {
-    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Mozc, Self::Hangul];
+    pub const ALL: [Self; 3] = [Self::Rime, Self::Anthy, Self::Hangul];
 
     /// The engine's name in the input-method framework (and in its source id).
     pub fn name(self) -> &'static str {
         match self {
-            Self::Pinyin => "pinyin",
-            Self::Mozc => "mozc",
+            Self::Rime => "rime",
+            Self::Anthy => "anthy",
             Self::Hangul => "hangul",
         }
     }
 
-    /// The durable source id, e.g. `ime/pinyin`.
+    /// The durable source id, e.g. `ime/rime`.
     pub fn source_id(self) -> String {
         format!("{INPUT_METHOD_SOURCE_PREFIX}{}", self.name())
     }
@@ -1138,8 +1138,8 @@ impl InputMethodEngine {
     /// Human-readable source name for choosers and the switcher readout.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pinyin => "Chinese (Simplified) — Pinyin",
-            Self::Mozc => "Japanese — Mozc",
+            Self::Rime => "Chinese (Simplified) — Rime",
+            Self::Anthy => "Japanese — Anthy",
             Self::Hangul => "Korean — Hangul",
         }
     }
@@ -1906,11 +1906,10 @@ pub enum ShortcutConfigError {
     ReservedSystemKey,
     InvalidChord,
     Conflict(ShortcutAction),
-    /// The chord is one of the shell's own fixed chords, named here.
+    /// The chord belongs to the desktop shortcut with this
+    /// [`crate::keyboard_shortcuts::FixedShortcut::id`], which nothing may
+    /// rebind.
     Fixed(&'static str),
-    /// The chord belongs to the fixed desktop shortcut with this
-    /// [`crate::keyboard_shortcuts::FixedShortcut::id`].
-    FixedShortcut(&'static str),
     /// The chord already runs another published action.
     TakenByAction,
 }
@@ -1923,61 +1922,13 @@ impl std::fmt::Display for ShortcutConfigError {
             }
             Self::InvalidChord => f.write_str("that chord is not supported"),
             Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
-            Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
-            Self::FixedShortcut(id) => {
-                write!(f, "the chord is the desktop's fixed shortcut `{id}`")
-            }
+            Self::Fixed(id) => write!(f, "the chord is the desktop's fixed shortcut `{id}`"),
             Self::TakenByAction => f.write_str("the chord already runs another action"),
         }
     }
 }
 
 impl std::error::Error for ShortcutConfigError {}
-
-/// The shell's own chords that no setting can rebind, with what they do.
-/// Configurable [`ShortcutAction`] chords are not listed: they move when
-/// rebound.
-#[must_use]
-pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
-    fn chord(modifiers: &[&str], key: &str) -> KeyChord {
-        KeyChord {
-            modifiers: modifiers.iter().map(|m| (*m).to_string()).collect(),
-            key: key.to_string(),
-        }
-    }
-    let mut fixed = vec![
-        ("Switch windows", chord(&["Alt"], "tab")),
-        ("Switch windows", chord(&["Alt", "Shift"], "tab")),
-        ("Switch windows of the app", chord(&["Alt"], "`")),
-        ("Close tab", chord(&["Alt"], "f4")),
-        ("Close tab", chord(&["Super"], "w")),
-        ("Previous workspace", chord(&["Super"], "pageup")),
-        ("Next workspace", chord(&["Super"], "pagedown")),
-        ("Lock", chord(&["Super"], "l")),
-        ("Global search", chord(&["Super"], "space")),
-        ("New window", chord(&["Super"], "n")),
-        ("Add tab here", chord(&["Super"], "t")),
-        ("Duplicate tab", chord(&["Super"], "d")),
-        ("Workspace wheel", chord(&["Super"], "s")),
-        ("Workspace activity", chord(&["Super"], "h")),
-        ("Workspace activity", chord(&["Super", "Shift"], "h")),
-        ("Wireless display", chord(&["Super"], "p")),
-        ("Picture in picture", chord(&["Super", "Shift"], "p")),
-        ("Save recent replay", chord(&["Super", "Shift"], "r")),
-        ("Capture screenshot", chord(&["Super", "Shift"], "s")),
-        ("Open terminal", chord(&["Super"], "enter")),
-        ("Desktop help", chord(&[], "f1")),
-        ("Screenshot", chord(&[], "printscreen")),
-        ("Dismiss", chord(&[], "escape")),
-    ];
-    for key in ["h", "j", "k", "l"] {
-        fixed.push(("Vim navigation", chord(&["Super", "Ctrl"], key)));
-    }
-    for key in ["h", "l"] {
-        fixed.push(("Vim navigation", chord(&["Super", "Ctrl", "Shift"], key)));
-    }
-    fixed
-}
 
 impl Default for ShortcutConfig {
     #[allow(
@@ -2175,11 +2126,8 @@ impl ShortcutConfig {
         if !chord.is_valid_configurable() {
             return Err(ShortcutConfigError::InvalidChord);
         }
-        if let Some((label, _)) = fixed_shell_chords()
-            .into_iter()
-            .find(|(_, fixed)| fixed == chord)
-        {
-            return Err(ShortcutConfigError::Fixed(label));
+        if let Some(fixed) = crate::keyboard_shortcuts::desktop_owner(chord) {
+            return Err(ShortcutConfigError::Fixed(fixed.id));
         }
         if let Some((action, _)) = self.bindings.iter().find(|(_, bound)| *bound == chord) {
             return Err(ShortcutConfigError::Conflict(*action));
@@ -2265,9 +2213,9 @@ impl ShortcutConfig {
         // Some defaults are also fixed chords (Super+Page Up changes the
         // workspace either way); an action may always return to its own.
         if defaults.bindings.get(&action) != Some(&chord)
-            && let Some(fixed) = crate::keyboard_shortcuts::fixed_owner(&chord)
+            && let Some(fixed) = crate::keyboard_shortcuts::desktop_owner(&chord)
         {
-            return Err(ShortcutConfigError::FixedShortcut(fixed.id));
+            return Err(ShortcutConfigError::Fixed(fixed.id));
         }
         if self.actions.iter().any(|bound| bound.chord == chord) {
             return Err(ShortcutConfigError::TakenByAction);
@@ -2815,7 +2763,7 @@ mod tests {
                 target("shortcuts.shortcut:b"),
                 "Run B"
             ),
-            Err(ShortcutConfigError::Fixed("Switch windows"))
+            Err(ShortcutConfigError::Fixed("fixed-switch-windows"))
         );
         assert_eq!(
             cfg.set_action(
@@ -3075,9 +3023,9 @@ mod tests {
     #[test]
     fn input_method_engines_share_the_source_list_without_taking_xkb_groups() {
         let section = serde_json::json!({
-            "keyboard_layout": "ime/pinyin",
+            "keyboard_layout": "ime/rime",
             "keyboard_layouts": [
-                "us", "ime/pinyin", "de", "ime/pinyin", "ime/unknown", "fr", "es", "gb", "ime/mozc"
+                "us", "ime/rime", "de", "ime/rime", "ime/mozc", "fr", "es", "gb", "ime/anthy"
             ]
         })
         .as_object()
@@ -3086,7 +3034,7 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(
             cfg.keyboard_layouts,
-            ["us", "ime/pinyin", "de", "fr", "es", "ime/mozc"],
+            ["us", "ime/rime", "de", "fr", "es", "ime/anthy"],
             "engines do not count against the four XKB groups; unknown engines are dropped"
         );
         assert_eq!(
@@ -3097,7 +3045,7 @@ mod tests {
             ["us", "de", "fr", "es"]
         );
         assert_eq!(cfg.active_source_index(), 1);
-        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Pinyin));
+        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Rime));
         assert_eq!(
             cfg.active_layout_index(),
             0,
@@ -3122,13 +3070,13 @@ mod tests {
         assert_eq!(single.keyboard_layout, "us");
         let mut with_engine = RichInputConfig {
             keyboard_layout: "us".into(),
-            keyboard_layouts: vec!["us".into(), "ime/pinyin".into()],
+            keyboard_layouts: vec!["us".into(), "ime/rime".into()],
             ..Default::default()
         };
         assert_eq!(with_engine.select_next_source(), Some(1));
         assert_eq!(
             with_engine.active_input_method(),
-            Some(InputMethodEngine::Pinyin)
+            Some(InputMethodEngine::Rime)
         );
     }
 
@@ -3177,13 +3125,13 @@ mod tests {
     #[test]
     fn an_engine_only_list_keeps_a_layout_to_type_on() {
         let mut cfg = RichInputConfig {
-            keyboard_layout: "ime/mozc".into(),
-            keyboard_layouts: vec!["ime/mozc".into()],
+            keyboard_layout: "ime/anthy".into(),
+            keyboard_layouts: vec!["ime/anthy".into()],
             ..Default::default()
         };
         cfg.normalise_sources();
-        assert_eq!(cfg.keyboard_layouts, ["us", "ime/mozc"]);
-        assert_eq!(cfg.keyboard_layout, "ime/mozc");
+        assert_eq!(cfg.keyboard_layouts, ["us", "ime/anthy"]);
+        assert_eq!(cfg.keyboard_layout, "ime/anthy");
         assert!(
             cfg.xkb_options().is_empty(),
             "one layout needs no group toggle"
@@ -3192,12 +3140,12 @@ mod tests {
 
     #[test]
     fn engine_ids_never_parse_as_xkb_layouts() {
-        assert!(KeyboardInputSource::parse("ime/pinyin").is_none());
+        assert!(KeyboardInputSource::parse("ime/rime").is_none());
         assert_eq!(
             InputSource::parse("ime/hangul"),
             Some(InputSource::InputMethod(InputMethodEngine::Hangul))
         );
-        assert!(InputSource::parse("ime/../pinyin").is_none());
+        assert!(InputSource::parse("ime/../rime").is_none());
         for engine in InputMethodEngine::ALL {
             assert_eq!(
                 InputMethodEngine::from_source_id(&engine.source_id()),
@@ -3214,7 +3162,7 @@ mod tests {
         };
         cfg.normalise_sources();
         assert!(!cfg.can_add_source("gb"));
-        assert!(cfg.can_add_source("ime/pinyin"));
+        assert!(cfg.can_add_source("ime/rime"));
         assert!(!cfg.can_add_source("de"), "already present");
         assert!(!cfg.can_add_source("ime/nope"));
     }

@@ -124,8 +124,16 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     if path.exists() {
         return path;
     }
-    // Encode beside the final name and rename into place, so a concurrent
-    // test process sees either no clip or a complete one.
+    // Every test runs in its own process and they start together: the first
+    // to take the lock encodes, the rest wait for it and reuse its clip.
+    let _lock =
+        advisory_lock::FileLock::open(&cache.join(".lock"), advisory_lock::LockMode::Exclusive)
+            .expect("lock the generated clip cache");
+    if path.exists() {
+        return path;
+    }
+    // Encode beside the final name and rename into place, so a test process
+    // that checks before taking the lock sees either no clip or a complete one.
     let partial = cache.join(format!(
         "{}.{}.partial",
         path.file_name()

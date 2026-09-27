@@ -111,6 +111,16 @@ impl HistoryHost {
             self.invalidate_owner();
             return false;
         }
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            return false;
+        };
+        if let Err(reason) = root.history_restore_readiness(scope.key) {
+            if let Some(files) = &mut self.files {
+                files.cancel_review();
+            }
+            self.show_review(None, reason);
+            return false;
+        }
         if matches!(
             self.source(),
             HistorySourceRegistration::CheckedFiles { .. }

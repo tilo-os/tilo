@@ -240,20 +240,6 @@ fn clock_activity_active_default() -> bool {
     true
 }
 
-/// Device-local reduction of the active workspace's collaborative history.
-/// The history document remains authoritative; this is only the small piece
-/// of presentation state needed by passive chrome.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ActivityGlance {
-    pub headline: Option<String>,
-    pub unread: usize,
-    /// Changes whenever a new latest entry is observed, even when the text is
-    /// coincidentally identical. The top bar uses it to restart its brief
-    /// transient reveal without stealing the user's selected center widget.
-    pub pulse: u64,
-    pub focus: Option<ActivityFocus>,
-}
-
 #[derive(Debug)]
 struct PendingNotificationHistoryClear {
     notifications: Vec<Notification>,
@@ -274,51 +260,39 @@ fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
         .unwrap_or(now)
 }
 
-/// Intent-addressable destination inside History. Kept device-local; links
-/// from chrome/search/agents all resolve through the same shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ActivityFocus {
-    pub author: Option<String>,
-    pub group_id: Option<String>,
-    pub entry_id: Option<[u8; 16]>,
-    /// Stable record/resource identity. Paths are deliberately excluded:
-    /// rename and move must not break a Files → Activity hand-off.
-    pub resource_id: Option<String>,
-    /// App-native immutable version identity, retained for detail renderers.
-    pub resource_version: Option<[u8; 16]>,
-}
+/// The history glance, its focus and screen exposures are the shared
+/// desktop's chrome vocabulary; the shell holds them as the desktop reads
+/// them. Exposures are session-local and never persisted or replicated.
+pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
+pub use ui::search::system::SearchScope;
 
-/// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
-/// claim Super from the host DE). Degrades rather than empties: no
-/// provider claiming the focused tab widens `ActiveApp` to every
-/// provider; nothing focused widens the palette to `All`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchScope {
-    ActiveApp,
-    #[default]
-    Workspace,
-    All,
-}
-
-impl SearchScope {
+/// The shell's localized and addressable view of a [`SearchScope`].
+pub trait SearchScopeText {
     /// `ActiveApp` renders the tab's title instead of this static
     /// string. Must not share a word with the kind-filter chips —
     /// those name result sorts, this names places.
-    pub fn label(self) -> &'static str {
+    fn localized_label(self) -> String;
+
+    /// Stable, language-independent address of the scope segment
+    /// (`palette:scope:<slug>`).
+    fn slug(self) -> &'static str;
+}
+
+impl SearchScopeText for SearchScope {
+    fn localized_label(self) -> String {
         match self {
-            SearchScope::ActiveApp => "This app",
-            SearchScope::Workspace => "Workspace",
-            SearchScope::All => "Everywhere",
+            SearchScope::ActiveApp => crate::shell::i18n::t("search-scope-this-app"),
+            SearchScope::Workspace => crate::shell::i18n::t("search-scope-workspace"),
+            SearchScope::All => crate::shell::i18n::t("search-scope-everywhere"),
         }
     }
 
-    /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope,
-    /// not the query.
-    pub fn narrows_results(self) -> bool {
-        matches!(self, SearchScope::ActiveApp)
+    fn slug(self) -> &'static str {
+        match self {
+            SearchScope::ActiveApp => "this-app",
+            SearchScope::Workspace => "workspace",
+            SearchScope::All => "everywhere",
+        }
     }
 }
 
@@ -338,10 +312,10 @@ pub enum OpenTarget {
 impl OpenTarget {
     /// Appended to launchable palette rows so a result says where it
     /// will land before the user commits.
-    pub fn result_hint(self) -> &'static str {
+    pub fn result_hint(self) -> String {
         match self {
-            OpenTarget::Beside => "Opens in rightmost space",
-            OpenTarget::Here(_) => "Opens here, as a tab",
+            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
+            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
         }
     }
 }
@@ -434,16 +408,6 @@ pub struct QuickSettingsState {
     pub do_not_disturb: bool,
     /// Private clipboard history entries, read when the popover opens.
     pub clipboard_items: usize,
-}
-
-/// One compositor-authoritative screen exposure projected into trusted
-/// chrome. This is session-local: it must never be persisted or replicated,
-/// because a stale viewer is worse than no disclosure at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ActiveExposure {
-    pub peer: u64,
-    pub surface: u64,
-    pub can_control: bool,
 }
 
 /// Session-local drill-down into one app-published resource directory.
@@ -648,6 +612,7 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -856,6 +821,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            workspace_view_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -1351,6 +1317,57 @@ impl ChromeState {
         }
     }
 
+    /// Private presentation requests share the portable descriptor contract.
+    /// The descriptor names workspaces by their raw id; the shell resolves it
+    /// against its own desktop model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named workspace or requested view is unavailable.
+    pub fn request_workspace_view(
+        &mut self,
+        request: tilo_desktop::activity::WorkspaceViewRequest,
+    ) -> Result<(), String> {
+        use tilo_desktop::activity::WorkspaceViewRequest;
+        let workspace = WorkspaceId(request.workspace().0);
+        if !self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|candidate| candidate.id == workspace)
+        {
+            return Err("Workspace unavailable".into());
+        }
+        let previous = self.tree().desktop.active;
+        match &request {
+            WorkspaceViewRequest::Select { .. } => {
+                self.tree_mut().desktop.active = workspace;
+                self.overlays.room_activity = false;
+            }
+            WorkspaceViewRequest::OpenActivity { .. } => {
+                if previous != workspace {
+                    return Err("Workspace is no longer active".into());
+                }
+                self.open_room_activity(None);
+            }
+            WorkspaceViewRequest::CloseActivity { .. } => {
+                if previous != workspace {
+                    return Err("Workspace is no longer active".into());
+                }
+                self.overlays.room_activity = false;
+            }
+        }
+        self.workspace_view_request = Some((previous, request));
+        self.bump();
+        Ok(())
+    }
+    pub fn take_workspace_view_request(
+        &mut self,
+    ) -> Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)> {
+        self.workspace_view_request.take()
+    }
+
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
         self.activity_focus_request = focus;
         {
@@ -1773,7 +1790,7 @@ impl ChromeState {
     }
 
     /// Read by the search-scope pill so "This app" can show the tab's
-    /// title instead of the static [`SearchScope::label`].
+    /// title instead of the static [`SearchScopeText::localized_label`].
     pub fn active_app_title(&self) -> Option<String> {
         let tab = self.active_tab_ref()?;
         let title = tab.title.trim();

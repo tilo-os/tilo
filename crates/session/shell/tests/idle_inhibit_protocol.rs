@@ -242,8 +242,10 @@ fn an_inhibitor_holds_the_screen_on_only_while_its_window_is_visible() {
 
     inhibitor.destroy();
     h.tick();
+    let still_held = h.registry.is_inhibited_for(INHIBIT_IDLE);
+    drop(h);
     assert!(
-        !h.registry.is_inhibited_for(INHIBIT_IDLE),
+        !still_held,
         "destroying the inhibitor must release the hold"
     );
     let _keep = (toplevel, xdg);

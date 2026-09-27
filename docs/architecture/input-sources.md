@@ -56,14 +56,17 @@ on Caps Lock wins over a Caps Lock remap.
 ## Input methods (Chinese, Japanese, Korean)
 
 Composing input methods are input sources in the same ordered list, with ids
-`ime/pinyin`, `ime/mozc` and `ime/hangul` (`/` never occurs in an XKB name).
+`ime/rime`, `ime/anthy` and `ime/hangul` (`/` never occurs in an XKB name).
 They are not XKB groups: the four-group bound counts layouts only, and an
 engine types on the primary (first) layout, so the XKB group index is the
 active layout's position among layouts, or 0 while an engine is active
 (`RichInputConfig::active_layout_index`). Settings offers an engine only when
 the image ships it.
 
-Fcitx5 provides the engines. The compositor starts it — never XDG autostart —
+Fcitx5 provides the engines: Rime (Simplified Chinese through its
+`luna_pinyin_simp` schema, set in the image's
+`/usr/share/rime-data/default.custom.yaml`), Anthy and Hangul, none of which
+links a UI toolkit. The compositor starts it — never XDG autostart —
 as `/usr/bin/fcitx5` on its own private Wayland display, exactly as the
 on-screen keyboard gets its own: the display admits only the process group the
 compositor started, running as the same user, and for Fcitx5 only a process
@@ -72,8 +75,7 @@ carry an immutable `TrustedInputMethod` credential; public app sockets never
 see `zwp_input_method_manager_v2` or `zwp_virtual_keyboard_manager_v1`. Its
 configuration is regenerated in the runtime directory on every start (the
 engine as its default, `ActiveByDefault`, every enumerate chord cleared so it
-cannot take Super+Space or Ctrl+Space, Cloud Pinyin and the other unused
-addons disabled); user dictionaries stay in its ordinary data directory.
+cannot take Super+Space or Ctrl+Space, and the unused addons disabled); user dictionaries stay in its ordinary data directory.
 
 `input-method-v2` admits one input method per seat, so `compositor::input_method`
 arbitrates:

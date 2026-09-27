@@ -14,6 +14,7 @@
 //! [`Workspace::may_administer`]. Non-owners see the same information
 //! with controls painted disabled, not hidden.
 
+use crate::shell::i18n::{t, t_args};
 use crate::shell::state::WorkspaceAuthority as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -225,7 +226,10 @@ pub(crate) fn permission_profile_resource_with_access(
     let mut root = tilo_actions::Resource::new(
         format!("workspace.permissions:{}", ws.room),
         "workspace.permissions",
-        format!("{} permission roles", ws.name),
+        t_args(
+            "workspace-settings-roles-resource",
+            &[("workspace", ws.name.clone().into())],
+        ),
     );
     if !can_administer {
         return root;
@@ -240,8 +244,8 @@ pub(crate) fn permission_profile_resource_with_access(
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
             "profile.save",
-            "Create or update permission role",
-            "Role name",
+            t("workspace-settings-role-save"),
+            t("workspace-settings-role-save-placeholder"),
             OperationKind::Effect,
             PERMISSION_PROFILE_ACTION_TYPE,
             vec![
@@ -302,17 +306,15 @@ pub(crate) fn permission_profile_resource_with_access(
                 })
             },
         )
-        .with_description(
-            "Save a reusable least-privilege role made from app, action, file, resource, or workspace capability rules.",
-        )
+        .with_description(t("workspace-settings-role-save-description"))
         .with_contract(contract.clone()),
     );
 
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
             "profile.assign",
-            "Assign permission role",
-            "Role and collaborator",
+            t("workspace-settings-role-assign"),
+            t("workspace-settings-role-assign-placeholder"),
             OperationKind::Effect,
             PERMISSION_PROFILE_ACTION_TYPE,
             vec![
@@ -350,7 +352,7 @@ pub(crate) fn permission_profile_resource_with_access(
                 })
             },
         )
-        .with_description("Assign a saved least-privilege role to a person, application, or agent.")
+        .with_description(t("workspace-settings-role-assign-description"))
         .with_contract(contract.clone()),
     );
 
@@ -377,8 +379,8 @@ pub(crate) fn permission_profile_resource_with_access(
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
             APP_ACTION_GRANT_ACTION_ID,
-            "Let an app use another app's action",
-            "App and action",
+            t("workspace-settings-app-action-grant"),
+            t("workspace-settings-app-action-placeholder"),
             OperationKind::Effect,
             PERMISSION_PROFILE_ACTION_TYPE,
             grant_params,
@@ -391,16 +393,14 @@ pub(crate) fn permission_profile_resource_with_access(
                 })
             },
         )
-        .with_description(
-            "Grant one application the use of one action another application publishes, in this workspace.",
-        )
+        .with_description(t("workspace-settings-app-action-grant-description"))
         .with_contract(contract.clone()),
     );
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
             APP_ACTION_REVOKE_ACTION_ID,
-            "Stop an app using another app's action",
-            "App and action",
+            t("workspace-settings-app-action-revoke"),
+            t("workspace-settings-app-action-placeholder"),
             OperationKind::Effect,
             PERMISSION_PROFILE_ACTION_TYPE,
             app_action_params(),
@@ -412,9 +412,7 @@ pub(crate) fn permission_profile_resource_with_access(
                 })
             },
         )
-        .with_description(
-            "Take back every grant letting one application use another application's action in this workspace.",
-        )
+        .with_description(t("workspace-settings-app-action-revoke-description"))
         .with_contract(contract.clone()),
     );
 
@@ -432,8 +430,11 @@ pub(crate) fn permission_profile_resource_with_access(
         resource.actions.push(
             tilo_actions::ActionSpec::typed_operation(
                 "profile.assign",
-                format!("Assign {}", profile.name),
-                "Collaborator identity",
+                t_args(
+                    "workspace-settings-role-assign-named",
+                    &[("role", profile.name.clone().into())],
+                ),
+                t("workspace-settings-role-assign-named-placeholder"),
                 OperationKind::Effect,
                 PERMISSION_PROFILE_ACTION_TYPE,
                 vec![
@@ -519,7 +520,10 @@ pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_
     let mut resource = tilo_actions::Resource::new(
         format!("workspace:{}", ws.room),
         "workspace.governance",
-        format!("{} ownership", ws.name),
+        t_args(
+            "workspace-settings-ownership-resource",
+            &[("workspace", ws.name.clone().into())],
+        ),
     );
     if ws.owner.as_ref() == Some(local_user) {
         resource.actions.push(ownership_proposal_action());
@@ -544,8 +548,8 @@ fn ownership_proposal_action() -> tilo_actions::ActionSpec {
 
     tilo_actions::ActionSpec::typed_operation(
         "ownership.propose",
-        "Propose ownership transfer",
-        "Recipient identity",
+        t("workspace-settings-ownership-propose"),
+        t("workspace-settings-ownership-propose-placeholder"),
         OperationKind::Effect,
         OWNERSHIP_TRANSFER_ACTION_TYPE,
         vec![
@@ -571,9 +575,7 @@ fn ownership_proposal_action() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .with_description(
-        "Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.",
-    )
+    .with_description(t("workspace-settings-ownership-propose-description"))
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Privileged,
@@ -593,7 +595,7 @@ fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
     };
     tilo_actions::ActionSpec::operation(
         "ownership.accept",
-        "Accept workspace ownership",
+        t("workspace-settings-ownership-accept"),
         OperationKind::Effect,
         OWNERSHIP_TRANSFER_ACTION_TYPE,
         &operation,
@@ -601,19 +603,17 @@ fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
     .unwrap_or_else(|_| {
         tilo_actions::ActionSpec::immediate_encoded(
             "ownership.accept",
-            "Accept workspace ownership",
+            t("workspace-settings-ownership-accept"),
             tilo_actions::ExecutionLocus::ClientLocal,
             encoded_ownership_operation(&operation),
         )
     })
-    .with_description(
-        "Acceptance immediately transfers ownership; generic role controls cannot perform this action.",
-    )
+    .with_description(t("workspace-settings-ownership-accept-description"))
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Privileged,
         confirmation: ConfirmationPolicy::Phrase {
-            phrase: "Accept ownership".into(),
+            phrase: t("workspace-settings-ownership-accept-phrase"),
         },
         tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
         ..ActionContract::default()
@@ -630,7 +630,7 @@ fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
     };
     tilo_actions::ActionSpec::operation(
         "ownership.cancel",
-        "Cancel ownership transfer",
+        t("workspace-settings-ownership-cancel"),
         OperationKind::Effect,
         OWNERSHIP_TRANSFER_ACTION_TYPE,
         &operation,
@@ -638,12 +638,12 @@ fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
     .unwrap_or_else(|_| {
         tilo_actions::ActionSpec::immediate_encoded(
             "ownership.cancel",
-            "Cancel ownership transfer",
+            t("workspace-settings-ownership-cancel"),
             tilo_actions::ExecutionLocus::ClientLocal,
             encoded_ownership_operation(&operation),
         )
     })
-    .with_description("Cancel the pending offer before the recipient accepts it.")
+    .with_description(t("workspace-settings-ownership-cancel-description"))
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Low,
@@ -714,26 +714,26 @@ pub enum WsTab {
 }
 
 impl WsTab {
-    pub fn label(&self) -> &'static str {
-        match self {
-            WsTab::General => "General",
-            WsTab::Members => "People",
-            WsTab::Agents => "Agents",
-            WsTab::Permissions => "Privacy & Security",
-            WsTab::Apps => "Apps & Files",
-        }
+    pub fn label(&self) -> String {
+        t(match self {
+            WsTab::General => "workspace-settings-tab-general",
+            WsTab::Members => "workspace-settings-tab-people",
+            WsTab::Agents => "workspace-settings-tab-agents",
+            WsTab::Permissions => "workspace-settings-tab-privacy-security",
+            WsTab::Apps => "workspace-settings-tab-apps-files",
+        })
     }
 
     /// Short labels for the same destinations when the lens promotes to a
     /// narrow-screen sheet. This is responsive copy, not a second nav model.
-    pub fn compact_label(&self) -> &'static str {
-        match self {
-            WsTab::General => "General",
-            WsTab::Members => "People",
-            WsTab::Agents => "Agents",
-            WsTab::Permissions => "Privacy",
-            WsTab::Apps => "Apps",
-        }
+    pub fn compact_label(&self) -> String {
+        t(match self {
+            WsTab::General => "workspace-settings-tab-general",
+            WsTab::Members => "workspace-settings-tab-people",
+            WsTab::Agents => "workspace-settings-tab-agents",
+            WsTab::Permissions => "workspace-settings-tab-privacy",
+            WsTab::Apps => "workspace-settings-tab-apps",
+        })
     }
 
     /// Iteration order for the sidebar nav and tab strip. Every tab is
@@ -933,7 +933,7 @@ impl WorkspaceSettings {
 
         text_renderer.draw_text(
             scene,
-            "Workspace Settings",
+            &t("workspace-settings-title"),
             tokens.typography.scale.xs,
             colors.text_dim,
             at(transform, sidebar.x0 + 24.0, identity_rect.y1 + 12.0),
@@ -963,10 +963,11 @@ impl WorkspaceSettings {
             };
             // Centred on the measured line, not at a fixed offset (HIG §7a).
             let label_size = tokens.typography.scale.base;
-            let (_, label_h) = text_renderer.measure(tab.label(), label_size, None);
+            let label = tab.label();
+            let (_, label_h) = text_renderer.measure(&label, label_size, None);
             text_renderer.draw_text(
                 scene,
-                tab.label(),
+                &label,
                 label_size,
                 label_color,
                 at(
@@ -1019,10 +1020,11 @@ impl WorkspaceSettings {
             LUCIDE_DEFAULT_STROKE_PX,
         );
         let close_size = tokens.typography.scale.sm;
-        let (_, close_h) = text_renderer.measure("Close Settings", close_size, None);
+        let close_label = t("workspace-settings-close");
+        let (_, close_h) = text_renderer.measure(&close_label, close_size, None);
         text_renderer.draw_text(
             scene,
-            "Close Settings",
+            &close_label,
             close_size,
             colors.text_dim,
             at(
@@ -1551,54 +1553,89 @@ fn draw_empty_state(
 
 // Capability vocabulary — labels
 
-pub fn role_label(role: CapRole) -> &'static str {
-    match role {
-        CapRole::Owner => "Owner",
-        CapRole::Editor => "Editor",
-        CapRole::Commenter => "Commenter",
-        CapRole::Viewer => "Viewer",
-        CapRole::Denied => "Blocked",
-    }
+pub fn role_label(role: CapRole) -> String {
+    t(match role {
+        CapRole::Owner => "workspace-settings-role-owner",
+        CapRole::Editor => "workspace-settings-role-editor",
+        CapRole::Commenter => "workspace-settings-role-commenter",
+        CapRole::Viewer => "workspace-settings-role-viewer",
+        CapRole::Denied => "workspace-settings-role-blocked",
+    })
 }
 
 /// Plain-language consequences shown before changing a person's workspace
 /// role. Keeping this next to the role vocabulary makes the chooser describe
 /// the same authority that `role_verb` ultimately writes.
-pub fn role_capability_preview(role: CapRole) -> &'static str {
-    match role {
-        CapRole::Owner => "Can manage people, permissions, and workspace settings.",
-        CapRole::Editor => "Can view, comment on, and edit shared work.",
-        CapRole::Commenter => "Can view shared work and add comments, but cannot edit it.",
-        CapRole::Viewer => "Can view shared work, but cannot comment or edit it.",
-        CapRole::Denied => "Cannot access this workspace.",
-    }
+pub fn role_capability_preview(role: CapRole) -> String {
+    t(match role {
+        CapRole::Owner => "workspace-settings-role-owner-preview",
+        CapRole::Editor => "workspace-settings-role-editor-preview",
+        CapRole::Commenter => "workspace-settings-role-commenter-preview",
+        CapRole::Viewer => "workspace-settings-role-viewer-preview",
+        CapRole::Denied => "workspace-settings-role-blocked-preview",
+    })
 }
 
-/// The thing a device-scoped capability names.
-fn device_label(device: &str) -> &str {
+/// The catalogue message for a device-scoped capability, or `None` for a
+/// device the catalogue has no name for (shown by its id).
+fn device_scope_key(device: &str) -> Option<&'static str> {
     match device {
-        "camera" => "the camera",
-        "microphone" => "the microphone",
-        "screencast" => "screen capture",
-        "remote-desktop" => "remote pointer + keyboard",
-        other => other,
+        "camera" => Some("workspace-settings-scope-camera"),
+        "microphone" => Some("workspace-settings-scope-microphone"),
+        "screencast" => Some("workspace-settings-scope-screencast"),
+        "remote-desktop" => Some("workspace-settings-scope-remote-desktop"),
+        _ => None,
     }
 }
 
+/// What a capability covers, on its own (a share row, a revoke toast).
 pub fn scope_label(scope: &Scope) -> String {
-    match scope {
-        Scope::Workspace | Scope::Room(_) => "this workspace".to_string(),
-        Scope::App(app) => format!("the {app} app"),
-        Scope::FsPath(path) => fs_scope_label(path),
-        Scope::FsRecord(record) => format!("one shared file ({})", short_id(record)),
-        Scope::Device(device) => device_label(device).to_string(),
-        Scope::NetHost(host) if host == "*" => "any network host".to_string(),
-        Scope::NetHost(host) => format!("network host {host}"),
+    scope_phrase(scope, false)
+}
+
+/// What a capability covers, phrased as the object of the sentence saying
+/// what it allows; languages that inflect the object pick their own form
+/// through the `-object` messages.
+fn scope_object_label(scope: &Scope) -> String {
+    scope_phrase(scope, true)
+}
+
+fn scope_phrase(scope: &Scope, object: bool) -> String {
+    let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
+        Scope::Workspace | Scope::Room(_) => ("workspace-settings-scope-workspace", Vec::new()),
+        Scope::App(app) => ("workspace-settings-scope-app", vec![("app", app.into())]),
+        Scope::FsPath(path) => fs_scope_phrase(path),
+        Scope::FsRecord(record) => (
+            "workspace-settings-scope-record",
+            vec![("id", short_id(record).into())],
+        ),
+        Scope::Device(device) => match device_scope_key(device) {
+            Some(key) => (key, Vec::new()),
+            None => return device.clone(),
+        },
+        Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
+        Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
         Scope::Action { app, action } => {
-            format!("“{action}” in {}", tilo_desktop_model::apps::app_label(app))
+            let name = crate::shell::launcher::display_name_for_app_id(app)
+                .unwrap_or_else(|| crate::shell::launcher::display_name_for_package_id(app));
+            (
+                "workspace-settings-scope-action",
+                vec![("action", action.into()), ("app", name.into())],
+            )
         }
-        Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(*kind)),
-        Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
+        Scope::ResourceType(kind) => (
+            "workspace-settings-scope-resource-type",
+            vec![("kind", artifact_kind_selector(*kind).into())],
+        ),
+        Scope::ResourceInstance(id) => (
+            "workspace-settings-scope-resource-instance",
+            vec![("id", short_id(&id.0.to_string()).into())],
+        ),
+    };
+    if object {
+        t_args(&format!("{key}-object"), &args)
+    } else {
+        t_args(key, &args)
     }
 }
 
@@ -1606,26 +1643,34 @@ pub fn scope_label(scope: &Scope) -> String {
 /// [`WORKSPACE_FILES_PATH`] mount point never appears in the label — it's
 /// a fact about where the OS keeps the bytes, not what the user is
 /// agreeing to (HIG §4).
-fn fs_scope_label(path: &str) -> String {
+fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, ui::i18n::ArgValue)>) {
     // Trailing slash: `/var/workspace/` is the root, not an unnamed child.
     let trimmed = path.trim_end_matches('/');
     if trimmed == WORKSPACE_FILES_PATH {
-        return "workspace files".to_string();
+        return ("workspace-settings-scope-workspace-files", Vec::new());
     }
     match trimmed.strip_prefix(&format!("{WORKSPACE_FILES_PATH}/")) {
-        Some(rest) if !rest.is_empty() => format!("\u{201c}{rest}\u{201d} in this workspace"),
-        _ => format!("files under {trimmed}"),
+        Some(rest) if !rest.is_empty() => (
+            "workspace-settings-scope-workspace-folder",
+            vec![("folder", rest.into())],
+        ),
+        _ => (
+            "workspace-settings-scope-path",
+            vec![("path", trimmed.into())],
+        ),
     }
 }
 
-fn artifact_kind_label(kind: collab_types::role::ArtifactKind) -> &'static str {
+/// The selector the scope messages branch on, so each language inflects
+/// "every note" / "every board" for itself.
+fn artifact_kind_selector(kind: collab_types::role::ArtifactKind) -> &'static str {
     use collab_types::role::ArtifactKind;
     match kind {
         ArtifactKind::Note => "note",
         ArtifactKind::File => "file",
-        ArtifactKind::Cluster => "saved cluster",
-        ArtifactKind::Kanban => "board",
-        ArtifactKind::ChatLog => "chat log",
+        ArtifactKind::Cluster => "cluster",
+        ArtifactKind::Kanban => "kanban",
+        ArtifactKind::ChatLog => "chat-log",
     }
 }
 
@@ -1643,38 +1688,56 @@ pub fn short_id(id: &str) -> String {
 /// rather than concatenated — "verb · scope" would read "View · the
 /// microphone" instead of "Use the microphone".
 pub fn capability_allows(cap: &CapOverride) -> String {
-    let what = scope_label(&cap.scope);
-    match (&cap.scope, cap.verb) {
-        (Scope::Device(_), Verb::Write | Verb::Admin) => format!("Control {what}"),
-        (Scope::Device(_), _) => format!("Use {what}"),
-        (Scope::NetHost(_), _) => format!("Reach {what}"),
-        (Scope::Action { .. }, _) => format!("Run {what}"),
-        (_, Verb::Admin) => format!("Administer {what}"),
-        (_, Verb::Write) => format!("Edit {what}"),
-        (_, Verb::Comment) => format!("Comment on {what}"),
-        (_, Verb::Invite) => format!("Invite others to {what}"),
-        (_, Verb::Read) => format!("View {what}"),
-    }
+    let key = match (&cap.scope, cap.verb) {
+        (Scope::Device(_), Verb::Write | Verb::Admin) => "workspace-settings-allows-control",
+        (Scope::Device(_), _) => "workspace-settings-allows-use",
+        (Scope::NetHost(_), _) => "workspace-settings-allows-reach",
+        (Scope::Action { .. }, _) => "workspace-settings-allows-run",
+        (_, Verb::Admin) => "workspace-settings-allows-administer",
+        (_, Verb::Write) => "workspace-settings-allows-edit",
+        (_, Verb::Comment) => "workspace-settings-allows-comment",
+        // Inviting names the scope on its own rather than as an object.
+        (_, Verb::Invite) => {
+            return t_args(
+                "workspace-settings-allows-invite",
+                &[("what", scope_label(&cap.scope).into())],
+            );
+        }
+        (_, Verb::Read) => "workspace-settings-allows-view",
+    };
+    t_args(key, &[("what", scope_object_label(&cap.scope).into())])
 }
 
-pub fn expiry_label(expiry: Expiry) -> &'static str {
-    match expiry {
-        Expiry::AfterUse => "Once",
-        Expiry::EndOfSession => "Session",
-        Expiry::AtUnix(_) => "Until",
-        Expiry::Never => "Always",
-    }
+pub fn expiry_label(expiry: Expiry) -> String {
+    t(match expiry {
+        Expiry::AfterUse => "workspace-settings-expiry-once",
+        Expiry::EndOfSession => "workspace-settings-expiry-session",
+        Expiry::AtUnix(_) => "workspace-settings-expiry-until",
+        Expiry::Never => "workspace-settings-expiry-always",
+    })
 }
 
 /// Who granted a capability, as a user-facing phrase, or `None` for a
 /// capability with no recorded grantor.
 pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
     cap.granted_by.as_ref().map(|p| match p {
-        Principal::Person(id) => format!("granted by {}", short_id(id)),
-        Principal::App(id) => format!("granted by the {id} app"),
-        Principal::Agent(id) => format!("granted by agent {}", short_id(id)),
-        Principal::Token(id) => format!("granted by token {}", short_id(id)),
-        Principal::Room(id) => format!("granted by workspace {}", short_id(id)),
+        Principal::Person(id) => t_args(
+            "workspace-settings-granted-by-person",
+            &[("id", short_id(id).into())],
+        ),
+        Principal::App(id) => t_args("workspace-settings-granted-by-app", &[("app", id.into())]),
+        Principal::Agent(id) => t_args(
+            "workspace-settings-granted-by-agent",
+            &[("id", short_id(id).into())],
+        ),
+        Principal::Token(id) => t_args(
+            "workspace-settings-granted-by-token",
+            &[("id", short_id(id).into())],
+        ),
+        Principal::Room(id) => t_args(
+            "workspace-settings-granted-by-workspace",
+            &[("id", short_id(id).into())],
+        ),
     })
 }
 
@@ -1697,15 +1760,15 @@ pub enum SubjectKind {
 }
 
 impl SubjectKind {
-    pub fn section_label(self) -> &'static str {
-        match self {
-            SubjectKind::App => "Apps",
-            SubjectKind::AppAction => "App actions",
-            SubjectKind::Member => "People",
-            SubjectKind::Agent => "Agents",
-            SubjectKind::Role => "Roles",
-            SubjectKind::Other => "Other",
-        }
+    pub fn section_label(self) -> String {
+        t(match self {
+            SubjectKind::App => "workspace-settings-section-apps",
+            SubjectKind::AppAction => "workspace-settings-section-app-actions",
+            SubjectKind::Member => "workspace-settings-section-people",
+            SubjectKind::Agent => "workspace-settings-section-agents",
+            SubjectKind::Role => "workspace-settings-section-roles",
+            SubjectKind::Other => "workspace-settings-section-other",
+        })
     }
 }
 
@@ -1731,7 +1794,9 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
             SubjectKind::App | SubjectKind::AppAction => {
-                tilo_desktop_model::apps::app_label(&self.id).to_string()
+                crate::shell::launcher::display_name_for_app_id(&self.id).unwrap_or_else(|| {
+                    crate::shell::launcher::display_name_for_package_id(&self.id)
+                })
             }
             _ => self.id.clone(),
         }
@@ -1756,55 +1821,56 @@ enum GrantTarget {
 /// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
 /// sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
-    label: &'static str,
+    /// Catalogue key of the picker's label.
+    label_key: &'static str,
     target: GrantTarget,
     verb: Verb,
 }
 
 impl GrantChoice {
-    pub fn label(&self) -> &'static str {
-        self.label
+    pub fn label(&self) -> String {
+        t(self.label_key)
     }
 }
 
 static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
-        label: "Camera",
+        label_key: "workspace-settings-grant-camera",
         target: GrantTarget::Device("camera"),
         verb: Verb::Read,
     },
     GrantChoice {
-        label: "Microphone",
+        label_key: "workspace-settings-grant-microphone",
         target: GrantTarget::Device("microphone"),
         verb: Verb::Read,
     },
     GrantChoice {
-        label: "Screen capture",
+        label_key: "workspace-settings-grant-screencast",
         target: GrantTarget::Device("screencast"),
         verb: Verb::Read,
     },
     GrantChoice {
-        label: "Remote control",
+        label_key: "workspace-settings-grant-remote-control",
         target: GrantTarget::Device("remote-desktop"),
         verb: Verb::Write,
     },
     GrantChoice {
-        label: "Network access",
+        label_key: "workspace-settings-grant-network",
         target: GrantTarget::AnyHost,
         verb: Verb::Read,
     },
     GrantChoice {
-        label: "Read workspace files",
+        label_key: "workspace-settings-grant-read-files",
         target: GrantTarget::WorkspaceFiles,
         verb: Verb::Read,
     },
     GrantChoice {
-        label: "Edit workspace files",
+        label_key: "workspace-settings-grant-edit-files",
         target: GrantTarget::WorkspaceFiles,
         verb: Verb::Write,
     },
     GrantChoice {
-        label: "Create permission roles",
+        label_key: "workspace-settings-grant-create-roles",
         target: GrantTarget::Action {
             app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
             action: crate::shell::state::PROFILE_SAVE_ACTION_ID,
@@ -1812,7 +1878,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         verb: Verb::Admin,
     },
     GrantChoice {
-        label: "Assign permission roles",
+        label_key: "workspace-settings-grant-assign-roles",
         target: GrantTarget::Action {
             app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
             action: crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
@@ -1825,7 +1891,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
 /// length ever disagree — unreachable in practice since the index is
 /// always taken modulo the live length, but a real value beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
-    label: "Edit workspace files",
+    label_key: "workspace-settings-grant-edit-files",
     target: GrantTarget::WorkspaceFiles,
     verb: Verb::Write,
 };
@@ -2197,23 +2263,34 @@ pub enum AgentAuthorityPreset {
 }
 
 impl AgentAuthorityPreset {
-    pub const fn label(self) -> &'static str {
+    /// Stable id, recorded in the admission capability's id and accepted
+    /// by [`Self::parse`].
+    pub const fn id(self) -> &'static str {
         match self {
-            Self::Observer => "Observer",
-            Self::Contributor => "Contributor",
-            Self::Operator => "Operator",
-            Self::Custom => "Custom",
+            Self::Observer => "observer",
+            Self::Contributor => "contributor",
+            Self::Operator => "operator",
+            Self::Custom => "custom",
         }
     }
 
+    pub fn label(self) -> String {
+        t(match self {
+            Self::Observer => "workspace-settings-preset-observer",
+            Self::Contributor => "workspace-settings-preset-contributor",
+            Self::Operator => "workspace-settings-preset-operator",
+            Self::Custom => "workspace-settings-preset-custom",
+        })
+    }
+
     /// Plain-language preview shown before the user grants a surface.
-    pub const fn review_hint(self) -> &'static str {
-        match self {
-            Self::Observer => "Read only on surfaces you select",
-            Self::Contributor => "Read/write only on surfaces you select",
-            Self::Operator => "Run only approved app actions",
-            Self::Custom => "Review every scoped permission",
-        }
+    pub fn review_hint(self) -> String {
+        t(match self {
+            Self::Observer => "workspace-settings-preset-observer-hint",
+            Self::Contributor => "workspace-settings-preset-contributor-hint",
+            Self::Operator => "workspace-settings-preset-operator-hint",
+            Self::Custom => "workspace-settings-preset-custom-hint",
+        })
     }
 
     /// The admission marker used for an initial, permission-free setup. It
@@ -2326,10 +2403,7 @@ pub fn admit_agent(
         ws.room.to_string(),
         preset.admission_verb(),
     )
-    .with_id(format!(
-        "agent-member:{agent}:{}",
-        preset.label().to_ascii_lowercase()
-    ))
+    .with_id(format!("agent-member:{agent}:{}", preset.id()))
     .granted_by(Principal::Person(actor.clone()));
     edit.granted.push(ws.grant_capability(cap));
     edit
@@ -2505,17 +2579,15 @@ pub fn draw_members_pane(
 
     let roster_count = ordered_roster(ws).len();
     let transfer_status = ownership_transfer_status(ws, local_user);
-    let member_help_owned;
     let member_help = if let Some(status) = transfer_status.as_deref() {
-        member_help_owned = elide(
+        elide(
             status,
             theme.tokens.typography.scale.xs,
             (pane_rect.width() - 294.0).max(120.0),
             text_renderer,
-        );
-        member_help_owned.as_str()
+        )
     } else {
-        "Removing someone blocks future sync and edits; copies already downloaded stay with them."
+        t("workspace-settings-members-help")
     };
     let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
         .actions
@@ -2525,15 +2597,18 @@ pub fn draw_members_pane(
         transform,
         pane_rect,
         Icon::Home,
-        &format!("{roster_count} people share this workspace"),
-        member_help,
-        if can_manage_transfer {
-            "Ownership"
+        &t_args(
+            "workspace-settings-members-count",
+            &[("count", roster_count.into())],
+        ),
+        &member_help,
+        &t(if can_manage_transfer {
+            "workspace-settings-ownership"
         } else if is_owner {
-            "You manage"
+            "workspace-settings-you-manage"
         } else {
-            "View only"
-        },
+            "workspace-settings-view-only"
+        }),
         text_renderer,
         theme,
     );
@@ -2542,7 +2617,7 @@ pub fn draw_members_pane(
             scene,
             transform,
             ownership_action_rect(pane_rect),
-            "Ownership",
+            &t("workspace-settings-ownership"),
             true,
             text_renderer,
             theme,
@@ -2562,8 +2637,8 @@ pub fn draw_members_pane(
             empty,
             Icon::Shield,
             (
-                "No one else is in this workspace",
-                "Create a signed invite from the General tab to add someone.",
+                &t("workspace-settings-members-empty-title"),
+                &t("workspace-settings-members-empty-detail"),
             ),
             text_renderer,
             theme,
@@ -2578,7 +2653,7 @@ pub fn draw_members_pane(
             pane_rect.x0 + PANE_PAD_X,
             pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
         ),
-        "PEOPLE",
+        &t("workspace-settings-people-header"),
         Some(ordered_roster(ws).len()),
         text_renderer,
         theme,
@@ -2620,19 +2695,19 @@ pub fn ownership_transfer_status(ws: &Workspace, local_user: &UserId) -> Option<
     let recipient = public_key_member_id(proposal.recipient);
     let owner = public_key_member_id(proposal.current_owner);
     if &recipient == local_user {
-        Some(format!(
-            "{} offered you ownership. Review the workspace and explicitly accept before the offer expires.",
-            member_name_or_short_id(ws, &owner)
+        Some(t_args(
+            "workspace-settings-ownership-offered",
+            &[("owner", member_name_or_short_id(ws, &owner).into())],
         ))
     } else if &owner == local_user {
-        Some(format!(
-            "Waiting for {} to explicitly accept ownership. You can cancel until acceptance.",
-            member_name_or_short_id(ws, &recipient)
+        Some(t_args(
+            "workspace-settings-ownership-waiting",
+            &[("recipient", member_name_or_short_id(ws, &recipient).into())],
         ))
     } else {
-        Some(format!(
-            "Ownership transfer to {} is awaiting that person's acceptance.",
-            member_name_or_short_id(ws, &recipient)
+        Some(t_args(
+            "workspace-settings-ownership-pending",
+            &[("recipient", member_name_or_short_id(ws, &recipient).into())],
         ))
     }
 }
@@ -2655,6 +2730,10 @@ struct MemberRowDrawContext<'a> {
     theme: &'a Theme,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a paint routine that lays one member row out left to right from shared running offsets"
+)]
 fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     let MemberRowDrawContext {
         scene,
@@ -2698,7 +2777,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
             scene,
             *transform,
             Point::new(text_limit, row.row_rect.center().y),
-            "You",
+            &t("workspace-settings-you"),
             Tint {
                 color: colors.accent[5],
                 alpha: 1.0,
@@ -2723,15 +2802,17 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     );
 
     let displayed_role = if row.role == CapRole::Owner && !row.is_workspace_owner {
-        "Admin"
+        t("workspace-settings-role-admin")
     } else {
         role_label(row.role)
     };
-    let detail = match row.grant_count {
-        0 => format!("{displayed_role} · no extra permissions"),
-        1 => format!("{displayed_role} · 1 extra permission"),
-        n => format!("{displayed_role} · {n} extra permissions"),
-    };
+    let detail = t_args(
+        "workspace-settings-member-detail",
+        &[
+            ("role", displayed_role.as_str().into()),
+            ("count", row.grant_count.into()),
+        ],
+    );
     let detail_size = tokens.typography.scale.xs;
     let detail_text = elide(&detail, detail_size, text_max, text_renderer);
     text_renderer.draw_text(
@@ -2749,7 +2830,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
         *transform,
         row.role_rect,
         row.role,
-        displayed_role,
+        &displayed_role,
         row.is_workspace_owner,
         can_manage_row,
         detail_size,
@@ -2761,7 +2842,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
         scene,
         *transform,
         row.remove_rect,
-        "Remove",
+        &t("workspace-settings-remove"),
         can_manage_row,
         text_renderer,
         theme,
@@ -2770,7 +2851,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
 
 fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) -> String {
     if &row.user == local_user {
-        return "You".to_string();
+        return t("workspace-settings-you");
     }
     if let Some(person) = ws.collaborators.iter().find(|person| person.id == row.user)
         && !person.name.trim().is_empty()
@@ -2883,9 +2964,16 @@ pub fn draw_agents_pane(
         transform,
         pane_rect,
         Icon::Sparkles,
-        &format!("{count} agent collaborators"),
-        "Agents are visibly non-human collaborators. Admission grants no ambient workspace power.",
-        if is_owner { "You manage" } else { "View only" },
+        &t_args(
+            "workspace-settings-agents-count",
+            &[("count", count.into())],
+        ),
+        &t("workspace-settings-agents-help"),
+        &t(if is_owner {
+            "workspace-settings-you-manage"
+        } else {
+            "workspace-settings-view-only"
+        }),
         text_renderer,
         theme,
     );
@@ -2894,7 +2982,7 @@ pub fn draw_agents_pane(
             scene,
             transform,
             agents_add_rect(pane_rect),
-            "Add agent",
+            &t("workspace-settings-add-agent"),
             is_owner,
             text_renderer,
             theme,
@@ -2915,8 +3003,8 @@ pub fn draw_agents_pane(
             empty,
             Icon::Sparkles,
             (
-                "No agents have access",
-                "Start with a safe profile, then review each exact surface.",
+                &t("workspace-settings-agents-empty-title"),
+                &t("workspace-settings-agents-empty-detail"),
             ),
             text_renderer,
             theme,
@@ -2934,7 +3022,7 @@ pub fn draw_agents_pane(
                 + PANE_INTRO_GAP
                 + AGENT_ONBOARDING_HEIGHT,
         ),
-        "AGENTS",
+        &t("workspace-settings-agents-header"),
         Some(count),
         text_renderer,
         theme,
@@ -2943,7 +3031,7 @@ pub fn draw_agents_pane(
         scene,
         transform,
         agents_add_rect(pane_rect),
-        "Add agent",
+        &t("workspace-settings-add-agent"),
         is_owner,
         text_renderer,
         theme,
@@ -2958,25 +3046,38 @@ pub fn draw_agents_pane(
 
 /// One line on what a service member may do in the room and for how long.
 fn service_member_detail(service: &crate::shell::service_members::ServiceMember) -> String {
-    let scope = match service.verb {
-        Verb::Admin => "administers",
-        Verb::Write | Verb::Invite => "reads and edits",
-        Verb::Comment => "reads and comments",
-        Verb::Read => "reads",
+    let access = match service.verb {
+        Verb::Admin => "admin",
+        Verb::Write | Verb::Invite => "write",
+        Verb::Comment => "comment",
+        Verb::Read => "read",
     };
     let device = hex::encode(service.device.as_bytes().get(..4).unwrap_or_default());
     let until = service.expires_at.map_or_else(
-        || "until removed".to_string(),
+        || t("workspace-settings-service-until-removed"),
         |deadline| {
             let remaining = deadline.saturating_sub(tilo_clock::unix_now());
             match remaining {
-                0..60 => "access ends within a minute".to_string(),
-                60..3_600 => format!("access ends in {} min", remaining / 60),
-                _ => format!("access ends in {} h", remaining / 3_600),
+                0..60 => t("workspace-settings-service-ends-soon"),
+                60..3_600 => t_args(
+                    "workspace-settings-service-ends-minutes",
+                    &[("minutes", (remaining / 60).into())],
+                ),
+                _ => t_args(
+                    "workspace-settings-service-ends-hours",
+                    &[("hours", (remaining / 3_600).into())],
+                ),
             }
         },
     );
-    format!("Service member · {scope} end-to-end encrypted content · {until} · device {device}")
+    t_args(
+        "workspace-settings-service-member",
+        &[
+            ("access", access.into()),
+            ("until", until.into()),
+            ("device", device.into()),
+        ],
+    )
 }
 
 fn draw_agent_row(
@@ -3006,11 +3107,11 @@ fn draw_agent_row(
         scene,
         transform,
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        if row.service.is_some() {
-            "SERVICE"
+        &t(if row.service.is_some() {
+            "workspace-settings-badge-service"
         } else {
-            "AGENT"
-        },
+            "workspace-settings-badge-agent"
+        }),
         Tint {
             color: colors.accent[5],
             alpha: 1.0,
@@ -3034,17 +3135,14 @@ fn draw_agent_row(
     let detail = if let Some(service) = &row.service {
         service_member_detail(service)
     } else {
-        match row.grant_count {
-            0 => format!("{admission} · no scoped permissions — review required"),
-            1 => format!(
-                "{admission} · {} profile · 1 scoped permission",
-                row.preset.label()
-            ),
-            n => format!(
-                "{admission} · {} profile · {n} scoped permissions",
-                row.preset.label()
-            ),
-        }
+        t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", admission.into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        )
     };
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);
@@ -3060,7 +3158,7 @@ fn draw_agent_row(
         scene,
         transform,
         Point::new(row.role_rect.x1, row.role_rect.center().y),
-        "Admitted",
+        &t("workspace-settings-admitted"),
         Tint {
             color: colors.semantic.success,
             alpha: 1.0,
@@ -3073,7 +3171,7 @@ fn draw_agent_row(
         transform,
         text_renderer,
         theme,
-        &ButtonFace::new(row.review_rect, "Review access")
+        &ButtonFace::new(row.review_rect, &t("workspace-settings-review-access"))
             .disabled(!is_owner)
             .text_size(theme.tokens.typography.scale.xs),
     );
@@ -3081,21 +3179,21 @@ fn draw_agent_row(
         scene,
         transform,
         row.remove_rect,
-        "Revoke",
+        &t("workspace-settings-revoke"),
         is_owner,
         text_renderer,
         theme,
     );
 }
 
-fn agent_admission_label(role: CapRole) -> &'static str {
-    match role {
-        CapRole::Owner => "Admin admission",
-        CapRole::Editor => "Write admission",
-        CapRole::Commenter => "Comment admission",
-        CapRole::Viewer => "Read admission",
-        CapRole::Denied => "Blocked",
-    }
+fn agent_admission_label(role: CapRole) -> String {
+    t(match role {
+        CapRole::Owner => "workspace-settings-admission-admin",
+        CapRole::Editor => "workspace-settings-admission-write",
+        CapRole::Commenter => "workspace-settings-admission-comment",
+        CapRole::Viewer => "workspace-settings-admission-read",
+        CapRole::Denied => "workspace-settings-role-blocked",
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -3178,11 +3276,11 @@ pub fn default_app_rows(
         .collect()
 }
 
-fn app_name<'a>(id: &str, candidates: &'a [desktop_policy::AppCandidate]) -> &'a str {
-    candidates
-        .iter()
-        .find(|a| a.package_id == id)
-        .map_or("Unavailable app", |a| a.display_name.as_str())
+fn app_name(id: &str, candidates: &[desktop_policy::AppCandidate]) -> String {
+    candidates.iter().find(|a| a.package_id == id).map_or_else(
+        || t("workspace-settings-unavailable-app"),
+        |a| a.display_name.clone(),
+    )
 }
 
 /// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
@@ -3215,9 +3313,15 @@ pub fn draw_default_apps_pane(
         .len();
     let custom_rules = ws.default_apps.policy.len();
     let status = if custom_rules == 0 {
-        format!("{resources} file types")
+        t_args(
+            "workspace-settings-apps-file-types",
+            &[("count", resources.into())],
+        )
     } else {
-        format!("{custom_rules} custom rules")
+        t_args(
+            "workspace-settings-apps-custom-rules",
+            &[("count", custom_rules.into())],
+        )
     };
     draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
     let can_admin = ws.may_administer(local_user);
@@ -3233,8 +3337,8 @@ pub fn draw_default_apps_pane(
             rows,
             Icon::LayoutGrid,
             (
-                "No file handlers installed",
-                "Apps appear here after they declare supported file types.",
+                &t("workspace-settings-apps-empty-title"),
+                &t("workspace-settings-apps-empty-detail"),
             ),
             text_renderer,
             theme,
@@ -3258,8 +3362,8 @@ fn draw_default_apps_header(
         transform,
         pane,
         Icon::LayoutGrid,
-        "Defaults without lock-in",
-        "The workspace supplies a baseline; each person can explicitly choose something else.",
+        &t("workspace-settings-apps-intro-title"),
+        &t("workspace-settings-apps-intro-detail"),
         status,
         text_renderer,
         theme,
@@ -3269,18 +3373,20 @@ fn draw_default_apps_header(
         scene,
         transform,
         Point::new(pane.x0 + PANE_PAD_X, heading_y),
-        "DEFAULT APPLICATIONS",
+        &t("workspace-settings-apps-header"),
         None,
         text_renderer,
         theme,
     );
+    let workspace_choice = t("workspace-settings-workspace-choice");
+    let your_choice = t("workspace-settings-your-choice");
     if compact_pane(pane) {
         let x0 = pane.x0 + PANE_PAD_X;
         let x1 = pane.x1 - PANE_PAD_X;
         let midpoint = x0 + (x1 - x0) / 2.0;
         text_renderer.draw_text(
             scene,
-            "Workspace choice",
+            &workspace_choice,
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, x0, heading_y + 22.0),
@@ -3288,7 +3394,7 @@ fn draw_default_apps_header(
         );
         text_renderer.draw_text(
             scene,
-            "Your choice",
+            &your_choice,
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, midpoint + 4.0, heading_y + 22.0),
@@ -3297,7 +3403,7 @@ fn draw_default_apps_header(
     } else {
         text_renderer.draw_text(
             scene,
-            "Workspace choice",
+            &workspace_choice,
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, pane.x1 - 404.0, heading_y + 22.0),
@@ -3305,7 +3411,7 @@ fn draw_default_apps_header(
         );
         text_renderer.draw_text(
             scene,
-            "Your choice",
+            &your_choice,
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, pane.x1 - 194.0, heading_y + 22.0),
@@ -3354,7 +3460,9 @@ fn draw_default_apps_rows(
             .get(&row.resource)
             .unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal);
         let policy_label = match policy {
-            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => "Follow personal defaults",
+            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => {
+                t("workspace-settings-follow-personal")
+            }
             desktop_policy::WorkspaceDefaultPolicy::App(id) => app_name(id, candidates),
         };
         let choice = ws
@@ -3364,15 +3472,19 @@ fn draw_default_apps_rows(
             .and_then(|m| m.get(&row.resource))
             .unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace);
         let choice_label = match choice {
-            desktop_policy::UserWorkspaceChoice::FollowWorkspace => "Use workspace choice",
-            desktop_policy::UserWorkspaceChoice::PersonalDefault => "Use my personal default",
+            desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
+                t("workspace-settings-use-workspace-choice")
+            }
+            desktop_policy::UserWorkspaceChoice::PersonalDefault => {
+                t("workspace-settings-use-personal-default")
+            }
             desktop_policy::UserWorkspaceChoice::App(id) => app_name(id, candidates),
         };
         draw_cycler(
             scene,
             transform,
             row.workspace_rect,
-            policy_label,
+            &policy_label,
             can_admin,
             text_renderer,
             theme,
@@ -3381,7 +3493,7 @@ fn draw_default_apps_rows(
             scene,
             transform,
             row.user_rect,
-            choice_label,
+            &choice_label,
             true,
             text_renderer,
             theme,
@@ -3445,11 +3557,11 @@ fn draw_authority_footnote(
     theme: &Theme,
 ) {
     let tokens = &theme.tokens;
-    let note = "Only the workspace owner can change permissions.";
+    let note = t("workspace-settings-owner-only");
     let size = tokens.typography.scale.xs;
     text_renderer.draw_text(
         scene,
-        note,
+        &note,
         size,
         tokens.colors.text_dim,
         at(
@@ -3471,7 +3583,7 @@ pub struct PermissionRow {
     pub cap_id: String,
     pub subject: GrantSubject,
     pub allows: String,
-    pub expiry: &'static str,
+    pub expiry: String,
     pub granted_by: Option<String>,
     pub row_rect: Rect,
     pub revoke_rect: Rect,
@@ -3518,7 +3630,10 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
         },
         Subject::Role(role) => GrantSubject {
             kind: SubjectKind::Role,
-            id: format!("everyone with {}", role_label(*role)),
+            id: t_args(
+                "workspace-settings-subject-role",
+                &[("role", role_label(*role).into())],
+            ),
         },
         Subject::Principal(Principal::Agent(id)) => GrantSubject {
             kind: SubjectKind::Agent,
@@ -3526,11 +3641,17 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
         },
         Subject::Principal(Principal::Token(id)) => GrantSubject {
             kind: SubjectKind::Other,
-            id: format!("token {}", short_id(id)),
+            id: t_args(
+                "workspace-settings-subject-token",
+                &[("id", short_id(id).into())],
+            ),
         },
         Subject::Principal(Principal::Room(id)) => GrantSubject {
             kind: SubjectKind::Other,
-            id: format!("workspace {}", short_id(id)),
+            id: t_args(
+                "workspace-settings-subject-workspace",
+                &[("id", short_id(id).into())],
+            ),
         },
     }
 }
@@ -3791,9 +3912,12 @@ pub fn draw_permissions_pane(
         transform,
         pane_rect,
         Icon::Shield,
-        "Access is explicit and revocable",
-        "Grants are enforced by the app sandbox and stay scoped to this workspace.",
-        &format!("{active_grants} active grants"),
+        &t("workspace-settings-permissions-intro-title"),
+        &t("workspace-settings-permissions-intro-detail"),
+        &t_args(
+            "workspace-settings-active-grants",
+            &[("count", active_grants.into())],
+        ),
         text_renderer,
         theme,
     );
@@ -3825,8 +3949,8 @@ pub fn draw_permissions_pane(
             body,
             Icon::Shield,
             (
-                "No permissions granted",
-                "Apps get nothing until it is granted here or approved in a prompt.",
+                &t("workspace-settings-permissions-empty-title"),
+                &t("workspace-settings-permissions-empty-detail"),
             ),
             text_renderer,
             theme,
@@ -3854,7 +3978,7 @@ pub fn draw_permissions_pane(
                     row.row_rect.x0,
                     row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0,
                 ),
-                row.subject.kind.section_label(),
+                &row.subject.kind.section_label(),
                 Some(group_counts(row.subject.kind)),
                 text_renderer,
                 theme,
@@ -3865,7 +3989,10 @@ pub fn draw_permissions_pane(
     }
 
     if layout.overflow > 0 {
-        let more = format!("+{} more", layout.overflow);
+        let more = t_args(
+            "workspace-settings-more",
+            &[("count", layout.overflow.into())],
+        );
         text_renderer.draw_text(
             scene,
             &more,
@@ -3903,16 +4030,16 @@ fn draw_who_what_pickers(
     let subject = draft_subject(ws, draft);
     match &subject {
         Some(entry) => {
-            let caption = if entry.kind == SubjectKind::Agent {
-                "Who · AGENT (only this surface; no ambient workspace access)"
+            let caption = t(if entry.kind == SubjectKind::Agent {
+                "workspace-settings-who-agent"
             } else {
-                "Who"
-            };
+                "workspace-settings-who"
+            });
             draw_control_caption(
                 scene,
                 transform,
                 Point::new(layout.subject_rect.x0 + 2.0, caption_y),
-                caption,
+                &caption,
                 text_renderer,
                 theme,
             );
@@ -3931,7 +4058,7 @@ fn draw_who_what_pickers(
                 scene,
                 transform,
                 Point::new(card.x0 + 12.0, caption_y),
-                "Nobody to grant to yet — invite someone, or open an app here.",
+                &t("workspace-settings-nobody-to-grant"),
                 text_renderer,
                 theme,
             );
@@ -3941,7 +4068,7 @@ fn draw_who_what_pickers(
         scene,
         transform,
         Point::new(layout.choice_rect.x0 + 2.0, caption_y),
-        "What it allows",
+        &t("workspace-settings-what-it-allows"),
         text_renderer,
         theme,
     );
@@ -3949,7 +4076,7 @@ fn draw_who_what_pickers(
         scene,
         transform,
         layout.choice_rect,
-        draft.choice().label,
+        &draft.choice().label(),
         is_owner,
         text_renderer,
         theme,
@@ -3984,7 +4111,7 @@ fn draw_permission_composer(
             pane_rect.x0 + PANE_PAD_X,
             pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
         ),
-        "GRANT A PERMISSION",
+        &t("workspace-settings-grant-header"),
         None,
         text_renderer,
         theme,
@@ -4015,9 +4142,9 @@ fn draw_permission_composer(
     );
     text_renderer.draw_text(
         scene,
-        &format!(
-            "{} SAVED ROLES · MANAGE",
-            subject_draft.0.permission_profiles.len()
+        &t_args(
+            "workspace-settings-saved-roles",
+            &[("count", subject_draft.0.permission_profiles.len().into())],
         ),
         tokens.typography.scale.xs,
         if is_owner {
@@ -4063,7 +4190,7 @@ fn draw_permission_composer(
         scene,
         transform,
         Point::new(layout.expiry_rects[0].x0 + 2.0, caption_y),
-        "Until",
+        &t("workspace-settings-expiry-caption"),
         text_renderer,
         theme,
     );
@@ -4082,7 +4209,7 @@ fn draw_permission_composer(
             scene,
             transform,
             layout.submit_rect,
-            "Grant",
+            &t("workspace-settings-grant"),
             is_owner,
             text_renderer,
             theme,
@@ -4105,7 +4232,8 @@ fn draw_expiry_track(
         .iter()
         .position(|expiry| *expiry == draft.expiry)
         .unwrap_or_default();
-    let labels = EXPIRY_CHOICES.map(expiry_label);
+    let owned_labels = EXPIRY_CHOICES.map(expiry_label);
+    let labels = owned_labels.each_ref().map(String::as_str);
     // `SegmentedFace` owns the selected/unselected contrast, separators and
     // shared focus-compatible geometry. The surrounding disabled layer keeps
     // a viewer's immutable policy visibly unavailable without changing which
@@ -4175,7 +4303,7 @@ fn draw_permission_row(
         scene,
         transform,
         Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
-        row.expiry,
+        &row.expiry,
         Tint {
             color: colors.accent[5],
             alpha: 1.0,
@@ -4197,7 +4325,13 @@ fn draw_permission_row(
         None,
     );
     let detail = match &row.granted_by {
-        Some(by) => format!("{} · {by}", row.allows),
+        Some(by) => t_args(
+            "workspace-settings-permission-detail",
+            &[
+                ("allows", row.allows.as_str().into()),
+                ("grantor", by.into()),
+            ],
+        ),
         None => row.allows.clone(),
     };
     let detail_size = tokens.typography.scale.xs;
@@ -4215,7 +4349,7 @@ fn draw_permission_row(
         scene,
         transform,
         row.revoke_rect,
-        "Revoke",
+        &t("workspace-settings-revoke"),
         is_owner,
         text_renderer,
         theme,
@@ -5448,7 +5582,7 @@ mod permissions_pane_tests {
                     choice_index: 0,
                     expiry: Expiry::Never,
                 };
-                while draft.choice().label != "Microphone" {
+                while draft.choice().label() != "Microphone" {
                     draft.cycle_choice();
                 }
                 assert!(!ws.allows(
@@ -5481,7 +5615,7 @@ mod permissions_pane_tests {
                     choice_index: 0,
                     expiry: Expiry::AfterUse,
                 };
-                while draft.choice().label != "Microphone" {
+                while draft.choice().label() != "Microphone" {
                     draft.cycle_choice();
                 }
                 let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
@@ -5510,7 +5644,7 @@ mod permissions_pane_tests {
                     choice_index: 0,
                     expiry: Expiry::AfterUse,
                 };
-                while draft.choice().label != "Camera" {
+                while draft.choice().label() != "Camera" {
                     draft.cycle_choice();
                 }
                 apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
@@ -5588,7 +5722,7 @@ mod permissions_pane_tests {
                     assert!(
                         probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
                         "granting {:?} must make the decision function allow it",
-                        choice.label
+                        choice.label()
                     );
                 }
             }

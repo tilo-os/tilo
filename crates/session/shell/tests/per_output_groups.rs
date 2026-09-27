@@ -17,6 +17,10 @@
 //! fixture (`TILO_HEADLESS_OUTPUTS`) and drives it through the same entry
 //! points the compositor uses: backend events via `dispatch_event`, frame
 //! pumps, and the tree the control socket's `state-dump` serves.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};

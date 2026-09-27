@@ -180,6 +180,9 @@ pub struct FileHistoryStore {
     state: Mutex<HistoryState>,
     /// Threads whose appends are deferred to one durable write.
     deferring: Mutex<HashSet<std::thread::ThreadId>>,
+    /// Log entries after which the log is folded into the snapshot;
+    /// [`LOG_COMPACT_AFTER_ENTRIES`] outside tests.
+    compact_after: usize,
 }
 
 /// Defers the durable log write of this thread's history appends until
@@ -686,7 +689,7 @@ impl FileHistoryStore {
     }
 
     fn maybe_compact(&self, state: &mut HistoryState) {
-        if state.log.entries >= LOG_COMPACT_AFTER_ENTRIES
+        if state.log.entries >= self.compact_after
             && let Err(error) = self.compact_locked(state)
         {
             // The log already holds every entry durably; compaction only
@@ -795,7 +798,16 @@ impl FileHistoryStore {
             log_path,
             state: Mutex::new(state),
             deferring: Mutex::new(HashSet::new()),
+            compact_after: LOG_COMPACT_AFTER_ENTRIES,
         })
+    }
+
+    /// Fold the log after `entries` instead of [`LOG_COMPACT_AFTER_ENTRIES`],
+    /// so a test crosses the bound without thousands of synced appends.
+    #[cfg(test)]
+    pub(crate) fn with_compact_after(mut self, entries: usize) -> Self {
+        self.compact_after = entries;
+        self
     }
 
     /// Append one immutable version. Returns `false` for an exact replay and
@@ -1567,14 +1579,22 @@ mod tests {
 
     #[test]
     fn the_log_folds_into_the_snapshot_after_its_bound() {
+        const BOUND: usize = 64;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path).unwrap();
+        let store = FileHistoryStore::open(&path)
+            .unwrap()
+            .with_compact_after(BOUND);
         let record = FileRecordId::new();
         let mut parent = version(record, vec![], FileProvenance::Create, 0);
         store.append(parent.clone()).unwrap();
-        for i in 1..LOG_COMPACT_AFTER_ENTRIES as u64 {
-            let next = version(record, vec![parent.id], FileProvenance::Edit, i);
+        for i in 1..BOUND {
+            assert_eq!(
+                store.pending_log_entries(),
+                i,
+                "the log is not folded before its bound"
+            );
+            let next = version(record, vec![parent.id], FileProvenance::Edit, i as u64);
             store.append(next.clone()).unwrap();
             parent = next;
         }
@@ -1582,9 +1602,6 @@ mod tests {
         assert!(disk_state(&path).1.is_empty());
         drop(store);
         let reopened = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(
-            reopened.snapshot(record).unwrap().versions.len(),
-            LOG_COMPACT_AFTER_ENTRIES
-        );
+        assert_eq!(reopened.snapshot(record).unwrap().versions.len(), BOUND);
     }
 }

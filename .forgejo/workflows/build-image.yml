@@ -34,6 +34,11 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      allow_public_lenovo_firmware:
+        description: "Explicitly permit this Lenovo dispatch to publish bundled firmware through the public tilo owner"
+        type: boolean
+        required: false
+        default: false
       fex_payload_candidate:
         description: "One-off ARM FEX OCI digest; requires a paired guest and Lenovo main dispatch"
         required: false
@@ -71,10 +76,14 @@ concurrency:
   # freshness check sees a publication queued ahead of it. Validation builds
   # allocate nothing and must not hold up a release, so they serialize per ref.
   # Job outputs are unavailable here; this mirrors the plan job's rule.
-  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
+  # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
+  # failed release's ARM worker active after cancellation and queued later
+  # signed releases behind it. The old run cannot enter promotion.
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
+  TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   # The compiler cache belongs to this repository: its key is a repository
   # secret, not runner environment, because the runners serve every repository.
   SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2

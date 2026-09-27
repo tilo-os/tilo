@@ -1286,7 +1286,7 @@ impl CameraApp {
                 doc,
                 crate::actions::CAMERA_ACTION_TYPE,
                 action,
-                tilo_actions::ActionContext::for_action("org.tilo.Camera", "Camera", action),
+                tilo_actions::ActionContext::for_action("so.tilo.camera", "Camera", action),
             )
             .map_err(|error| error.to_string())
     }

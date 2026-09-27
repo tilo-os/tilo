@@ -778,6 +778,9 @@ impl SearchProvider for FilesProvider {
     fn name(&self) -> &'static str {
         "Files"
     }
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-files")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::File, ResourceKind::Folder]
     }
@@ -1320,7 +1323,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         DocumentTarget::NoAppForDocument { ext } => {
             notify_open_failure(
                 path,
-                &format!("no app on this desktop opens .{ext} documents"),
+                &crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]),
                 chrome,
             );
         }

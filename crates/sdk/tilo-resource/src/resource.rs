@@ -250,8 +250,8 @@ impl<R: Resource> ActionDecl<R> {
 /// origin, when an action is built; never inside `apply`.
 #[must_use]
 pub fn origin_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
         })

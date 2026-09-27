@@ -300,7 +300,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         {
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
-            h.host.room_activity_mut().refresh(&mut tree);
+            h.host.room_activity_mut().refresh(&mut *tree);
         }
         h.host
             .room_activity_mut()
@@ -868,12 +868,10 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree.clone());
         let records = chrome.borrow().records().clone();
-        let (content, ptrs, scene_parts) =
-            crate::shell::build_workspace_root_with_scene_parts(&tree, &records, &chrome);
+        let (content, ptrs) = crate::shell::build_workspace_root(&tree, &records, &chrome);
         let host = ShellOverlayHost::new(content)
             .with_chrome(chrome)
-            .with_group_row_ptrs(ptrs)
-            .with_workspace_scene_parts(scene_parts);
+            .with_group_row_ptrs(ptrs);
         let (maximize, restore) = host
             .active_window_control_rects()
             .expect("demo workspace has an active group");
@@ -2402,7 +2400,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .search_registry
             .registered_kinds()
             .iter()
-            .map(|k| k.label().to_string())
+            .map(crate::shell::search::ResourceKindText::localized_label)
             // The leading reset chip is painted separately from the
             // registered kinds; see `draw_search_banner`.
             .chain(std::iter::once("All".to_string()))

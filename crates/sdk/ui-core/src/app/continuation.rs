@@ -232,6 +232,9 @@ impl App {
         if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
+        let Some(route) = self.private_continuity_route() else {
+            return;
+        };
         let semantic = self.root_widget.continuable().and_then(|continuable| {
             continuable.continuation_metadata(&self.state.doc, &self.state.root)
         });
@@ -241,7 +244,7 @@ impl App {
             return;
         }
         if let Some(request) = continuation_publication(
-            crate::collaboration::local_app_id(),
+            route.app_id,
             metadata.as_ref(),
             self.continuation.last_published.is_some(),
         ) {

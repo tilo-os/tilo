@@ -14,5 +14,9 @@ path = "src/lib.rs"
 # must not pull anything in.
 [dependencies]
 
+# The browser runtime's only clock is the page's.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+web-time = "1"
+
 [lints]
 workspace = true

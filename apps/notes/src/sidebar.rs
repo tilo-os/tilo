@@ -793,8 +793,6 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn sidebar_rows_track_pages_and_scale_at_high_text_on_every_preset() {
-        // The selected page's fill is a contrast step off the raised sidebar on
-        // every preset, with an edge that registers on that fill (HIG §9.3/§9.5).
         eprintln!("phase selection_fill_moves_off_the_raised_sidebar_on_every_preset");
         {
             use ui::surface::{edge_delta, edge_on};
@@ -1189,6 +1187,23 @@ mod tests {
                 ),
                 "closed menu target is stale"
             );
+        }
+    }
+
+    /// A populated tree laid out shorter than its heading plus a minimum
+    /// scrollbar thumb (a startup frame, a squeezed drawer) still draws.
+    #[test]
+    fn populated_sidebar_draws_in_short_startup_viewports() {
+        let mut workspace = Workspace::new();
+        for _ in 0..12 {
+            workspace.create_page(None);
+        }
+        for scale in [1.0, 2.0] {
+            for height in [1.0, 9.0, 16.0, 40.0] {
+                let mut tree = PageSidebar::new();
+                tree.sync_from_workspace(&workspace);
+                place(&mut tree, Rect::new(0.0, 0.0, 240.0, height), scale);
+            }
         }
     }
 }

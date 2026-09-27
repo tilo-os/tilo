@@ -37,6 +37,10 @@ impl SearchProvider for NotesProvider {
     fn name(&self) -> &'static str {
         "Notes"
     }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-notes")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Note]
     }

@@ -157,6 +157,20 @@ mod positioned {
     }
 }
 
+/// The browser has no files; its storage is the page's.
+#[cfg(not(any(unix, windows)))]
+mod positioned {
+    use std::fs::File;
+
+    pub(super) fn read(_: &File, _: &mut [u8], _: u64) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    pub(super) fn write(_: &File, _: &[u8], _: u64) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

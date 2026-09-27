@@ -1832,7 +1832,7 @@ impl AudioPane {
             return card(
                 "System sounds",
                 rows(vec![caption(
-                    "This device cannot play system sounds. They need libcanberra or the PipeWire sound tools.",
+                    "This device cannot play system sounds. They need the PipeWire sound tools.",
                 )]),
             );
         }

@@ -22,7 +22,7 @@
 //! This mirrors the weather app's adaptive sidebar, generalised to a pair
 //! of opposing flaps.
 
-use std::time::Instant;
+use ui::clock::Instant;
 
 /// Below this allocated width (logical px) the left flap (rail + channel
 /// sidebar) switches from docked to overlay. Chosen so the rail + sidebar +

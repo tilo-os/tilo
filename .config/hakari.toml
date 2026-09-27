@@ -45,6 +45,9 @@ third-party = [
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
     # bundled sources and wayland-sys is dlopen-only, so both may stay.
     { name = "smithay-client-toolkit" },
+    # A git-pinned YouTube client only the Tube app uses; server images and
+    # the builder canary must not compile it.
+    { name = "rustypipe", git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
 ]
 
 [final-excludes]
@@ -76,6 +79,16 @@ workspace-members = [
     "tilo-vm",
     "tilo-vm-protocol",
     "xdg-paths",
-    # builder sccache canary
+    # builder sccache canary and its member dependency
+    "advisory-lock",
     "atomic-file",
+    # The [patch.crates-io] replacement for rustls-native-certs sits below
+    # third-party crates the hack itself depends on (rustls-platform-verifier),
+    # so depending on the hack would be a cycle.
+    "rustls-native-certs",
+    # browser wasm32 registry verifier and its member dependency: the hack's
+    # native features pull mio there
+    "registry-types",
+    "registry-web",
+    "registry-web-bindgen",
 ]

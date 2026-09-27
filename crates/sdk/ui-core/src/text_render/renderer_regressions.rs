@@ -191,6 +191,7 @@ fn expected_coords(font: &Font, weight: u16, optical: Option<f32>) -> Vec<i16> {
 fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected: u16) {
     let buffer = renderer.shape_buffer("Hamburgefon", None, style);
     let shaped: Vec<_> = buffer
+        .buffer
         .layout_runs()
         .flat_map(|run| run.glyphs.iter())
         .map(|glyph| (glyph.font_id, glyph.font_weight))
@@ -723,12 +724,15 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             vec![],
             vec![],
         );
+        // Horizontally outside but vertically overlapping the line, so the line
+        // is not culled whole (`rich_run_outside_clip`) and reaches the glyph
+        // batch cull, which looks up ink once per font instance.
         renderer.draw_rich_in_clip(
             &mut Scene::new(),
             &layout,
             Affine::IDENTITY,
             Color::WHITE,
-            Rect::new(0.0, 1000.0, 400.0, 1100.0),
+            Rect::new(1000.0, 0.0, 1100.0, 100.0),
         );
         assert_eq!(
             renderer.ink_bounds.len(),
@@ -891,12 +895,13 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
         let buffer = renderer.shape_buffer(text, None, &style);
         assert!(
             buffer
+                .buffer
                 .layout_runs()
                 .flat_map(|run| run.glyphs.iter())
                 .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0),
             "fixture must exercise GPOS mark offsets"
         );
-        let shaped = shaped_origins(&buffer);
+        let shaped = shaped_origins(&buffer.buffer);
         let scene = draw(&mut renderer, text, &style);
         assert_same_origins(&painted_origins(&scene), &shaped, "plain text");
 

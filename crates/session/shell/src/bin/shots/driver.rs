@@ -1119,7 +1119,7 @@ impl ShellDriver {
                 let mut tree = st.tree_mut();
                 self.host_mut()
                     .room_activity_mut()
-                    .revert_to(&mut tree, &id)
+                    .revert_to(&mut *tree, &id)
             };
             if changed {
                 self.with_chrome(|state| {
@@ -1870,7 +1870,7 @@ impl ShellDriver {
                     let last = entries.len().saturating_sub(1);
                     let pane = self.fb.host_mut().room_activity_mut();
                     pane.apply_name(
-                        &mut tree,
+                        &mut *tree,
                         &ui::GroupNameRequest {
                             record_id: None,
                             start: entries[0].id,
@@ -1879,7 +1879,7 @@ impl ShellDriver {
                         },
                     );
                     pane.apply_name(
-                        &mut tree,
+                        &mut *tree,
                         &ui::GroupNameRequest {
                             record_id: None,
                             start: entries[split].id,
@@ -1892,7 +1892,7 @@ impl ShellDriver {
             self.fb
                 .host_mut()
                 .room_activity_mut()
-                .prepare_away_recap_for_shots(&mut tree);
+                .prepare_away_recap_for_shots(&mut *tree);
             drop(tree);
             drop(state);
         }
@@ -1994,7 +1994,7 @@ impl ShellDriver {
             .fb
             .host_mut()
             .room_activity_mut()
-            .move_work_session_boundary_for_shots(&mut tree, 1, 0, true);
+            .move_work_session_boundary_for_shots(&mut *tree, 1, 0, true);
         drop(tree);
         drop(state);
         self.fb.host_mut().force_room_activity_settled();
@@ -2035,6 +2035,10 @@ impl ShellDriver {
         true
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn select_room_activity_entry(&mut self, index: usize) {
         let (start, len) = {
             let activity = self.fb.host().room_activity();
@@ -2058,7 +2062,7 @@ impl ShellDriver {
                 .fb
                 .host()
                 .room_activity()
-                .compare_selection(&mut tree, None)
+                .compare_selection(&mut *tree, None)
                 .is_some()
             {
                 break;
@@ -2096,7 +2100,7 @@ impl ShellDriver {
             if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
                 let pane = self.fb.host_mut().room_activity_mut();
                 pane.apply_name(
-                    &mut tree,
+                    &mut *tree,
                     &ui::GroupNameRequest {
                         record_id: None,
                         start: first.id,
@@ -2118,10 +2122,10 @@ impl ShellDriver {
         let handle = self.chrome_handle();
         let st = handle.borrow();
         let tree = st.tree();
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_scope(shell::shell::room_activity::RoomScope::AllWorkspaces, &tree);
+        self.fb.host_mut().room_activity_mut().set_scope(
+            shell::shell::room_activity::RoomScope::AllWorkspaces,
+            &*tree,
+        );
     }
 
     fn scene_ws_settings_permissions(&mut self) {
@@ -2551,7 +2555,17 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
 // Tests
 // =====================================================================
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
 

@@ -608,8 +608,11 @@ impl Workspace {
         if self.owner.as_deref() == Some(user.as_str()) {
             return Some(CapRole::Owner);
         }
+        // A person with a signing key is named by its lowercase hex, so a
+        // `Person` principal and the matching `User` key are the same member.
         let subject_is_user = |c: &CapOverride| match &c.subject {
             Subject::Principal(Principal::Person(p)) => p == user,
+            Subject::User(key) => hex::encode(key.as_bytes()) == *user,
             _ => false,
         };
         let live_at = Some(now);
