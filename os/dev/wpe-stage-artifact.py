@@ -20,7 +20,7 @@ import tempfile
 ARCHES = {'x86_64': ('amd64', 62), 'aarch64': ('arm64', 183)}
 PURPOSE = 'tilo-development-wpe-completed-stage'
 DIGEST = r'sha256:[0-9a-f]{64}'
-RECIPES = ('os/Containerfile', 'os/dev/build-wpe.sh')
+RECIPES = ('os/Containerfile.wpe', 'os/dev/build-wpe.sh')
 
 
 def require(condition, message):
@@ -322,8 +322,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--receipt', type=Path)
     parser.add_argument('--jobs', type=int, default=2)
-    for name in ('base', 'rpms', 'kernel', 'cache'):
-        parser.add_argument('--' + name)
+    parser.add_argument('--cache')
     for name in ('revision', 'run-id', 'attempt'):
         parser.add_argument('--' + name)
     args = parser.parse_args()

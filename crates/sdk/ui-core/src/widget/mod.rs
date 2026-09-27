@@ -740,6 +740,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget presents its document's History itself, so the
+    /// host must not add the shared standalone History control beside it —
+    /// one document gets one History surface.
+    fn provides_document_history(&self) -> bool {
+        self.children()
+            .into_iter()
+            .any(|child| child.provides_document_history())
+    }
+
     /// Framework lifecycle traversal, independent of visible presentation children.
     /// Borrowed surfaces and retained children cannot escape this callback.
     #[doc(hidden)]
