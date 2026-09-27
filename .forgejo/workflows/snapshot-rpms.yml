@@ -3,20 +3,13 @@ name: Snapshot / RPM repository
 # Builds, signs and tags the frozen RPM repo as
 # registry.tilo.so/tilo/rpms:set-<fingerprint>, where the fingerprint is the
 # content address of both architectures' package sets, BASE_REF, and the files
-# that shape the snapshot. Exits early when that tag already resolves. Called
-# on main pushes and as a reusable workflow from image builds; there is no
-# hand-kept pin file and no pin pull request.
+# that shape the snapshot. Exits early when that tag already resolves. Runs
+# standalone on relevant main pushes or explicit dispatch. Forgejo v13 does not
+# supply OIDC credentials to expanded reusable jobs, so signing must stay here.
+# There is no hand-kept pin file and no pin pull request.
 
 on:
   workflow_dispatch:
-  workflow_call:
-    outputs:
-      rpms_ref:
-        description: Digest-pinned frozen RPM repository reference
-        value: ${{ jobs.resolve.outputs.rpms_ref }}
-      fingerprint:
-        description: Package-set fingerprint for this checkout
-        value: ${{ jobs.fingerprint.outputs.fingerprint }}
   push:
     branches: [main]
     paths:
