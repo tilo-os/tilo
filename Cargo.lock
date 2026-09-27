@@ -5967,7 +5967,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tower-service",
  "tracing",
@@ -6692,14 +6692,15 @@ checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
 
 [[package]]
 name = "ipconfig"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b58db92f96b720de98181bbbe63c831e87005ab460c1bf306eb2622b4707997f"
+checksum = "4d40460c0ce33d6ce4b0630ad68ff63d6661961c48b6dba35e5a4d81cfb48222"
 dependencies = [
- "socket2 0.5.10",
+ "socket2",
  "widestring",
- "windows-sys 0.48.0",
- "winreg 0.50.0",
+ "windows-registry",
+ "windows-result 0.4.1",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7476,7 +7477,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-native-certs",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "url",
@@ -8145,7 +8146,7 @@ dependencies = [
  "log",
  "mio",
  "socket-pktinfo",
- "socket2 0.6.3",
+ "socket2",
 ]
 
 [[package]]
@@ -8455,7 +8456,7 @@ dependencies = [
  "named_pipe",
  "pem",
  "percent-encoding",
- "socket2 0.6.3",
+ "socket2",
  "twox-hash",
  "url",
 ]
@@ -8733,7 +8734,7 @@ dependencies = [
  "objc2-system-configuration",
  "pin-project-lite",
  "serde",
- "socket2 0.6.3",
+ "socket2",
  "time",
  "tokio",
  "tokio-util",
@@ -8802,7 +8803,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -8846,7 +8847,7 @@ checksum = "bde7a5d5102f1cff03d482240f0ed20551661f63663620f4b26112ed751165e9"
 dependencies = [
  "cfg_aliases 0.2.2",
  "libc",
- "socket2 0.6.3",
+ "socket2",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -10464,7 +10465,7 @@ dependencies = [
  "shared_library",
  "shell-words",
  "winapi",
- "winreg 0.10.1",
+ "winreg",
 ]
 
 [[package]]
@@ -10487,7 +10488,7 @@ dependencies = [
  "rand 0.10.1",
  "serde",
  "smallvec",
- "socket2 0.6.3",
+ "socket2",
  "time",
  "tokio",
  "tokio-util",
@@ -10997,7 +10998,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -11037,7 +11038,7 @@ dependencies = [
  "cfg_aliases 0.2.2",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -13443,18 +13444,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "612942246d0cc239cfd83af1dfd39be47f649208a3524e5e9da651910128e0ac"
 dependencies = [
  "libc",
- "socket2 0.6.3",
+ "socket2",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -13819,7 +13810,7 @@ dependencies = [
  "acto",
  "hickory-proto",
  "rand 0.10.1",
- "socket2 0.6.3",
+ "socket2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -15269,7 +15260,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "socket2 0.6.3",
+ "socket2",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-actions",
@@ -15883,7 +15874,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.6.3",
+ "socket2",
  "tokio-macros",
  "tracing",
  "windows-sys 0.61.2",
@@ -15920,7 +15911,7 @@ dependencies = [
  "postgres-protocol",
  "postgres-types",
  "rand 0.10.1",
- "socket2 0.6.3",
+ "socket2",
  "tokio",
  "tokio-util",
  "whoami",
@@ -18237,6 +18228,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link",
+ "windows-result 0.4.1",
+ "windows-strings",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18663,16 +18665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winreg"
-version = "0.50.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "524e57b2c537c0f9b1e69f1965311ec12182b4122e45035b1508cd24d2adadb1"
-dependencies = [
- "cfg-if",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "winx"
 version = "0.36.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18949,7 +18941,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "smol_str 0.3.6",
- "socket2 0.6.3",
+ "socket2",
  "spin 0.9.9",
  "spki 0.8.0",
  "stable_deref_trait",
