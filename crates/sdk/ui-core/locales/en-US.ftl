@@ -74,3 +74,10 @@ now-playing-output-local = On this computer
 now-playing-output-device = One of your devices
 now-playing-output-speaker-group = One of your speaker groups
 now-playing-route-gone = That destination is no longer available
+
+# The inline permission prompt a sandboxed app raises.
+permission-prompt-allow = Allow
+permission-prompt-session = This session
+permission-prompt-always = Always allow
+permission-prompt-deny = Deny
+permission-prompt-requested = { $capability } requested by { $app }

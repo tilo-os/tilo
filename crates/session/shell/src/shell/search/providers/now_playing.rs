@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::{
     NowPlayingSource, NowPlayingView, PlaybackStatus, PlayerCommand, PlayerSnapshot,
 };
@@ -68,14 +69,14 @@ impl Verb {
     }
 
     fn title(self, player: &PlayerSnapshot) -> String {
-        let verb = match self {
-            Self::PlayPause if player.status == PlaybackStatus::Playing => "Pause",
-            Self::PlayPause => "Play",
-            Self::Next => "Next track in",
-            Self::Previous => "Previous track in",
-            Self::Seek => "Seek in",
+        let key = match self {
+            Self::PlayPause if player.status == PlaybackStatus::Playing => "search-media-pause",
+            Self::PlayPause => "search-media-play",
+            Self::Next => "search-media-next",
+            Self::Previous => "search-media-previous",
+            Self::Seek => "search-media-seek",
         };
-        format!("{verb} {}", player.identity)
+        t_args(key, &[("player", player.identity.as_str().into())])
     }
 }
 
@@ -144,6 +145,10 @@ impl SearchProvider for NowPlayingProvider {
         "Now playing"
     }
 
+    fn display_name(&self) -> String {
+        t("search-provider-now-playing")
+    }
+
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
@@ -176,7 +181,7 @@ impl SearchProvider for NowPlayingProvider {
                     id: action_id,
                     title,
                     subtitle: Some(player.headline().to_string()),
-                    badge: Some("Media".into()),
+                    badge: Some(t("search-badge-media")),
                     score,
                     params: if verb == Verb::Seek {
                         vec![ActionParam::required(

@@ -678,12 +678,12 @@ host-fabric-controller-stopped = Weiterleitung von { $controller } beendet
 host-fabric-media-move-cancelled = Verschieben von { $title } auf { $device } abgebrochen
 host-fabric-media-retrying = { $title } auf { $device } wird erneut versucht
 host-fabric-output-routed = Audio wird jetzt an { $output } geleitet
-host-fabric-input-selected = Aufnahme von { $input }
+host-fabric-input-selected = Aufnahmequelle: { $input }
 host-fabric-tethering-allowed = { $device } darf die Verbindung dieses Telefons nutzen
 host-fabric-tethering-declined = Tethering für { $device } abgelehnt
 host-fabric-tethering-disconnected = Tethering mit { $device } getrennt
 host-fabric-asked-mirror = { $device } wurde gebeten, die Bildschirmspiegelung einmal zu erlauben
-host-fabric-asked-capture = { $device } wurde gebeten, einmal { $input } zu teilen
+host-fabric-asked-capture = Einmalige Freigabe bei { $device } angefragt: { $input }
 host-fabric-asked-audio = { $device } wurde gebeten, dieses Audio einmal zu erlauben; bis zur Genehmigung bleibt die Wiedergabe lokal
 host-fabric-asked-tethering = { $device } wurde gebeten, seine Verbindung zu teilen
 host-fabric-asked-controller = { $device } wurde gebeten, diesen Controller einmal für die fokussierte App zu erlauben
@@ -1427,3 +1427,991 @@ emoji-picker-tone-medium-light = mittelheller Hautton
 emoji-picker-tone-medium = mittlerer Hautton
 emoji-picker-tone-medium-dark = mitteldunkler Hautton
 emoji-picker-tone-dark = dunkler Hautton
+
+# Die Rolle eines Lautsprechers in einer Lautsprechergruppe, als $role eines Satzes („Wohnzimmer als rechter Lautsprecher beitreten“)
+speaker-role-left = linker Lautsprecher
+speaker-role-right = rechter Lautsprecher
+speaker-role-centre = Mittellautsprecher
+speaker-role-subwoofer = Subwoofer
+speaker-role-surround-left = linker Surround-Lautsprecher
+speaker-role-surround-right = rechter Surround-Lautsprecher
+speaker-role-room = Raumlautsprecher
+speaker-group-summary = { $total ->
+    [one] { $ready } von 1 Lautsprecher bereit
+   *[other] { $ready } von { $total } Lautsprechern bereit
+}
+speaker-group-summary-waiting = { $total ->
+    [one] { $ready } von 1 Lautsprecher bereit · Freigabe ausstehend: { $waiting }
+   *[other] { $ready } von { $total } Lautsprechern bereit · Freigabe ausstehend: { $waiting }
+}
+
+# Eine entfernte Eingabe, als $input eines Satzes
+remote-input-camera = Kamera
+remote-input-microphone = Mikrofon
+remote-input-scanner = Scanner
+
+# Warum die Bildschirmspiegelung endete, als $reason eines Satzes
+mirror-failure-denied = auf dem Zielgerät abgelehnt
+mirror-failure-peer-offline = das zertifizierte Gerät ist offline gegangen
+mirror-failure-timed-out = Zeitüberschreitung der Sitzung
+mirror-failure-transport = die private Videoverbindung ist fehlgeschlagen
+mirror-failure-policy = die Bildschirmübergabe wurde deaktiviert
+
+# Warum das Verschieben von Medien auf ein anderes Gerät fehlschlug, als $reason eines Satzes
+media-handoff-failure-destination-unavailable = Ziel nicht verfügbar
+media-handoff-failure-unsupported-output = das Ziel kann dieses Medium nicht abspielen
+media-handoff-failure-invalid-workspace = der Arbeitsbereich ist dort nicht verfügbar
+media-handoff-failure-open-failed = das Ziel konnte es nicht öffnen
+media-handoff-failure-timed-out = das Ziel hat nicht geantwortet
+media-handoff-failure-cancelled = abgebrochen
+
+# Warum das Verschieben eines Bluetooth-Zubehörs fehlschlug, als $reason eines Satzes
+bluetooth-handoff-failure-inspect-target = Prüfung des Zielgeräts fehlgeschlagen
+bluetooth-handoff-failure-target-unavailable = Zielgerät nicht verfügbar oder abgelehnt
+bluetooth-handoff-failure-disconnect-source = die Quelle konnte das Zubehör nicht freigeben
+bluetooth-handoff-failure-pair-target = Kopplung mit dem Zielgerät fehlgeschlagen
+bluetooth-handoff-failure-connect-target = Verbindung zum Zielgerät fehlgeschlagen
+bluetooth-handoff-failure-send = die zertifizierte Verbindung wurde unterbrochen
+bluetooth-handoff-failure-timed-out = Zeitüberschreitung des Vorgangs
+bluetooth-handoff-failure-rollback = Zurücksetzen der Quelle fehlgeschlagen
+
+# Arten von Suchergebnissen, wie Filterchips und Gruppenüberschriften sie nennen
+search-kind-actions = Aktionen
+search-kind-applications = Anwendungen
+search-kind-host-apps = Host-Apps
+search-kind-notes = Notizen
+search-kind-records = Einträge
+search-kind-files = Dateien
+search-kind-folders = Ordner
+search-kind-creators = Kanäle
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Fenstergruppen
+
+# Suchbereiche
+search-scope-this-app = Diese App
+search-scope-workspace = Arbeitsbereich
+search-scope-everywhere = Überall
+
+# Wo eine gestartete App geöffnet wird
+search-opens-beside = Öffnet sich ganz rechts
+search-opens-here = Öffnet sich hier als Tab
+
+# Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
+search-provider-now-playing = Aktuelle Wiedergabe
+search-provider-records = Einträge
+search-provider-notes = Notizen
+search-provider-editor = Editor
+search-provider-session = Sitzung
+search-provider-shortcuts = Kurzbefehle
+search-provider-tray = Statusbereich
+search-provider-desktop-windows = Fenster auf dem Desktop
+search-provider-files = Dateien
+search-provider-host-apps = Host-Apps
+search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
+
+# Kennzeichen von Suchergebnissen
+search-badge-media = Medien
+search-badge-session = Sitzung
+search-badge-quick-action = Schnellaktion
+search-badge-shortcut = Kurzbefehl
+search-badge-tray = Statusbereich
+search-badge-tab = Tab
+search-badge-window-group = Fenstergruppe
+
+# Suche: Wiedergabesteuerung eines laufenden Players
+search-media-pause = { $player } pausieren
+search-media-play = { $player } abspielen
+search-media-next = Nächster Titel in { $player }
+search-media-previous = Vorheriger Titel in { $player }
+search-media-seek = In { $player } springen
+
+# Suche: Einträge
+search-record-file-missing = Die Datei, auf die dieser Eintrag verweist, ist nicht mehr vorhanden.
+search-record-in-this-workspace = In diesem Arbeitsbereich
+search-record-in-workspace = In { $workspace }
+search-record-in-another-workspace = In einem anderen Arbeitsbereich
+
+# Suche: Dateien
+search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
+
+# Suche: Host-Apps
+search-host-app-open = { $app } öffnen
+search-host-app-subtitle = { $source } · nicht isolierte Host-App · { $id }
+
+# Suche: Aufträge und Ressourcen von App-Aktionen
+search-app-job = Aktionsauftrag { $id }
+search-app-job-cancel = Aktionsauftrag { $id } abbrechen
+search-app-job-cancel-detail = Bittet die App, den Auftrag abzubrechen
+search-app-job-accepted = angenommen
+search-app-job-running = läuft
+search-app-job-streaming = liefert Ergebnisse
+search-app-job-succeeded = abgeschlossen
+search-app-job-failed = fehlgeschlagen
+search-app-job-cancelled = abgebrochen
+search-app-resource-contains = { $app } · enthält Ressourcen
+search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+
+# Suche: Sitzungsaktionen
+search-session-logout = Von Tilo abmelden
+search-session-logout-detail = Diese Desktop-Sitzung sauber beenden und zur Anmeldung zurückkehren
+search-session-unsaved-work = Eine App hat ungesicherte Arbeit
+search-session-inhibited = { $reason } – schließe die App oder beende zuerst ihre Arbeit.
+
+# Suche: Kurzbefehle
+search-shortcut-run-on = Auf { $resource } anwenden
+
+# Suche: Elemente im Statusbereich
+search-tray-open = { $item } öffnen
+search-tray-in-top-bar = { $item } in der oberen Leiste
+search-tray-entry = { $item }: { $entry }
+search-tray-entry-on = { $item }: { $entry } (an)
+search-tray-entry-off = { $item }: { $entry } (aus)
+
+# Suche: Fenster auf dem Desktop
+search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
+search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-group-untitled = Fenstergruppe { $group }
+search-window-close-group = Fenstergruppe „{ $group }“ schließen
+search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
+    [one] 1 Tab
+   *[other] { $count } Tabs
+}
+search-window-close-tab = Tab „{ $tab }“ schließen
+search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+
+# Suche: Shell-Aktionen als Palettenzeilen
+search-action-shortcut-help-toggle = Desktop-Hilfe anzeigen
+search-action-shortcut-help-toggle-subtitle = F1 öffnet sie überall; Super+/ ist das anpassbare Tastenkürzel für dieselbe Anleitung
+search-action-desktop-tour-open = Desktop-Tour starten
+search-action-desktop-tour-open-subtitle = Die dreiminütige Einführung in Navigation, Organisation und Zusammenarbeit noch einmal ansehen
+search-action-overview-toggle = Arbeitsbereichsübersicht ein- oder ausblenden
+search-action-overview-toggle-subtitle = Alle Arbeitsbereiche in der Radansicht zeigen
+search-action-settings-open = Arbeitsbereichseinstellungen öffnen
+search-action-settings-open-subtitle = Identität, Personen, Datenschutz, Apps und Dateien dieses Arbeitsbereichs
+search-action-settings-members-open = Personen im Arbeitsbereich öffnen
+search-action-settings-members-open-subtitle = Personen, Rollen und Einladungen in diesem Arbeitsbereich
+search-action-settings-privacy-open = Datenschutz und Sicherheit des Arbeitsbereichs öffnen
+search-action-settings-privacy-open-subtitle = App-Freigaben und durchgesetzte Zugriffe in diesem Arbeitsbereich
+search-action-settings-apps-open = Apps und Dateien des Arbeitsbereichs öffnen
+search-action-settings-apps-open-subtitle = Gemeinsame App-Standards und deine Anpassungen für diesen Arbeitsbereich
+search-action-identity-devices-copy = Liste verbundener Geräte kopieren
+search-action-identity-devices-copy-subtitle = Gerätenamen, Fingerabdrücke, Fähigkeiten und Widerrufsstatus kopieren
+search-action-identity-device-enroll = Weiteres Gerät hinzufügen
+search-action-identity-device-enroll-subtitle = Einen Einrichtungscode für ein Gerät kopieren, der fünf Minuten gültig ist
+search-action-identity-home-peer-enroll = Heimserver koppeln
+search-action-identity-home-peer-enroll-subtitle = Einen fünf Minuten gültigen Einrichtungscode mit ständigem Vollsynchronisations-Zugriff kopieren
+search-action-quick-settings-open = Schnelleinstellungen öffnen
+search-action-quick-settings-open-subtitle = Helligkeit, Lautstärke, WLAN, Bluetooth, Energieprofil
+search-action-quick-settings-clipboard = Zwischenablage-Verlauf öffnen
+search-action-quick-settings-clipboard-subtitle = Private Einträge der Zwischenablage durchsuchen, anheften, entfernen oder wiederverwenden
+search-action-quick-settings-devices = Geräte und Medien öffnen
+search-action-quick-settings-devices-subtitle = Zertifizierte Geräte, Medienwege, entfernte Eingabe und Übergaben
+search-action-projection-open = Wählen, wo der Desktop erscheint
+search-action-projection-open-subtitle = Erweitern, spiegeln, ein Bildschirm oder ein Miracast-, Google-Cast-, AirPlay- oder FCast-Empfänger
+search-action-display-layout-extend = Bildschirme erweitern
+search-action-display-layout-extend-subtitle = Alle verbundenen Bildschirme als einen größeren Desktop nutzen
+search-action-display-layout-mirror = Bildschirme spiegeln
+search-action-display-layout-mirror-subtitle = Auf allen verbundenen Bildschirmen dasselbe Bild zeigen
+search-action-display-layout-builtin-only = Nur auf diesem Bildschirm anzeigen
+search-action-display-layout-builtin-only-subtitle = Externe Bildschirme ausschalten und den eingebauten Bildschirm behalten
+search-action-display-layout-external-only = Nur auf externen Bildschirmen anzeigen
+search-action-display-layout-external-only-subtitle = Den eingebauten Bildschirm ausschalten und die externen Bildschirme nutzen
+search-action-display-change-keep = Bildschirmeinstellungen behalten
+search-action-display-change-keep-subtitle = Die gerade angewendete Bildschirmanordnung bestätigen
+search-action-display-change-revert = Bildschirmeinstellungen zurücksetzen
+search-action-display-change-revert-subtitle = Die Bildschirmanordnung von vor der letzten Änderung wiederherstellen
+search-action-capture-open = Bildschirmbereich aufnehmen oder schweben lassen
+search-action-capture-open-subtitle = Bildschirmfoto, Aufnahme oder Bild-im-Bild aus einem oder mehreren Bereichen
+search-action-collaborators-open = Mitwirkende anzeigen
+search-action-collaborators-open-subtitle = Mitwirkende, die gerade in diesem Arbeitsbereich sind
+search-action-presence-follow-stop = Nicht mehr folgen
+search-action-presence-follow-stop-subtitle = Diese Ansicht wieder lokal navigieren
+search-action-room-activity-open = Aktivität im Arbeitsbereich anzeigen
+search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änderungen, Berechtigungen, wer was wann getan hat
+search-action-peer-invite = Mitwirkende einladen …
+search-action-peer-invite-subtitle = Eine Einladung prüfen, bevor sie erstellt wird
+search-action-peer-connect = Dialog zum Beitreten öffnen
+search-action-peer-connect-subtitle = Eine Einladung von Mitwirkenden eingeben und prüfen
+search-action-tab-new-terminal-here = Neuer Terminal-Tab hier
+search-action-tab-new-terminal-here-subtitle = Ein Terminal als Tab in der fokussierten Fenstergruppe öffnen
+search-action-window-new-terminal = Neues Terminalfenster
+search-action-window-new-terminal-subtitle = Ein Terminal neben dem fokussierten Fenster öffnen
+search-action-tab-duplicate = Diesen Tab duplizieren
+search-action-tab-duplicate-subtitle = Eine zweite Instanz der fokussierten App daneben öffnen
+search-action-tab-close = Diesen Tab schließen
+search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
+search-action-tab-reopen = Geschlossenen Tab wieder öffnen
+search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
+search-action-tab-split-right = Diesen Tab nach rechts teilen
+search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
+search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
+search-action-tab-move-to-new-group-subtitle = Den fokussierten Tab in eine neue Fenstergruppe am Ende seiner Leiste verschieben
+search-action-notifications-dnd-toggle = „Bitte nicht stören“ umschalten
+search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner stummschalten; zurückgehaltene Benachrichtigungen landen im Verlauf
+search-action-identity-connect = Vorhandene Identität hinzufügen
+search-action-identity-connect-subtitle = Identitätszugangsdaten importieren und in diesem Arbeitsbereich verwenden
+search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
+search-action-identity-select-subtitle = Eine der Identitäten wählen, die bereits mit diesem Gerät verbunden sind
+search-action-identity-device-revoke = Gerät einer Identität widerrufen
+search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
+search-action-capture-screenshot-send = Letztes Bildschirmfoto senden
+search-action-capture-screenshot-send-subtitle = An eines deiner Geräte oder in die Dateien dieses Arbeitsbereichs
+search-action-presence-follow = Mitwirkenden folgen
+search-action-presence-follow-subtitle = Diese Ansicht an eine verbundene Person oder einen sichtbaren Agenten koppeln
+search-action-presence-status-set = Status im Arbeitsbereich festlegen
+search-action-presence-status-set-subtitle = Einen ausdrücklichen Status veröffentlichen oder ihn mit einem leeren Wert löschen
+search-action-presence-status-sharing-set = Status-Privatsphäre festlegen
+search-action-presence-status-sharing-set-subtitle = Wählen, ob der Status aus, nur ausdrücklich oder automatisch abgeleitet ist
+search-action-peer-invite-named = Mitwirkende benennen und Einladung öffnen
+search-action-peer-invite-named-subtitle = Den Anzeigenamen festhalten und dann die Einladung prüfen, bevor sie erstellt wird
+search-action-agent-invite = Agenten in den Arbeitsbereich einladen
+search-action-agent-invite-subtitle = Eine eingegrenzte Agenten-Einrichtung starten; jeden Bereich wählen, den er nutzen darf
+search-action-text-insert = Text in die fokussierte Notiz einfügen
+search-action-text-insert-subtitle = An einer Zeichenposition in den fokussierten Notizen- oder Editor-Tab schreiben
+search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
+search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
+search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen
+search-action-quick-settings-brightness-set-subtitle = Die Helligkeit eines Monitors in Prozent festlegen: die Hintergrundbeleuchtung des Panels oder ein externer Monitor über DDC/CI
+search-action-quick-settings-volume-set = Ausgabelautstärke festlegen
+search-action-quick-settings-volume-set-subtitle = Die Standard-Audioausgabe dieses Geräts in Prozent festlegen
+search-action-quick-settings-wifi-set-enabled = WLAN ein- oder ausschalten
+search-action-quick-settings-wifi-set-enabled-subtitle = Das WLAN-Funkmodul dieses Geräts ein- oder ausschalten
+search-action-quick-settings-power-profile-set = Energieprofil festlegen
+search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung für dieses Gerät wählen
+search-action-quick-settings-vpn-set-enabled = VPN ein- oder ausschalten
+search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbindung auf diesem Gerät ein- oder ausschalten
+
+# Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
+search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
+search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
+search-action-provider-enable = Suche in { $source } aktivieren
+search-action-provider-enable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung anzeigen
+search-action-provider-disable = Suche in { $source } deaktivieren
+search-action-provider-disable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung ausblenden
+search-action-provider-badge-on = AN
+search-action-provider-badge-off = AUS
+search-action-governance-subtitle = Signierte Verwaltungsaktion für den aktiven Arbeitsbereich
+search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrollen mit minimalen Rechten verwalten
+
+# Suche: was eine Shell-Aktion getan hat
+search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
+search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
+search-action-device-list-copied = Geräteliste kopiert
+search-action-device-list-copied-body = { $count ->
+    [one] 1 Gerät
+   *[other] { $count } Geräte
+}
+search-action-enrollment-copied = Einrichtungscode kopiert
+search-action-enrollment-copied-body = Er läuft in fünf Minuten ab und kann keine weiteren Geräte zulassen.
+search-action-home-server-copied = Einrichtungscode für den Heimserver kopiert
+search-action-home-server-copied-body = Er läuft in fünf Minuten ab und gewährt die vollständige Replikation des Arbeitsbereichs.
+search-action-device-revoked = Gerät widerrufen
+search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
+
+# Suche: Anwendungen
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-detail-grouped = { $group } · { $detail }
+search-apps-open = { $app } öffnen
+search-apps-open-subtitle = { $target } · { $detail }
+search-apps-shortcut-subtitle = { $target } · Verknüpfung
+search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
+search-apps-verification-pending = Prüfung durch die Registry ausstehend
+search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-view-in-store = { $app } im App Store ansehen
+search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
+search-apps-opening = { $app } wird geöffnet
+search-apps-opening-body = Wird geladen …
+
+# Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
+search-continuity-certified-device = Zertifiziertes Gerät
+search-continuity-play-on = { $source } auf { $target } abspielen
+search-continuity-media-handoff-subtitle = Diese laufende Mediensitzung auf ein bestimmtes zertifiziertes Gerät verschieben
+search-continuity-media-cancel = Verschieben von „{ $media }“ abbrechen
+search-continuity-media-retry = Verschieben von „{ $media }“ erneut versuchen
+search-continuity-media-status-subtitle = Medienübergabe an { $device }
+search-continuity-bluetooth-allow = Übergabe von { $accessory } von { $device } erlauben
+search-continuity-bluetooth-decline = Übergabe von { $accessory } von { $device } ablehnen
+search-continuity-bluetooth-consent-subtitle = Diese Anfrage zur Übergabe einer Bluetooth-Kopplung beantworten
+search-continuity-bluetooth-retry = Übergabe von { $accessory } erneut versuchen
+search-continuity-bluetooth-cancel = Übergabe von { $accessory } abbrechen
+search-continuity-bluetooth-status-subtitle = Bluetooth-Kontinuität mit { $device }
+search-continuity-route-audio = Audio an { $output } ausgeben
+search-continuity-route-audio-subtitle = Einen der aktuell erkannten lokalen Audioausgänge wählen
+search-continuity-input-raise = Eingangspegel von { $input } erhöhen
+search-continuity-input-lower = Eingangspegel von { $input } senken
+search-continuity-input-level-subtitle = Den Pegel des aktuellen Mikrofons um eine Stufe ändern
+search-continuity-input-select = { $input } als Mikrofon verwenden
+search-continuity-input-select-subtitle = Ab jetzt über diesen lokalen Eingang aufnehmen
+search-continuity-audio-forward-subtitle = Eine freigegebene Live-Audioverbindung zu diesem zertifizierten Gerät anfragen
+search-continuity-audio-allow = Live-Audio von { $device } erlauben
+search-continuity-audio-decline = Live-Audio von { $device } ablehnen
+search-continuity-audio-consent-subtitle = Diese Anfrage zur Freigabe von entferntem Audio beantworten
+search-continuity-audio-stop = Weiterleitung von { $source } beenden
+search-continuity-audio-stop-subtitle = Diese Live-Audioverbindung schließen und zurücksetzen
+search-continuity-speaker-join = { $group } als { $role } beitreten
+search-continuity-speaker-decline = Beitritt zu { $group } als { $role } ablehnen
+search-continuity-speaker-consent-subtitle = { $device } hat dieses Gerät gebeten, in einer Lautsprechergruppe zu spielen
+search-continuity-speaker-leave = { $group } verlassen
+search-continuity-speaker-leave-subtitle = Nicht mehr als { $role } in dieser Lautsprechergruppe spielen
+search-continuity-speaker-play-subtitle = Über jeden bereiten Lautsprecher dieser Gruppe abspielen
+search-continuity-speaker-media-subtitle = Hier weiterspielen und den Ton an diese Lautsprechergruppe senden
+search-continuity-speaker-stop = Wiedergabe auf { $group } beenden
+search-continuity-speaker-stop-subtitle = Die Wiedergabe dieser Lautsprechergruppe auf allen Lautsprechern beenden
+search-continuity-place-left = { $device } links anordnen
+search-continuity-place-right = { $device } rechts anordnen
+search-continuity-place-above = { $device } oberhalb anordnen
+search-continuity-place-below = { $device } unterhalb anordnen
+search-continuity-place-subtitle = Einen bestimmten zertifizierten Bildschirm um dieses Gerät herum anordnen
+search-continuity-control-revoke = { $device } die Steuerung entziehen
+search-continuity-control-grant = { $device } die Steuerung erlauben
+search-continuity-control-subtitle = Die kurzlebige geräteübergreifende Eingabefreigabe ändern
+search-continuity-calibration-apply = Platzierungsvorschlag für { $device } übernehmen
+search-continuity-calibration-dismiss = Platzierungsvorschlag für { $device } verwerfen
+search-continuity-calibration-subtitle = Auf den aktuellen, aus der Nähe abgeleiteten Platzierungsvorschlag reagieren
+search-continuity-calibration-revert = Platzierung für { $device } zurücksetzen
+search-continuity-calibration-revert-subtitle = Die vorherige Platzierung des zertifizierten Bildschirms wiederherstellen
+search-continuity-mirror-allow = Bildschirmspiegelung von { $device } erlauben
+search-continuity-mirror-decline = Bildschirmspiegelung von { $device } ablehnen
+search-continuity-mirror-consent-subtitle = Diese Anfrage zur reinen Bildschirmanzeige beantworten
+search-continuity-mirror-stop = Bildschirmspiegelung mit { $device } beenden
+search-continuity-mirror-stop-subtitle = Diese reine Anzeigesitzung schließen
+search-continuity-mirror-request = Diesen Bildschirm auf { $device } spiegeln
+search-continuity-mirror-request-subtitle = Eine freigegebene, reine Anzeigeübertragung an diesen zertifizierten Bildschirm anfragen
+search-continuity-tether-request = { $device } um Tethering bitten
+search-continuity-tether-request-subtitle = Eine kurzlebige, auf dem Telefon bestätigte Verbindung anfragen
+search-continuity-tether-allow = Tethering für { $device } erlauben
+search-continuity-tether-decline = Tethering für { $device } ablehnen
+search-continuity-tether-consent-subtitle = Diese Freigabeanfrage auf dem Telefon beantworten
+search-continuity-tether-disconnect = Tethering mit { $device } trennen
+search-continuity-tether-disconnect-subtitle = Diese Tethering-Anfrage und ihre Netzwerkverbindung widerrufen
+search-continuity-capture-camera = Kamera von { $device } verwenden
+search-continuity-capture-microphone = Mikrofon von { $device } verwenden
+search-continuity-capture-scanner = Scanner von { $device } verwenden
+search-continuity-capture-request-subtitle = Eine entfernte Eingabe für eine Sitzung der fokussierten App anfragen
+search-continuity-capture-allow = Entfernte Eingabe für { $app } erlauben
+search-continuity-capture-decline = Entfernte Eingabe für { $app } ablehnen
+search-continuity-capture-consent-subtitle = Diese Aufnahmeanfrage auf dem Quellgerät beantworten
+search-continuity-capture-approve-app = Fokussierte App für { $device } erlauben
+search-continuity-capture-stop = Entfernte Eingabe von { $device } beenden
+search-continuity-capture-session-subtitle = Auf diese entfernte Aufnahmesitzung reagieren
+search-continuity-controller-stop = Weiterleitung von { $controller } beenden
+search-continuity-controller-stop-subtitle = Diese Controller-Sitzung zurücksetzen und schließen
+search-continuity-controller-start = { $controller } auf { $device } verwenden
+search-continuity-controller-start-subtitle = Normalisierte Eingaben an die aktuell fokussierte App weiterleiten
+search-continuity-controller-allow = { $controller } von { $device } erlauben
+search-continuity-controller-decline = { $controller } von { $device } ablehnen
+search-continuity-controller-consent-subtitle = Controller-Zugriff für die lokal bestätigte fokussierte App
+search-continuity-call-move = Anruf in { $room } auf { $device } verschieben
+search-continuity-call-move-subtitle = Übergabe an ein bestimmtes zertifiziertes Gerät vorschlagen
+search-continuity-call-allow = Übergabe für { $room } erlauben
+search-continuity-call-decline = Übergabe für { $room } ablehnen
+search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe beantworten
+
+# Identitätseinrichtung bei der ersten Anmeldung: was die Identität ist
+onboarding-intro-title = Deine lokale Tilo-Identität erstellen
+onboarding-intro-body = Tilo erstellt eine kryptografische Identität, die dir gehört, und zertifiziert dann einen eigenen Schlüssel für dieses Gerät. Tilo nutzt diese Kette für die Zusammenarbeit und für Einladungen an andere Geräte. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
+onboarding-intro-point-collaboration = Sie gibt dir eine beständige Identität für die Zusammenarbeit und zertifiziert dieses Gerät gegenüber anderen.
+onboarding-intro-point-local = Sie wird hier auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
+onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort – es gibt nichts, bei dem du dich anmelden müsstest.
+onboarding-intro-card-title = Wofür sie da ist
+onboarding-host-intro-title = Deine Tilo-Identität einrichten
+onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale kryptografische Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
+
+# Identitätseinrichtung: kein Wiederherstellungsdienst
+onboarding-no-recovery-title = Verlierst du dieses Gerät ohne Sicherung, ist diese Identität verloren
+onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Kein Sicherungscode und keine Wiederherstellungsphrase können diese Identität neu erstellen.
+onboarding-no-recovery-point-backup = Die als Nächstes angebotene verschlüsselte Sicherung ist der einzige Weg zur Wiederherstellung. Bewahre Datei und Passphrase getrennt auf. Ohne sie braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
+onboarding-acknowledgement = Mir ist klar, dass ich diese Identität verliere, wenn ich dieses Gerät ohne Sicherung verliere.
+onboarding-protect-title = Deine Tilo-Identität schützen
+onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Erstelle nach diesem Schritt eine verschlüsselte, übertragbare Sicherung.
+onboarding-create-failed = Deine Identität wurde nicht erstellt
+onboarding-create-failed-title = Deine Identität konnte nicht erstellt werden
+onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop ist weiterhin geschützt. Geh zurück und versuche es erneut, nachdem du Speicherplatz und Berechtigungen geprüft hast.
+
+# Identitätseinrichtung: Fortschrittsanzeige
+onboarding-progress-eyebrow = Einrichtung der Tilo-Identität
+onboarding-progress-stage = Schritt { $step } von { $total }  ·  { $stage }
+onboarding-progress-a11y = Identitätseinrichtung, Schritt { $step } von { $total }: { $stage }
+onboarding-stage-choose = Auswählen
+onboarding-stage-restore = Wiederherstellen
+onboarding-stage-protect = Schützen
+onboarding-stage-media = Medien
+onboarding-stage-ready = Fertig
+onboarding-stage-backup = Sicherung
+
+# Identitätseinrichtung: Fortsetzen nach einem Neustart
+onboarding-progress-attention = Der Einrichtungsfortschritt braucht deine Aufmerksamkeit
+onboarding-progress-unreadable = Die gespeicherte Einrichtungsposition konnte nicht gelesen werden ({ $error }). Deine Identität ist sicher; die Einrichtung wurde beim Abschlussschritt fortgesetzt.
+onboarding-progress-invalid-identity = Die Einrichtung hat unvollständigen Fortschritt gefunden, konnte die vorhandene Identität aber nicht prüfen: { $error }
+onboarding-progress-save-failed = Die Einrichtung konnte ihre Neustartposition nicht speichern: { $error }. Es wurde keine Identitätsaktion wiederholt.
+onboarding-progress-clear-failed = Die Einrichtung ist abgeschlossen, aber ihre Neustartmarkierung konnte nicht entfernt werden: { $error }. Wähle erneut „Fertigstellen“, damit dieser Bildschirm bei der nächsten Anmeldung nicht wieder erscheint.
+
+# Identitätseinrichtung: gemeinsame Schaltflächen
+onboarding-back = Zurück
+onboarding-cancel = Abbrechen
+onboarding-continue = Weiter
+onboarding-done = Fertig
+onboarding-use-existing = Vorhandene verwenden
+onboarding-create-identity = Identität erstellen
+onboarding-create-local-identity = Lokale Identität erstellen
+onboarding-restore-backup = Ausgewählte Sicherung wiederherstellen
+
+# Identitätseinrichtung: vorhandene Identität verbinden
+onboarding-connect-title = Eine vorhandene Identität verbinden
+onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
+onboarding-connect-recovery-message = Tilo konnte die Kette deiner vorhandenen Identität nicht prüfen. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Tilo ersetzt diese Identität nicht automatisch.
+onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
+onboarding-connect-nearby = Mit einem Gerät in der Nähe verbinden
+onboarding-connect-nearby-instructions = Öffne auf dem anderen Gerät Einstellungen → Geräte & Synchronisierung → Persönliches Gerät hinzufügen und vergleiche dann den sechsstelligen Code auf beiden Bildschirmen.
+onboarding-connect-retry-keyring = Schlüsselbund erneut versuchen
+onboarding-connect-browse = Durchsuchen …
+onboarding-connect-file = Sicherungsdatei der Identität
+onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
+onboarding-connect-passphrase = Passphrase der Sicherung
+onboarding-connect-passphrase-placeholder = Passphrase (bei älterer JSON leer lassen)
+onboarding-connect-nearby-card = Vertrauenswürdiges Gerät in der Nähe
+onboarding-connect-backup-card = Verschlüsselte Sicherung
+onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
+onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
+onboarding-picker-import-title = Eine Tilo-Identität auswählen
+onboarding-picker-import-filter = Tilo-Identität
+
+# Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
+onboarding-nearby-searching = Suche nach einem vertrauenswürdigen Gerät in der Nähe …
+onboarding-nearby-start-failed = Die Einrichtung über ein Gerät in der Nähe konnte nicht gestartet werden: { $error }
+onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
+onboarding-nearby-cancelled = Einrichtung über ein Gerät in der Nähe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+onboarding-nearby-code = Code { $code } · wartet auf Freigabe auf deinem vertrauenswürdigen Gerät
+onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
+onboarding-nearby-invalid-identity = Das vertrauenswürdige Gerät hat eine ungültige Identität geliefert. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+onboarding-nearby-failed = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+onboarding-nearby-failed-detail = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: { $detail }. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+
+# Identitätseinrichtung: verschlüsselte Sicherung
+onboarding-backup-title = Deine Tilo-Identität sichern
+onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
+onboarding-backup-explanation = Speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
+onboarding-backup-passphrase = Neue Passphrase für die Sicherung
+onboarding-backup-passphrase-placeholder = Lange, einzigartige Passphrase – mindestens 12 Zeichen
+onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
+onboarding-backup-confirmation-placeholder = Passphrase bestätigen
+onboarding-backup-save = Speicherort wählen und Sicherung speichern …
+onboarding-backup-save-another = Weitere Kopie speichern
+onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne verschlüsselte Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
+onboarding-backup-continue-without = Ohne Sicherung fortfahren
+onboarding-backup-failed = Die Sicherung wurde nicht gespeichert
+onboarding-backup-verified = Verschlüsselte Sicherung geprüft
+onboarding-backup-verified-earlier = Die geprüfte Sicherung wurde vor dem Neustart der Einrichtung gespeichert.
+onboarding-passphrase-too-short = Verwende mindestens 12 Zeichen. Mach sie lang und einzigartig; Länge allein macht eine gängige Passphrase nicht sicher.
+onboarding-passphrase-mismatch = Die beiden Passphrasen stimmen nicht überein.
+onboarding-passphrase-unavailable = Die Passphrasefelder sind vorübergehend nicht verfügbar.
+onboarding-picker-backup-title = Verschlüsselte Identitätssicherung speichern
+onboarding-picker-backup-filter = Verschlüsselte Tilo-Identität
+
+# Identitätseinrichtung: Beispielzustände für die Vorschau
+onboarding-snapshot-restore-error = Diese Sicherung konnte nicht geöffnet werden. Prüfe Datei und Passphrase und versuche es dann erneut.
+onboarding-snapshot-create-error = Die Identität konnte nicht gespeichert werden. Es wurde nichts erstellt; prüfe den verfügbaren Speicherplatz und versuche es erneut.
+
+# Identitätseinrichtung: Identität bereit
+onboarding-done-title = Deine Identität ist bereit
+onboarding-done-body = Dieser Fingerabdruck kennzeichnet deinen lokalen kryptografischen Stamm. Tilo kann ihn in Abläufen der Zusammenarbeit anzeigen, die eine Überprüfung unterstützen; du musst ihn nicht eintippen.
+onboarding-done-ready = Identität auf diesem Gerät gespeichert
+onboarding-host-done-title = Deine Tilo-Identität ist bereit
+onboarding-host-done-body = Tilo verwendet diese lokale Identität, wenn du zusammenarbeitest oder andere Geräte einlädst. Sie bleibt von deiner Linux-Anmeldung getrennt und ist kein Online-Konto.
+onboarding-host-done-ready = Bereit für die Zusammenarbeit mit Tilo
+onboarding-done-next-title = Wie es weitergeht
+onboarding-done-next-body = Der Desktop ist bereit. Teilen bleibt ausgeschaltet, bis du es bewusst in den Einstellungen aktivierst.
+onboarding-done-backup-verified = Sicherung geprüft
+onboarding-done-backup-verified-body = Bewahre die verschlüsselte Sicherungsdatei und ihre Passphrase an getrennten Orten auf.
+onboarding-done-backup-recommended = Sicherung weiterhin empfohlen
+onboarding-done-backup-recommended-body = Erstelle in den Einstellungen eine verschlüsselte, übertragbare Sicherung, bevor du dich auf diese Identität verlässt.
+onboarding-done-system-care-title = Systempflege
+onboarding-done-system-care-body = Tilo sucht nach der Einrichtung automatisch nach signierten Systemupdates, sobald der Rechner online ist. In den Einstellungen kannst du Versionen prüfen, vormerken und zurücksetzen.
+onboarding-tour-take = Kurze Tour starten
+onboarding-finish = Weiter zum Desktop
+
+# Einrichtung: Mediencodecs
+onboarding-codecs-title = Mediencodecs installieren?
+onboarding-codecs-body = H.264 und HEVC, die Formate der meisten Videos, Kameras und Anrufe, sind patentiert und nicht Teil von Tilo. Du kannst sie jetzt mit einem Klick hinzufügen.
+onboarding-codecs-enables-title = Was sie ermöglichen
+onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und Intel-Grafik.
+onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
+onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
+onboarding-codecs-source-title = Woher sie kommen
+onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen.
+onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
+onboarding-codecs-progress = Fortschritt: { $percent } %
+onboarding-codecs-starting = Wird gestartet …
+onboarding-codecs-installing-title = Mediencodecs werden installiert
+onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
+onboarding-codecs-offline-title = Die Mediencodecs werden installiert, sobald du online bist
+onboarding-codecs-offline-message = Dieser Computer ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Die Codecs werden automatisch installiert, sobald er online ist, und du erhältst eine Benachrichtigung.
+onboarding-codecs-installed-title = Mediencodecs installiert
+onboarding-codecs-failed-title = Mediencodecs konnten nicht installiert werden
+onboarding-codecs-failed-message = Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
+onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
+onboarding-codecs-installer-failed = Das Installationsprogramm konnte nicht gestartet werden: { $error }
+onboarding-codecs-skip = Überspringen
+onboarding-codecs-not-now = Nicht jetzt
+onboarding-codecs-retry = Erneut versuchen
+onboarding-codecs-install = Mediencodecs installieren
+
+# Desktop-Tour
+onboarding-tour-eyebrow = Tilo  •  DESKTOP-TOUR
+onboarding-tour-stage = { $stage }  ·  { $step } von 4
+onboarding-tour-progress-a11y = Desktop-Tour, Schritt { $step } von 4: { $stage }
+onboarding-tour-stage-move = Bewegen
+onboarding-tour-stage-arrange = Anordnen
+onboarding-tour-stage-share = Teilen
+onboarding-tour-stage-begin = Loslegen
+onboarding-tour-skip = Tour überspringen
+onboarding-tour-enter = Tilo betreten
+onboarding-tour-navigate-title = Alles in Reichweite
+onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
+onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
+onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
+onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
+onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Wischen mit vier Fingern
+onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
+onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
+onboarding-tour-move-body = Auf und Ab wechseln zwischen Arbeitsbereichen. Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens.
+onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
+onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
+onboarding-tour-workspace-title = Arbeitsbereich
+onboarding-tour-workspace-body = Ein dauerhafter Ort für ein Projekt, seine Personen, Berechtigungen, Apps und seinen Verlauf.
+onboarding-tour-strip-title = Streifen
+onboarding-tour-strip-body = Eine waagerechte Reihe von Fenstergruppen in einem Arbeitsbereich. Füge einen weiteren Streifen hinzu, wenn die Arbeit eine zweite Spur braucht.
+onboarding-tour-window-group-title = Fenstergruppe
+onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit Super+Links oder Super+Rechts zwischen Gruppen.
+onboarding-tour-tab-title = Tab
+onboarding-tour-tab-body = Eine App oder ein Dokument in einer Fenstergruppe. Ziehe Tabs, um sie ohne überlappende Fenster anzuordnen.
+onboarding-tour-collaborate-title = Teilen bleibt bewusst
+onboarding-tour-collaborate-intro = Zusammenarbeit ist in den Arbeitsbereich eingebaut, nicht an einzelne Apps angeflanscht. Nichts wird geteilt, nur weil es geöffnet ist.
+onboarding-tour-invite-settings-title = Aus den Arbeitsbereich-Einstellungen einladen
+onboarding-tour-invite-settings-body = Wähle eine Rolle und prüfe genau, welchen Arbeitsbereich die Einladung öffnet.
+onboarding-tour-follow-title = Folgen nur, wenn du es willst
+onboarding-tour-follow-body = Alle behalten ihren eigenen Fokus und ihre eigene Ansicht. Folgen ist eine ausdrückliche, umkehrbare Aktion.
+onboarding-tour-system-features-title = Rückgängig und Berechtigungen sind Systemfunktionen
+onboarding-tour-system-features-body = Der Verlauf folgt der Urheberschaft, und Apps fragen Tilo nach Fähigkeiten, statt stillschweigend Zugriff zu erhalten.
+onboarding-tour-start-title = Deine ersten fünf Minuten
+onboarding-tour-start-intro = Beginne mit einem Ziel und lass den Arbeitsbereich dann mit dem Projekt wachsen. Du findest dies über die Suche unter „Desktop-Tour“ wieder.
+onboarding-tour-name-title = 1  Arbeitsbereich benennen
+onboarding-tour-name-body = Öffne die Arbeitsbereich-Einstellungen über den Titel und wähle einen gut erkennbaren Projektnamen.
+onboarding-tour-open-title = 2  Einen gemeinsamen Ausgangspunkt öffnen
+onboarding-tour-open-body = Wähle Notizen, Kalender oder Chat und füge dann weitere Apps daneben hinzu.
+onboarding-tour-invite-title = 3  Die richtigen Personen einladen
+onboarding-tour-invite-body = Wähle „Personen einladen“ in den Arbeitsbereich-Einstellungen und prüfe jede Rolle, bevor du teilst.
+onboarding-tour-check-title = 4  Arbeit prüfen und Fehler beheben
+onboarding-tour-check-body = Öffne die Aktivität, um auf den neuesten Stand zu kommen, Versionen zu vergleichen oder nur die fehlerhafte Änderung rückgängig zu machen.
+
+# Einladungskarte für Arbeitsbereiche: jemanden einladen, mit einer Einladung beitreten, ausstehende Einladungen
+peer-sync-title-review = Einladung prüfen
+peer-sync-title-invite = Jemanden einladen
+peer-sync-title-join = Einem Arbeitsbereich beitreten
+peer-sync-title-workspace-invite = Einladung zum Arbeitsbereich
+peer-sync-paste-token = Einladungscode einfügen oder eingeben
+peer-sync-identity-copied = Identität kopiert – schick sie der Person, die dich einlädt
+peer-sync-invite-failed = Einladung fehlgeschlagen: { $error }
+peer-sync-identity-unavailable = Identität nicht verfügbar: { $error }
+peer-sync-joined-room = Raum { $room } beigetreten
+peer-sync-join-refused = Abgelehnt: { $error }
+peer-sync-pending-unavailable = Ausstehende Einladungen nicht verfügbar: { $error }
+peer-sync-resend-failed = Erneutes Senden fehlgeschlagen: { $error }
+peer-sync-invite-canceled = Einladung zurückgezogen
+peer-sync-cancel-failed = Zurückziehen fehlgeschlagen: { $error }
+peer-sync-unexpected-response = Unerwartete Antwort der Zusammenarbeit
+peer-sync-using-verified-identity = Verifizierte Identität wird verwendet · { $verification }
+peer-sync-ask-for-identity = Bitte die Person, dir ihre Tilo-Identität zu schicken, und füge sie dann hier ein.
+peer-sync-name-required = Gib an, für wen diese Einladung ist
+peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
+peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
+peer-sync-copied = Kopiert
+peer-sync-pasted = Eingefügt – drück die Eingabetaste zum Beitreten
+peer-sync-clipboard-empty = Die Zwischenablage ist leer
+peer-sync-identity-bound = Identität gebunden · { $fingerprint }
+peer-sync-identity-invalid = Das ist kein Tilo-Identitätsschlüssel (erwartet werden 64 Hexadezimalzeichen)
+peer-sync-pending-heading = AUSSTEHENDE EINLADUNGEN
+peer-sync-pending-heading-paged = AUSSTEHENDE EINLADUNGEN · { $first }–{ $last } von { $total } · scrollen
+peer-sync-role-expires = { $role } · { $unit ->
+    [now] läuft gleich ab
+    [seconds] läuft in { $count ->
+        [one] 1 Sekunde
+       *[other] { $count } Sekunden
+    } ab
+    [minutes] läuft in { $count ->
+        [one] 1 Minute
+       *[other] { $count } Minuten
+    } ab
+    [hours] läuft in { $count ->
+        [one] 1 Stunde
+       *[other] { $count } Stunden
+    } ab
+   *[days] läuft in { $count ->
+        [one] 1 Tag
+       *[other] { $count } Tagen
+    } ab
+}
+peer-sync-received-role-expires = Zugriff als { $role } · { $unit ->
+    [now] läuft gleich ab
+    [seconds] läuft in { $count ->
+        [one] 1 Sekunde
+       *[other] { $count } Sekunden
+    } ab
+    [minutes] läuft in { $count ->
+        [one] 1 Minute
+       *[other] { $count } Minuten
+    } ab
+    [hours] läuft in { $count ->
+        [one] 1 Stunde
+       *[other] { $count } Stunden
+    } ab
+   *[days] läuft in { $count ->
+        [one] 1 Tag
+       *[other] { $count } Tagen
+    } ab
+}
+peer-sync-role-viewer = Betrachter
+peer-sync-role-commenter = Kommentator
+peer-sync-role-editor = Bearbeiter
+peer-sync-copy = Kopieren
+peer-sync-cancel = Abbrechen
+peer-sync-back = Zurück
+peer-sync-join = Beitreten
+peer-sync-paste = Einfügen
+peer-sync-create-invite = Einladung erstellen
+peer-sync-review-invite = Einladung prüfen
+peer-sync-paste-identity = Neue Identität einfügen
+peer-sync-copy-identity = Meine Identität kopieren
+peer-sync-recipient-heading = WEN LÄDST DU EIN?
+peer-sync-recipient-new = Jemand Neues · Tilo-Identität austauschen
+peer-sync-role-heading = ZUGRIFF, DEN DIE PERSON ERHÄLT
+peer-sync-review-workspace = Arbeitsbereich · { $workspace }
+peer-sync-review-workspace-this = Arbeitsbereich · dieser Arbeitsbereich
+peer-sync-review-inviter = Eingeladen von · { $inviter }
+peer-sync-review-inviter-you = Eingeladen von · dir
+peer-sync-review-recipient = Empfänger · { $name }
+peer-sync-review-recipient-unnamed = Empfänger · unbenannt
+peer-sync-review-role = Zugriff · { $role }
+peer-sync-review-identity = Gebundene Identität · { $fingerprint }
+peer-sync-review-identity-missing = Gebundene Identität · fehlt
+peer-sync-review-note = Nur diese Identität kann die signierte, eine Stunde gültige Einladung einlösen.
+peer-sync-selected-person = Ausgewählte Person
+peer-sync-name-new-person = Name der neuen Person
+peer-sync-name-placeholder = Name
+peer-sync-recipient-hint = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein.
+peer-sync-identity-remembered = Verifizierte gespeicherte Identität · { $fingerprint }
+peer-sync-identity-new = Neue Identität gebunden · { $fingerprint }
+peer-sync-invite-anyone = Jeder mit dieser Einladung
+peer-sync-invite-received = Einladung erhalten
+peer-sync-paste-invite-hint = Füge die Einladung ein, die man dir geschickt hat.
+peer-sync-token-characters = { $token } · { $count ->
+    [one] 1 Zeichen
+   *[other] { $count } Zeichen
+}
+peer-sync-token-incomplete = Noch keine vollständige Einladung
+
+# Arbeitsbereichseinstellungen: Berechtigungsrollen und Eigentum an der Aktionstür
+workspace-settings-roles-resource = Berechtigungsrollen von { $workspace }
+workspace-settings-role-save = Berechtigungsrolle erstellen oder aktualisieren
+workspace-settings-role-save-placeholder = Rollenname
+workspace-settings-role-save-description = Speichere eine wiederverwendbare Rolle mit minimalen Rechten aus App-, Aktions-, Datei-, Ressourcen- oder Arbeitsbereichsregeln.
+workspace-settings-role-assign = Berechtigungsrolle zuweisen
+workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
+workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
+workspace-settings-role-assign-named = { $role } zuweisen
+workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
+workspace-settings-app-action-placeholder = App und Aktion
+workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
+workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion zu verwenden, die eine andere Anwendung bereitstellt.
+workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
+workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung die Aktion einer anderen Anwendung verwenden darf.
+workspace-settings-ownership-resource = Eigentum an { $workspace }
+workspace-settings-ownership-propose = Eigentumsübertragung vorschlagen
+workspace-settings-ownership-propose-placeholder = Identität der empfangenden Person
+workspace-settings-ownership-propose-description = Deine Signatur erlaubt die sofortige Übertragung des Eigentums, wenn genau diese Administratorin oder dieser Administrator vor Ablauf annimmt.
+workspace-settings-ownership-accept = Eigentum am Arbeitsbereich annehmen
+workspace-settings-ownership-accept-description = Mit der Annahme wird das Eigentum sofort übertragen; allgemeine Rollensteuerungen können diese Aktion nicht ausführen.
+workspace-settings-ownership-accept-phrase = Eigentum annehmen
+workspace-settings-ownership-cancel = Eigentumsübertragung abbrechen
+workspace-settings-ownership-cancel-description = Ziehe das offene Angebot zurück, bevor die empfangende Person es annimmt.
+
+# Arbeitsbereichseinstellungen: Tabs und Rahmen
+workspace-settings-title = Arbeitsbereichseinstellungen
+workspace-settings-close = Einstellungen schließen
+workspace-settings-tab-general = Allgemein
+workspace-settings-tab-people = Personen
+workspace-settings-tab-agents = Agenten
+workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
+workspace-settings-tab-privacy = Datenschutz
+workspace-settings-tab-apps-files = Apps & Dateien
+workspace-settings-tab-apps = Apps
+workspace-settings-close-hint = Esc zum Schließen
+workspace-settings-edit-hint = Eingabetaste zum Speichern · Esc zum Abbrechen
+
+# Arbeitsbereichseinstellungen: Rollen
+workspace-settings-role-owner = Eigentümer
+workspace-settings-role-editor = Bearbeiter
+workspace-settings-role-commenter = Kommentator
+workspace-settings-role-viewer = Betrachter
+workspace-settings-role-blocked = Gesperrt
+workspace-settings-role-admin = Admin
+workspace-settings-role-guest = Gast
+workspace-settings-role-owner-preview = Kann Personen, Berechtigungen und Einstellungen des Arbeitsbereichs verwalten.
+workspace-settings-role-editor-preview = Kann geteilte Arbeit ansehen, kommentieren und bearbeiten.
+workspace-settings-role-commenter-preview = Kann geteilte Arbeit ansehen und kommentieren, aber nicht bearbeiten.
+workspace-settings-role-viewer-preview = Kann geteilte Arbeit ansehen, aber weder kommentieren noch bearbeiten.
+workspace-settings-role-blocked-preview = Kein Zugriff auf diesen Arbeitsbereich.
+
+# Arbeitsbereichseinstellungen: worauf sich eine Berechtigung bezieht, für sich allein
+workspace-settings-scope-workspace = dieser Arbeitsbereich
+workspace-settings-scope-app = die App { $app }
+workspace-settings-scope-workspace-files = Dateien des Arbeitsbereichs
+workspace-settings-scope-workspace-folder = „{ $folder }“ in diesem Arbeitsbereich
+workspace-settings-scope-path = Dateien unter { $path }
+workspace-settings-scope-record = eine geteilte Datei ({ $id })
+workspace-settings-scope-camera = die Kamera
+workspace-settings-scope-microphone = das Mikrofon
+workspace-settings-scope-screencast = Bildschirmaufnahme
+workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
+workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
+workspace-settings-scope-host = Netzwerkhost { $host }
+workspace-settings-scope-action = „{ $action }“ in { $app }
+workspace-settings-scope-resource-type = { $kind ->
+    [note] jede Notiz
+    [file] jede Datei
+    [cluster] jeder gespeicherte Cluster
+    [kanban] jedes Board
+   *[chat-log] jeder Chatverlauf
+}
+workspace-settings-scope-resource-instance = ein Dokument ({ $id })
+
+# Arbeitsbereichseinstellungen: worauf sich eine Berechtigung bezieht, als Objekt am Satzanfang (Akkusativ)
+workspace-settings-scope-workspace-object = Diesen Arbeitsbereich
+workspace-settings-scope-app-object = Die App { $app }
+workspace-settings-scope-workspace-files-object = Dateien des Arbeitsbereichs
+workspace-settings-scope-workspace-folder-object = „{ $folder }“ in diesem Arbeitsbereich
+workspace-settings-scope-path-object = Dateien unter { $path }
+workspace-settings-scope-record-object = Eine geteilte Datei ({ $id })
+workspace-settings-scope-camera-object = Die Kamera
+workspace-settings-scope-microphone-object = Das Mikrofon
+workspace-settings-scope-screencast-object = Bildschirmaufnahme
+workspace-settings-scope-remote-desktop-object = Fernsteuerung von Zeiger und Tastatur
+workspace-settings-scope-any-host-object = Einen beliebigen Netzwerkhost
+workspace-settings-scope-host-object = Netzwerkhost { $host }
+workspace-settings-scope-action-object = „{ $action }“ in { $app }
+workspace-settings-scope-resource-type-object = { $kind ->
+    [note] Jede Notiz
+    [file] Jede Datei
+    [cluster] Jeden gespeicherten Cluster
+    [kanban] Jedes Board
+   *[chat-log] Jeden Chatverlauf
+}
+workspace-settings-scope-resource-instance-object = Ein Dokument ({ $id })
+
+# Arbeitsbereichseinstellungen: was eine Berechtigung erlaubt
+workspace-settings-allows-control = { $what } steuern
+workspace-settings-allows-use = { $what } verwenden
+workspace-settings-allows-reach = { $what } erreichen
+workspace-settings-allows-run = { $what } ausführen
+workspace-settings-allows-administer = { $what } verwalten
+workspace-settings-allows-edit = { $what } bearbeiten
+workspace-settings-allows-comment = { $what } kommentieren
+workspace-settings-allows-invite = Andere einladen: { $what }
+workspace-settings-allows-view = { $what } ansehen
+
+# Arbeitsbereichseinstellungen: wie lange eine Freigabe gilt und wer sie erteilt hat
+workspace-settings-expiry-once = Einmal
+workspace-settings-expiry-session = Sitzung
+workspace-settings-expiry-until = Bis
+workspace-settings-expiry-always = Immer
+workspace-settings-granted-by-person = erteilt von { $id }
+workspace-settings-granted-by-app = erteilt von der App { $app }
+workspace-settings-granted-by-agent = erteilt von Agent { $id }
+workspace-settings-granted-by-token = erteilt über Token { $id }
+workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
+workspace-settings-permission-detail = { $allows } · { $grantor }
+
+# Arbeitsbereichseinstellungen: für wen eine Berechtigung gilt
+workspace-settings-section-apps = Apps
+workspace-settings-section-app-actions = App-Aktionen
+workspace-settings-section-people = Personen
+workspace-settings-section-agents = Agenten
+workspace-settings-section-roles = Rollen
+workspace-settings-section-other = Sonstige
+workspace-settings-subject-role = alle mit der Rolle { $role }
+workspace-settings-subject-token = Token { $id }
+workspace-settings-subject-workspace = Arbeitsbereich { $id }
+
+# Arbeitsbereichseinstellungen: was der Freigabe-Editor erlauben kann
+workspace-settings-grant-camera = Kamera
+workspace-settings-grant-microphone = Mikrofon
+workspace-settings-grant-screencast = Bildschirmaufnahme
+workspace-settings-grant-remote-control = Fernsteuerung
+workspace-settings-grant-network = Netzwerkzugriff
+workspace-settings-grant-read-files = Dateien des Arbeitsbereichs lesen
+workspace-settings-grant-edit-files = Dateien des Arbeitsbereichs bearbeiten
+workspace-settings-grant-create-roles = Berechtigungsrollen erstellen
+workspace-settings-grant-assign-roles = Berechtigungsrollen zuweisen
+
+# Arbeitsbereichseinstellungen: Agentenprofile
+workspace-settings-preset-observer = Beobachter
+workspace-settings-preset-contributor = Mitwirkender
+workspace-settings-preset-operator = Operator
+workspace-settings-preset-custom = Benutzerdefiniert
+workspace-settings-preset-observer-hint = Nur Lesen auf Bereichen, die du auswählst
+workspace-settings-preset-contributor-hint = Lesen und Schreiben nur auf Bereichen, die du auswählst
+workspace-settings-preset-operator-hint = Nur freigegebene App-Aktionen ausführen
+workspace-settings-preset-custom-hint = Jede eingeschränkte Berechtigung prüfen
+
+# Arbeitsbereichseinstellungen: Tab „Personen“
+workspace-settings-members-count = { $count ->
+    [one] 1 Person teilt diesen Arbeitsbereich
+   *[other] { $count } Personen teilen diesen Arbeitsbereich
+}
+workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
+workspace-settings-ownership = Eigentum
+workspace-settings-you-manage = Von dir verwaltet
+workspace-settings-view-only = Nur ansehen
+workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
+workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
+workspace-settings-people-header = PERSONEN
+workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
+workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
+workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
+workspace-settings-you = Du
+workspace-settings-member-detail = { $count ->
+    [0] { $role } · keine zusätzlichen Berechtigungen
+    [one] { $role } · 1 zusätzliche Berechtigung
+   *[other] { $role } · { $count } zusätzliche Berechtigungen
+}
+workspace-settings-remove = Entfernen
+workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
+
+# Arbeitsbereichseinstellungen: Tab „Agenten“
+workspace-settings-agents-count = { $count ->
+    [one] 1 mitwirkender Agent
+   *[other] { $count } mitwirkende Agenten
+}
+workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirkende. Die Zulassung gewährt keine allgemeinen Rechte im Arbeitsbereich.
+workspace-settings-add-agent = Agent hinzufügen
+workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
+workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
+workspace-settings-agents-header = AGENTEN
+workspace-settings-service-member = Dienstmitglied · { $access ->
+    [admin] verwaltet
+    [write] liest und bearbeitet
+    [comment] liest und kommentiert
+   *[read] liest
+} Ende-zu-Ende-verschlüsselte Inhalte · { $until } · Gerät { $device }
+workspace-settings-service-until-removed = bis zur Entfernung
+workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
+workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
+workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
+workspace-settings-badge-service = DIENST
+workspace-settings-badge-agent = AGENT
+workspace-settings-agent-detail = { $count ->
+    [0] { $admission } · keine eingeschränkten Berechtigungen – Prüfung erforderlich
+    [one] { $admission } · Profil { $profile } · 1 eingeschränkte Berechtigung
+   *[other] { $admission } · Profil { $profile } · { $count } eingeschränkte Berechtigungen
+}
+workspace-settings-admitted = Zugelassen
+workspace-settings-review-access = Zugriff prüfen
+workspace-settings-revoke = Entziehen
+workspace-settings-admission-admin = Zulassung als Admin
+workspace-settings-admission-write = Zulassung zum Schreiben
+workspace-settings-admission-comment = Zulassung zum Kommentieren
+workspace-settings-admission-read = Zulassung zum Lesen
+
+# Arbeitsbereichseinstellungen: Tab „Apps & Dateien“
+workspace-settings-unavailable-app = Nicht verfügbare App
+workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
+workspace-settings-apps-empty-detail = Apps erscheinen hier, sobald sie unterstützte Dateitypen angeben.
+workspace-settings-apps-intro-title = Standards ohne Bindung
+workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vor; jede Person kann ausdrücklich etwas anderes wählen.
+workspace-settings-apps-header = STANDARDANWENDUNGEN
+workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
+workspace-settings-your-choice = Deine Wahl
+workspace-settings-follow-personal = Persönlichen Standards folgen
+workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
+workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
+workspace-settings-apps-file-types = { $count ->
+    [one] 1 Dateityp
+   *[other] { $count } Dateitypen
+}
+workspace-settings-apps-custom-rules = { $count ->
+    [one] 1 eigene Regel
+   *[other] { $count } eigene Regeln
+}
+
+# Arbeitsbereichseinstellungen: Tab „Datenschutz & Sicherheit“
+workspace-settings-permissions-intro-title = Zugriff ist ausdrücklich und widerrufbar
+workspace-settings-permissions-intro-detail = Freigaben werden von der App-Sandbox durchgesetzt und bleiben auf diesen Arbeitsbereich beschränkt.
+workspace-settings-active-grants = { $count ->
+    [one] 1 aktive Freigabe
+   *[other] { $count } aktive Freigaben
+}
+workspace-settings-permissions-empty-title = Keine Berechtigungen erteilt
+workspace-settings-permissions-empty-detail = Apps erhalten nichts, bis es hier erteilt oder in einer Abfrage erlaubt wird.
+workspace-settings-more = +{ $count } weitere
+workspace-settings-who = Wer
+workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeiner Zugriff auf den Arbeitsbereich)
+workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
+workspace-settings-what-it-allows = Was es erlaubt
+workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
+workspace-settings-saved-roles = { $count ->
+    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
+   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
+}
+workspace-settings-expiry-caption = Gültigkeit
+workspace-settings-grant = Erteilen
+
+# Arbeitsbereichseinstellungen: Bestätigungsdialoge
+workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
+workspace-settings-role-sheet-description = { $person } ist derzeit { $role }. Wähle genau, was diese Person tun kann.
+workspace-settings-remove-sheet-title = Diese Person entfernen?
+workspace-settings-remove-sheet-description = Die Person erhält keine Synchronisierung und Änderungen mehr. Heruntergeladene Kopien bleiben auf ihren Geräten.
+workspace-settings-revoke-sheet-title = Diese Berechtigung entziehen?
+workspace-settings-revoke-sheet-description = Die ausgewählte Berechtigung gilt sofort nicht mehr. Prüfe zuerst ihre Aktivität, wenn du unsicher bist.
+workspace-settings-keep-access = Zugriff behalten
+workspace-settings-review-activity = Zuerst Aktivität prüfen
+workspace-settings-remove-person = Person entfernen
+workspace-settings-no-changes = Es werden keine Änderungen vorgenommen.
+workspace-settings-open-history = Öffne vor der Entscheidung den Verlauf des Arbeitsbereichs.
+workspace-settings-remove-person-detail = Dadurch verliert die Person ihre Berechtigungen im Arbeitsbereich.
+workspace-settings-keep-permission = Berechtigung behalten
+workspace-settings-revoke-permission = Berechtigung entziehen
+workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
+
+# Arbeitsbereichseinstellungen: Tab „Allgemein“
+workspace-settings-workspace-fallback = Arbeitsbereich
+workspace-settings-identity-caption = Arbeitsbereich · { $role }
+workspace-settings-current-workspace = AKTUELLER ARBEITSBEREICH
+workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
+workspace-settings-identity-title = Identität des Arbeitsbereichs
+workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
+workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
+workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
+workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
+workspace-settings-invite-create = Erstellen
+workspace-settings-invite-title = Personen einladen
+workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
+workspace-settings-glance-title = Auf einen Blick
+workspace-settings-stat-members = { $count ->
+    [one] Mitglied
+   *[other] Mitglieder
+}
+workspace-settings-stat-grants = { $count ->
+    [one] gezielte Freigabe
+   *[other] gezielte Freigaben
+}
+workspace-settings-stat-app-rules = { $count ->
+    [one] App-Regel
+   *[other] App-Regeln
+}

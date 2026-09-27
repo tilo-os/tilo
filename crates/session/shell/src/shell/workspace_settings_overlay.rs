@@ -4,6 +4,7 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
+use crate::shell::i18n::{t, t_args};
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 
@@ -257,12 +258,12 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let hint = "Press Esc to close";
+        let hint = t("workspace-settings-close-hint");
         let size = theme.tokens.typography.scale.xs;
-        let (width, _) = text_renderer.measure(hint, size, None);
+        let (width, _) = text_renderer.measure(&hint, size, None);
         text_renderer.draw_text(
             scene,
-            hint,
+            &hint,
             size,
             theme.tokens.colors.text_dim,
             transform.pre_translate((card.x1 - f64::from(width) - 24.0, card.y1 - 24.0).into()),
@@ -833,16 +834,16 @@ impl WorkspaceSettingsOverlay {
 
         scene.pop_layer();
 
-        let hint = if editing {
-            "Enter to save · Esc to cancel"
+        let hint = t(if editing {
+            "workspace-settings-edit-hint"
         } else {
-            "Press Esc to close"
-        };
+            "workspace-settings-close-hint"
+        });
         let hsize = tokens.typography.scale.xs;
-        let (hw, _hh) = text_renderer.measure(hint, hsize, None);
+        let (hw, _hh) = text_renderer.measure(&hint, hsize, None);
         text_renderer.draw_text(
             scene,
-            hint,
+            &hint,
             hsize,
             colors.text_dim,
             transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
@@ -916,37 +917,45 @@ impl WorkspaceSettingsOverlay {
             &surface,
         );
 
-        let (title, description, subject): (&str, String, Option<String>) = match &sheet {
+        let (title, description, subject): (String, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
                 let current = tree
-                    .desktop.active_workspace()
+                    .desktop
+                    .active_workspace()
                     .and_then(|workspace| workspace.role_of(user))
-                    .map_or("Viewer", crate::shell::workspace_settings::role_label);
+                    .unwrap_or(CapRole::Viewer);
                 (
-                    "Choose workspace access",
-                    format!(
-                        "{} is currently {current}. Choose exactly what they can do.",
-                        crate::shell::workspace_settings::short_id(user)
+                    t("workspace-settings-role-sheet-title"),
+                    t_args(
+                        "workspace-settings-role-sheet-description",
+                        &[
+                            (
+                                "person",
+                                crate::shell::workspace_settings::short_id(user).into(),
+                            ),
+                            (
+                                "role",
+                                crate::shell::workspace_settings::role_label(current).into(),
+                            ),
+                        ],
                     ),
                     None,
                 )
             }
             MemberSheet::Remove(user) => (
-                "Remove this person?",
-                "They will stop receiving future sync and edits. Downloaded copies remain on their devices."
-                    .to_string(),
+                t("workspace-settings-remove-sheet-title"),
+                t("workspace-settings-remove-sheet-description"),
                 Some(crate::shell::workspace_settings::short_id(user)),
             ),
             MemberSheet::Revoke(cap_id) => (
-                "Revoke this permission?",
-                "The selected capability will stop applying immediately. Review its activity first if you are unsure."
-                    .to_string(),
+                t("workspace-settings-revoke-sheet-title"),
+                t("workspace-settings-revoke-sheet-description"),
                 Some(crate::shell::workspace_settings::short_id(cap_id)),
             ),
         };
         text_renderer.draw_text(
             scene,
-            title,
+            &title,
             tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((card.x0 + 20.0, card.y0 + 20.0).into()),
@@ -990,39 +999,38 @@ impl WorkspaceSettingsOverlay {
                 (
                     roles
                         .iter()
-                        .map(|role| crate::shell::workspace_settings::role_label(*role).to_string())
+                        .map(|role| crate::shell::workspace_settings::role_label(*role))
                         .collect(),
                     roles
                         .iter()
                         .map(|role| {
                             crate::shell::workspace_settings::role_capability_preview(*role)
-                                .to_string()
                         })
                         .collect(),
                 )
             }
             MemberSheet::Remove(_) => (
                 vec![
-                    "Keep access".into(),
-                    "Review activity first".into(),
-                    "Remove person".into(),
+                    t("workspace-settings-keep-access"),
+                    t("workspace-settings-review-activity"),
+                    t("workspace-settings-remove-person"),
                 ],
                 vec![
-                    "No changes are made.".into(),
-                    "Open workspace history before deciding.".into(),
-                    "This removes their workspace capabilities.".into(),
+                    t("workspace-settings-no-changes"),
+                    t("workspace-settings-open-history"),
+                    t("workspace-settings-remove-person-detail"),
                 ],
             ),
             MemberSheet::Revoke(_) => (
                 vec![
-                    "Keep permission".into(),
-                    "Review activity first".into(),
-                    "Revoke permission".into(),
+                    t("workspace-settings-keep-permission"),
+                    t("workspace-settings-review-activity"),
+                    t("workspace-settings-revoke-permission"),
                 ],
                 vec![
-                    "No changes are made.".into(),
-                    "Open workspace history before deciding.".into(),
-                    "This removes the selected capability immediately.".into(),
+                    t("workspace-settings-no-changes"),
+                    t("workspace-settings-open-history"),
+                    t("workspace-settings-revoke-permission-detail"),
                 ],
             ),
         };
@@ -1113,22 +1121,28 @@ impl WorkspaceSettingsOverlay {
         let (identity, close) =
             self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
         if theme.text_scale > 1.0 {
-            let name = tree
-                .desktop
-                .active_workspace()
-                .map_or("Workspace", |workspace| workspace.name.as_str());
+            let name = tree.desktop.active_workspace().map_or_else(
+                || t("workspace-settings-workspace-fallback"),
+                |workspace| workspace.name.clone(),
+            );
             let role = tree
                 .desktop
                 .active_workspace()
                 .and_then(|workspace| workspace.role_of(&state.local_user_id))
-                .map_or("Guest", crate::shell::workspace_settings::role_label);
+                .map_or_else(
+                    || t("workspace-settings-role-guest"),
+                    crate::shell::workspace_settings::role_label,
+                );
             let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
             let caption = text_renderer.elide_to_width(
-                &format!("Workspace · {role}"),
+                &t_args(
+                    "workspace-settings-identity-caption",
+                    &[("role", role.into())],
+                ),
                 tokens.typography.scale.xs,
                 width,
             );
-            let name = text_renderer.elide_to_width(name, tokens.typography.scale.base, width);
+            let name = text_renderer.elide_to_width(&name, tokens.typography.scale.base, width);
             text_renderer.draw_text(
                 scene,
                 &caption,
@@ -1145,23 +1159,23 @@ impl WorkspaceSettingsOverlay {
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 38.0).into()),
                 None,
             );
-            return tree
-                .desktop
-                .active_workspace()
-                .map_or_else(|| "Workspace".into(), |workspace| workspace.name.clone());
+            return tree.desktop.active_workspace().map_or_else(
+                || t("workspace-settings-workspace-fallback"),
+                |workspace| workspace.name.clone(),
+            );
         }
         text_renderer.draw_text(
             scene,
-            "CURRENT WORKSPACE",
+            &t("workspace-settings-current-workspace"),
             tokens.typography.scale.xs,
             colors.accent[4],
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
-        let active_name = tree
-            .desktop
-            .active_workspace()
-            .map_or_else(|| "Workspace".into(), |w| w.name.clone());
+        let active_name = tree.desktop.active_workspace().map_or_else(
+            || t("workspace-settings-workspace-fallback"),
+            |w| w.name.clone(),
+        );
         let tsize = tokens.typography.scale.xl;
         let shown_name = text_renderer.elide_to_width(
             &active_name,
@@ -1180,9 +1194,15 @@ impl WorkspaceSettingsOverlay {
             .desktop
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
-            .map_or("Guest", crate::shell::workspace_settings::role_label);
+            .map_or_else(
+                || t("workspace-settings-role-guest"),
+                crate::shell::workspace_settings::role_label,
+            );
         let label = text_renderer.elide_to_width(
-            &format!("{active_role} · Settings and policy stay with this workspace"),
+            &t_args(
+                "workspace-settings-role-policy-line",
+                &[("role", active_role.into())],
+            ),
             tokens.typography.scale.sm,
             f64_to_f32_lossy(identity.x1 - identity.x0 - 92.0),
         );
@@ -1324,7 +1344,7 @@ impl WorkspaceSettingsOverlay {
                 } else {
                     tab.label()
                 };
-                f64::from(text_renderer.measure(label, lsize, None).0) + reserved
+                f64::from(text_renderer.measure(&label, lsize, None).0) + reserved
             })
             .collect();
         let widths = tab_pill_widths(&needs, nav.width());
@@ -1387,7 +1407,7 @@ impl WorkspaceSettingsOverlay {
             let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
             let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
             let label = text_renderer.elide_to_width(
-                label,
+                &label,
                 lsize,
                 f64_to_f32_lossy(pill_rect.width() - icon_size - icon_gap - 8.0),
             );
@@ -1781,7 +1801,7 @@ impl WorkspaceSettingsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "Workspace identity",
+            &t("workspace-settings-identity-title"),
             tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
@@ -1794,7 +1814,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let description = text_renderer.elide_to_width(
-            "This name appears in the top bar, invites, and shared activity.",
+            &t("workspace-settings-identity-description"),
             tokens.typography.scale.xs,
             f64_to_f32_lossy(identity_card.width() - 32.0),
         );
@@ -1867,7 +1887,7 @@ impl WorkspaceSettingsOverlay {
         } else if !can_rename {
             text_renderer.draw_text(
                 scene,
-                "Only a workspace administrator can rename this workspace.",
+                &t("workspace-settings-rename-admin-only"),
                 tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
@@ -1913,13 +1933,13 @@ impl WorkspaceSettingsOverlay {
             f64::from(tokens.radii.sm),
             colors.surfaces.base,
         );
-        let invite_url = if can_invite {
-            "Choose a person and role; Tilo signs a one-hour invite."
+        let invite_url = t(if can_invite {
+            "workspace-settings-invite-hint"
         } else {
-            "Only a governing administrator can create workspace invites."
-        };
+            "workspace-settings-invite-admin-only"
+        });
         let invite_url = text_renderer.elide_to_width(
-            invite_url,
+            &invite_url,
             tokens.typography.scale.sm,
             f64_to_f32_lossy(url_pill.width() - 24.0),
         );
@@ -1946,11 +1966,11 @@ impl WorkspaceSettingsOverlay {
                 ui::chrome::ChromeRole::Control.radius(theme, invite_btn.height()),
             ),
         );
-        let invite_label = "Create";
-        let (cw, _ch) = text_renderer.measure(invite_label, tokens.typography.scale.sm, None);
+        let invite_label = t("workspace-settings-invite-create");
+        let (cw, _ch) = text_renderer.measure(&invite_label, tokens.typography.scale.sm, None);
         text_renderer.draw_text(
             scene,
-            invite_label,
+            &invite_label,
             tokens.typography.scale.sm,
             if can_invite {
                 colors.text_primary
@@ -2018,7 +2038,7 @@ impl WorkspaceSettingsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "Invite people",
+            &t("workspace-settings-invite-title"),
             tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
@@ -2031,7 +2051,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let description = text_renderer.elide_to_width(
-            "Invites bind the workspace, recipient role, expiry and this device's identity.",
+            &t("workspace-settings-invite-description"),
             tokens.typography.scale.xs,
             f64_to_f32_lossy(sharing_card.width() - 76.0),
         );
@@ -2055,6 +2075,10 @@ impl WorkspaceSettingsOverlay {
     /// Live workspace summary. Detailed member management belongs to the
     /// Members tab; General stays an honest overview rather than inventing
     /// a placeholder collaborator.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays the summary out top to bottom from shared running offsets"
+    )]
     fn draw_ws_settings_collaborators(
         scene: &mut Scene,
         transform: Affine,
@@ -2077,7 +2101,7 @@ impl WorkspaceSettingsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "At a glance",
+            &t("workspace-settings-glance-title"),
             tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
@@ -2103,9 +2127,27 @@ impl WorkspaceSettingsOverlay {
                 (members, grants, ws.default_apps.policy.len())
             });
         let stats = [
-            (members.to_string(), "members"),
-            (grants.to_string(), "specific grants"),
-            (app_rules.to_string(), "app rules"),
+            (
+                members.to_string(),
+                t_args(
+                    "workspace-settings-stat-members",
+                    &[("count", members.into())],
+                ),
+            ),
+            (
+                grants.to_string(),
+                t_args(
+                    "workspace-settings-stat-grants",
+                    &[("count", grants.into())],
+                ),
+            ),
+            (
+                app_rules.to_string(),
+                t_args(
+                    "workspace-settings-stat-app-rules",
+                    &[("count", app_rules.into())],
+                ),
+            ),
         ];
         let stat_gap = 8.0;
         let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale);
@@ -2184,14 +2226,14 @@ pub(crate) fn tab_strip_plan(
     size: f32,
     pill_w: f64,
 ) -> TabStripPlan {
-    let mut widest = |labels: &[&str]| -> f64 {
+    let mut widest = |labels: &[String]| -> f64 {
         labels
             .iter()
             .map(|label| f64::from(text_renderer.measure(label, size, None).0))
             .fold(0.0, f64::max)
     };
-    let full: Vec<&str> = WsTab::all().iter().map(WsTab::label).collect();
-    let compact: Vec<&str> = WsTab::all().iter().map(WsTab::compact_label).collect();
+    let full: Vec<String> = WsTab::all().iter().map(WsTab::label).collect();
+    let compact: Vec<String> = WsTab::all().iter().map(WsTab::compact_label).collect();
     let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
     let fits = |label_w: f64, with_icon: bool| {
         label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
@@ -2527,7 +2569,7 @@ mod tests {
             );
             let widest = WsTab::all()
                 .iter()
-                .map(|tab| f64::from(text.measure(tab.compact_label(), lsize, None).0))
+                .map(|tab| f64::from(text.measure(&tab.compact_label(), lsize, None).0))
                 .fold(0.0, f64::max);
             assert!(
                 widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
