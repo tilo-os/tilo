@@ -156,23 +156,10 @@ fn empty_queries_browse_in_key_order_and_page() {
         Page {
             offset: 2,
             limit: 2,
-            after_key: None,
         },
     );
     assert_eq!(rest.hits.iter().map(|hit| hit.key).collect::<Vec<_>>(), [2]);
     assert!(!rest.more);
-    let after = index.search(
-        "",
-        Page {
-            offset: 0,
-            limit: 8,
-            after_key: Some(0),
-        },
-    );
-    assert_eq!(
-        after.hits.iter().map(|hit| hit.key).collect::<Vec<_>>(),
-        [1, 2]
-    );
 }
 
 #[test]

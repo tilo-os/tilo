@@ -30,12 +30,14 @@
 //! ```
 
 pub mod fold;
+mod highlight;
 mod index;
 mod query;
 mod tokenizer;
 mod weight;
 
 pub use fold::{fold, fold_char};
+pub use highlight::locate;
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex};
 pub use query::Matching;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
