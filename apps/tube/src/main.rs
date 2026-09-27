@@ -273,14 +273,12 @@ fn shot_loading(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_device_sync(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let app = shot_app(args);
     #[cfg(feature = "grayjay-sync")]
     {
-        return Ok(Box::new(app.with_device_sync_shot()));
+        Ok(Box::new(shot_app(args).with_device_sync_shot()))
     }
     #[cfg(not(feature = "grayjay-sync"))]
     {
-        let _ = app;
         Ok(Box::new(shot_app(args)))
     }
 }
