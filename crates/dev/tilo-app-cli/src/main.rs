@@ -500,9 +500,16 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Cargo profile used to build the declared entrypoints.
-    #[arg(long, default_value = "release")]
-    profile: String,
+    /// Cargo profile used to build the declared entrypoints. Defaults to
+    /// `thin-app`, or `release` with `--static`.
+    #[arg(long)]
+    profile: Option<String>,
+
+    /// Link the toolkit and `libstd` into the binary instead of against the
+    /// copies the OS ships. The result is far over the application size limit;
+    /// use it for local experiments only.
+    #[arg(long = "static")]
+    static_link: bool,
 
     /// Rust target triple passed to Cargo.
     #[arg(long)]
@@ -1119,6 +1126,7 @@ fn run_package(args: PackageArgs) -> Result<Value> {
             output: args.output,
             identity: args.identity,
             profile: args.profile,
+            static_link: args.static_link,
             target: args.target,
             features: args.features,
             no_default_features: args.no_default_features,
@@ -2409,7 +2417,7 @@ mod tests {
             assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
             assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
             assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-            assert_eq!(package.profile, "distribution");
+            assert_eq!(package.profile, Some("distribution".into()));
             assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
             assert_eq!(package.features, ["sqlite", "telemetry"]);
             assert!(package.no_default_features);
@@ -2419,7 +2427,8 @@ mod tests {
             let Command::Package(defaults) = defaults.command else {
                 panic!("expected package command");
             };
-            assert_eq!(defaults.profile, "release");
+            assert_eq!(defaults.profile, None);
+            assert!(!defaults.static_link);
             assert!(!defaults.force);
         }
     }
