@@ -3596,6 +3596,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
                 author: String::new(),
                 subject: String::new(),
                 added: 1,
+                content: None,
             },
         );
         let payload =

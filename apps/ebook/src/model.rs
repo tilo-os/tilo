@@ -899,6 +899,9 @@ pub struct LibraryEntry {
     /// When the book was first added (ms since epoch), for a "recently added"
     /// reading of the shelf.
     pub added: u64,
+    /// Full BLAKE3 hash of the EPUB when its bytes are in a host content store
+    /// (`tilo_content`), where a device without the file finds them.
+    pub content: Option<String>,
 }
 
 /// Persisted shelf preferences: the sort order and whether finished books are

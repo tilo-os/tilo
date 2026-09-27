@@ -839,12 +839,13 @@ impl BooksApp {
         if head.key() <= anchor.key() {
             return Err("the passage ends before it starts".into());
         }
+        // The position is explicit: `persist_progress` records it, where a
+        // cleared `last_persisted` would re-adopt the stored chapter instead.
         if self.book_idx != index || self.chapter != chapter {
             self.book_idx = index;
             self.chapter = chapter;
             self.page = 0;
             self.layout = None;
-            self.last_persisted = None;
         }
         self.view = View::Reader;
         self.composing = None;
@@ -883,6 +884,12 @@ pub struct BooksApp {
     pending_open_path: Option<PathBuf>,
     /// A shelf book, by content id, to open on the first `sync`.
     pending_open_book: Option<String>,
+    /// A book the host handed over as bytes, to shelve and open on the
+    /// first `sync`.
+    pending_handed: Option<content::HandedBook>,
+    /// The host's content store, where rows naming a content hash find
+    /// their bytes on a device without the file.
+    content: Option<tilo_content::ContentStore>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
@@ -1237,6 +1244,8 @@ impl BooksApp {
             library_loaded: true,
             pending_open_path: None,
             pending_open_book: None,
+            pending_handed: None,
+            content: None,
             portal_rx: None,
             resource_invocation: None,
             resource_lifecycle: None,
@@ -1382,6 +1391,18 @@ impl BooksApp {
     /// the library does not hold it.
     pub fn open_book_on_load(&mut self, book_id: &str) {
         self.pending_open_book = Some(book_id.into());
+    }
+
+    /// Read library books from the host's content store as well as files.
+    pub fn set_content_store(&mut self, store: tilo_content::ContentStore) {
+        self.content = Some(store);
+    }
+
+    /// Shelve a book the host handed over and open it once the library
+    /// loads, through the same library action an import records.
+    pub fn open_handed_on_load(&mut self, handed: content::HandedBook) {
+        self.pending_handed = Some(handed);
+        self.view = View::Reader;
     }
 
     /// Screenshot-only: force the floating page bubble hover-pinned open so
@@ -2336,7 +2357,12 @@ impl BooksApp {
 
         Arc::make_mut(&mut self.library).clear();
         self.library_paths.clear();
-        for lb in content::load_library(doc, &self.watched_folders, &self.local_library.books) {
+        for lb in content::load_library_with_content(
+            doc,
+            &self.watched_folders,
+            &self.local_library.books,
+            self.content.as_ref(),
+        ) {
             self.library_paths.insert(lb.book.id.clone(), lb.path);
             Arc::make_mut(&mut self.library).push(Arc::new(lb.book));
         }
@@ -2349,6 +2375,21 @@ impl BooksApp {
             if let Err(error) = self.begin_import(path, ImportKind::Open) {
                 self.settle_import_failure(error, "ebook.importer_unavailable");
             }
+        } else if let Some(handed) = self.pending_handed.take() {
+            let entry = content::handed_book_entry(&handed);
+            self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+            let id = handed.book.id.clone();
+            if let Some(hash) = &handed.content {
+                self.library_paths
+                    .insert(id.clone(), content::content_path(hash));
+            }
+            let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
+                index
+            } else {
+                Arc::make_mut(&mut self.library).push(Arc::new(handed.book));
+                self.library.len() - 1
+            };
+            self.open_book_at(doc, index);
         } else if let Some(index) = pending_book {
             self.open_book_at(doc, index);
         } else {
@@ -4802,8 +4843,8 @@ impl Widget for BooksApp {
                 self.composing = None;
                 self.note_composer.close();
                 self.comment_overlay.close();
+                // Explicit, like `select_passage`: persisted, never re-adopted.
                 self.layout = None;
-                self.last_persisted = None;
                 self.dirty = true;
             }
             EbookOperation::SelectPassage {
