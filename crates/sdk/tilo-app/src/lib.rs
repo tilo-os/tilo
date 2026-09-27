@@ -28,6 +28,48 @@ pub use ui_core::*;
 
 pub mod framework;
 
+/// Export the symbols `tilo-app dev` loads into the process that already
+/// owns the windows.
+///
+/// Invoke it once at the root of the app library, naming the [`framework::ResourceApp`]
+/// type. It compiles only for a `thin` build, the build that links one shared
+/// `ui` so the new view is the same type as the windows already on screen.
+#[macro_export]
+macro_rules! dev_reload_entry {
+    ($app:ty) => {
+        #[cfg(feature = "thin")]
+        extern crate runtime_dylib;
+
+        #[cfg(feature = "thin")]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn tilo_dev_apply(
+            id: *const u8,
+            id_len: usize,
+            state: *const u8,
+            state_len: usize,
+            out: *mut u8,
+            out_cap: usize,
+        ) -> isize {
+            let _ = (id, id_len);
+            unsafe {
+                $crate::framework::dev_reload::copy_window_state(state, state_len, out, out_cap)
+            }
+        }
+
+        #[cfg(feature = "thin")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn tilo_dev_linked_ui() -> *const () {
+            $crate::framework::dev_reload::linked_ui()
+        }
+
+        #[cfg(feature = "thin")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn tilo_dev_publish_root() -> i32 {
+            $crate::framework::dev_reload::publish_root::<$app>()
+        }
+    };
+}
+
 /// The resource layer, re-exported under its own name so `#[resource]` and
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;

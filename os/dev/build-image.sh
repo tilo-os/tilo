@@ -545,8 +545,26 @@ else
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/prepare-wpe-stage.py" \
       --architecture "$TILO_WINDOWS_ARCH" --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" \
       --cache "$TILO_WPE_BUILD_CACHE_REF" --repo "$TILO_REPO" \
-      --assets "$TILO_REPO/os/external-assets/cache" \
-      --base "$BASE_REF" --rpms "$RPMS_REF" --kernel "$KERNEL_RPMS_REF" --wpe "$WPE_BUILDROOT_REF")
+      --assets "$TILO_REPO/os/external-assets/cache" --wpe "$WPE_BUILDROOT_REF")
+    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
+    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  elif [ "$TILO_WITH_BROWSER" = 1 ]; then
+    # Compile only from os/Containerfile.wpe, then consume the immutable stage.
+    # Never fall back into a second compile recipe inside os/Containerfile.
+    : "${TILO_WPE_SOURCE_DATE_EPOCH:=0}"
+    _tilo_wpe_iid="$(mktemp)"
+    podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile.wpe" \
+      --layers --skip-unused-stages=true --network=none --target wpe-builder-1 \
+      --iidfile "$_tilo_wpe_iid" \
+      --source-date-epoch "$TILO_WPE_SOURCE_DATE_EPOCH" --rewrite-timestamp \
+      --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+      --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
+      --build-arg "TILO_WPE_SOURCE_DATE_EPOCH=$TILO_WPE_SOURCE_DATE_EPOCH" \
+      --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
+      "$TILO_REPO" \
+      || { rm -f "$_tilo_wpe_iid"; die "isolated WPE recipe build failed"; }
+    _tilo_wpe_id="$(tr -d '[:space:]' < "$_tilo_wpe_iid")"
+    rm -f "$_tilo_wpe_iid"
     [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
     _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
   fi

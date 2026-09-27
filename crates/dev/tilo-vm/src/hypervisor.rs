@@ -391,22 +391,6 @@ pub fn domain_xml_path(disk: &str) -> String {
     format!("{disk}.xml")
 }
 
-/// Text safe inside an XML element or a quoted attribute.
-fn xml_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\'' => out.push_str("&apos;"),
-            '"' => out.push_str("&quot;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 /// The libvirt domain for `vm`, defined with `virsh define`. That needs only
 /// libvirt's QEMU driver: no storage or network driver, no virt-install.
 ///
@@ -442,7 +426,7 @@ pub fn domain_xml_with_uuid(
     } else {
         ("kvm", "host-passthrough")
     };
-    let e = xml_escape;
+    let e = quick_xml::escape::escape;
     Ok(format!(
         "<domain type='{domain_type}'>
   <name>{name}</name>{uuid}
