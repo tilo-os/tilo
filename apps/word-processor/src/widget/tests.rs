@@ -130,7 +130,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         wp.inner.insert_str(&mut state.doc, "Untouched paragraph");
         wp.inner.enter(&mut state.doc);
         wp.inner.insert_str(&mut state.doc, "Edited paragraph");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let untouched = wp.blocks[0].text.as_ptr();
         for (key, text) in [
             (Key::Character("é".into()), Some("é")),
@@ -233,7 +233,14 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let c = wp.inner.containers.as_ref().unwrap();
         assert_eq!(
             wp.blocks,
-            qdoc::model::materialize_blocks(&state.doc, c, &wp.body_order[start..end])
+            qdoc::model::materialize_blocks(
+                &state.doc,
+                c,
+                &wp.body_order
+                    .ids(start..end)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            )
         );
     }
 
@@ -557,7 +564,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         let retained_text = wp.blocks[100].text.as_ptr();
         for focus in [60, 80, 70, 48] {
             wp.scroll_y = num::f64_of_usize(focus) * ESTIMATED_BLOCK_EXTENT;
-            wp.refresh_blocks(&state.doc);
+            wp.refresh_blocks(&mut state.doc);
             assert_eq!(
                 wp.blocks
                     .iter()
@@ -574,7 +581,10 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
                 qdoc::model::materialize_blocks(
                     &state.doc,
                     wp.inner.containers.as_ref().unwrap(),
-                    &wp.body_order[start..end]
+                    &wp.body_order
+                        .ids(start..end)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
                 )
             );
         }
@@ -585,14 +595,17 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         wp.set_caret_block_indent_view(123.0);
         wp.set_caret_block_first_line_view(42.0);
         wp.scroll_y = 70.0 * ESTIMATED_BLOCK_EXTENT;
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let (start, end) = wp.body_window_bounds();
         assert_eq!(
             wp.blocks,
             qdoc::model::materialize_blocks(
                 &state.doc,
                 wp.inner.containers.as_ref().unwrap(),
-                &wp.body_order[start..end]
+                &wp.body_order
+                    .ids(start..end)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
             ),
             "scrolling must discard uncommitted previews even without a live drag"
         );
@@ -630,7 +643,7 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
-    let first = wp.body_order[0].clone();
+    let first = wp.body_order.id_at(0).unwrap().to_owned();
     let cold_shapes = wp.dbg_layout_misses;
     assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
     let distant_scroll = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
@@ -676,8 +689,12 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
-    let first = wp.body_order[0].clone();
-    let deep = wp.body_order[VIEWPORT_BLOCK_WINDOW * 3].clone();
+    let first = wp.body_order.id_at(0).unwrap().to_owned();
+    let deep = wp
+        .body_order
+        .id_at(VIEWPORT_BLOCK_WINDOW * 3)
+        .unwrap()
+        .to_owned();
     wp.inner.set_caret(Caret {
         block: deep.clone(),
         offset: 0,
@@ -755,7 +772,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Intro");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
         let resources = Widget::resources(&wp, &state.doc);
@@ -774,7 +791,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             "toolbar affordance and palette spec build the same EncodedAction"
         );
         // And the affordance really created the table (a 2x2 = four cells).
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             wp.blocks.iter().filter(|b| b.kind == "cell").count(),
             4,
@@ -790,7 +807,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Body text");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let before = state.doc.get_heads();
 
         wp.apply_panel_hit(&mut state.doc, PanelHit::ParaAlign("center"));
@@ -824,7 +841,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             "panel align and palette spec build the same EncodedAction"
         );
         // The block really carries the centre alignment.
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let aligned = wp
             .blocks
             .iter()
@@ -839,7 +856,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "hello world hello there");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         wp.find.set_queries_for_tests("hello", "hi");
         wp.find.open(None, &wp.blocks);
@@ -850,7 +867,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
 
         wp.replace_all(&mut state.doc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.blocks[0].text, "hi world hi there");
         assert!(
             wp.find.matches().is_empty(),
@@ -962,7 +979,7 @@ fn character_marks_shape_their_spans() {
         wp.model_mut().insert_str(&mut state.doc, "hello world");
         select_range(&mut wp, 0, 5);
         wp.model_mut().set_highlight(&mut state.doc, "#fff35c");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let b = wp
             .blocks
             .iter()
@@ -993,7 +1010,7 @@ fn character_marks_shape_their_spans() {
         wp.model_mut().insert_str(&mut state.doc, "x2");
         select_range(&mut wp, 1, 2); // the "2"
         wp.model_mut().toggle_super(&mut state.doc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let b = wp
             .blocks
             .iter()
@@ -1041,7 +1058,7 @@ fn character_marks_shape_their_spans() {
 
         // Now set double spacing and redraw on the same path.
         wp.model_mut().set_line_spacing(&mut state.doc, 2.0);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
             2.0,
@@ -1177,7 +1194,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
 
         // Picking the Quote style makes the caret block adopt it (component-instance).
         wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("quote".into()));
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             wp.focused_style_key().as_deref(),
             Some("quote"),
@@ -1259,7 +1276,7 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
             n_before + 1,
             "a new style id was added"
         );
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let key = wp.focused_style_key().unwrap();
         assert!(
             key.starts_with("custom"),
@@ -1481,7 +1498,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             .expect("shared picker lays out each swatch")
             .center();
         left_click(&mut wp, &mut state, swatch);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
     }
 
@@ -1790,7 +1807,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         );
 
         wp.apply_tool(&mut state.doc, ToolAction::FontSizeInc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let up = wp.current_font_size();
         assert!(up > base, "A+ enlarges the selection: {base} -> {up}");
         // The nudge is a per-run character mark, not an edit of the Body style.
@@ -1813,7 +1830,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
 
         wp.apply_tool(&mut state.doc, ToolAction::Bold);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert!(
             wp.mark_active_in_selection("strong"),
             "the whole selection is now bold"
@@ -3919,11 +3936,11 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.insert_text_via_action(&mut state.doc, "X");
 
         let dispatched = wp.last_dispatched_for_test().expect("action dispatched");
-        let action: crate::actions::WordProcessorAction =
+        let action: crate::actions::RichTextAction =
             serde_json::from_slice(&dispatched.payload).unwrap();
         assert!(matches!(
             action,
-            crate::actions::WordProcessorAction::ReplaceSelection { .. }
+            crate::actions::RichTextAction::ReplaceSelection { .. }
         ));
         let blocks = qdoc::model::materialize(
             &state.doc,
@@ -5446,7 +5463,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Draft");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         pipeline_draw(&mut wp, &mut state, 1200, 700);
         wp.lifecycle.focused = true;
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
@@ -5547,7 +5564,7 @@ fn templates_replace_the_document_only_when_chosen() {
         // Author some pre-existing content so we can prove it's actually replaced.
         wp.model_mut()
             .insert_str(&mut state.doc, "Pre-existing rough draft");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             first_block(&wp, &state).map(|b| b.text),
             Some("Pre-existing rough draft".to_string()),
@@ -5676,7 +5693,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
             };
             wp.set_recovery_dir(dir.clone());
             wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
-            wp.refresh_blocks(&state.doc);
+            wp.refresh_blocks(&mut state.doc);
             if case == "stale" {
                 wp.inner.insert_str(&mut state.doc, " latest pending edit");
             } else if case == "partial" {
@@ -5826,7 +5843,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
         wp.set_recovery_dir(dir.clone());
         wp.set_file(dir.join("d.md"), WpFormat::Markdown);
         wp.model_mut().insert_str(&mut state.doc, "Keep me");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         let rp = wp.recovery_path();
         std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
@@ -6527,7 +6544,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+        presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
         presence.set_display_name(ui::permissions::UserId(peer.into()), "bob");
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
@@ -6549,7 +6566,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+        presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
@@ -6574,7 +6591,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         // Place "alice"'s caret 3 bytes into the first block.
-        presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
+        presence.set_remote_caret("alice".into(), block_presence_key(false, &block_id), 3);
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1, "one remote caret resolved");
@@ -6618,7 +6635,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         // "bob" selects bytes [0, 4) of the first block.
-        presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
+        presence.set_remote_selection("bob".into(), block_presence_key(false, &block_id), 0, 4);
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "a selection yields no bare caret");
@@ -6646,7 +6663,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
 
         let mut presence = PresenceCtx::empty();
         presence.selections.insert(
-            block_presence_key(&block_id),
+            block_presence_key(false, &block_id),
             vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
         );
 
@@ -6675,8 +6692,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let b1 = wp.laid[1].id.clone();
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
-        presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
+        presence.set_remote_caret("alice".into(), block_presence_key(false, &b0), 1);
+        presence.set_remote_caret("bob".into(), block_presence_key(false, &b1), 1);
 
         let (carets, _selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 2, "both peers' carets resolved");
@@ -6703,7 +6720,7 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let block_id = first_block_id(&wp);
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
+        presence.set_remote_caret("charlie".into(), block_presence_key(false, &block_id), 2);
 
         // Run the REAL five-pass draw with the populated presence (the same call
         // the App makes each frame). It must paint without panicking.
@@ -6795,7 +6812,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
             Some((key, ui::PresencePayload::Caret { pos })) => {
                 assert_eq!(
                     key,
-                    block_presence_key(&block),
+                    block_presence_key(false, &block),
                     "keyed to the caret's block"
                 );
                 // The caret block text is ASCII here, so byte offset == char offset.
@@ -6820,7 +6837,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let block = wp.model().caret().block.clone();
         match wp.presence_payload() {
             Some((key, ui::PresencePayload::Selection { start, end })) => {
-                assert_eq!(key, block_presence_key(&block));
+                assert_eq!(key, block_presence_key(false, &block));
                 assert_eq!((start, end), (1, 4), "selection reported as a byte range");
             }
             other => panic!("expected a Selection payload, got {other:?}"),

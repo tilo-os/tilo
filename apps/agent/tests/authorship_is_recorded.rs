@@ -22,7 +22,7 @@
 )]
 
 use automerge::AutoCommit;
-use word_processor::actions::{RegionKind, WordProcessorAction};
+use word_processor::actions::{RegionKind, RichTextAction};
 
 const AGENT: &str = "Claude";
 const PERSON: &str = "ada";
@@ -70,7 +70,7 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
 
         let note = " The bullet says 18:00.";
         editor
-            .apply(&WordProcessorAction::SpliceText {
+            .apply(&RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: "Doors at seven.".chars().count(),
@@ -120,7 +120,7 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
         let mut editor =
             tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
         editor
-            .apply(&WordProcessorAction::SpliceText {
+            .apply(&RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: "Doors at seven.".chars().count(),
@@ -154,7 +154,7 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
             tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
         // An edit that removes text authors nothing.
         editor
-            .apply(&WordProcessorAction::SpliceText {
+            .apply(&RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: 0,
