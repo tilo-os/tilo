@@ -136,6 +136,36 @@ pub struct VoiceState {
 
 pub struct ChatDoc;
 
+/// The names a freshly scaffolded workspace starts with, resolved in the
+/// desktop's language when it is created and stored as ordinary data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StarterNames {
+    /// The first-run workspace's own name.
+    workspace: String,
+    /// The category holding the text channels.
+    text_category: String,
+    /// The category holding the voice channels.
+    voice_category: String,
+    /// The first text channel.
+    text_channel: String,
+    /// The first voice channel.
+    voice_channel: String,
+}
+
+impl StarterNames {
+    /// The starter scaffold's names in the desktop's language: what a new
+    /// person reads as their first workspace, categories and channels.
+    fn localized() -> Self {
+        Self {
+            workspace: crate::i18n::t("chat-default-workspace"),
+            text_category: crate::i18n::t("chat-default-text-category"),
+            voice_category: crate::i18n::t("chat-default-voice-category"),
+            text_channel: crate::i18n::t("chat-default-text-channel"),
+            voice_channel: crate::i18n::t("chat-default-voice-channel"),
+        }
+    }
+}
+
 /// One agent lifecycle transition is an indivisible authored claim: pairing a
 /// state from one transition with the timestamp of another would invent an
 /// event nobody observed. This scalar deliberately remains atomic while trace
@@ -431,19 +461,41 @@ impl ChatDoc {
         if Self::is_seeded(doc) {
             return;
         }
+        let names = StarterNames::localized();
         let _ = doc.put(&ROOT, "seeded", true);
         Self::put_shared_roots(doc);
 
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
-        Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
-        Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
-        Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
+        Self::put_workspace(
+            doc,
+            "ws_home",
+            &names.workspace,
+            &monogram(&names.workspace),
+            0,
+            0,
+        );
+        Self::put_category(
+            doc,
+            "cat_home_text",
+            "ws_home",
+            &names.text_category,
+            0,
+            false,
+        );
+        Self::put_category(
+            doc,
+            "cat_home_voice",
+            "ws_home",
+            &names.voice_category,
+            1,
+            false,
+        );
         Self::put_channel(
             doc,
             "c_general",
             "ws_home",
             "cat_home_text",
-            "general",
+            &names.text_channel,
             "",
             ChannelKind::Text,
             0,
@@ -453,7 +505,7 @@ impl ChatDoc {
             "c_lounge",
             "ws_home",
             "cat_home_voice",
-            "Lounge",
+            &names.voice_channel,
             "",
             ChannelKind::Voice,
             0,
@@ -1904,6 +1956,7 @@ impl ChatDoc {
     /// switching to it lands on a real channel and the header "Call" button
     /// has somewhere to go. Returns the new workspace id.
     pub fn create_workspace(doc: &mut AutoCommit, name: &str) -> String {
+        let names = StarterNames::localized();
         let id = format!("ws_{}", Uuid::new_v4().simple());
         let order = Self::list_workspaces(doc)
             .into_iter()
@@ -1911,10 +1964,16 @@ impl ChatDoc {
             .max()
             .map_or(0, |m| m + 1);
         Self::put_workspace(doc, &id, name, &monogram(name), order as usize, order);
-        let text_cat = Self::create_category(doc, &id, "Channels");
-        Self::create_channel(doc, &id, &text_cat, "general", ChannelKind::Text);
-        let voice_cat = Self::create_category(doc, &id, "Voice");
-        Self::create_channel(doc, &id, &voice_cat, "Lounge", ChannelKind::Voice);
+        let text_cat = Self::create_category(doc, &id, &names.text_category);
+        Self::create_channel(doc, &id, &text_cat, &names.text_channel, ChannelKind::Text);
+        let voice_cat = Self::create_category(doc, &id, &names.voice_category);
+        Self::create_channel(
+            doc,
+            &id,
+            &voice_cat,
+            &names.voice_channel,
+            ChannelKind::Voice,
+        );
         id
     }
 
