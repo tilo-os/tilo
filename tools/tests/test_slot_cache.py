@@ -50,8 +50,8 @@ class SlotCacheTests(unittest.TestCase):
         first, second, third = 10**18, 2 * 10**18, 3 * 10**18
         with self.subTest(phase="a first job has nothing to restore"):
             checkout(self.workspace, {"src/a.rs": "a", "src/b.rs": "b"}, first)
-            restored, files = slot_cache.restore_mtimes(self.workspace, self.target)
-            self.assertEqual((restored, files), (0, 2))
+            restored, paths = slot_cache.restore_mtimes(self.workspace, self.target)
+            self.assertEqual((restored, paths), (0, 3))  # two files and src/
             self.assertFalse((self.target / slot_cache.SEALED).exists())
             slot_cache.seal(mock.Mock(workspace=str(self.workspace)))
             self.assertTrue((self.target / slot_cache.SEALED).exists())
@@ -60,7 +60,7 @@ class SlotCacheTests(unittest.TestCase):
         with self.subTest(phase="unchanged blobs get the mtime artifacts were built after"):
             checkout(self.workspace, {"src/a.rs": "a", "src/b.rs": "b changed"}, second)
             restored, _ = slot_cache.restore_mtimes(self.workspace, self.target)
-            self.assertEqual(restored, 1)
+            self.assertEqual(restored, 2)  # src/a.rs and src/
             self.assertEqual(mtime(self.workspace / "src/a.rs"), first)
             self.assertEqual(mtime(self.workspace / "src/b.rs"), second)
 
@@ -76,11 +76,53 @@ class SlotCacheTests(unittest.TestCase):
             os.utime(self.workspace / "src/b.rs", ns=(third + 10**9, third + 10**9))
             slot_cache.seal(mock.Mock(workspace=str(self.workspace)))
             sealed = slot_cache.load_manifest(self.target / slot_cache.SEALED)
-            self.assertEqual(set(sealed), {"src/a.rs"})
+            self.assertEqual(set(sealed), {"src/a.rs", "src/"})
             checkout(self.workspace, {"src/a.rs": "a", "src/b.rs": "b changed"}, 4 * 10**18)
             slot_cache.restore_mtimes(self.workspace, self.target)
             self.assertEqual(mtime(self.workspace / "src/a.rs"), third)
             self.assertEqual(mtime(self.workspace / "src/b.rs"), 4 * 10**18)
+
+    def test_directory_mtimes_are_restored_while_their_tracked_entries_stay(self) -> None:
+        first, second, third = 10**18, 2 * 10**18, 3 * 10**18
+
+        def fresh_checkout(files: dict[str, str], stamp: int) -> None:
+            for entry in self.workspace.iterdir():
+                if entry.name not in (".git", "target"):
+                    shutil.rmtree(entry)
+            checkout(self.workspace, files, stamp)
+            for directory in {Path(name).parent for name in files} - {Path(".")}:
+                for parent in (directory, *directory.parents):
+                    if parent != Path("."):
+                        os.utime(self.workspace / parent, ns=(stamp, stamp))
+
+        files = {"shader/a.wgsl": "a", "shader/shared/b.wgsl": "b"}
+        with self.subTest(phase="a sealed job vouches for its directories"):
+            fresh_checkout(files, first)
+            slot_cache.restore_mtimes(self.workspace, self.target)
+            slot_cache.seal(mock.Mock(workspace=str(self.workspace)))
+            sealed = slot_cache.load_manifest(self.target / slot_cache.SEALED)
+            self.assertIn("shader/", sealed)
+            self.assertIn("shader/shared/", sealed)
+
+        with self.subTest(phase="a new checkout with the same entries gets their mtimes back"):
+            fresh_checkout(files, second)
+            slot_cache.restore_mtimes(self.workspace, self.target)
+            self.assertEqual(mtime(self.workspace / "shader"), first)
+            self.assertEqual(mtime(self.workspace / "shader/shared"), first)
+            slot_cache.seal(mock.Mock(workspace=str(self.workspace)))
+
+        with self.subTest(phase="an added entry keeps the checkout's mtime"):
+            fresh_checkout({**files, "shader/shared/c.wgsl": "c"}, third)
+            slot_cache.restore_mtimes(self.workspace, self.target)
+            self.assertEqual(mtime(self.workspace / "shader"), first)
+            self.assertEqual(mtime(self.workspace / "shader/shared"), third)
+
+        with self.subTest(phase="a file a step adds unseals its directory"):
+            (self.workspace / "shader/generated.rs").write_text("x", encoding="utf-8")
+            slot_cache.seal(mock.Mock(workspace=str(self.workspace)))
+            sealed = slot_cache.load_manifest(self.target / slot_cache.SEALED)
+            self.assertNotIn("shader/", sealed)
+            self.assertIn("shader/shared/", sealed)
 
     def select(self, root: Path, key: str, now: float, *, used: int = 10, size: int = 1):
         with mock.patch.object(slot_cache, "used_percent", return_value=used), \
