@@ -1547,6 +1547,9 @@ search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbin
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
 search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
 search-action-workspace-view-subtitle = Lokale Arbeitsbereichsansicht
+search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
+# Zusätzliche Suchbegriffe für Arbeitsbereichsansichten; nicht angezeigt.
+search-action-workspace-view-keywords = arbeitsbereich aktivität verlauf
 search-action-provider-enable = Suche in { $source } aktivieren
 search-action-provider-enable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung anzeigen
 search-action-provider-disable = Suche in { $source } deaktivieren
