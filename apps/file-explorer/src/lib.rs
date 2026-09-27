@@ -35,7 +35,6 @@ pub mod external_drag;
 pub mod favorites;
 pub mod fileops;
 pub mod files_app;
-pub mod filesystem_metadata;
 pub mod framework_history;
 pub mod history_control;
 mod history_panel;
@@ -62,3 +61,6 @@ pub mod views;
 
 pub use command::{CommandSink, FileCommand};
 pub use files_app::{FileExplorerWidget, StartupInputs};
+
+#[cfg(all(test, windows))]
+mod unavailable_projection_tests;

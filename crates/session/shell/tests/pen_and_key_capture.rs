@@ -460,13 +460,13 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
         "the lock screen gets the tip as a click"
     );
     h.pump();
+    let wire = std::mem::take(&mut h.client.wire);
+    drop(h);
     assert!(
-        !h.client
-            .wire
+        !wire
             .iter()
             .any(|w| matches!(w, Wire::Down | Wire::Button(..))),
-        "{:?}",
-        h.client.wire
+        "{wire:?}"
     );
 }
 
@@ -549,6 +549,9 @@ fn an_inhibiting_vm_gets_super_chords_until_focus_or_the_release_chord_takes_the
         "handed-back shortcuts stay with the shell while focus stays put"
     );
     h.pump();
-    assert!(h.client.wire.contains(&Wire::Inactive));
-    assert!(!h.state.shortcut_inhibit.is_active());
+    let released = h.client.wire.contains(&Wire::Inactive);
+    let still_active = h.state.shortcut_inhibit.is_active();
+    drop(h);
+    assert!(released);
+    assert!(!still_active);
 }

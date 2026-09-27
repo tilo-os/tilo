@@ -50,7 +50,7 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let resolved = environment.resolve(definition.app_id, &author)?;
-        let host = ApplicationHost::with_store(
+        let mut host = ApplicationHost::with_store(
             Rc::new(app_state::FsStore::new(resolved.profile_root)),
             resolved.device_id,
             &resolved.workspace_id,
@@ -58,6 +58,7 @@ impl NativeProcessHost {
             Rc::new(RefCell::new(resolved.permissions)),
             tilo_actions::ActionContext::default(),
         )?;
+        host.package_id = Some(resolved.package_id);
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -93,6 +94,7 @@ struct NativeProcessEnvironment {
 }
 
 struct ResolvedNativeProcessHost {
+    package_id: String,
     profile_root: PathBuf,
     device_id: String,
     workspace_id: String,
@@ -133,12 +135,12 @@ impl NativeProcessEnvironment {
         app_id: &str,
         author: &UserId,
     ) -> Result<ResolvedNativeProcessHost, LaunchError> {
-        if self
+        let package_id = self
             .package_id
             .as_deref()
             .or(self.quick_app_id.as_deref())
-            .is_some_and(|actual| actual != app_id)
-        {
+            .map_or_else(|| app_id.to_owned(), str::to_owned);
+        if package_id != app_id {
             return Err(LaunchError::BindingMismatch);
         }
         let profile_root = self.persistent_profile_root()?;
@@ -159,7 +161,7 @@ impl NativeProcessEnvironment {
         let permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
         let instance_id = self.continuity_instance.map_or_else(
-            || Ok(stable_instance_id(app_id)),
+            || Ok(stable_instance_id(&package_id)),
             |value| {
                 value.parse::<u64>().map_err(|_| {
                     LaunchError::Operation("invalid launcher continuation identity".into())
@@ -167,6 +169,7 @@ impl NativeProcessEnvironment {
             },
         )?;
         Ok(ResolvedNativeProcessHost {
+            package_id,
             profile_root,
             device_id,
             workspace_id,
@@ -299,6 +302,10 @@ fn validate_device_id(value: &str) -> Result<String, LaunchError> {
 }
 
 pub struct ApplicationHost {
+    /// The launcher-bound package id of a native process; only that app's
+    /// definition may open records through this host. Explicit/capture hosts
+    /// take the app id from the definition passed to `records_for`.
+    package_id: Option<String>,
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -379,6 +386,7 @@ impl ApplicationHost {
                 .map_err(LaunchError::Restore)?,
         );
         Ok(Self {
+            package_id: None,
             owners: RecordOwners::with_store(store),
             views,
             device_id,
@@ -401,8 +409,12 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        if package_id != definition.app_id {
+            return Err(LaunchError::BindingMismatch);
+        }
         self.owners
-            .open(definition.app_id, self.views.workspace_id())
+            .open(package_id, self.views.workspace_id())
             .map_err(LaunchError::Record)
     }
 
@@ -421,11 +433,14 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        if saved.as_ref().is_some_and(|saved| {
-            saved.app_id != definition.app_id
-                || saved.record_id != checkout.id.as_str()
-                || saved.record_kind != checkout.kind.as_str()
-        }) {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        if package_id != definition.app_id
+            || saved.as_ref().is_some_and(|saved| {
+                saved.app_id != package_id
+                    || saved.record_id != checkout.id.as_str()
+                    || saved.record_kind != checkout.kind.as_str()
+            })
+        {
             return Err(LaunchError::BindingMismatch);
         }
         Ok(saved)
@@ -639,5 +654,23 @@ mod native_process_tests {
                 b"damaged\n"
             );
         }
+    }
+
+    #[test]
+    fn signed_package_id_must_name_the_launched_definition() {
+        let temp = tempfile::tempdir().unwrap();
+        let author = UserId("person-a".into());
+        let mut exact = environment(temp.path());
+        exact.package_id = Some("so.tilo.notes".into());
+        let resolved = exact.resolve("so.tilo.notes", &author).unwrap();
+        assert_eq!(resolved.package_id, "so.tilo.notes");
+        assert_eq!(resolved.instance_id, stable_instance_id("so.tilo.notes"));
+
+        let mut foreign_package = environment(temp.path());
+        foreign_package.package_id = Some("so.tilo.photos".into());
+        assert!(matches!(
+            foreign_package.resolve("so.tilo.notes", &author),
+            Err(LaunchError::BindingMismatch)
+        ));
     }
 }

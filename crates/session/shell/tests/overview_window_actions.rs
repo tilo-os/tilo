@@ -359,8 +359,11 @@ fn clicking_a_preview_goes_to_its_window_and_closes_the_overview() {
     assert!(h.button(MouseButton::Left, ElementState::Pressed));
     assert!(h.overview_open(), "a press alone may still become a drag");
     assert!(h.button(MouseButton::Left, ElementState::Released));
-    assert_eq!(h.focused(), 2, "the click went to the window");
-    assert!(!h.overview_open(), "and closed the overview");
+    let focused = h.focused();
+    let overview_open = h.overview_open();
+    drop(h);
+    assert_eq!(focused, 2, "the click went to the window");
+    assert!(!overview_open, "and closed the overview");
 }
 
 #[test]
@@ -378,6 +381,7 @@ fn a_middle_click_closes_the_window_and_the_overview_stays() {
     assert!(h.overview_open());
     assert_eq!(h.focused(), 1, "focus did not move");
     let titles: Vec<String> = h.window_row().into_iter().map(|(name, ..)| name).collect();
+    drop(h);
     assert_eq!(titles, ["Terminal 1", "Browser 2", "Notes"]);
 }
 
@@ -414,11 +418,11 @@ fn dragging_a_preview_onto_another_workspace_moves_the_window_there() {
     // Let go over the room you are in, or over nothing: nothing moves.
     let from = h.preview_of("Browser 2");
     h.mouse_drag(from, Point::new(from.x, from.y + 40.0));
-    assert!(h.tabs_in(h.home()).iter().any(|tab| tab.id == 2));
-    assert!(
-        h.overview_open(),
-        "a drag that lands nowhere is not a click"
-    );
+    let stayed = h.tabs_in(h.home()).iter().any(|tab| tab.id == 2);
+    let overview_open = h.overview_open();
+    drop(h);
+    assert!(stayed);
+    assert!(overview_open, "a drag that lands nowhere is not a click");
 }
 
 #[test]
@@ -448,8 +452,10 @@ fn a_client_window_moves_as_a_fresh_instance_in_the_destination_sandbox() {
         }
         other => panic!("the running process must not cross sandboxes, got {other:?}"),
     }
+    let close_requests = h.chrome.borrow_mut().take_surface_close_requests();
+    drop(h);
     assert_eq!(
-        h.chrome.borrow_mut().take_surface_close_requests(),
+        close_requests,
         [CLIENT_SURFACE],
         "the instance in the old sandbox is asked to close"
     );
@@ -476,8 +482,11 @@ fn arrows_walk_the_previews_and_enter_goes_to_the_selected_window() {
     assert!(h.overview_open());
 
     assert!(h.key(Key::Named(NamedKey::Enter)));
-    assert_eq!(h.focused(), 3, "Enter went to the selected window");
-    assert!(!h.overview_open());
+    let focused = h.focused();
+    let overview_open = h.overview_open();
+    drop(h);
+    assert_eq!(focused, 3, "Enter went to the selected window");
+    assert!(!overview_open);
 }
 
 #[test]
@@ -488,12 +497,15 @@ fn up_and_down_leave_the_previews_for_the_rooms() {
     assert!(h.key(Key::Named(NamedKey::ArrowDown)));
     assert_eq!(h.selected_window(), None);
     assert!(h.key(Key::Named(NamedKey::Enter)));
+    let active = h.chrome.borrow().tree().desktop.active;
+    let elsewhere = h.elsewhere;
+    let focused = h.focused();
+    drop(h);
     assert_eq!(
-        h.chrome.borrow().tree().desktop.active,
-        h.elsewhere,
+        active, elsewhere,
         "Enter goes to the room the keyboard moved to"
     );
-    assert_eq!(h.focused(), 1, "and focuses no window in the room it left");
+    assert_eq!(focused, 1, "and focuses no window in the room it left");
 }
 
 #[test]
@@ -522,6 +534,9 @@ fn a_tap_goes_to_the_window_and_a_finger_drag_moves_it() {
     let browser = h.preview_of("Browser 2");
     assert!(h.touch(2, TouchPhase::Started, browser));
     assert!(h.touch(2, TouchPhase::Ended, browser));
-    assert_eq!(h.focused(), 2, "the tap went to the window");
-    assert!(!h.overview_open());
+    let focused = h.focused();
+    let overview_open = h.overview_open();
+    drop(h);
+    assert_eq!(focused, 2, "the tap went to the window");
+    assert!(!overview_open);
 }

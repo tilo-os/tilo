@@ -2368,7 +2368,15 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
         Command::DiscoverDevice { timeout } => discover(timeout, EnrollmentKind::PersonalDevice),

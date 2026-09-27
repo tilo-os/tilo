@@ -2268,8 +2268,14 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 &mut app,
                 invocation,
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &automerge::ROOT,
             )
@@ -2305,8 +2311,14 @@ fn global_search_and_canonical_views_route_without_mutation() {
             Widget::invoke_resource_operation(
                 &mut app,
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &automerge::ROOT,
             )
@@ -2441,7 +2453,10 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("view resource exposes open");
         let operation = match &open.input {
             tilo_actions::ActionInput::Immediate(operation) => operation,
-            tilo_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("open destination is immediate")
+            }
         };
         let heads = doc.get_heads();
         assert!(

@@ -46,12 +46,10 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # exact for paths containing spaces and non-ASCII.
 url.workspace = true
 uuid.workspace = true
+bounded-command = { path = "../../crates/system/bounded-command" }
 hex.workspace = true
 sha2.workspace = true
 workspace-hack = { version = "0.1" }
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -42,3 +42,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Enable Automerge's own browser entropy and clock support.
+automerge = { workspace = true, features = ["wasm"] }

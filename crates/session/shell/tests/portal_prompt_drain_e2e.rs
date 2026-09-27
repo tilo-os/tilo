@@ -351,3 +351,9 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
         Box::pin(phase()).await;
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

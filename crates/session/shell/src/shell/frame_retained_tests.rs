@@ -4,6 +4,10 @@
     clippy::cast_sign_loss,
     reason = "fixed native-4K test allocation and index arithmetic"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use super::*;
 
@@ -408,6 +412,13 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         ]
     );
     assert!(tree.desktop.workspaces[2].collaborators.is_empty());
+    // The fixture is the owning action for its presented tabs: it creates
+    // exactly their records, and constructing the tree fabricates no others.
+    let expected_records = group
+        .tabs
+        .iter()
+        .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
+        .collect::<std::collections::BTreeSet<_>>();
     drop(tree);
     let actual_records = chrome
         .records()
@@ -416,9 +427,9 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         .map(|record| record.id.to_string())
         .collect::<std::collections::BTreeSet<_>>();
     drop(chrome);
-    assert!(
-        actual_records.is_empty(),
-        "constructing a fixture tree must not fabricate document authority; owning actions create records explicitly"
+    assert_eq!(
+        actual_records, expected_records,
+        "only the fixture's explicit creations may hold document authority"
     );
 }
 

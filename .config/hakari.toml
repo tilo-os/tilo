@@ -78,6 +78,10 @@ workspace-members = [
     "xdg-paths",
     # builder sccache canary
     "atomic-file",
+    # The [patch.crates-io] replacement for rustls-native-certs sits below
+    # third-party crates the hack itself depends on (rustls-platform-verifier),
+    # so depending on the hack would be a cycle.
+    "rustls-native-certs",
     # browser wasm32 registry verifier and its member dependency: the hack's
     # native features pull mio there
     "registry-types",

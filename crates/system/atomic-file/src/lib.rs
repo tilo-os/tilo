@@ -11,8 +11,16 @@
 //! power loss can leave the directory entry pointing at a file whose data blocks were never
 //! written.
 //!
-//! [`write()`] does all four steps: write the temp file, `fsync` it, rename, and `fsync` the
-//! containing directory so the rename itself is durable.
+//! On Unix, [`write()`] writes and flushes a sibling file, renames it, and flushes
+//! the held containing directory. On admitted local NTFS, it creates a native
+//! write-through sibling, flushes it, renames through the held parent using
+//! extended POSIX semantics, then flushes the same retained writable file.
+//!
+//! The Windows sequence composes documented NTFS metadata behavior; native
+//! crash, operating-system and storage/filter qualification remains required.
+//! Unsupported Windows volumes fail admission before file publication effects.
+//! Both protocols require an existing durably provisioned parent and a trusted
+//! child namespace (or caller-held exclusion against child-name mutation).
 //!
 //! # What it does not do
 //!
@@ -45,19 +53,69 @@
     )
 )]
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod bounded;
 
 #[cfg(feature = "json")]
 pub mod json;
 
+#[cfg(unix)]
+mod existing;
+pub mod lease;
+#[cfg(unix)]
+pub use existing::ExistingCommitError;
+
+#[cfg(unix)]
+mod provision;
+#[cfg(unix)]
+pub use provision::{
+    DirectoryReconcileError, DirectoryState, ProvisionError, directory_state, provision_directory,
+    reconcile_directory,
+};
+
+#[cfg(feature = "test-support")]
+pub mod directory_probe;
+
+#[cfg(any(unix, windows))]
+mod directory;
+#[cfg(any(unix, windows))]
+mod identity;
+#[cfg(any(unix, windows))]
+mod native;
+#[cfg(not(any(unix, windows)))]
+mod portable;
+#[cfg(any(unix, windows))]
+mod publication;
+#[cfg(any(unix, windows))]
+mod replacement_block;
+#[cfg(all(any(unix, windows), feature = "test-support"))]
+pub mod test_support;
+#[cfg(any(unix, windows))]
+pub use replacement_block::block_replacement;
+
+#[cfg(any(unix, windows))]
+pub use directory::StorageDirectory;
+#[cfg(any(unix, windows))]
+pub use identity::{FileIdentity, VolumeIdentity};
+#[cfg(any(unix, windows))]
+pub use publication::{
+    Privacy, PublicationError, PublicationState, PublishMode, publication_state, publish_if_absent,
+    replace,
+};
+
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Sequence for the hidden sibling names [`write_with_temp_opener`] and
+/// [`create_with_temp_opener`] offer to caller-supplied temp openers.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
-/// The parent directory must already exist — see [`write_creating_parent`].
+/// The parent directory must already be durable — see [`write_creating_parent`]
+/// for first-launch preparation (durable on Unix; transitional on Windows).
 ///
 /// # Errors
 ///
@@ -65,7 +123,14 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// over `path` fails (including `EXDEV` if `path`'s parent is on a different filesystem
 /// than the temp file, or if `path`'s parent doesn't exist).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_inner(path, bytes, None)
+    #[cfg(any(unix, windows))]
+    {
+        replace(path, bytes, Privacy::Inherit).map_err(PublicationError::into_io_error)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        portable::write(path, bytes)
+    }
 }
 
 /// Atomically save a user document, following an existing symbolic link and
@@ -104,7 +169,7 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     // Do not let directory replacement bypass the target's write access. This
     // opens without truncating, so an access refusal leaves its bytes intact.
-    drop(OpenOptions::new().write(true).open(&target)?);
+    drop(fs::OpenOptions::new().write(true).open(&target)?);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -122,24 +187,57 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// [`write()`], creating the parent directory first when it is missing.
 ///
+/// Unix opens/creates the entire parent chain, fsyncs every held directory
+/// leaf-to-root, and publishes relative to the held leaf. Existing aliases are
+/// admitted, but unresolved `missing/../other` suffixes fail before creation.
+/// Windows parent creation remains transitional: file commit does not establish
+/// durability of newly created ancestors.
+///
 /// # Errors
 ///
 /// Returns an error if the parent directory can't be created, or any error [`write()`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    create_parent(path)?;
-    write_inner(path, bytes, None)
+    #[cfg(unix)]
+    {
+        write_provisioned(path, bytes, None)
+    }
+    #[cfg(windows)]
+    {
+        create_parent(path)?;
+        write(path, bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        portable::write_creating_parent(path, bytes)
+    }
 }
 
 /// [`write_with_mode`], creating the parent directory first when it is
 /// missing. The final file gets its restrictive mode before its atomic rename.
+/// Directory creation uses ordinary inherited modes, independently of file mode.
+/// Parent durability has the same platform-specific behavior as
+/// [`write_creating_parent`].
 ///
 /// # Errors
 ///
 /// Returns an error if the parent directory cannot be created, or any error
 /// [`write_with_mode`] documents.
 pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    create_parent(path)?;
-    write_inner(path, bytes, Some(mode))
+    #[cfg(windows)]
+    publication::validate_windows_mode(mode).map_err(PublicationError::into_io_error)?;
+    #[cfg(unix)]
+    {
+        write_provisioned(path, bytes, Some(mode))
+    }
+    #[cfg(windows)]
+    {
+        create_parent(path)?;
+        publication::replace_with_mode(path, bytes, mode).map_err(PublicationError::into_io_error)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        portable::write_creating_parent_with_mode(path, bytes, mode)
+    }
 }
 
 /// Save user-private state: the parent directory is created owner-only (`0700`)
@@ -152,7 +250,7 @@ pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> 
 /// any error [`write_with_mode`] documents.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     create_private_parent(path)?;
-    write_inner(path, bytes, Some(0o600))
+    write_with_mode(path, bytes, 0o600)
 }
 
 /// Create `path`'s parent owner-only, and restrict it when it already exists:
@@ -213,6 +311,37 @@ pub fn create_with_temp_opener(
     publish(path, bytes, open_temp, Publish::CreateNew)
 }
 
+#[cfg(unix)]
+fn write_provisioned(path: &Path, bytes: &[u8], exact_mode: Option<u32>) -> io::Result<()> {
+    let not_published =
+        |source| PublicationError::new(PublicationState::NotPublished, source).into_io_error();
+    let name = path.file_name().ok_or_else(|| {
+        not_published(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "publication path has no file name",
+        ))
+    })?;
+    native::validate_component(name).map_err(not_published)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory =
+        provision_directory(parent, Privacy::Inherit).map_err(ProvisionError::into_io_error)?;
+    directory
+        .publish_with_mode(
+            name,
+            bytes,
+            PublishMode::Replace,
+            Privacy::Inherit,
+            exact_mode,
+        )
+        .map_err(PublicationError::into_io_error)
+}
+
+#[cfg(windows)]
+// Transitional parent preparation only; ancestor durability is handled elsewhere:
+// create_dir_all does not establish that the new parent is crash durable.
 fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -229,9 +358,17 @@ fn create_parent(path: &Path) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns any error [`write()`] documents. `mode` is ignored (no-op) on non-Unix targets.
+/// Returns any error [`write()`] documents. On Windows, only `0o600` is supported
+/// and maps to [`Privacy::OwnerOnly`]; other raw modes fail before mutation.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    write_inner(path, bytes, Some(mode))
+    #[cfg(any(unix, windows))]
+    {
+        publication::replace_with_mode(path, bytes, mode).map_err(PublicationError::into_io_error)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        portable::write_with_mode(path, bytes, mode)
+    }
 }
 
 /// Replace `path` with `bytes` for data that can be recreated, such as a cache entry: readers
@@ -247,14 +384,15 @@ pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish(
         path,
         bytes,
-        |tmp| open_temp(tmp, None),
+        |tmp| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(tmp)
+        },
         Publish::ReplaceUnsynced,
     )
     .map(|_| ())
-}
-
-fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    publish(path, bytes, |tmp| open_temp(tmp, mode), Publish::Replace).map(|_| ())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -379,66 +517,12 @@ fn create_temp(
     ))
 }
 
-/// The default temp opener: exclusive creation, with `mode` applied exactly.
-fn open_temp(tmp: &Path, mode: Option<u32>) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    if let Some(mode) = mode {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(mode);
-    }
-    #[cfg(not(unix))]
-    let _ = mode;
-    let file = options.open(tmp)?;
-    #[cfg(unix)]
-    if let Some(mode) = mode {
-        use std::os::unix::fs::PermissionsExt;
-        // `mode()` is filtered by umask. Restore the caller's exact contract
-        // while the file still has only its hidden temporary name; the
-        // initial mode can only be stricter.
-        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
-            drop(file);
-            let _ = fs::remove_file(tmp);
-            return Err(error);
-        }
-    }
-    Ok(file)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn temp_paths_and_directory_barriers_target_the_containing_directory() {
-        // Phase `the_temp_file_sits_beside_the_target`.
-        {
-            // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
-            // machine where /tmp is a separate mount.
-            let t = temp_path(Path::new("/var/lib/tilo/state.automerge"), 7);
-            assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
-            assert!(
-                t.file_name().unwrap().to_string_lossy().starts_with('.'),
-                "temp file should be hidden: {t:?}"
-            );
-            assert!(
-                t.extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
-                "expected a .tmp extension, got {t:?}"
-            );
-        }
-        // Phase `two_writes_do_not_share_a_temp_path`.
-        {
-            let a = temp_path(Path::new("/x/doc"), 1);
-            let b = temp_path(Path::new("/x/doc"), 2);
-            assert_ne!(a, b, "every write needs a no-clobber temporary path");
-            assert!(
-                a.to_string_lossy()
-                    .contains(&std::process::id().to_string()),
-                "temp path must be process-scoped: {a:?}"
-            );
-        }
+    fn directory_barriers_target_the_containing_directory() {
         // Phase `the_directory_barrier_targets_the_containing_directory`.
         {
             assert_eq!(parent_or_current(Path::new("/a/b/c")), Path::new("/a/b"));
@@ -457,6 +541,7 @@ mod tests {
     }
     use tempfile::TempDir;
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn writes_publish_only_complete_values_and_leave_no_temporary_files() {
         // Phase `writes_the_bytes`.
@@ -551,14 +636,41 @@ mod tests {
             fs::create_dir(&target).unwrap();
             fs::write(target.join("marker"), b"original").unwrap();
 
-            assert!(write(&target, b"replacement").is_err());
+            let error = write(&target, b"replacement").unwrap_err();
+            #[cfg(windows)]
+            assert_eq!(
+                publication_state(&error),
+                Some(PublicationState::PublicationUnknown)
+            );
+            #[cfg(not(windows))]
+            let _ = error;
             assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
             let leftovers = fs::read_dir(d.path())
                 .unwrap()
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
                 .count();
+            #[cfg(not(windows))]
             assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
+            #[cfg(windows)]
+            {
+                assert_eq!(leftovers, 1, "ambiguous rename must preserve its stage");
+                let stage = fs::read_dir(d.path())
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .find(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                    .unwrap();
+                assert_eq!(fs::read(stage.path()).unwrap(), b"replacement");
+                let typed = error
+                    .into_inner()
+                    .unwrap()
+                    .downcast::<PublicationError>()
+                    .unwrap();
+                assert_eq!(
+                    typed.retry_commit().unwrap_err().state(),
+                    PublicationState::PublicationUnknown
+                );
+            }
         }
         // Phase `a_missing_parent_is_an_error_not_a_silent_success`.
         {
@@ -631,7 +743,10 @@ mod tests {
                 if offered.len() == 1 {
                     return Err(io::Error::from(io::ErrorKind::AlreadyExists));
                 }
-                OpenOptions::new().write(true).create_new(true).open(tmp)
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(tmp)
             })
             .unwrap();
             assert_eq!(offered.len(), 2);
@@ -658,7 +773,12 @@ mod tests {
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("broker-identity");
-            let open = |tmp: &Path| OpenOptions::new().write(true).create_new(true).open(tmp);
+            let open = |tmp: &Path| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(tmp)
+            };
             assert!(create_with_temp_opener(&p, b"first", open).unwrap());
             assert!(!create_with_temp_opener(&p, b"second", open).unwrap());
             assert_eq!(fs::read(&p).unwrap(), b"first");
@@ -669,11 +789,31 @@ mod tests {
             );
         }
     }
+
+    #[cfg(all(any(unix, windows), feature = "test-support"))]
+    #[test]
+    fn publication_commit_failure_can_be_retried_without_republishing() {
+        use crate::test_support::{Checkpoint, with_failure};
+        use crate::{Privacy, PublicationState};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state");
+        crate::write(&path, b"old").unwrap();
+        let error = with_failure(Checkpoint::BeforeCommit, || {
+            crate::replace(&path, b"new", Privacy::Inherit)
+        })
+        .unwrap_err();
+        assert_eq!(error.state(), PublicationState::PublishedDurabilityUnknown);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(error.retry_commit().is_ok());
+    }
 }
 
 #[cfg(test)]
 mod document_target_tests {
     use super::*;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[test]
     fn document_save_readonly_target_refuses_without_changing_bytes() {

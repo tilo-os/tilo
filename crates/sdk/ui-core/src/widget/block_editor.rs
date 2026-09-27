@@ -4654,39 +4654,43 @@ pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
 // paragraph / heading{1..3} / bullet:{indent} / checklist:{indent}:{0|1}
 // / code:{lang} / divider.
 
-/// Derived from block position, so a peer's caret/selection renders on
-/// the matching block everywhere.
-pub fn block_presence_key(index: usize) -> PresenceKey {
+/// Keyed by the block's stable CRDT id (never its position), so a peer's
+/// caret/selection stays on the same block when blocks are inserted, removed
+/// or moved above it on either side.
+pub fn block_presence_key(block_id: &str) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
             PathSegment::Field("notes_block".to_string()),
-            PathSegment::Index(u32::try_from(index).unwrap_or(u32::MAX)),
+            PathSegment::Field(block_id.to_string()),
         ],
     }
 }
 
-/// A document selection uses one transport frame; block endpoints live in
-/// the key while the existing selection payload carries endpoint bytes.
-pub fn document_selection_presence_key(start_block: usize, end_block: usize) -> PresenceKey {
+/// A document selection uses one transport frame: the start block's stable
+/// id and the number of blocks it spans after that block live in the key,
+/// the existing selection payload carries the endpoint bytes. Compact enough
+/// for the live presence anchor bound (64 bytes with a UUID block id).
+pub fn document_selection_presence_key(start_block_id: &str, span: usize) -> PresenceKey {
     PresenceKey::Widget {
         path: vec![
-            PathSegment::Field("notes_document_selection".to_string()),
-            PathSegment::Index(u32::try_from(start_block).unwrap_or(u32::MAX)),
-            PathSegment::Index(u32::try_from(end_block).unwrap_or(u32::MAX)),
+            PathSegment::Field("notes_sel".to_string()),
+            PathSegment::Field(start_block_id.to_string()),
+            PathSegment::Index(u32::try_from(span).unwrap_or(u32::MAX)),
         ],
     }
 }
 
-fn document_selection_blocks(key: &PresenceKey) -> Option<(usize, usize)> {
+/// `(start block id, span)` of a document selection key.
+fn document_selection_parts(key: &PresenceKey) -> Option<(&str, usize)> {
     let PresenceKey::Widget { path } = key else {
         return None;
     };
     match path.as_slice() {
         [
             PathSegment::Field(tag),
-            PathSegment::Index(start),
-            PathSegment::Index(end),
-        ] if tag == "notes_document_selection" => Some((*start as usize, *end as usize)),
+            PathSegment::Field(start),
+            PathSegment::Index(span),
+        ] if tag == "notes_sel" => Some((start.as_str(), *span as usize)),
         _ => None,
     }
 }
@@ -7528,10 +7532,12 @@ impl Widget for BlockEditor {
         }
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
-        // fresh `char_x_positions`.
+        // fresh `char_x_positions`. Cross-block selections are resolved from
+        // their start block id once per frame.
+        let document_selections = self.resolve_document_selections(presence);
         for (i, b) in self.blocks.iter().enumerate() {
             if painted[i] {
-                self.draw_block_presence(i, b, &mut ctx);
+                self.draw_block_presence(i, b, &document_selections, &mut ctx);
             }
         }
         for (index, block) in self.blocks.iter().enumerate() {
@@ -7711,6 +7717,9 @@ impl Widget for BlockEditor {
         self.focus_block_under_mouse(event, &mut ctx);
 
         self.route_event_to_focused_block(event, &mut ctx);
+        // Consumed input can move the caret or selection without editing text.
+        // Repaint that change once; focus alone is not an animation source.
+        self.dirty |= *ctx.handled;
     }
 
     fn name(&self) -> &'static str {
@@ -7730,15 +7739,16 @@ impl Widget for BlockEditor {
         }
         if let Some(selection) = self.document_selection {
             let (start, end) = selection.ordered();
+            let start_id = self.blocks.get(start.block)?.id.as_str();
             return Some((
-                document_selection_presence_key(start.block, end.block),
+                document_selection_presence_key(start_id, end.block.saturating_sub(start.block)),
                 PresencePayload::Selection {
                     start: start.byte,
                     end: end.byte,
                 },
             ));
         }
-        let key = block_presence_key(idx);
+        let key = block_presence_key(&block.id);
         // A selection takes priority over the bare caret.
         if let Some((start, end)) = block.line.selection_range() {
             return Some((key, PresencePayload::Selection { start, end }));
@@ -8566,9 +8576,7 @@ impl Widget for BlockEditor {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.visual_formula_focus.is_some()
-            || self.blocks.iter().any(|b| b.line.is_focused())
+        self.dirty || self.visual_formula_focus.is_some()
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -8603,6 +8611,15 @@ impl Widget for BlockEditor {
         let was = self.structure_dirty;
         self.structure_dirty = false;
         was
+    }
+
+    /// The editor is a column of one taffy node per line; its own margins
+    /// and formula minimums are styles set at build time (a structural
+    /// change), so its size can only move when a line's does. Forwarded per
+    /// line rather than through `children()`, which the editor does not
+    /// expose, so an idle document re-measures nothing.
+    fn is_layout_dirty(&self) -> bool {
+        self.blocks.iter().any(|block| block.line.is_layout_dirty())
     }
 }
 
@@ -8655,8 +8672,49 @@ impl BlockEditor {
     /// Peer authorship marker, live-typing glow, carets and selection
     /// bands for one block — collaboration overlays drawn after every
     /// block's own content so they land on top.
-    fn draw_block_presence(&self, i: usize, b: &Block, ctx: &mut BlockDrawCtx<'_>) {
-        let key = block_presence_key(i);
+    /// `(start index, end index, user, byte range)` of every remote document
+    /// selection whose start block exists here; the span is clamped to the
+    /// last block.
+    fn resolve_document_selections<'p>(
+        &self,
+        presence: &'p PresenceCtx,
+    ) -> Vec<(
+        usize,
+        usize,
+        &'p crate::permissions::UserId,
+        crate::presence::SelectionRange,
+    )> {
+        let mut out = Vec::new();
+        for (key, list) in &presence.selections {
+            let Some((start_id, span)) = document_selection_parts(key) else {
+                continue;
+            };
+            let Some(start) = self.blocks.iter().position(|block| block.id == start_id) else {
+                continue;
+            };
+            let end = start
+                .saturating_add(span)
+                .min(self.blocks.len().saturating_sub(1));
+            for (user, range) in list {
+                out.push((start, end, user, *range));
+            }
+        }
+        out
+    }
+
+    fn draw_block_presence(
+        &self,
+        i: usize,
+        b: &Block,
+        document_selections: &[(
+            usize,
+            usize,
+            &crate::permissions::UserId,
+            crate::presence::SelectionRange,
+        )],
+        ctx: &mut BlockDrawCtx<'_>,
+    ) {
+        let key = block_presence_key(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
         let _tr_rect = {
@@ -8726,28 +8784,23 @@ impl BlockEditor {
         }
         // Cross-block selection presence is sent once under a document
         // key, then expanded into the same per-line geometry locally.
-        for (document_key, list) in &ctx.presence.selections {
-            let Some((start_block, end_block)) = document_selection_blocks(document_key) else {
-                continue;
-            };
+        for &(start_block, end_block, user, range) in document_selections {
             if i < start_block || i > end_block {
                 continue;
             }
-            for (user, range) in list {
-                let start = if i == start_block { range.start } else { 0 };
-                let end = if i == end_block {
-                    range.end
-                } else {
-                    line.value().len()
-                };
-                ctx.presence.draw_peer_selection(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.transform,
-                    user,
-                    line.selection_rect(ctx.theme, start, end),
-                );
-            }
+            let start = if i == start_block { range.start } else { 0 };
+            let end = if i == end_block {
+                range.end
+            } else {
+                line.value().len()
+            };
+            ctx.presence.draw_peer_selection(
+                ctx.scene,
+                ctx.theme,
+                ctx.transform,
+                user,
+                line.selection_rect(ctx.theme, start, end),
+            );
         }
     }
 }
@@ -9246,6 +9299,11 @@ impl BlockEditor {
             return;
         };
         if self.focused == Some(idx) {
+            // A programmatic focus (binding a page places the caret) leaves
+            // the block and its line focused without the host keyboard owner
+            // following. A click on it still names this editor the owner;
+            // re-claiming an already owned focus is a host no-op.
+            *ctx.focus_target = Some(ctx.node_id);
             return;
         }
         if let Some(prev) = self.focused

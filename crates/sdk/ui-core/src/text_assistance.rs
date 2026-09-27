@@ -51,7 +51,8 @@ pub fn preferences() -> TextAssistancePrefs {
     }
     let stamp = settings_store::settings_path()
         .and_then(|path| std::fs::metadata(path).ok())
-        .and_then(|metadata| metadata.modified().ok());
+        .and_then(|metadata| metadata.modified().ok())
+        .map(crate::time::from_file_time);
     if !cache.loaded || cache.stamp != stamp {
         let doc = settings_store::load();
         cache.prefs = TextAssistancePrefs {

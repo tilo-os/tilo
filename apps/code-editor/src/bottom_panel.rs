@@ -663,13 +663,14 @@ impl BottomPanel {
                 // tops, not centres).
                 let centred = |tr: &mut TextRenderer, text: &str, size: f32| {
                     let (_, h) = tr.measure(text, size, None);
-                    y + (ROW_H - f64::from(h)) / 2.0
+                    y + (self.row_height() - f64::from(h)) / 2.0
                 };
-                let glyph_y = centred(text_renderer, glyph, 13.0);
+                let glyph_size = 13.0 * theme.text_scale;
+                let glyph_y = centred(text_renderer, glyph, glyph_size);
                 text_renderer.draw_text(
                     scene,
                     glyph,
-                    13.0 * theme.text_scale,
+                    glyph_size,
                     sev_color,
                     transform * Affine::translate((self.rect.x0 + 14.0 * self.text_scale, glyph_y)),
                     None,
@@ -687,33 +688,41 @@ impl BottomPanel {
                         13.0 * theme.text_scale,
                         self.rect.width() - 62.0 * self.text_scale,
                     );
+                    let message_size = 13.0 * theme.text_scale;
+                    let message_y = centred(text_renderer, &message, message_size);
                     text_renderer.draw_text(
                         scene,
                         &message,
-                        13.0 * theme.text_scale,
+                        message_size,
                         c.neutral[8],
-                        transform * Affine::translate((self.rect.x0 + 48.0 * self.text_scale, y)),
+                        transform
+                            * Affine::translate((self.rect.x0 + 48.0 * self.text_scale, message_y)),
                         None,
                     );
                 } else {
+                    let loc_size = 12.0 * theme.text_scale;
+                    let loc_y = centred(text_renderer, &loc, loc_size);
                     text_renderer.draw_text(
                         scene,
                         &loc,
-                        12.0 * theme.text_scale,
+                        loc_size,
                         c.text_dim,
                         transform
-                            * Affine::translate((
-                                self.rect.x0 + 36.0 * self.text_scale,
-                                y + 0.5 * self.text_scale,
-                            )),
+                            * Affine::translate((self.rect.x0 + 36.0 * self.text_scale, loc_y)),
                         None,
                     );
+                    let message_size = 13.0 * theme.text_scale;
+                    let message_y = centred(text_renderer, &d.message, message_size);
                     text_renderer.draw_text(
                         scene,
                         &d.message,
-                        13.0 * theme.text_scale,
+                        message_size,
                         c.neutral[8],
-                        transform * Affine::translate((self.rect.x0 + 130.0 * self.text_scale, y)),
+                        transform
+                            * Affine::translate((
+                                self.rect.x0 + 130.0 * self.text_scale,
+                                message_y,
+                            )),
                         Some((self.rect.width() - 140.0 * self.text_scale) as f32),
                     );
                 }

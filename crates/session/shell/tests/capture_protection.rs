@@ -302,6 +302,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     assert!(count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12);
 
     store().forget(SURFACE);
@@ -324,6 +325,7 @@ fn a_protected_app_does_not_withhold_other_apps() {
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     store().release_capture_protection(CONNECTION);
     assert!(
         count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12,
@@ -389,7 +391,9 @@ fn the_lock_screen_is_never_captured() {
     // An App capture has no desktop to repaint while locked.
     let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
-    assert!(CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture).is_err());
+    let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
+    drop(fb);
+    assert!(captured.is_err());
 }
 
 /// Whether a shell prompt at `rect` is withheld: every sample of it in the
@@ -525,6 +529,7 @@ fn the_shells_secret_prompts_are_never_captured() {
         });
         fb.host_mut().force_quick_settings_settled();
         assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
+        drop(fb);
     }
 
     // Phase `identity_restore_and_backup`: the steps that take a backup's
@@ -556,10 +561,15 @@ fn the_shells_secret_prompts_are_never_captured() {
                 );
             }
         }
+        drop(fb);
     }
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness and frame builder drive every phase of the one keyboard session"
+)]
 fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     use super::emoji_picker_commit::Harness;
     use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{

@@ -172,6 +172,12 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;

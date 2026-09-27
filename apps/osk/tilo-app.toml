@@ -22,6 +22,9 @@ runtime  = "tilo-runtime/2026.07"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[platform]
+native = "Injects keystrokes into the Tilo compositor through the Wayland virtual-keyboard protocol."
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

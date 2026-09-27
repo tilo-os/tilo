@@ -234,6 +234,12 @@ jobs:
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh
 
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. It compiles the CLI, so it runs beside the gcc install.
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
   suites:

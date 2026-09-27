@@ -305,6 +305,14 @@ pub fn clipboard_copy(text: &str) {
     clipboard().set_text(ClipboardTarget::Clipboard, text);
 }
 
+/// [`clipboard_copy`] that reports whether the host's clipboard took the
+/// text, including the in-process fallback (which pastes inside this
+/// process). Cut uses it so a failed copy never deletes the selection.
+#[must_use]
+pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
+    clipboard().set_text(ClipboardTarget::Clipboard, text)
+}
+
 /// Copy text only if a system clipboard backend accepts it.
 ///
 /// Returns `false` on failure and never retains the text in an in-process
