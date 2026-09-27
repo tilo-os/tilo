@@ -12,6 +12,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::shell::i18n::{t, t_args};
+
 /// Offscreen wgpu + vello PNG writer shared by the system-surface review
 /// fixtures (OSD, power menu, lock screen, notifications) — surfaces the
 /// ux-bench cannot open on macOS, photographed straight from their paint
@@ -66,6 +68,52 @@ pub enum OsdKind {
     MouseKeys { enabled: bool },
     /// The magnifier after a magnifier shortcut; `zoom` is the factor, `1` meaning off.
     Magnifier { zoom: u8 },
+    /// The keyboard input source just switched to.
+    InputSource(OsdLabel),
+    /// The focused app takes every key, shell shortcuts included
+    /// (`captured`), or the shortcuts were just handed back.
+    KeysCaptured { captured: bool },
+}
+
+/// A short caption carried inline so a readout stays `Copy`: the slab is
+/// raised from input handlers every keypress and must never allocate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OsdLabel {
+    bytes: [u8; Self::CAPACITY],
+    len: u8,
+}
+
+impl OsdLabel {
+    const CAPACITY: usize = 48;
+
+    /// `text`, cut at the last whole character that fits.
+    pub fn new(text: &str) -> Self {
+        let mut end = text.len().min(Self::CAPACITY);
+        while !text.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        let mut bytes = [0; Self::CAPACITY];
+        if let (Some(dst), Some(src)) = (bytes.get_mut(..end), text.as_bytes().get(..end)) {
+            dst.copy_from_slice(src);
+        }
+        Self {
+            bytes,
+            len: u8::try_from(end).unwrap_or(0),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .get(..usize::from(self.len))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or("")
+    }
+}
+
+impl std::fmt::Debug for OsdLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OsdLabel").field(&self.as_str()).finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,13 +126,13 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn caption(self) -> &'static str {
+    pub fn caption(self) -> String {
         match self {
-            Transport::Play => "Play",
-            Transport::Pause => "Pause",
-            Transport::Next => "Next track",
-            Transport::Previous => "Previous track",
-            Transport::Stop => "Stop",
+            Transport::Play => t("osd-play"),
+            Transport::Pause => t("osd-pause"),
+            Transport::Next => t("osd-next-track"),
+            Transport::Previous => t("osd-previous-track"),
+            Transport::Stop => t("osd-stop"),
         }
     }
 }
@@ -140,6 +188,14 @@ impl Osd {
     pub fn pointer_held(held: bool) -> Self {
         Self {
             kind: OsdKind::PointerHeld { held },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
+    pub fn keys_captured(captured: bool) -> Self {
+        Self {
+            kind: OsdKind::KeysCaptured { captured },
             level: 0.0,
             raised_at: Instant::now(),
         }
@@ -204,6 +260,14 @@ impl Osd {
         }
     }
 
+    pub fn input_source(name: &str) -> Self {
+        Self {
+            kind: OsdKind::InputSource(OsdLabel::new(name)),
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
@@ -219,36 +283,51 @@ impl Osd {
     /// The one-line caption under the bar.
     pub fn caption(&self) -> String {
         match self.kind {
-            OsdKind::Volume { muted: true } => "Muted".to_string(),
-            OsdKind::Volume { muted: false } => {
-                format!("Volume {}%", level_to_percent(self.level))
-            }
-            OsdKind::Brightness => format!("Brightness {}%", level_to_percent(self.level)),
-            OsdKind::MicMute { muted: true } => "Microphone muted".to_string(),
-            OsdKind::MicMute { muted: false } => "Microphone on".to_string(),
-            OsdKind::Transport(t) => t.caption().to_string(),
-            OsdKind::KeyboardBacklight if self.level <= 0.0 => "Keyboard backlight off".to_string(),
-            OsdKind::KeyboardBacklight => {
-                format!("Keyboard backlight {}%", level_to_percent(self.level))
-            }
-            OsdKind::NoBacklight => "No adjustable display".to_string(),
-            OsdKind::AirplaneMode { on: true } => "Airplane mode on".to_string(),
-            OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
-            OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
+            OsdKind::Volume { muted: true } => t("osd-muted"),
+            OsdKind::Volume { muted: false } => t_args(
+                "osd-volume",
+                &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::Brightness => t_args(
+                "osd-brightness",
+                &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::MicMute { muted: true } => t("osd-microphone-muted"),
+            OsdKind::MicMute { muted: false } => t("osd-microphone-on"),
+            OsdKind::Transport(transport) => transport.caption(),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-keyboard-backlight-off"),
+            OsdKind::KeyboardBacklight => t_args(
+                "osd-keyboard-backlight",
+                &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::NoBacklight => t("osd-no-backlight"),
+            OsdKind::AirplaneMode { on: true } => t("osd-airplane-mode-on"),
+            OsdKind::AirplaneMode { on: false } => t("osd-airplane-mode-off"),
+            OsdKind::Touchpad { enabled: true } => t("osd-touchpad-on"),
             OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => {
-                "Magnifier off".to_string()
+                t("osd-magnifier-off")
             }
-            OsdKind::Magnifier { zoom } => {
-                format!("Magnifier {}", settings_store::magnifier::zoom_label(zoom))
-            }
-            OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
-            OsdKind::PointerHeld { held: true } => format!(
-                "Pointer held by app · {} releases",
+            OsdKind::Magnifier { zoom } => t_args(
+                "osd-magnifier",
+                &[("zoom", settings_store::magnifier::zoom_label(zoom).into())],
+            ),
+            OsdKind::Touchpad { enabled: false } => t("osd-touchpad-off"),
+            OsdKind::PointerHeld { held: true } => t_args(
+                "osd-pointer-held",
+                &[(
+                    "chord",
+                    crate::compositor::pointer_lock::RELEASE_CHORD_LABEL.into(),
+                )],
+            ),
+            OsdKind::PointerHeld { held: false } => t("osd-pointer-released"),
+            OsdKind::MouseKeys { enabled: true } => t("osd-mouse-keys-on"),
+            OsdKind::MouseKeys { enabled: false } => t("osd-mouse-keys-off"),
+            OsdKind::InputSource(name) => name.as_str().to_string(),
+            OsdKind::KeysCaptured { captured: true } => format!(
+                "App receives all keys · {} restores shortcuts",
                 crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
             ),
-            OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
-            OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
-            OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
+            OsdKind::KeysCaptured { captured: false } => "Shortcuts restored".to_string(),
         }
     }
 
@@ -482,7 +561,9 @@ fn draw_glyph(
             },
             colors.text_primary,
         ),
-        OsdKind::KeyboardBacklight => (ui::icons::Icon::Keyboard, colors.text_primary),
+        OsdKind::KeyboardBacklight | OsdKind::InputSource(_) | OsdKind::KeysCaptured { .. } => {
+            (ui::icons::Icon::Keyboard, colors.text_primary)
+        }
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
@@ -755,6 +836,16 @@ mod tests {
         a_second_press_restarts_the_slab_instead_of_stacking_one();
         a_different_key_replaces_rather_than_queues();
         expiry_reports_whether_it_changed_anything();
+    }
+
+    #[test]
+    fn an_input_source_readout_names_the_layout_and_stays_bounded() {
+        let osd = Osd::input_source("German (no dead keys)");
+        assert_eq!(osd.caption(), "German (no dead keys)");
+        assert!(!osd.has_level());
+        let long = "Ü".repeat(40);
+        let cut = Osd::input_source(&long).caption();
+        assert!(cut.len() <= 48 && long.starts_with(&cut) && !cut.is_empty());
     }
 
     #[test]

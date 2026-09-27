@@ -46,7 +46,7 @@ jobs:
           docker build --file "$context/Containerfile" --tag "$tag" "$context"
           push_output=$(docker push "$tag")
           printf '%s\n' "$push_output"
-          digest=$(printf '%s\n' "$push_output" | awk '/digest: sha256:/ {print $2}' | tail -n1)
+          digest=$(printf '%s\n' "$push_output" | grep -oE 'digest: sha256:[0-9a-f]{64}' | tail -n1 | cut -d' ' -f2)
           test "${digest#sha256:}" != "$digest"
           python3 - "$tag" "$digest" "$binary_sha256" "$GITHUB_SHA" <<'PY'
           import json, pathlib, sys

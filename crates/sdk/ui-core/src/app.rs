@@ -1592,6 +1592,36 @@ impl App {
     }
 }
 
+/// Reduce a winit monitor to what output selection ranks on. Whether a
+/// display is built in comes from its connector name (`eDP-1`), which
+/// Wayland compositors advertise as the `wl_output` name; its physical size
+/// from `wl_output.geometry`. Platforms that expose neither rank on pixels.
+#[cfg(feature = "native")]
+pub(crate) fn monitor_info(
+    index: usize,
+    monitor: &winit::monitor::MonitorHandle,
+    primary: bool,
+) -> crate::fullscreen::MonitorInfo {
+    #[cfg(target_os = "linux")]
+    let physical_mm = {
+        use winit::platform::wayland::MonitorHandleExtWayland;
+        monitor.physical_size_mm()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let physical_mm = None;
+    crate::fullscreen::MonitorInfo {
+        index: u32::try_from(index).unwrap_or(u32::MAX),
+        width: monitor.size().width,
+        height: monitor.size().height,
+        primary,
+        scale: monitor.scale_factor(),
+        builtin: monitor
+            .name()
+            .is_some_and(|name| crate::fullscreen::connector_is_builtin(&name)),
+        physical_mm,
+    }
+}
+
 impl App {
     /// Reconciles both directions, idempotently: app-driven (push
     /// `fullscreen_intent` to the window on change) and compositor-driven
@@ -1614,13 +1644,7 @@ impl App {
                 let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| crate::fullscreen::MonitorInfo {
-                        index: u32::try_from(i).unwrap_or(u32::MAX),
-                        width: m.size().width,
-                        height: m.size().height,
-                        primary: primary.as_ref() == Some(m),
-                        scale: m.scale_factor(),
-                    })
+                    .map(|(i, m)| monitor_info(i, m, primary.as_ref() == Some(m)))
                     .collect();
                 let chosen = crate::fullscreen::select_output(&infos, params.target)
                     .and_then(|idx| monitors.get(idx as usize).cloned());

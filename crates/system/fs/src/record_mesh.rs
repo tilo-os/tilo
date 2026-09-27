@@ -9,9 +9,11 @@ use std::io;
 use collab_types::{FileActor, FileRecordId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
+use wire_frame::Framing;
 
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::record_replication::RecordEnvelopeV1;
 use crate::record_repository::{
     RecordRepository, RecordRepositoryKey, RecordStreamCursor, RecordStreamKey,
@@ -412,25 +414,31 @@ pub fn serve_authorized_request(
     }
 }
 
+/// Each mesh request and response: a big-endian `u32` length, then the
+/// canonical encoding.
+const RECORD_MESH_FRAMING: Framing = Framing::big_endian(MAX_RECORD_MESH_FRAME_BYTES);
+
+impl From<CanonicalFrameError> for RecordMeshFrameError {
+    fn from(error: CanonicalFrameError) -> Self {
+        match error {
+            CanonicalFrameError::Io(error) => Self::Io(error),
+            CanonicalFrameError::TooLarge(announced) => Self::TooLarge {
+                announced,
+                maximum: MAX_RECORD_MESH_FRAME_BYTES,
+            },
+            CanonicalFrameError::Empty
+            | CanonicalFrameError::Encode(_)
+            | CanonicalFrameError::Decode(_) => Self::NonCanonical,
+        }
+    }
+}
+
 async fn write_frame<W, T>(writer: &mut W, value: &T) -> Result<(), RecordMeshFrameError>
 where
     W: AsyncWrite + Unpin,
     T: Serialize + Sync,
 {
-    let bytes =
-        collab_types::canonical_bytes(value).map_err(|_| RecordMeshFrameError::NonCanonical)?;
-    if bytes.len() > MAX_RECORD_MESH_FRAME_BYTES {
-        return Err(RecordMeshFrameError::TooLarge {
-            announced: bytes.len(),
-            maximum: MAX_RECORD_MESH_FRAME_BYTES,
-        });
-    }
-    let length = u32::try_from(bytes.len()).map_err(|_| RecordMeshFrameError::TooLarge {
-        announced: bytes.len(),
-        maximum: MAX_RECORD_MESH_FRAME_BYTES,
-    })?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
+    canonical_frame::write(RECORD_MESH_FRAMING, writer, value).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -440,19 +448,7 @@ where
     R: AsyncRead + Unpin,
     T: serde::de::DeserializeOwned,
 {
-    let mut prefix = [0_u8; 4];
-    reader.read_exact(&mut prefix).await?;
-    let announced = u32::from_be_bytes(prefix) as usize;
-    if announced > MAX_RECORD_MESH_FRAME_BYTES {
-        return Err(RecordMeshFrameError::TooLarge {
-            announced,
-            maximum: MAX_RECORD_MESH_FRAME_BYTES,
-        });
-    }
-    let mut bytes = vec![0_u8; announced];
-    reader.read_exact(&mut bytes).await?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| RecordMeshFrameError::NonCanonical)
+    Ok(canonical_frame::read_required(RECORD_MESH_FRAMING, reader).await?)
 }
 
 fn validate_workspace(workspace_id: Uuid) -> Result<(), RecordMeshValidationError> {
@@ -878,6 +874,55 @@ mod tests {
             assert_eq!(
                 serve_authorized_request(&repository, workspace_id, &pull(prefix)).result,
                 RecordMeshResultV1::Error(RecordMeshErrorCodeV1::PrefixMismatch)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_record_mesh_response(
+            &mut wire,
+            &RecordMeshResponseV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                result: RecordMeshResultV1::Error(RecordMeshErrorCodeV1::PrefixMismatch),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(wire, [0, 0, 0, 3, 2, 4, 4]);
+
+        let mut wire: Vec<u8> = vec![0, 0, 0, 21, 2, 16];
+        wire.extend_from_slice(&[0x33; 16]);
+        wire.extend_from_slice(&[0, 0, 16]);
+        assert_eq!(
+            read_record_mesh_request(&mut wire.as_slice())
+                .await
+                .unwrap(),
+            RecordMeshRequestV1 {
+                protocol_version: RECORD_MESH_PROTOCOL_VERSION,
+                workspace_id: Uuid::from_bytes([0x33; 16]),
+                operation: RecordMeshOperationV1::Inventory {
+                    after: None,
+                    limit: 16,
+                },
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_and_truncated_frames_are_rejected() {
+        assert!(matches!(
+            read_record_mesh_request(&mut &[0, 0, 0, 0][..]).await,
+            Err(RecordMeshFrameError::NonCanonical)
+        ));
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 3, 2][..]] {
+            assert!(
+                matches!(
+                    read_record_mesh_request(&mut &wire[..]).await,
+                    Err(RecordMeshFrameError::Io(ref error)) if error.kind() == io::ErrorKind::UnexpectedEof
+                ),
+                "{wire:?}"
             );
         }
     }

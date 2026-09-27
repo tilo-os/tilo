@@ -4,6 +4,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+. "$repo_root/tools/desktop-isolation.sh"
+tilo_test_isolate "$@"
 work=$(mktemp -d)
 cleanup() {
     if [ "${TILO_SESSION_TEST_KEEP:-0}" = 1 ]; then
@@ -74,13 +76,11 @@ SH
 cp "$repo_root/dist/session/tilo-flight-recorder.py" "$work/tilo-flight-recorder"
 chmod 0755 "$work/systemctl" "$work/systemd-cat" \
     "$work/dbus-update-activation-environment" "$work/shell" "$work/tilo-flight-recorder"
-sed \
-    -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$work/systemctl|" \
-    -e "s|SYSTEMD_CAT=/usr/bin/systemd-cat|SYSTEMD_CAT=$work/systemd-cat|" \
-    -e "s|DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|DBUS_UPDATE=$work/dbus-update-activation-environment|" \
-    -e "s|FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder|FLIGHT_RECORDER=$work/tilo-flight-recorder|" \
-    "$repo_root/dist/session/tilo-session-runner" >"$work/tilo-session"
-chmod 0755 "$work/tilo-session"
+tilo_stage_script "$repo_root/dist/session/tilo-session-runner" "$work/tilo-session" \
+    SYSTEMCTL="$work/systemctl" \
+    SYSTEMD_CAT="$work/systemd-cat" \
+    DBUS_UPDATE="$work/dbus-update-activation-environment" \
+    FLIGHT_RECORDER="$work/tilo-flight-recorder"
 
 # The shared runner is an internal package component, but it still fails
 # closed when a broken wrapper omits or supplies an unsafe compositor path.

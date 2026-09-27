@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::shell::i18n::{t, t_args};
+
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
@@ -83,35 +85,36 @@ impl SystemStatus {
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         match &self.link {
-            Some(l) if l.kind == LinkKind::Wired => parts.push(
-                l.name
-                    .clone()
-                    .map_or_else(|| "Wired".to_string(), |n| format!("Wired: {n}")),
-            ),
-            Some(l) if l.kind == LinkKind::Wifi => parts.push(
-                l.name
-                    .clone()
-                    .map_or_else(|| "Wi-Fi".to_string(), |n| format!("Wi-Fi: {n}")),
-            ),
-            Some(_) => parts.push("Offline".to_string()),
+            Some(l) if l.kind == LinkKind::Wired => parts.push(l.name.clone().map_or_else(
+                || t("status-wired"),
+                |n| t_args("status-wired-named", &[("name", n.into())]),
+            )),
+            Some(l) if l.kind == LinkKind::Wifi => parts.push(l.name.clone().map_or_else(
+                || t("status-wifi"),
+                |n| t_args("status-wifi-named", &[("name", n.into())]),
+            )),
+            Some(_) => parts.push(t("status-offline")),
             None => {}
         }
         if let Some(v) = self.volume {
             parts.push(if v.muted {
-                "Muted".to_string()
+                t("status-muted")
             } else {
-                format!("Volume {}%", volume_percent(v.level))
+                t_args(
+                    "status-volume",
+                    &[("percent", volume_percent(v.level).into())],
+                )
             });
         }
         if let Some(pct) = self.battery_percent() {
             parts.push(if self.battery_is_charging() {
-                format!("Battery {pct}%, charging")
+                t_args("status-battery-charging", &[("percent", pct.into())])
             } else {
-                format!("Battery {pct}%")
+                t_args("status-battery", &[("percent", pct.into())])
             });
         }
         if parts.is_empty() {
-            "System status".to_string()
+            t("status-summary-empty")
         } else {
             parts.join(" · ")
         }
