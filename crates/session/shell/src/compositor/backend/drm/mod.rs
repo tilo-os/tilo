@@ -33,7 +33,8 @@ use std::time::{Duration, Instant};
 use vello::Scene;
 
 use paint::{
-    SceneDamage, SubrectSource, copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed,
+    SceneDamage, SubrectSource, copy_rgba_subrect, encode_subrect_rgba_to_xbgr2101010_transformed,
+    swizzle_subrect_rgba_to_xrgb8888_transformed,
 };
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
@@ -974,6 +975,11 @@ fn apply_scanout_command(
                 entry.scanout.set_adaptive_sync(on);
             }
         }
+        ScanoutCommand::SetHdr { output, request } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.set_hdr_request(request.clone());
+            }
+        }
         ScanoutCommand::SetOutputPower { output, on } => {
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
                 entry.powered_off = !on;
@@ -1141,11 +1147,28 @@ fn paint_scanouts(
                     entry.direct_unavailable = Some(reason.to_owned());
                 }
             } else {
-                if entry.direct_targets.is_none() && entry.direct_unavailable.is_none() {
-                    match scanout::DirectScanoutTargets::new(&entry.scanout, bridge) {
+                // HDR renders into 10-bit (or half-float) targets; targets in
+                // the other format go first, CRTC back on the dumb front.
+                let want_hdr = entry.hdr_wanted();
+                if entry
+                    .direct_targets
+                    .as_ref()
+                    .is_some_and(|targets| targets.format().is_hdr() != want_hdr)
+                {
+                    entry.scanout.restore_legacy_front();
+                    entry.direct_targets = None;
+                }
+                let direct_blocked = if want_hdr {
+                    entry.hdr_direct_unavailable.is_some()
+                } else {
+                    entry.direct_unavailable.is_some()
+                };
+                if entry.direct_targets.is_none() && !direct_blocked {
+                    match create_direct_targets(&entry.scanout, bridge, want_hdr) {
                         Ok(targets) => {
                             eprintln!(
-                                "direct_scanout_status=enabled renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} DRM direct scanout enabled",
+                                "direct_scanout_status=enabled format={:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} DRM direct scanout enabled",
+                                targets.format(),
                                 adapter.pci_bus_id,
                                 eligibility.renderer_drm_matches,
                                 drm_bus_id.as_deref().unwrap_or("unavailable"),
@@ -1158,6 +1181,10 @@ fn paint_scanouts(
                                 "DRM direct scanout enabled"
                             );
                             entry.direct_targets = Some(targets);
+                        }
+                        Err(error) if want_hdr => {
+                            tracing::warn!(%error, "DRM HDR direct scanout unavailable; using the readback path");
+                            entry.hdr_direct_unavailable = Some(error);
                         }
                         Err(error) => {
                             tracing::warn!(%error, "DRM direct scanout unavailable; retaining readback fallback");
@@ -1188,11 +1215,16 @@ fn paint_scanouts(
                         let deadline = Instant::now()
                             .checked_add(Duration::from_secs(1))
                             .unwrap_or_else(Instant::now);
-                        match bridge.paint_imported_bgra8_until(
+                        let sdr_white = entry.scanout.hdr_request().map_or(
+                            crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                            |request| request.sdr_white_nits,
+                        );
+                        match bridge.paint_imported_until(
                             scene,
                             direct_damage,
                             target,
                             deadline,
+                            sdr_white,
                         ) {
                             Ok(stats) => {
                                 targets.mark_rendered(index, revision);
@@ -1214,6 +1246,14 @@ fn paint_scanouts(
                                             ..PaintScanoutSample::default()
                                         };
                                     }
+                                    scanout::DirectSubmit::Presented => {
+                                        // The first HDR frame went up by modeset:
+                                        // no flip event to wait for.
+                                        if let Some(window) = phase_window.as_deref_mut() {
+                                            window.record_direct_submit();
+                                        }
+                                        return PaintScanoutSample::default();
+                                    }
                                     scanout::DirectSubmit::Busy => {
                                         if let Some(window) = phase_window.as_deref_mut() {
                                             window.record_direct_drop();
@@ -1224,7 +1264,17 @@ fn paint_scanouts(
                                         tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
                                         entry.scanout.restore_legacy_front();
                                         entry.direct_targets = None;
-                                        entry.direct_unavailable = Some(error);
+                                        if want_hdr {
+                                            entry.hdr_direct_unavailable = Some(error);
+                                        } else {
+                                            entry.direct_unavailable = Some(error);
+                                        }
+                                    }
+                                    scanout::DirectSubmit::HdrFailed(reason, detail) => {
+                                        // The CRTC is still (or again) on the
+                                        // dumb front; the targets can go.
+                                        entry.direct_targets = None;
+                                        entry.fail_hdr(reason, &detail);
                                     }
                                 }
                             }
@@ -1232,7 +1282,11 @@ fn paint_scanouts(
                                 tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
                                 entry.scanout.restore_legacy_front();
                                 entry.direct_targets = None;
-                                entry.direct_unavailable = Some(error.to_string());
+                                if want_hdr {
+                                    entry.hdr_direct_unavailable = Some(error.to_string());
+                                } else {
+                                    entry.direct_unavailable = Some(error.to_string());
+                                }
                             }
                         }
                     } else {
@@ -1244,63 +1298,18 @@ fn paint_scanouts(
                 }
             }
         }
-        let cursor = Some(pointer);
-        if entry.scanout.xrgb_damage_available()
-            && bridge.xrgb_history_available()
-            && sparse_coordinates_match
-            && let Some(damage) = damage
-        {
-            let started = Instant::now();
-            let result = entry
-                .scanout
-                .present_scene_damage(cursor, bridge, scene, damage);
-            let elapsed_us = started.elapsed().as_micros();
-            let bridge_us = bridge
-                .last_phase_timing()
-                .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
-            if let Err(error) = result {
-                match error {
-                    paint::BridgeError::RecoveryBackoff { .. } => {
-                        tracing::debug!("DRM backend: paint recovery is cooling down: {error}");
-                    }
-                    error => tracing::error!("DRM backend: history-aware XRGB paint: {error}"),
-                }
-            }
-            return PaintScanoutSample {
-                legacy_attempted: true,
-                bridge_us,
-                scanout_us: elapsed_us.saturating_sub(bridge_us),
-                ..PaintScanoutSample::default()
-            };
+        // HDR without the direct path goes through the combined readback
+        // below, into 10-bit dumb buffers; everything else stays XRGB8888.
+        if !entry.sync_hdr_readback() {
+            return present_single_xrgb(
+                entry,
+                bridge,
+                scene,
+                damage,
+                Some(pointer),
+                sparse_coordinates_match,
+            );
         }
-        if entry.scanout.xrgb_damage_requested() {
-            entry.scanout.invalidate_xrgb_history();
-        }
-        let started = Instant::now();
-        let result = entry.scanout.present_into(cursor, |dst, pitch| {
-            match damage.filter(|_| sparse_coordinates_match) {
-                Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),
-                None => bridge.paint_into_xrgb8888(scene, dst, pitch),
-            }
-        });
-        let elapsed_us = started.elapsed().as_micros();
-        let bridge_us = bridge
-            .last_phase_timing()
-            .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
-        if let Err(e) = result {
-            match e {
-                paint::BridgeError::RecoveryBackoff { .. } => {
-                    tracing::debug!("DRM backend: paint recovery is cooling down: {e}");
-                }
-                e => tracing::error!("DRM backend: paint_into_xrgb8888: {e}"),
-            }
-        }
-        return PaintScanoutSample {
-            legacy_attempted: true,
-            bridge_us,
-            scanout_us: elapsed_us.saturating_sub(bridge_us),
-            ..PaintScanoutSample::default()
-        };
     }
 
     // Multi-output path: scanouts on one card share an open file
@@ -1310,10 +1319,116 @@ fn paint_scanouts(
     // device and route only to siblings from the same device; draining just
     // `scanouts[0]` would wedge every secondary GPU after its first flip.
     drain_page_flip_completions(scanouts);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        entry.sync_hdr_readback();
+    }
+    render_combined_readback(scanouts, outputs, paint, pointer, scene, target_size)
+}
 
-    // Render the combined scene ONCE into a tight RGBA buffer, then swizzle
-    // each output's sub-rect into its own scanout's dumb buffer (fused
-    // single-pass, per output).
+/// Direct targets in the format the output needs now: the HDR formats in
+/// order of preference while HDR is wanted, `XRGB8888` otherwise.
+fn create_direct_targets(
+    scanout: &scanout::DrmScanout,
+    bridge: &paint::VelloDrmBridge,
+    want_hdr: bool,
+) -> Result<scanout::DirectScanoutTargets, String> {
+    if !want_hdr {
+        return scanout::DirectScanoutTargets::new(
+            scanout,
+            bridge,
+            scanout::ScanoutFormat::Xrgb8888,
+        );
+    }
+    let mut errors = Vec::new();
+    for format in scanout::ScanoutFormat::HDR_PREFERENCE {
+        match scanout::DirectScanoutTargets::new(scanout, bridge, format) {
+            Ok(targets) => return Ok(targets),
+            Err(error) => errors.push(format!("{format:?}: {error}")),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+/// The single-output SDR readback: render and swizzle straight into the
+/// scanout's XRGB8888 dumb buffer, through the destination history when it
+/// is enabled.
+fn present_single_xrgb(
+    entry: &mut ScanoutEntry,
+    bridge: &mut paint::VelloDrmBridge,
+    scene: &Scene,
+    damage: Option<SceneDamage<'_>>,
+    cursor: Option<(f64, f64)>,
+    sparse_coordinates_match: bool,
+) -> PaintScanoutSample {
+    if entry.scanout.xrgb_damage_available()
+        && bridge.xrgb_history_available()
+        && sparse_coordinates_match
+        && let Some(damage) = damage
+    {
+        let started = Instant::now();
+        let result = entry
+            .scanout
+            .present_scene_damage(cursor, bridge, scene, damage);
+        let elapsed_us = started.elapsed().as_micros();
+        let bridge_us = bridge
+            .last_phase_timing()
+            .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
+        if let Err(error) = result {
+            match error {
+                paint::BridgeError::RecoveryBackoff { .. } => {
+                    tracing::debug!("DRM backend: paint recovery is cooling down: {error}");
+                }
+                error => tracing::error!("DRM backend: history-aware XRGB paint: {error}"),
+            }
+        }
+        return PaintScanoutSample {
+            legacy_attempted: true,
+            bridge_us,
+            scanout_us: elapsed_us.saturating_sub(bridge_us),
+            ..PaintScanoutSample::default()
+        };
+    }
+    if entry.scanout.xrgb_damage_requested() {
+        entry.scanout.invalidate_xrgb_history();
+    }
+    let started = Instant::now();
+    let result = entry.scanout.present_into(cursor, |dst, pitch| {
+        match damage.filter(|_| sparse_coordinates_match) {
+            Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),
+            None => bridge.paint_into_xrgb8888(scene, dst, pitch),
+        }
+    });
+    let elapsed_us = started.elapsed().as_micros();
+    let bridge_us = bridge
+        .last_phase_timing()
+        .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
+    if let Err(e) = result {
+        match e {
+            paint::BridgeError::RecoveryBackoff { .. } => {
+                tracing::debug!("DRM backend: paint recovery is cooling down: {e}");
+            }
+            e => tracing::error!("DRM backend: paint_into_xrgb8888: {e}"),
+        }
+    }
+    PaintScanoutSample {
+        legacy_attempted: true,
+        bridge_us,
+        scanout_us: elapsed_us.saturating_sub(bridge_us),
+        ..PaintScanoutSample::default()
+    }
+}
+
+/// Render the combined scene ONCE into a tight RGBA buffer, then swizzle
+/// (or, for an HDR output, PQ-encode) each output's sub-rect into its own
+/// scanout's dumb buffer in a single pass per output.
+fn render_combined_readback(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    scene: &Scene,
+    target_size: (u32, u32),
+) -> PaintScanoutSample {
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
@@ -1468,8 +1583,11 @@ fn paint_one_scanout(
     };
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
+    let hdr = e.scanout.format().is_hdr();
+    // An ICC profile describes the panel's SDR response; while the output
+    // runs in HDR the PQ encode replaces it.
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
-        if let Some(transform) = &e.color_transform {
+        if let Some(transform) = e.color_transform.as_ref().filter(|_| !hdr) {
             copy_rgba_subrect(
                 SubrectSource {
                     src_rgba: rgba,
@@ -1493,22 +1611,34 @@ fn paint_one_scanout(
         } else {
             (rgba, cw, ch, sx, sy)
         };
-    e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-        swizzle_subrect_rgba_to_xrgb8888_transformed(
-            SubrectSource {
-                src_rgba: source,
-                src_w: source_w,
-                src_h: source_h,
-                src_x: source_x,
-                src_y: source_y,
-            },
-            dst,
-            pitch,
-            physical_w as usize,
-            physical_h as usize,
-            e.transform,
-        );
-    });
+    let encoder = e.scanout.hdr_encoder().filter(|_| hdr);
+    let subrect = SubrectSource {
+        src_rgba: source,
+        src_w: source_w,
+        src_h: source_h,
+        src_x: source_x,
+        src_y: source_y,
+    };
+    let transform = e.transform;
+    e.scanout
+        .present_no_drain(local_cursor, |dst, pitch| match &encoder {
+            Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
+                subrect,
+                dst,
+                pitch,
+                (physical_w as usize, physical_h as usize),
+                transform,
+                encoder,
+            ),
+            None => swizzle_subrect_rgba_to_xrgb8888_transformed(
+                subrect,
+                dst,
+                pitch,
+                physical_w as usize,
+                physical_h as usize,
+                transform,
+            ),
+        });
 }
 
 impl Presenter for DrmPresenter {
