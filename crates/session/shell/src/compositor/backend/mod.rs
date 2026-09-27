@@ -723,16 +723,6 @@ pub trait Backend {
     /// for backends with no physical panel.
     fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
 
-    /// The output a fullscreen client is shown on, or `None`. Backends that
-    /// drive adaptive sync engage it there.
-    fn set_fullscreen_output(&mut self, _output: Option<OutputId>) {}
-
-    /// Adaptive sync is engaged on some output: pace frames by content
-    /// readiness rather than a fixed refresh deadline.
-    fn adaptive_sync_active(&self) -> bool {
-        false
-    }
-
     /// Turn the built-in panel to `rotation` because the device was turned
     /// (`None` restores its configured transform). External monitors never
     /// follow. Default no-op for backends without a built-in panel.

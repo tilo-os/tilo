@@ -8014,25 +8014,12 @@ pub fn run() {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-        let fullscreen_output = reconcile_fullscreen_overlay(
+        reconcile_fullscreen_overlay(
             &mut state,
             &mut frame_builder,
             &output_globals,
             backend.outputs(),
         );
-        // Adaptive sync engages where a fullscreen client is shown; while it
-        // is on, frames follow the content instead of the fixed refresh grid.
-        backend.set_fullscreen_output(fullscreen_output);
-        if frame_clock.set_adaptive(backend.adaptive_sync_active()) {
-            eprintln!(
-                "tilo compositor: pacing {}",
-                if frame_clock.is_adaptive() {
-                    "by content readiness (adaptive sync engaged)".to_owned()
-                } else {
-                    format!("to {:.3} Hz", 1.0 / frame_clock.interval().as_secs_f64())
-                }
-            );
-        }
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
@@ -12412,16 +12399,15 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
     }
 }
 
-/// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
     globals: &output_globals::OutputGlobals,
     outputs: &[crate::compositor::backend::Output],
-) -> Option<crate::compositor::backend::OutputId> {
+) {
     let Some(target) = state.fullscreen_target.as_mut() else {
         frame.set_fullscreen_surface(None);
-        return None;
+        return;
     };
     let requested_id = target.pinned_output.or_else(|| {
         target
@@ -12434,7 +12420,7 @@ fn reconcile_fullscreen_overlay(
     let output = select_fullscreen_output(requested_id, centre, outputs);
     let Some(output) = output else {
         frame.set_fullscreen_surface(None);
-        return None;
+        return;
     };
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
@@ -12453,7 +12439,6 @@ fn reconcile_fullscreen_overlay(
     }
     let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
-    Some(output.id)
 }
 
 fn select_fullscreen_output(

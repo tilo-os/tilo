@@ -15,7 +15,6 @@ pub mod devices;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
-mod output_signal;
 pub mod outputs;
 pub mod paint;
 pub mod runtime;
@@ -26,7 +25,7 @@ pub mod session;
 mod tablet;
 mod xrgb_history;
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,7 +39,7 @@ use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::frame::FramePaint;
 use crate::compositor::present::Presenter;
 pub use runtime::DrmBackendError;
-use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
+use runtime::{ScanoutCommand, ScanoutEntry};
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] (libseat session + udev + libinput) plus a [`paint::VelloDrmBridge`] for the vello → RGBA bytes path.
 pub struct DrmBackend {
@@ -60,8 +59,6 @@ pub struct DrmBackend {
     /// `blanked` ("screen should be off") — `paused` means these CRTCs belong to another session right now; presenting under either is wrong.
     paused: bool,
     direct_bypass_reported: bool,
-    /// Signalling reports to the loop thread, held while scanouts are inline.
-    signal_reports: Option<Sender<SignalReport>>,
 }
 
 impl DrmBackend {
@@ -76,7 +73,6 @@ impl DrmBackend {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut inner = runtime::DrmRuntime::new()?;
         let commands = inner.commands.take();
-        let signal_reports = inner.signal_reports.take();
         let outputs = Self::refresh_outputs(&inner);
         // Pace to the *fastest* connected mode: the compositor paints one scene across the combined
         // geometry, so there's one cadence to pick — showing every Nth frame on a slower output beats throttling the fast panel down.
@@ -101,7 +97,6 @@ impl DrmBackend {
             commands,
             paused: false,
             direct_bypass_reported: false,
-            signal_reports,
         })
     }
 
@@ -166,26 +161,6 @@ pub struct DrmPresenter {
     /// Emit one durable explanation when direct presentation is bypassed
     /// before the detailed adapter/scanout eligibility check.
     direct_bypass_reported: bool,
-    /// Signalling facts learned while presenting, for the loop thread.
-    signal_reports: Option<Sender<SignalReport>>,
-}
-
-/// Send the loop thread every output's signalling status that changed since
-/// it was last reported.
-fn report_signal_status(scanouts: &mut [ScanoutEntry], reports: Option<&Sender<SignalReport>>) {
-    let Some(reports) = reports else {
-        return;
-    };
-    for entry in scanouts {
-        let status = entry.signal_status();
-        if status != entry.signal_reported {
-            entry.signal_reported = status.clone();
-            let _ = reports.send(SignalReport {
-                output: entry.id,
-                status,
-            });
-        }
-    }
 }
 
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
@@ -704,7 +679,6 @@ impl DrmPresenter {
             self.retire_direct_flip();
         }
         self.emit_phase_profile(sample);
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
     }
 
     fn render_frame(&mut self, frame: &FramePaint) {
@@ -730,7 +704,6 @@ impl DrmPresenter {
             self.retire_direct_flip();
         }
         self.emit_phase_profile(sample);
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
     }
 
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
@@ -967,11 +940,6 @@ fn apply_scanout_command(
         ScanoutCommand::SetPointerImage(image) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_pointer_image(image.clone());
-            }
-        }
-        ScanoutCommand::SetAdaptiveSync { output, on } => {
-            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
-                entry.scanout.set_adaptive_sync(on);
             }
         }
         ScanoutCommand::SetOutputPower { output, on } => {
@@ -1582,7 +1550,6 @@ impl Backend for DrmBackend {
             None,
             &mut self.direct_bypass_reported,
         );
-        report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
     }
 
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {
@@ -1604,7 +1571,6 @@ impl Backend for DrmBackend {
             None,
             &mut self.direct_bypass_reported,
         );
-        report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -1680,7 +1646,6 @@ impl Backend for DrmBackend {
             profile_seq: 0,
             phase_window: PhaseWindow::default(),
             direct_bypass_reported: false,
-            signal_reports: self.signal_reports.take(),
         }))
     }
 
@@ -1701,14 +1666,6 @@ impl Backend for DrmBackend {
 
     fn reset_display(&mut self) {
         self.inner.resume_from_sleep();
-    }
-
-    fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
-        self.inner.set_fullscreen_output(output);
-    }
-
-    fn adaptive_sync_active(&self) -> bool {
-        self.inner.dispatch.adaptive_sync_engaged()
     }
 
     fn set_keyboard_source(&mut self, index: usize) {

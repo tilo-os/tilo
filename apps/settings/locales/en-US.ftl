@@ -16,13 +16,6 @@ display-tools-caption = These programs rearrange your displays without asking yo
 display-tools-forget = Ask again
 display-tools-forgotten = This tool's display changes will ask to be kept again.
 
-# Displays pane: variable refresh rate
-display-vrr = Variable refresh rate
-display-vrr-description = Turns on by itself for fullscreen games and video
-display-vrr-unsupported = Not supported by this display
-display-vrr-driver-unsupported = The graphics driver does not offer it for this display
-display-vrr-driver-rejected = The graphics driver refused to turn it on
-
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad
