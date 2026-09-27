@@ -799,7 +799,7 @@ launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
 
 # Empty-workspace launchpad: the keyboard hint under the cards
-launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  { $chord } shows every app
+launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
 
 # Peers arriving in and leaving a workspace, batched into one toast
 peer-toast-joined-one = { $name } joined

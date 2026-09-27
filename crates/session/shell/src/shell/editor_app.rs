@@ -538,16 +538,13 @@ impl EditorApp {
             at(transform, (self.rect.x0 + PADDING_X, self.rect.y0 + 18.0)),
             None,
         );
-        let hint = if self.disk_conflict.is_some() {
-            crate::shell::i18n::t("editor-hint-disk-conflict")
+        let hint = crate::shell::i18n::t(if self.disk_conflict.is_some() {
+            "editor-hint-disk-conflict"
         } else if self.focused {
-            crate::shell::i18n::t_args(
-                "editor-hint-focused",
-                &[("chord", ui::keycaps::active().chord(["Ctrl"], "z").into())],
-            )
+            "editor-hint-focused"
         } else {
-            crate::shell::i18n::t("editor-hint-click")
-        };
+            "editor-hint-click"
+        });
         #[expect(
             clippy::cast_possible_truncation,
             reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"

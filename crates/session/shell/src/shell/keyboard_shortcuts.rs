@@ -85,27 +85,6 @@ pub fn chord_text(chord: &KeyChord) -> String {
     ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
 
-/// The chord `action` is bound to in `config`, as [`chord_text`] spells it,
-/// or the catalogue's word for "unassigned" when the person removed it.
-/// Copy that teaches a shortcut interpolates this rather than writing the
-/// chord into the sentence.
-#[must_use]
-pub fn action_chord_text(config: &ShortcutConfig, action: ShortcutAction) -> String {
-    config
-        .bindings
-        .get(&action)
-        .map_or_else(|| t("guide-unassigned-inline"), chord_text)
-}
-
-/// The first chord of fixed shortcut `id`, as [`chord_text`] spells it.
-#[must_use]
-pub fn fixed_chord_text(id: &str) -> String {
-    fixed_shortcut(id)
-        .and_then(|fixed| fixed.keys.first())
-        .map(|key| chord_text(&key.chord()))
-        .unwrap_or_default()
-}
-
 /// `chord` in the desktop's canonical US spelling, whatever layout is
 /// active: the form callers read back and pass to `rebind`.
 #[must_use]

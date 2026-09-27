@@ -433,7 +433,7 @@ mod tests {
                 "Alt+F4  /  Super+W",
             ]
         );
-        assert_eq!(mac.as_deref(), Some("⇧⌘S"));
+        assert_eq!(mac.as_deref(), Some("⌘⇧S"));
         // Routing is untouched: the chord is still the canonical one.
         assert_eq!(
             fixed_action(ChordKey::PageUp, SUPER),
