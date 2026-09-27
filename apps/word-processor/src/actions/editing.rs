@@ -34,6 +34,8 @@ use tilo_actions::{
     ExecutionLocus, ParamType, Resource,
 };
 
+use qdoc_rich_text::BodyOrder;
+
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
     MAX_ACTION_TEXT_CHARS, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
@@ -217,36 +219,78 @@ pub enum CaretTarget {
 
 type Range3 = (String, usize, usize);
 
-/// Read access to one region. The block order (a scan and sort of the whole
-/// region) is computed only when an operation needs it, so typing and
-/// erasing inside one block touch only that block (keystroke latency).
+/// Read access to one region. The body's order comes from the caller's kept
+/// [`BodyOrder`] when it has one, so finding a block's neighbours costs
+/// `O(log n)`; otherwise the region is listed (a scan and sort of the whole
+/// region) only when an operation needs it, so typing and erasing inside one
+/// block touch only that block (keystroke latency).
 struct RegionDoc<'a> {
     doc: &'a AutoCommit,
     containers: qdoc::Containers,
     region: RegionKind,
-    order: std::cell::OnceCell<Vec<String>>,
+    /// The kept body order, in step with `doc`; used only for the body.
+    body: Option<&'a BodyOrder>,
+    listed: std::cell::OnceCell<Vec<String>>,
 }
 
 impl<'a> RegionDoc<'a> {
     fn open(doc: &'a AutoCommit, region: RegionKind) -> Result<Self, EditingError> {
+        Self::open_in(doc, None, region)
+    }
+
+    fn open_in(
+        doc: &'a AutoCommit,
+        body: Option<&'a BodyOrder>,
+        region: RegionKind,
+    ) -> Result<Self, EditingError> {
         let containers =
             qdoc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
         Ok(Self {
             doc,
             containers,
             region,
-            order: std::cell::OnceCell::new(),
+            body: body.filter(|_| region == RegionKind::Body),
+            listed: std::cell::OnceCell::new(),
         })
     }
 
-    fn order(&self) -> &[String] {
-        self.order.get_or_init(|| {
+    fn listed(&self) -> &[String] {
+        self.listed.get_or_init(|| {
             qdoc::model::region_blocks_in_order(self.doc, &self.containers, self.region.to_region())
         })
     }
 
     fn index(&self, block: &str) -> Option<usize> {
-        self.order().iter().position(|id| id == block)
+        match self.body {
+            Some(body) => body.position(block),
+            None => self.listed().iter().position(|id| id == block),
+        }
+    }
+
+    /// The block at position `index` of the region.
+    fn id_at(&self, index: usize) -> Option<&str> {
+        match self.body {
+            Some(body) => body.id_at(index),
+            None => self.listed().get(index).map(String::as_str),
+        }
+    }
+
+    /// Blocks in the region.
+    fn count(&self) -> usize {
+        match self.body {
+            Some(body) => body.len(),
+            None => self.listed().len(),
+        }
+    }
+
+    fn first(&self) -> Option<&str> {
+        self.id_at(0)
+    }
+
+    fn last(&self) -> Option<&str> {
+        self.count()
+            .checked_sub(1)
+            .and_then(|last| self.id_at(last))
     }
 
     /// Characters of a region block, `None` when it is not a block of this
@@ -300,12 +344,21 @@ struct Resolved<'a> {
 }
 
 fn resolve<'a>(view: &ParticipantView, doc: &'a AutoCommit) -> Result<Resolved<'a>, EditingError> {
+    resolve_in(view, doc, None)
+}
+
+/// [`resolve`] reading the body's order from `body`, the kept order of `doc`.
+fn resolve_in<'a>(
+    view: &ParticipantView,
+    doc: &'a AutoCommit,
+    body: Option<&'a BodyOrder>,
+) -> Result<Resolved<'a>, EditingError> {
     let mut view = if view.pending.is_some() {
-        view.settle(doc)
+        view.settle_in(doc, body)
     } else {
         view.clone()
     };
-    let rd = RegionDoc::open(doc, view.region)?;
+    let rd = RegionDoc::open_in(doc, body, view.region)?;
     let caret_len = rd
         .block_len(&view.caret.block)
         .ok_or(EditingError::NoCaret)?;
@@ -329,7 +382,7 @@ fn resolve<'a>(view: &ParticipantView, doc: &'a AutoCommit) -> Result<Resolved<'
             })
         }
         Some(_) if has_anchor => view
-            .ordered_selection(rd.order())
+            .ordered_selection_by(|block| rd.index(block))
             .map(|(start, end)| (start.clone(), end.clone())),
         _ => None,
     };
@@ -361,14 +414,14 @@ impl Resolved<'_> {
         };
         (si..=ei)
             .filter_map(|i| {
-                let block = self.rd.order().get(i)?;
+                let block = self.rd.id_at(i)?;
                 let s = if i == si { start.offset } else { 0 };
                 let e = if i == ei {
                     end.offset
                 } else {
                     self.rd.len(block)
                 };
-                Some((block.clone(), s, e))
+                Some((block.to_owned(), s, e))
             })
             .collect()
     }
@@ -529,17 +582,14 @@ impl EraseTarget {
                 ends_region: false,
             };
         }
-        let order = r.rd.order();
         let caret_index = r.caret_index();
         let first = caret_index.saturating_sub(MAX_ERASE_COUNT + 1);
         let last = caret_index
             .saturating_add(MAX_ERASE_COUNT + 2)
-            .min(order.len());
-        let window = order
-            .get(first..last)
-            .unwrap_or_default()
-            .iter()
-            .map(|block| (block.clone(), r.rd.len(block)))
+            .min(r.rd.count());
+        let window = (first..last)
+            .filter_map(|index| r.rd.id_at(index))
+            .map(|block| (block.to_owned(), r.rd.len(block)))
             .collect();
         Self {
             typing: TypeTarget::new(r),
@@ -550,7 +600,7 @@ impl EraseTarget {
             window,
             caret_at: caret_index - first,
             starts_region: first == 0,
-            ends_region: last == order.len(),
+            ends_region: last == r.rd.count(),
         }
     }
 
@@ -843,7 +893,7 @@ impl PasteTarget {
             .unwrap_or_else(|| (caret.clone(), caret));
         let end_next =
             r.rd.index(&end.block)
-                .and_then(|index| r.rd.order().get(index + 1).cloned());
+                .and_then(|index| r.rd.id_at(index + 1).map(str::to_owned));
         Self {
             region: r.rd.region,
             view: r.view.clone(),
@@ -915,7 +965,21 @@ pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditRe
 /// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
 /// or when the arguments are stale or out of range for this document.
 pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
-    let r = resolve(view, doc)?;
+    new_paragraph_in(view, doc, None)
+}
+
+/// [`new_paragraph`] reading the body's order from `body`, the kept order of
+/// `doc`, so the paragraph that follows is found without listing the body.
+///
+/// # Errors
+///
+/// As [`new_paragraph`].
+pub fn new_paragraph_in(
+    view: &ParticipantView,
+    doc: &AutoCommit,
+    body: Option<&BodyOrder>,
+) -> EditResult {
+    let r = resolve_in(view, doc, body)?;
     let region = r.rd.region;
     let mut actions = Vec::new();
     let mut next = r.view.clone();
@@ -924,11 +988,11 @@ pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
         actions.extend(replace);
         next = typed;
         let end_index = r.rd.index(&end.block).unwrap_or_else(|| r.caret_index());
-        (start.clone(), r.rd.order().get(end_index + 1).cloned())
+        (start.clone(), r.rd.id_at(end_index + 1).map(str::to_owned))
     } else {
         (
             r.view.caret.clone(),
-            r.rd.order().get(r.caret_index() + 1).cloned(),
+            r.rd.id_at(r.caret_index() + 1).map(str::to_owned),
         )
     };
     // Like the widget, kind and emptiness are read before the replacement.
@@ -1085,7 +1149,9 @@ pub(crate) struct AppendTarget {
 }
 
 impl AppendTarget {
-    pub(crate) fn new(view: &ParticipantView, doc: &AutoCommit) -> Self {
+    /// `body`: the kept order of `doc`'s body, naming its last block without
+    /// listing the body.
+    pub(crate) fn new(view: &ParticipantView, doc: &AutoCommit, body: Option<&BodyOrder>) -> Self {
         let base = ParticipantView {
             region: RegionKind::Body,
             anchor: None,
@@ -1094,7 +1160,12 @@ impl AppendTarget {
         };
         let end = qdoc::model::open(doc, &automerge::ROOT)
             .ok()
-            .and_then(|c| super::body_end(doc, &c))
+            .and_then(|c| match body {
+                Some(body) => body
+                    .id_at(body.len().checked_sub(1)?)
+                    .map(|last| super::body_end_at(doc, &c, last.to_owned())),
+                None => super::body_end(doc, &c),
+            })
             .map(|end| {
                 let fills = end.chars == 0 && end.kind.as_deref() == Some("paragraph");
                 (end.id, end.chars, fills)
@@ -1138,7 +1209,7 @@ pub fn append_paragraph(view: &ParticipantView, doc: &AutoCommit, text: &str) ->
             "text must be non-empty and within Writer's limits".into(),
         ));
     }
-    let next = AppendTarget::new(view, doc).caret_after(text);
+    let next = AppendTarget::new(view, doc, None).caret_after(text);
     Ok((vec![super::append_paragraph_action(text)], next))
 }
 
@@ -1234,11 +1305,9 @@ pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) ->
     let rd = RegionDoc::open(doc, base.region)?;
     let caret = match to {
         CaretTarget::Point { block, offset } => rd.point(block, *offset)?,
-        CaretTarget::DocumentStart => {
-            ViewPoint::new(rd.order().first().ok_or(EditingError::NoCaret)?, 0)
-        }
+        CaretTarget::DocumentStart => ViewPoint::new(rd.first().ok_or(EditingError::NoCaret)?, 0),
         CaretTarget::DocumentEnd => {
-            let last = rd.order().last().ok_or(EditingError::NoCaret)?;
+            let last = rd.last().ok_or(EditingError::NoCaret)?;
             ViewPoint::new(last, rd.len(last))
         }
         CaretTarget::BlockEnd => {
@@ -1300,7 +1369,7 @@ pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> Ed
 pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
-    let (Some(first), Some(last)) = (rd.order().first(), rd.order().last()) else {
+    let (Some(first), Some(last)) = (rd.first(), rd.last()) else {
         return Err(EditingError::NoCaret);
     };
     let caret = ViewPoint::new(last, rd.len(last));
@@ -1523,26 +1592,37 @@ pub(super) fn refused(requirement: ContextRequirement) -> EncodedAction {
 
 /// Whether replacing this context's selection removes more than
 /// [`LARGE_REMOVAL_CHARS`].
-pub(super) fn large_selection(ctx: &WpResourceCtx, doc: &AutoCommit) -> bool {
+pub(super) fn large_selection(
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    body: Option<&BodyOrder>,
+) -> bool {
     ctx.selection.is_some()
-        && resolve(&ParticipantView::from_ctx(ctx), doc)
+        && resolve_in(&ParticipantView::from_ctx(ctx), doc, body)
             .is_ok_and(|r| r.removed_chars() > LARGE_REMOVAL_CHARS)
 }
 
 /// Publish the editing primitives as root operations of `root`
 /// (`word-processor.document`) for the participant whose context is `ctx`.
 /// Document operations encode positional envelopes; the view operations are
-/// published by [`super::view_ops::add_operations`].
+/// published by [`super::view_ops::add_operations`]. `body` is the kept order
+/// of `doc`'s body when the caller has one: building the tree then reads only
+/// the blocks around the caret, never the whole body.
 #[expect(
     clippy::too_many_lines,
     reason = "the published editing-operation table: one independent spec per operation"
 )]
-pub(super) fn add_operations(root: &mut Resource, ctx: &WpResourceCtx, doc: &AutoCommit) {
+pub(super) fn add_operations(
+    root: &mut Resource,
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    body: Option<&BodyOrder>,
+) {
     let view = ParticipantView::from_ctx(ctx);
     // Every participant's tree and the catalogue schema carry the same
     // operations with the same contracts; only the build closures differ.
     // Without a resolvable caret they refuse with `needs-caret`.
-    let r = resolve(&view, doc).ok();
+    let r = resolve_in(&view, doc, body).ok();
     let domain = continuation::view(
         ctx.region,
         &view.caret,
@@ -1600,7 +1680,7 @@ pub(super) fn add_operations(root: &mut Resource, ctx: &WpResourceCtx, doc: &Aut
     );
 
     // Both shapes take no input and share one contract.
-    let paragraph_edit = new_paragraph(&view, doc);
+    let paragraph_edit = new_paragraph_in(&view, doc, body);
     let paragraph = match (
         &r,
         paragraph_edit
