@@ -382,7 +382,7 @@ async fn subscribe_ops(
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(Duration::from_secs(5), client.member(&path))
+    let own = timeout(crate::HANG_BOUND, client.member(&path))
         .await
         .unwrap()
         .expect("own namespace relayed");

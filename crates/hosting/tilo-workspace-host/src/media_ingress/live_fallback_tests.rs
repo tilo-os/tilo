@@ -33,7 +33,7 @@ impl Stream {
                     return (kind, payload);
                 }
             }
-            let frame = timeout(Duration::from_secs(5), self.body.frame())
+            let frame = timeout(crate::HANG_BOUND, self.body.frame())
                 .await
                 .expect("stream deadline")
                 .expect("stream open")
@@ -133,7 +133,7 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(h.f.owner.identity.native_cert.device_public_key)
     );
-    let own = timeout(Duration::from_secs(5), client.member(&path))
+    let own = timeout(crate::HANG_BOUND, client.member(&path))
         .await
         .unwrap()
         .unwrap();
@@ -161,7 +161,7 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
     let (status, _, _) = post(&h, FALLBACK_SEND_PATH, vec![0x11, 0, 0], Some(id)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Codec-valid presence over HTTPS reaches the WebTransport subscriber.
-    let received = timeout(Duration::from_secs(5), async {
+    let received = timeout(crate::HANG_BOUND, async {
         let mut seq = 0;
         loop {
             seq += 1;

@@ -947,7 +947,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn desktop_service_readiness_does_not_wait_for_document_workers() {
         let (_root, _owner, runtime) = runtime();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
         let desktop = loop {
             if let Some(surface) = runtime
                 .broker

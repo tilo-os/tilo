@@ -100,7 +100,7 @@ async fn client(
             workspace_id: owner.workspace_id(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(crate::HANG_BOUND, async {
         while !matches!(client.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
     .await
@@ -109,7 +109,7 @@ async fn client(
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), client.recv_action())
+        tokio::time::timeout(crate::HANG_BOUND, client.recv_action())
             .await
             .unwrap(),
         Some(EnvelopeV2::ActionsReady { .. })
@@ -274,7 +274,7 @@ async fn room_media_broker_certified_scenario() {
         let (ready, mut readiness) = tokio::sync::watch::channel(false);
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve_with_readiness(server_session, room, durable_host, ready).await });
-        tokio::time::timeout(Duration::from_secs(5), async { while !*readiness.borrow_and_update() { readiness.changed().await.unwrap(); } }).await.unwrap();
+        tokio::time::timeout(crate::HANG_BOUND, async { while !*readiness.borrow_and_update() { readiness.changed().await.unwrap(); } }).await.unwrap();
         let mut harness = Harness { owner, host, committed, runtime, admin, commits, signatures, network, service: CollaborationService::new(vec![]), dispatched: 0 };
         let request = send(&caller, room, source, target, ActionMessage::CatalogueRefresh { scope: None });
         let ActionMessage::BrokerCatalogue { host: advertised_host, catalogue } = harness.response(&caller, request, false).await else { panic!("native durable catalogue absent") };

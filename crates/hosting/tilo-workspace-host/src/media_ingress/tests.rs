@@ -9,7 +9,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tilo_delivery_protocol::delivery_v3::{
     auth,
     http_proof::{Request, RequestProof},
@@ -81,7 +81,7 @@ async fn exchange(
 ) -> Vec<u8> {
     let transport = client.request(path, body, proof);
     let actor = async {
-        let request = timeout(Duration::from_secs(5), ingress.recv())
+        let request = timeout(crate::HANG_BOUND, ingress.recv())
             .await
             .unwrap()
             .unwrap();
@@ -233,7 +233,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     let before_read = f.owner.committed_generation();
     let transport = client.request_method("GET", "/peer/v3/descriptor", vec![], None);
     let actor = async {
-        let request = timeout(Duration::from_secs(5), ingress.recv())
+        let request = timeout(crate::HANG_BOUND, ingress.recv())
             .await
             .unwrap()
             .unwrap();
@@ -262,7 +262,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     }
     let transport = client.request_method("GET", "/peer/v3/descriptor", vec![], None);
     let actor = async {
-        let request = timeout(Duration::from_secs(5), ingress.recv())
+        let request = timeout(crate::HANG_BOUND, ingress.recv())
             .await
             .unwrap()
             .unwrap();
@@ -389,7 +389,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         .with_server_certificates(vec![certificate])
         .unwrap();
     let transport = timeout(
-        Duration::from_secs(5),
+        crate::HANG_BOUND,
         wt.connect(
             web_transport_quinn::proto::ConnectRequest::new(
                 format!("{origin}/moq/voice").parse::<url::Url>().unwrap(),
@@ -401,7 +401,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     .unwrap()
     .unwrap();
     let connected = timeout(
-        Duration::from_secs(5),
+        crate::HANG_BOUND,
         tilo_moq::carrier::start(transport, &setup, None, None),
     )
     .await
@@ -432,7 +432,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         .await,
         ControlResult::Closed
     ));
-    timeout(Duration::from_secs(5), connected.closed())
+    timeout(crate::HANG_BOUND, connected.closed())
         .await
         .unwrap();
     drop(connected);

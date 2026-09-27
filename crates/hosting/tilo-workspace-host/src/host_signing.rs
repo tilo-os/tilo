@@ -921,7 +921,7 @@ mod tests {
         let mut pending = Vec::with_capacity(LIMIT);
         for _ in 0..LIMIT {
             pending.push(
-                tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+                tokio::time::timeout(crate::HANG_BOUND, receiver.recv())
                     .await
                     .expect("bounded signer entered its owner queue")
                     .expect("owner queue remains open"),
@@ -972,11 +972,10 @@ mod tests {
             .commit(first)
             .await
             .expect("consuming one exact receipt releases one permit");
-        let overflow_pending =
-            tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-                .await
-                .expect("waiting signer advances after exact receipt consumption")
-                .expect("owner queue remains open");
+        let overflow_pending = tokio::time::timeout(crate::HANG_BOUND, receiver.recv())
+            .await
+            .expect("waiting signer advances after exact receipt consumption")
+            .expect("owner queue remains open");
         let (complete, result) = overflow_pending.apply(&mut owner);
         result.expect("waiting exact mutation remains admitted");
         complete();
@@ -1021,7 +1020,7 @@ mod tests {
         assert!(!waiting.is_finished());
 
         service.fail("owner authority retired while signing waited");
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        let error = tokio::time::timeout(crate::HANG_BOUND, waiting)
             .await
             .expect("closed capacity wakes waiter")
             .expect("signer task")

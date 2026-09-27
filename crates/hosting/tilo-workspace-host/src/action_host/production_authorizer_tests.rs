@@ -277,7 +277,7 @@ async fn native_production_authorizer_retired_original_owner_denies_certified_re
             max_depth: 1,
         },
     }));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
     loop {
         if let Some(result) = fixture
             .caller
@@ -374,7 +374,7 @@ async fn native_production_authorizer_replacement_does_not_revive_original_conne
                 max_depth: 1,
             },
         }));
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + crate::HANG_BOUND;
         loop {
             if let Some(result) = caller.poll().into_iter().find_map(|event| match event {
                 CollabEvent::ActionDirectoryPage {
