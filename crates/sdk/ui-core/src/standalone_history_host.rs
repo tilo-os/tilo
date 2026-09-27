@@ -2,9 +2,12 @@
 //!
 //! This is deliberately not an application-root wrapper. Hosts retain the app
 //! root and all its lifecycle hooks, and admit this chrome as an unbound sibling
-//! in the same layout arena. `local_resources` must never enter a broker or
-//! remote application's catalogue. `invoke_local` requires a trusted local UI
-//! dispatch path; a matching actor identity is not proof of locality.
+//! in the same layout arena. `local_resources` — the pane's session, selection
+//! and review controls — must never enter a broker or remote application's
+//! catalogue. `invoke_local` requires a trusted local UI dispatch path; a
+//! matching actor identity is not proof of locality. The broker-visible door
+//! onto the same History model is the permission-gated `tilo.history`
+//! resource in `app/history_actions.rs`.
 
 use std::collections::HashMap;
 
@@ -1020,10 +1023,10 @@ fn session_resource(session: uuid::Uuid) -> Resource {
         &HistoryCommand::Close { session },
     ))
 }
-fn encode_entry(id: HistoryEntryId) -> String {
+pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::widget::history_group::hex16(&id)
 }
-fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
+pub(crate) fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
     if value.len() != 32
         || !value
             .bytes()
