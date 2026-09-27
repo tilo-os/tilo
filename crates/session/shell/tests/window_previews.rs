@@ -20,6 +20,7 @@ use shell::shell::state::{TileContent, WorkspaceTree};
 use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };
+use tilo_desktop::window_switcher::WindowThumbnails as _;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
