@@ -55,12 +55,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         f.records
             .with(&checkout.id, |doc| {
                 let block_id = NotesDoc::page_block_snapshots(doc, f.empty)[0].0.clone();
-                NotesDoc::apply_block_ops(
-                    doc,
-                    f.empty,
-                    &[ui::widget::BlockEditOp::Delete { block_id }],
-                )
-                .unwrap();
+                remove_block(doc, f.empty, &block_id);
                 doc.commit();
             })
             .unwrap();
@@ -221,10 +216,9 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             .collect::<Vec<_>>();
         assert_eq!(app.main_panel_mut().inline_marks(), expected);
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-        let wrong = NotesDoc::page_blocks_list(&doc, f.root).unwrap();
         assert!(
             app.main_panel_mut()
-                .bind_canonical_page(&doc, f.child, "wrong", &wrong)
+                .bind_canonical_page(&doc, uuid::Uuid::new_v4(), "wrong")
                 .is_err()
         );
         assert_eq!(app.main_panel_mut().page_id(), Some(f.child));
@@ -242,8 +236,31 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             2
         );
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-        for (block, _) in expected {
-            NotesDoc::set_block_marks(&mut doc, f.child, &block, &[]).unwrap();
+        for (block, marks) in expected {
+            for span in marks {
+                let text = NotesDoc::page_block_snapshots(&doc, f.child)
+                    .into_iter()
+                    .find(|(id, _)| *id == block)
+                    .unwrap()
+                    .1;
+                let chars = |byte: usize| text[..byte].chars().count();
+                let (name, _) = tilo_rich_text::document_mark(&span.to_ui().unwrap().mark);
+                edit_body(
+                    &mut doc,
+                    f.child,
+                    qdoc_rich_text::RichTextAction::SetMark {
+                        region: qdoc_rich_text::action::RegionKind::Body,
+                        spans: vec![qdoc_rich_text::action::Span {
+                            block: block.clone(),
+                            start: chars(span.start),
+                            end: chars(span.end),
+                        }],
+                        name: name.into(),
+                        value: None,
+                        also_clear: Vec::new(),
+                    },
+                );
+            }
         }
         doc.commit();
         let cleared = (doc.base_heads(), doc.pending_ops());
