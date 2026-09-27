@@ -15,9 +15,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
@@ -35,7 +32,6 @@ fn live_text_edit_propagates_through_broker() {
     let broker = TypedBroker::new();
     let mut a = broker.manager("alice");
     let mut b = broker.manager("bob");
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
 

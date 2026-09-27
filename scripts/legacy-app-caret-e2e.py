@@ -23,7 +23,24 @@ import tempfile
 import time
 
 
-DEADLINE = 20.0
+def hang_bound() -> float:
+    """How long any wait below lasts before the run is called hung.
+
+    The same bound as `tilo_test_env::hang_bound`: every wait ends as soon as
+    its condition holds, so this only catches a hang. A debug compositor and a
+    real toolkit app page in hundreds of megabytes on a runner disk shared with
+    other jobs, which alone has taken longer than 20 s.
+    """
+    raw = os.environ.get("TILO_TEST_HANG_BOUND_SECS")
+    if raw is None:
+        return 120.0
+    try:
+        return float(int(raw.strip()))
+    except ValueError:
+        raise SystemExit(f"TILO_TEST_HANG_BOUND_SECS={raw!r} is not a whole number of seconds")
+
+
+DEADLINE = hang_bound()
 SCREEN = (1600, 900)
 
 
@@ -130,7 +147,7 @@ def wait_until(description: str, predicate):
             last_error = error
         time.sleep(0.05)
     suffix = f"; last error: {last_error}" if last_error else ""
-    raise Failure(f"timed out waiting for {description}{suffix}")
+    raise Failure(f"gave up waiting for {description} after {DEADLINE:.0f} s{suffix}")
 
 
 def terminate(process: subprocess.Popen | None) -> None:
@@ -144,7 +161,13 @@ def terminate(process: subprocess.Popen | None) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=3)
+        # A killed process still paging its binary in from a busy disk exits
+        # only once that read returns; waiting keeps the original failure
+        # rather than replacing it with a TimeoutExpired from teardown.
+        try:
+            process.wait(timeout=DEADLINE)
+        except subprocess.TimeoutExpired:
+            print(f"warning: pid {process.pid} survived SIGKILL for {DEADLINE:.0f} s", file=sys.stderr)
 
 
 def frame_for(control: Control, app_id: str) -> dict | None:
