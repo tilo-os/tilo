@@ -2301,7 +2301,11 @@ mod tests {
                 }
                 (strip.id, target_group, target_tab)
             };
-            tree.desktop.set_active_group(strip_id, 70_002);
+            // Keep the strip parked on the target group. The desktop eases its
+            // active group into view on a wall-clock animation, so naming the
+            // last group active here would let a slow run finish that ease
+            // before the explicit pan below and leave nothing to scroll.
+            tree.desktop.set_active_group(strip_id, target_group);
 
             let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
             let store = frame_builder.chrome().records().clone();
