@@ -265,6 +265,7 @@ chat-a11y-app-inbox = Inbox: conversations across Tilo workspaces
 chat-a11y-app-channels = Channels in the current Tilo workspace
 chat-a11y-messages = Messages
 chat-a11y-message = { $author }: { $text }
+chat-a11y-report = { $author }: { $text } ({ $votes }, { $replies }, { $status })
 chat-a11y-unknown-person = Unknown person
 
 # Accessible names of the app's controls.

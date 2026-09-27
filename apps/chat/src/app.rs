@@ -1482,6 +1482,49 @@ impl ChatApp {
         }
     }
 
+    /// What a screen reader says for a top-level message: who wrote what,
+    /// and for a report where it stands, as its strip shows it — votes,
+    /// replies and the status Editors set.
+    fn message_access_name(&self, message: &Message) -> String {
+        let author = self.user(&message.author).map_or_else(
+            || crate::i18n::t("chat-a11y-unknown-person"),
+            |user| user.name.clone(),
+        );
+        let mut args = vec![
+            ("author", crate::i18n::text(author)),
+            ("text", crate::i18n::text(&message.text)),
+        ];
+        if !self
+            .channel(&self.active_channel)
+            .is_some_and(|channel| channel.feedback)
+        {
+            return crate::i18n::t_args("chat-a11y-message", &args);
+        }
+        args.extend([
+            (
+                "votes",
+                crate::i18n::text(crate::feedback::counted(
+                    "chat-report-votes",
+                    crate::feedback::vote_count(message),
+                )),
+            ),
+            (
+                "replies",
+                crate::i18n::text(crate::feedback::counted(
+                    "chat-replies",
+                    model::reply_count(&self.messages, &message.id),
+                )),
+            ),
+            (
+                "status",
+                crate::i18n::text(crate::feedback::status_label(&crate::feedback::status_of(
+                    message,
+                ))),
+            ),
+        ]);
+        crate::i18n::t_args("chat-a11y-report", &args)
+    }
+
     /// Build the reaction action a click on `msg`/`emoji` should dispatch,
     /// deciding add-vs-remove from the currently-loaded state at authoring time.
     /// A toggle is a presentation decision; the resulting action is a pure,
@@ -4417,18 +4460,8 @@ impl Widget for ChatApp {
             .iter()
             .filter(|message| message.parent.is_none())
             .map(|message| {
-                let author = self.user(&message.author).map_or_else(
-                    || crate::i18n::t("chat-a11y-unknown-person"),
-                    |user| user.name.clone(),
-                );
                 AccessNode::new(Role::ListItem)
-                    .with_name(crate::i18n::t_args(
-                        "chat-a11y-message",
-                        &[
-                            ("author", crate::i18n::text(author)),
-                            ("text", crate::i18n::text(&message.text)),
-                        ],
-                    ))
+                    .with_name(self.message_access_name(message))
                     .with_hashed_key((&message.id, "message"))
             })
             .collect();
@@ -5235,5 +5268,96 @@ mod identity_on_screen {
             let me = app.me.id.clone();
             assert_eq!(app.user_name(&me), "You");
         }
+    }
+}
+
+#[cfg(test)]
+mod reports_read_aloud {
+    use super::*;
+    use crate::feedback::{ReportState, ReportStatus, VOTE_EMOJI};
+    use crate::model::{ChannelKind, Reaction};
+
+    fn message(id: &str, text: &str, parent: Option<&str>) -> Message {
+        Message {
+            id: id.into(),
+            channel: "c_feedback".into(),
+            author: "u_reporter".into(),
+            ts: 1,
+            text: text.into(),
+            edited: false,
+            history: vec![],
+            parent: parent.map(Into::into),
+            reactions: vec![],
+            mentions: vec![],
+            reference: None,
+            also: Vec::new(),
+            attachment: None,
+            attachment_withdrawn: false,
+            pinned: false,
+            work: None,
+            report: None,
+        }
+    }
+
+    fn names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            names(child, out);
+        }
+    }
+
+    /// Someone who cannot see a report's strip hears where it stands: its
+    /// votes, its replies and the status Editors set.
+    #[test]
+    fn a_report_is_read_with_its_votes_replies_and_status() {
+        let mut app = ChatApp::new_ephemeral();
+        app.channels = vec![Channel {
+            id: "c_feedback".into(),
+            workspace: app.active_ws.clone(),
+            category: String::new(),
+            name: "feedback".into(),
+            topic: String::new(),
+            kind: ChannelKind::Text,
+            order: 0,
+            unread: 0,
+            archived: false,
+            feedback: true,
+        }];
+        app.active_channel = "c_feedback".into();
+        let mut report = message("m_report", "Send does nothing", None);
+        report.reactions.push(Reaction {
+            emoji: VOTE_EMOJI.into(),
+            users: vec!["u_team".into(), "u_mate".into()],
+        });
+        report.report = Some(ReportState {
+            status: ReportStatus::Planned,
+            by: "u_team".into(),
+            since: 0,
+        });
+        app.messages = vec![report, message("m_reply", "Seen it too", Some("m_report"))];
+
+        let mut read = Vec::new();
+        names(
+            &Widget::accessibility(&app).expect("chat is accessible"),
+            &mut read,
+        );
+        assert!(
+            read.iter()
+                .any(|name| name.ends_with("Send does nothing (2 votes, 1 reply, Planned)")),
+            "{read:#?}"
+        );
+
+        // An ordinary channel's messages are read as they are.
+        app.channels[0].feedback = false;
+        let mut read = Vec::new();
+        names(
+            &Widget::accessibility(&app).expect("chat is accessible"),
+            &mut read,
+        );
+        assert!(
+            read.iter()
+                .any(|name| name.ends_with(": Send does nothing")),
+            "{read:#?}"
+        );
     }
 }

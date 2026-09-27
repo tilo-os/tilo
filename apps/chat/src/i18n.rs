@@ -212,6 +212,7 @@ mod tests {
         "chat-a11y-app-channels",
         "chat-a11y-messages",
         "chat-a11y-message",
+        "chat-a11y-report",
         "chat-a11y-unknown-person",
         "chat-a11y-reaction",
         "chat-a11y-add-reaction",
