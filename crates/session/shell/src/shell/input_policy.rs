@@ -109,7 +109,7 @@ pub fn surface_local(point: (f64, f64), rect: Rect) -> (f64, f64) {
 }
 
 /// Bare modifier keys — never treated as compositor chords, since a client's xkb state has to see them or its own `Shift`/`Ctrl` handling desynchronises from the seat's.
-fn is_modifier_key(key: &Key) -> bool {
+pub fn is_modifier_key(key: &Key) -> bool {
     matches!(
         key,
         Key::Named(
@@ -799,6 +799,13 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().file_picker().is_some() {
         return true;
     }
+    // Alt is held after Alt+Tab. The focused client gives up the keyboard
+    // for as long as the switcher is open, so Tab, the arrows and Escape
+    // reach it, and the client never sees Alt pressed and released alone
+    // (which toolkits read as "show the menu bar").
+    if fb.host().window_switcher_active() {
+        return true;
+    }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
     let maximized_chrome_captures = fb.host().maximized_chrome_captures_pointer();
@@ -1476,22 +1483,10 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn window_stepping_and_wheel_jumps_walk_the_strip() {
-        fn conventional_window_cycle_wraps_while_spatial_step_clamps() {
+        fn spatial_window_step_clamps_at_the_strip_ends() {
             let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
-            let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-            assert_eq!(
-                cycle_active_window(&tree, -1).map(|(_, group, _)| group),
-                Some(foreign_group),
-                "Alt+Shift+Tab from the first window wraps to the last"
-            );
             assert_eq!(step_active_window(&tree, -1), None);
-
             tree.desktop.set_active_group(strip, foreign_group);
-            assert_eq!(
-                cycle_active_window(&tree, 1).map(|(_, group, _)| group),
-                Some(first_group),
-                "Alt+Tab from the last window wraps to the first"
-            );
             assert_eq!(step_active_window(&tree, 1), None);
         }
 
@@ -1619,7 +1614,7 @@ mod tests {
             );
         }
 
-        conventional_window_cycle_wraps_while_spatial_step_clamps();
+        spatial_window_step_clamps_at_the_strip_ends();
         step_active_window_walks_tabs_within_a_group();
         step_active_window_continues_into_the_next_group();
         wheel_jump_detents_map_wheel_down_to_a_rightward_jump();
@@ -2203,17 +2198,6 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
-pub fn cycle_active_window(
-    tree: &WorkspaceTree,
-    direction: i32,
-) -> Option<(StripId, GroupId, u64)> {
-    if direction == 0 {
-        return None;
-    }
-    step_active_window(tree, direction)
-        .or_else(|| step_active_window(tree, if direction > 0 { i32::MIN } else { i32::MAX }))
-}
-
 use crate::compositor::lock_controller::LockKey;
 /// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
 /// The panic key for a shared session — stops whatever a guest is doing.

@@ -32,12 +32,15 @@ getrandom.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true
+# The storage daemon reads short-lived credentials through the cloud source
+# interface; the credential helper runs as a bounded child process.
+cloud-source = { path = "../cloud-source" }
+bounded-command = { path = "../../../crates/system/bounded-command" }
 
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file
 # checks, and edit Windows ACLs through a bounded `icacls` call.
 private-fs = { path = "../private-fs" }
-bounded-command = { path = "../../../crates/system/bounded-command" }
 
 [lints]
 workspace = true

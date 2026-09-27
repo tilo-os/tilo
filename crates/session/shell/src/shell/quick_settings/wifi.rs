@@ -14,6 +14,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
+use crate::shell::i18n::t;
+
 use crate::shell::chrome_state::QuickSettingsState;
 #[cfg(test)]
 use crate::shell::quick_settings::WifiNetwork;
@@ -48,7 +50,7 @@ pub enum WifiPaneOutcome {
     /// A synchronous radio mutation succeeded; refresh authoritative OS state.
     Reconcile,
     ActionFailed {
-        action: &'static str,
+        action: String,
         error: String,
     },
     JoinOpen(String),
@@ -114,18 +116,19 @@ impl QuickSettingsWifiPane {
         }
     }
 
-    fn status_message(state: &QuickSettingsState) -> Option<&'static str> {
-        if !state.wifi {
-            Some("Wi-Fi is off")
+    fn status_message(state: &QuickSettingsState) -> Option<String> {
+        let key = if !state.wifi {
+            "qs-wifi-off"
         } else if state.wifi_scanning {
-            Some("Scanning for networks…")
+            "qs-wifi-scanning"
         } else if state.wifi_scan_error.is_some() {
-            Some("Couldn’t scan · Refresh to try again")
+            "qs-wifi-scan-failed"
         } else if state.wifi_networks.is_empty() {
-            Some("No networks found")
+            "qs-wifi-none"
         } else {
-            None
-        }
+            return None;
+        };
+        Some(t(key))
     }
 
     /// Stable visual ids that are currently actionable. Disabled controls and
@@ -244,23 +247,27 @@ impl QuickSettingsWifiPane {
             .iter()
             .filter_map(|index| match *index {
                 Self::BACK_FOCUS => Some(
-                    AccessNode::new(Role::Button).with_name("Back").with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.keyboard_focus == Some(*index)),
-                    ),
+                    AccessNode::new(Role::Button)
+                        .with_name(t("qs-back"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index)),
+                        ),
                 ),
                 Self::WIFI_FOCUS => Some(
-                    AccessNode::new(Role::Switch).with_name("Wi-Fi").with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.keyboard_focus == Some(*index))
-                            .checked(state.wifi),
-                    ),
+                    AccessNode::new(Role::Switch)
+                        .with_name(t("qs-wifi"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index))
+                                .checked(state.wifi),
+                        ),
                 ),
                 Self::RESCAN_FOCUS => Some(
                     AccessNode::new(Role::Button)
-                        .with_name("Scan for Wi-Fi networks")
+                        .with_name(t("qs-wifi-rescan-a11y"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -269,7 +276,7 @@ impl QuickSettingsWifiPane {
                 ),
                 Self::HOTSPOT_FOCUS => Some(
                     AccessNode::new(Role::Switch)
-                        .with_name("Wi-Fi hotspot")
+                        .with_name(t("qs-wifi-hotspot-a11y"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -283,7 +290,11 @@ impl QuickSettingsWifiPane {
                     Some(
                         AccessNode::new(Role::Button)
                             .with_name(item.ssid.clone())
-                            .with_description(if item.secure { "Secured" } else { "Open" })
+                            .with_description(t(if item.secure {
+                                "qs-wifi-secured"
+                            } else {
+                                "qs-wifi-open"
+                            }))
                             .with_position(network.saturating_add(1), state.wifi_networks.len())
                             .with_state(
                                 AccessState::new()
@@ -295,10 +306,10 @@ impl QuickSettingsWifiPane {
             })
             .collect();
         AccessNode::new(Role::Dialog)
-            .with_name("Wi-Fi")
-            .with_description(Self::status_message(state).unwrap_or(
-                "Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot",
-            ))
+            .with_name(t("qs-wifi"))
+            .with_description(
+                Self::status_message(state).unwrap_or_else(|| t("qs-wifi-choose-a11y")),
+            )
             .with_state(AccessState::new().modal(true))
             .with_children(children)
     }
@@ -458,11 +469,11 @@ impl QuickSettingsWifiPane {
             if let Err(error) = result {
                 log_qs_result("set_wifi", Err(error.clone()));
                 return WifiPaneOutcome::ActionFailed {
-                    action: if next {
-                        "Turn on Wi-Fi"
+                    action: t(if next {
+                        "qs-wifi-turn-on"
                     } else {
-                        "Turn off Wi-Fi"
-                    },
+                        "qs-wifi-turn-off"
+                    }),
                     error,
                 };
             }
@@ -496,11 +507,11 @@ impl QuickSettingsWifiPane {
             if let Err(error) = result {
                 log_qs_result("set_hotspot", Err(error.clone()));
                 return WifiPaneOutcome::ActionFailed {
-                    action: if next {
-                        "Turn on Wi-Fi hotspot"
+                    action: t(if next {
+                        "qs-wifi-hotspot-turn-on"
                     } else {
-                        "Turn off Wi-Fi hotspot"
-                    },
+                        "qs-wifi-hotspot-turn-off"
+                    }),
                     error,
                 };
             }
@@ -559,7 +570,7 @@ impl QuickSettingsWifiPane {
             .layout_from(panel, displayed_networks, Self::LIST_TOP);
         let colors = &theme.tokens.colors;
         self.list
-            .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
+            .draw_header(scene, transform, text, theme, panel, cursor, &t("qs-wifi"));
         // The Hotspot row is a Control (HIG §9.1/§9.5): glyph, two-line
         // label and switch all on its centre line and the shared inset.
         let row = Self::hotspot_rect_for(panel);
@@ -576,23 +587,24 @@ impl QuickSettingsWifiPane {
         );
         let label_size = type_size(text, theme.tokens.typography.scale.sm);
         let detail_size = type_size(text, theme.tokens.typography.scale.xs);
-        let detail = if state.radios.hotspot_active {
-            "Sharing this connection"
+        let detail = t(if state.radios.hotspot_active {
+            "qs-wifi-hotspot-sharing"
         } else {
-            "Off"
-        };
+            "qs-off"
+        });
+        let hotspot_label = t("qs-wifi-hotspot");
         let (_, label_h) = text.measure_weighted(
-            "Hotspot",
+            &hotspot_label,
             label_size,
             None,
             ui::text_render::TextWeight::Medium,
         );
-        let (_, detail_h) = text.measure(detail, detail_size, None);
+        let (_, detail_h) = text.measure(&detail, detail_size, None);
         let block_top = centred_text_top(row, f64::from(label_h) + f64::from(detail_h));
         let text_x = glyph.x1 + CONTROL_INSET;
         text.draw_text_weighted(
             scene,
-            "Hotspot",
+            &hotspot_label,
             label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
@@ -601,7 +613,7 @@ impl QuickSettingsWifiPane {
         );
         text.draw_text(
             scene,
-            detail,
+            &detail,
             detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
@@ -624,7 +636,7 @@ impl QuickSettingsWifiPane {
                 text,
                 theme,
                 panel,
-                message,
+                &message,
                 Self::LIST_TOP,
             );
             if displayed_networks == 0 {
@@ -667,7 +679,7 @@ impl QuickSettingsWifiPane {
             if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
                 text.draw_text(
                     scene,
-                    "Connecting…",
+                    &t("qs-connecting"),
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
@@ -676,7 +688,7 @@ impl QuickSettingsWifiPane {
             } else if network.connected {
                 text.draw_text(
                     scene,
-                    "Connected",
+                    &t("qs-connected"),
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
@@ -946,10 +958,7 @@ mod tests {
             );
             assert!(matches!(
                 failure,
-                WifiPaneOutcome::ActionFailed {
-                    action: "Turn on Wi-Fi",
-                    ..
-                }
+                WifiPaneOutcome::ActionFailed { ref action, .. } if action == "Turn on Wi-Fi"
             ));
             assert!(
                 !rejected_state.wifi,
@@ -1011,26 +1020,26 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                QuickSettingsWifiPane::status_message(&state),
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
                 Some("Wi-Fi is off")
             );
 
             state.wifi = true;
             state.wifi_scanning = true;
             assert_eq!(
-                QuickSettingsWifiPane::status_message(&state),
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
                 Some("Scanning for networks…")
             );
 
             state.wifi_scanning = false;
             assert_eq!(
-                QuickSettingsWifiPane::status_message(&state),
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
                 Some("No networks found")
             );
 
             state.wifi_scan_error = Some("NetworkManager unavailable".into());
             assert_eq!(
-                QuickSettingsWifiPane::status_message(&state),
+                QuickSettingsWifiPane::status_message(&state).as_deref(),
                 Some("Couldn’t scan · Refresh to try again")
             );
             assert_eq!(

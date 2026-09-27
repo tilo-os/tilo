@@ -1,0 +1,50 @@
+[package]
+name = "account-custody"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Settings' custody of cloud account credentials: OAuth sign-in and refresh, Nextcloud Login Flow v2, iCloud sessions, and the short-lived handoff to the storage daemon."
+
+[lib]
+name = "account_custody"
+path = "src/lib.rs"
+
+# The credential helper the storage daemon runs to get a fresh short-lived
+# credential for one account. It holds the vault only for that call.
+[[bin]]
+name = "tilo-account-credential"
+path = "src/bin/tilo-account-credential.rs"
+
+[dependencies]
+accounts = { path = "../accounts" }
+tilo-oauth = { path = "../tilo-oauth" }
+tilo-clock = { path = "../tilo-clock" }
+tilo-net = { path = "../tilo-net", features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+zeroize.workspace = true
+tracing.workspace = true
+# The committed public client registrations (`oauth-clients.toml`).
+toml.workspace = true
+# Resolving a new account's storage (drive ids, team roots) once at sign-in,
+# and iCloud's web sign-in behind `icloud::ICloudAuth`.
+cloud-source = { path = "../cloud-source" }
+cloud-source-gdrive = { path = "../cloud-source-gdrive" }
+cloud-source-onedrive = { path = "../cloud-source-onedrive" }
+cloud-source-dropbox = { path = "../cloud-source-dropbox" }
+cloud-source-icloud = { path = "../cloud-source-icloud" }
+
+[dev-dependencies]
+cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
+cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
+cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
+test-http = { path = "../../dev/test-http" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

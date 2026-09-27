@@ -5,6 +5,12 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# It restarts the user's tilo-ush, ending every terminal session it serves.
+# A developer host that has the session packages installed has that unit too.
+if ! systemd-detect-virt --quiet --vm; then
+  echo 'ush systemd terminal VM acceptance: refusing to restart tilo-ush outside a VM' >&2
+  exit 2
+fi
 unit=/usr/lib/systemd/user/tilo-ush.service
 socket_unit=/usr/lib/systemd/user/tilo-ush.socket
 

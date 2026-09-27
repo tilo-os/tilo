@@ -19,11 +19,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 /// One display the shell draws across.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OutputGeometry {
     /// The compositor's stable id for the display (`OutputId`); `0` is the
     /// primary.
     pub id: u32,
+    /// The physical monitor behind the output, stable across restarts and
+    /// port swaps that renumber [`Self::id`]: its EDID identity, told apart
+    /// from an identical monitor by connector, or the connector alone
+    /// without a readable EDID. Empty when the backend knows neither.
+    pub monitor: String,
     /// Left edge in the logical desktop.
     pub x: f64,
     /// Top edge in the logical desktop.
@@ -47,6 +52,7 @@ impl OutputGeometry {
     pub fn unscaled(x: f64, y: f64, width: f64, height: f64) -> Self {
         Self {
             id: 0,
+            monitor: String::new(),
             x,
             y,
             width,
@@ -218,6 +224,7 @@ mod tests {
         vec![
             OutputGeometry {
                 id: 0,
+                monitor: String::new(),
                 x: 0.0,
                 y: 0.0,
                 width: 1280.0,
@@ -227,6 +234,7 @@ mod tests {
             },
             OutputGeometry {
                 id: 1,
+                monitor: String::new(),
                 x: 1280.0,
                 y: 200.0,
                 width: 1920.0,
