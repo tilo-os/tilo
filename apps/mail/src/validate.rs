@@ -515,7 +515,7 @@ mod tests {
                     .send(validate_account_cancellable(&cfg, &worker_cancellation))
                     .unwrap();
             });
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -538,7 +538,7 @@ mod tests {
                 "real TLS handshake began"
             );
             cancellation.store(true, Ordering::Relaxed);
-            let outcome = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            let outcome = receiver.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(!outcome.persisted());
             assert!(outcome.message().contains("cancelled"), "{outcome:?}");
             let mut remaining = Vec::new();

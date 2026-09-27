@@ -3273,15 +3273,11 @@ mod command_path_tests {
         )));
         // The daemon has the request but deliberately cannot reply yet. Reaching
         // this receive proves the UI command returned independently of I/O.
-        seen_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        seen_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(widget.share_pending_path.is_some());
         release_tx.send(()).unwrap();
         server.join().unwrap();
-        wakes
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let mut doc = automerge::AutoCommit::new();
         assert!(widget.update(&mut doc, &automerge::ROOT));
         assert!(widget.share_pending_path.is_none());
