@@ -1689,9 +1689,7 @@ impl TextRenderer {
         style: &TextStyle,
         warm_shape: bool,
     ) -> Option<f32> {
-        let Some(width) = max_width else {
-            return None;
-        };
+        let width = max_width?;
         // Balance and hyphenation consult the wrap width even when the natural
         // line would fit; keep those keys distinct.
         if style.wrap_mode == TextWrapMode::Balance
@@ -2311,13 +2309,7 @@ impl TextRenderer {
         // Count measure-time warms as shape misses so paint-side stats still
         // see the cosmic-text work that filled the entry.
         self.shape_misses = self.shape_misses.saturating_add(1);
-        self.shape_cache.insert(
-            key,
-            ShapedText {
-                runs,
-                size,
-            },
-        );
+        self.shape_cache.insert(key, ShapedText { runs, size });
     }
 
     /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
@@ -2966,14 +2958,8 @@ mod tests {
                 &FontChoice::SansSerif,
             );
             let (h, m, _ns) = tr.take_shape_stats();
-            assert_eq!(
-                m, 0,
-                "measure_font warms paint geometry for each family"
-            );
-            assert_eq!(
-                h, 2,
-                "serif and sans remain distinct shape-cache entries"
-            );
+            assert_eq!(m, 0, "measure_font warms paint geometry for each family");
+            assert_eq!(h, 2, "serif and sans remain distinct shape-cache entries");
         }
     }
 
