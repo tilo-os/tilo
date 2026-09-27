@@ -98,52 +98,8 @@ impl SessionOwner {
             .ok_or_else(|| rejected("workspace missing".into()))?;
         // Never mutate another native peer's namespace, including process-local
         // surface notices. Owning room governance does not transfer those IDs.
-        let own = |id: u64| {
-            if salts.contains(&tilo_desktop_model::peer_salt_of(id)) {
-                Ok(())
-            } else {
-                Err(rejected("target belongs to another topology owner".into()))
-            }
-        };
-        let placement = |p: &TabPlacement| -> Result<(), DesktopCommandError> {
-            match p {
-                TabPlacement::EmptyWorkspace => (),
-                TabPlacement::InGroup {
-                    strip,
-                    group,
-                    after,
-                } => {
-                    own(*strip)?;
-                    own(*group)?;
-                    if let Some(id) = after {
-                        own(*id)?;
-                    }
-                }
-                TabPlacement::NewGroup { strip, after } => {
-                    own(*strip)?;
-                    if let Some(id) = after {
-                        own(*id)?;
-                    }
-                }
-            }
-            Ok(())
-        };
-        let location = |l: &TabLocation| -> Result<(), DesktopCommandError> {
-            own(l.strip)?;
-            own(l.group)?;
-            own(l.tab)
-        };
-        // Resolve OpenApp to the OpenTab a person would make, inside this
-        // owner's own topology namespace; everything below checks and applies
-        // that exact command.
+        let owned = |id: u64| salts.contains(&tilo_desktop_model::peer_salt_of(id));
         let resolved = match &command.command {
-            DesktopCommand::OpenApp { app } => DesktopCommand::OpenTab {
-                app: app.clone(),
-                placement: tilo_desktop_model::commands::open_app_placement(workspace, |id| {
-                    salts.contains(&tilo_desktop_model::peer_salt_of(id))
-                })
-                .map_err(rejected)?,
-            },
             // The saver is the admitted caller, whatever the JSON claimed.
             DesktopCommand::SaveShortcut { shortcut_json } => {
                 let (_, _, person) = self
@@ -151,78 +107,19 @@ impl SessionOwner {
                     .permissions(caller.device_public_key, now)
                     .map_err(rejected)?;
                 DesktopCommand::SaveShortcut {
-                    shortcut_json: tilo_desktop_model::commands::stamp_saver(
-                        shortcut_json,
-                        &person,
-                    )
-                    .map_err(rejected)?,
+                    shortcut_json: stamp_saver(shortcut_json, &person).map_err(rejected)?,
                 }
             }
-            other => other.clone(),
+            other => resolve_open_app(workspace, other.clone(), owned).map_err(rejected)?,
         };
-        match &resolved {
-            DesktopCommand::OpenApp { .. } => unreachable!("resolved to OpenTab above"),
-            DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => (),
-            DesktopCommand::OpenTab { placement: p, .. } => placement(p)?,
-            DesktopCommand::CloseTab { location: l }
-            | DesktopCommand::DuplicateTab { location: l } => location(l)?,
-            DesktopCommand::ReorderTab {
-                location: l,
-                before,
-            }
-            | DesktopCommand::SplitTab {
-                location: l,
-                before,
-            } => {
-                location(l)?;
-                if let Some(id) = before {
-                    own(*id)?;
-                }
-            }
-            DesktopCommand::ReorderGroup {
-                strip,
-                group,
-                before,
-            } => {
-                own(*strip)?;
-                own(*group)?;
-                if let Some(id) = before {
-                    own(*id)?;
-                }
-            }
-            DesktopCommand::MoveTab {
-                location: l,
-                placement: p,
-            } => {
-                location(l)?;
-                placement(p)?;
-            }
-            DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::RemoveStrip { strip } => {
-                own(*strip)?
-            }
-            DesktopCommand::CreateStrip { .. } => (),
-            DesktopCommand::RenameWorkspace { .. } => (),
-        }
-        let maximum = workspace
-            .strips
-            .iter()
-            .flat_map(|s| {
-                std::iter::once(s.id.0).chain(
-                    s.window_groups
-                        .iter()
-                        .flat_map(|g| std::iter::once(g.id).chain(g.tabs.iter().map(|t| t.id))),
-                )
-            })
-            .filter(|id| tilo_desktop_model::peer_salt_of(*id) == salt)
-            .map(tilo_desktop_model::counter_of)
-            .max()
-            .unwrap_or(0);
+        check_owned(&resolved, owned).map_err(rejected)?;
         let stored = doc
             .get(ROOT, "desktop_counter_v1")
             .map_err(|e| rejected(e.to_string()))?
             .and_then(|(v, _)| v.as_u64())
             .unwrap_or(1);
-        let mut ids = tilo_desktop_model::IdMinter::resume(salt, stored.max(maximum + 1));
+        let mut ids =
+            tilo_desktop_model::IdMinter::resume(salt, namespace_counter(workspace, salt, stored));
         let mut creation = None;
         let mut documents = vec![];
         let mut routes = tilo_desktop_model::apps::record_routes(&doc);

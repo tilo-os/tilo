@@ -85,11 +85,11 @@ pub trait DesktopCommands: Send + Sync {
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         direct_delivery: bool,
     ) -> DesktopCommandFuture;
-    /// Applications this owner can open (durable app id, display title).
-    /// Each is published as an ordinary `desktop:app:<id>#open` action, the
-    /// same for people (command palette) and agents.
-    fn openable_applications(&self) -> Vec<(String, String)> {
-        Vec::new()
+    /// Applications this owner can open. Each is published as an ordinary
+    /// `desktop:app:<id>#open` action, the same for people (command palette)
+    /// and agents.
+    fn catalogue(&self) -> &dyn tilo_desktop_model::apps::AppCatalogue {
+        &()
     }
     /// [`Self::execute`] for an enrolled agent task. The opener is the broker's
     /// own revalidated task identity; an owner that records opened records

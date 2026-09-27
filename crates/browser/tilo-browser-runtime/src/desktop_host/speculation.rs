@@ -40,11 +40,10 @@
 use automerge::{AutoCommit, ReadDoc};
 use std::collections::BTreeSet;
 use tilo_desktop_model::commands::{
-    BoundCommand, DesktopCommand, TabPlacement, apply_command, open_app_placement,
+    BoundCommand, DesktopCommand, OpenContext, TabPlacement, apply_command, namespace_counter,
+    open_app_placement,
 };
-use tilo_desktop_model::{
-    AppKind, DesktopTree, TileContent, counter_of, mint_in_namespace, peer_salt_of,
-};
+use tilo_desktop_model::{AppKind, DesktopTree, TileContent, mint_in_namespace, peer_salt_of};
 use web_time::{Duration, Instant};
 
 /// A succeeded reorder the admitted tree does not satisfy is retired after this.
@@ -229,22 +228,10 @@ fn open(
                 after: None,
             }
         }
-        None => open_app_placement(workspace, owned)?,
+        None => open_app_placement(workspace, &OpenContext::default(), owned)?,
     };
     let salt = *namespace.salts.first().ok_or("no topology namespace")?;
-    let maximum = workspace
-        .strips
-        .iter()
-        .flat_map(|strip| {
-            std::iter::once(strip.id.0).chain(strip.window_groups.iter().flat_map(|group| {
-                std::iter::once(group.id).chain(group.tabs.iter().map(|tab| tab.id))
-            }))
-        })
-        .filter(|id| peer_salt_of(*id) == salt)
-        .map(counter_of)
-        .max()
-        .unwrap_or(0);
-    let mut counter = namespace.stored.max(maximum + 1);
+    let mut counter = namespace_counter(workspace, salt, namespace.stored);
     let mut fixed = bound.map(|bound| [bound.tab, bound.group, bound.strip].into_iter());
     let mut minted = vec![];
     let strip = match &placement {
@@ -1044,20 +1031,11 @@ mod open_tests {
     /// mint formula, and a checked record tile. Returns the committed window.
     fn host_open(tree: &mut DesktopTree, app: &str, stored: &mut u64) -> Placed {
         let workspace = &mut tree.workspaces[0];
-        let placement = open_app_placement(workspace, |id| peer_salt_of(id) == 5).unwrap();
-        let maximum = workspace
-            .strips
-            .iter()
-            .flat_map(|strip| {
-                std::iter::once(strip.id.0).chain(strip.window_groups.iter().flat_map(|group| {
-                    std::iter::once(group.id).chain(group.tabs.iter().map(|tab| tab.id))
-                }))
-            })
-            .filter(|id| peer_salt_of(*id) == 5)
-            .map(counter_of)
-            .max()
-            .unwrap_or(0);
-        let mut counter = (*stored).max(maximum + 1);
+        let placement = open_app_placement(workspace, &OpenContext::default(), |id| {
+            peer_salt_of(id) == 5
+        })
+        .unwrap();
+        let mut counter = namespace_counter(workspace, 5, *stored);
         let mut minted = vec![];
         apply_command(
             workspace,
