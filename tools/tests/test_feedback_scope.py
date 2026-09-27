@@ -20,14 +20,11 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertIn('pull_request:false:skipped)', workflow)
             self.assertIn("if: needs.select.outputs.security_required == 'true'", workflow)
             # Manual acceptance and the release-receipt branch both force full
-            # native qualification, and so does a main push that finds no
-            # checked ancestor to select from; ordinary base handling does not.
+            # native qualification; ordinary before-SHA handling does not.
             selection = workflow.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
-            self.assertEqual(selection.count('selection_args+=(--full)'), 3)
+            self.assertEqual(selection.count('selection_args+=(--full)'), 2)
             self.assertIn('workflow_dispatch', selection)
             self.assertIn('refs/heads/codex/package-desktop-release', selection)
-            fallback = selection.split('if ! base=$(python3 tools/ci/check_base.py --head HEAD); then', 1)[1]
-            self.assertEqual(fallback.split('fi', 1)[0].count('selection_args+=(--full)'), 1)
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
             workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
