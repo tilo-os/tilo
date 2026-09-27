@@ -117,7 +117,32 @@ GET  /health              → { "ok": true }
 GET  /entries             → SignedRegistrySnapshot
 GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
 POST /entries             → EntryChangeRequest body    (202/404/409/403)
+GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
+GET  /blobs/<blake3>      → one payload blob of a reviewed package
+GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
 ```
+
+`/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
+and answers a matching `If-None-Match` with `304`, so a returning client
+costs one small revalidation. The three content-addressed routes are
+immutable (`Cache-Control: public, max-age=31536000, immutable`); the server
+re-checks every file against its name before serving it, and clients verify
+again. A blob that is a WebAssembly binary is served as `application/wasm`
+so browsers can compile it while it streams; everything else is
+`application/octet-stream`, with `X-Content-Type-Options: nosniff`.
+
+Approving a submission (`review approve`) stores the thin form and payload
+blobs of every reviewed version, so a client that already has some blobs of
+an earlier release downloads only the new ones.
+
+**Browsers.** `serve --cors-origin <origin>` (repeatable) lets pages on an
+exact serialized origin such as `https://tilo.so` or `http://localhost:4321`
+read GET responses: those responses carry `Vary: Origin` and, for a listed
+`Origin`, `Access-Control-Allow-Origin: <origin>`. Nothing else is granted:
+no credentials, no preflight answers, no cross-origin `POST`. Without the
+flag no CORS headers are sent. Clients revalidate the snapshot with
+`fetch(url, {cache: 'no-cache'})`, which lets the browser add
+`If-None-Match` itself; setting the header by hand would need a preflight.
 
 `POST /entries` accepts an `EntryChangeRequest` with an `action`
 of `add`, `update`, or `delete`. All three must carry:
@@ -223,6 +248,31 @@ cannot relabel artifacts signed by another key. Updates require the current
 signed entry and append to its immutable version history; re-running the same
 artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
+
+Web builds use the same flow. `tilo-app-package pack-web` packs the authored
+manifest around the WebAssembly module (see
+[packaging.md](app-model/packaging.md#target--written-by-the-packer)), and
+`entry --platform web --arch wasm32` copies the signed `[target]` into the
+version:
+
+```text
+tilo-app-package pack-web --manifest apps/ebook/tilo-app.toml \
+  --module out/apps/so.tilo.ebook/app.wasm \
+  --identity /run/secrets/app-publisher.json -o ebook-web.tapp
+tilo-app-package entry --platform web --arch wasm32 --action add \
+  --identity /run/secrets/app-publisher.json \
+  --url https://apps.tilo.so/artifacts/<blake3>.tapp ebook-web.tapp > request.json
+```
+
+The toolkit core is published the same way, as a `kind = "runtime"` package
+whose `[target].runtime` is the ABI id it provides; a browser only offers an
+app version whose `runtime` equals a published core's. Artifact URLs must be
+under `https://apps.tilo.so/artifacts/`; a registry whose `base_url` is a
+loopback address (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
+`http://[::1]:<port>`) also accepts its own `<base_url>/artifacts/`, where
+`tilo-registry-server import-artifact <file.tapp>` hosts a file and prints
+its URL. `tools/web/local-registry.sh` runs the whole flow against a
+throwaway local registry.
 
 Presentation metadata is a signed part of the entry. Localized fields use one
 consistent language-tag map, and every non-empty localized map must contain an
@@ -474,6 +524,12 @@ data-dir/
     snapshots/
         <sequence>-<hash>.json # immutable signed channel history
     published-snapshot.json    # atomic current channel pointer
+    payload-blobs/
+        <blake3>         # payload blobs of reviewed packages
+    thin-packages/
+        <root>.tapp      # thin form of each reviewed package
+    artifacts/
+        <blake3>.tapp    # full packages hosted with import-artifact
 ```
 
 All writes are atomic-rename (`.tmp` → real path), so

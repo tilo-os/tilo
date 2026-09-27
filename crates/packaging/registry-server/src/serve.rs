@@ -13,6 +13,19 @@
 //!   appeal, or owner decision.
 //! - `GET  /moderation/cases/<id>` → convenience projection (not a proof).
 //! - `GET  /moderation/transparency` → bounded public signed hash-chain page.
+//! - `GET  /blobs/<blake3>`       → a reviewed payload blob.
+//! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by
+//!   package root.
+//! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
+//!
+//! The last three are content addressed and served as immutable. `/entries`
+//! carries the snapshot hash as its `ETag`, so a client revalidating an
+//! unchanged catalogue receives an empty `304`.
+//!
+//! Cross-origin reads are off by default. With configured origins
+//! ([`ServeOptions::cors_origins`]) a browser page on exactly those origins may
+//! read GET responses; no request method other than GET is ever granted, and
+//! credentials are never allowed.
 //!
 //! The dispatcher is kept small so the wire shape is auditable at
 //! a glance. Business logic (add / update / delete decisions) is
@@ -49,11 +62,48 @@ struct AppStateInner {
     moderation: ModerationService,
     moderation_api: ModerationApiService,
     identity: ServerIdentity,
+    options: ServeOptions,
+}
+
+/// Serving policy beyond the data directory.
+#[derive(Clone, Debug, Default)]
+pub struct ServeOptions {
+    /// Exact origins (`scheme://host[:port]`) whose pages may read GET
+    /// responses cross-origin. Empty means no CORS headers at all.
+    pub cors_origins: Vec<String>,
+}
+
+/// Whether `origin` is a serialized web origin as a browser sends it in
+/// `Origin`: `http` or `https`, a lower-case DNS name or IPv4 address, an
+/// optional port, and nothing else — no path, wildcard or `null`.
+pub fn valid_cors_origin(origin: &str) -> bool {
+    let Some(authority) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+        && port.is_none_or(|port| {
+            (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 impl AppState {
-    /// Build the shared state.
+    /// Build the shared state with default serving options.
     pub fn new(storage: Storage, identity: ServerIdentity) -> Self {
+        Self::with_options(storage, identity, ServeOptions::default())
+    }
+
+    /// Build the shared state.
+    pub fn with_options(storage: Storage, identity: ServerIdentity, options: ServeOptions) -> Self {
         let moderation = ModerationService::new(storage.clone());
         let moderation_api = ModerationApiService::new(storage.clone(), identity.clone());
         Self {
@@ -62,8 +112,19 @@ impl AppState {
                 moderation,
                 moderation_api,
                 identity,
+                options,
             }),
         }
+    }
+
+    fn allowed_origin(&self, origin: Option<&str>) -> Option<String> {
+        let origin = origin?;
+        self.inner
+            .options
+            .cors_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+            .then(|| origin.to_string())
     }
 
     /// Owner's own view of the identity.
@@ -86,6 +147,9 @@ pub async fn handle(
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    let origin = header_text(&req, header::ORIGIN);
+    let if_none_match = header_text(&req, header::IF_NONE_MATCH);
+    let is_get = method == Method::GET;
 
     let res = match (method, path.as_str()) {
         (Method::GET, "/health") => Ok(json_response(
@@ -93,7 +157,12 @@ pub async fn handle(
             &serde_json::json!({"ok": true}),
         )),
         (Method::GET, "/registry") => handle_get_registry(&state),
-        (Method::GET, "/entries") => read_file(&state, handle_get_entries).await,
+        (Method::GET, "/entries") => {
+            read_file(&state, move |state| {
+                handle_get_entries(state, if_none_match.as_deref())
+            })
+            .await
+        }
         (Method::GET, p) if p.starts_with("/entries/") => {
             let id = p.trim_start_matches("/entries/").to_owned();
             read_file(&state, move |state| handle_get_entry(state, &id)).await
@@ -101,6 +170,20 @@ pub async fn handle(
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         (Method::GET, p) if p.starts_with("/blobs/") => {
             handle_get_blob(&state, p.trim_start_matches("/blobs/"))
+        }
+        (Method::GET, p) if p.starts_with("/thin/") => {
+            let name = p.trim_start_matches("/thin/").to_owned();
+            read_file(&state, move |state| {
+                content_addressed(&name, |root| state.inner.storage.load_thin_package(root))
+            })
+            .await
+        }
+        (Method::GET, p) if p.starts_with("/artifacts/") => {
+            let name = p.trim_start_matches("/artifacts/").to_owned();
+            read_file(&state, move |state| {
+                content_addressed(&name, |digest| state.inner.storage.load_artifact(digest))
+            })
+            .await
         }
         (Method::POST, "/moderation/mutations") => handle_post_moderation(&state, req).await,
         (Method::GET, p) if p.starts_with("/moderation/cases/") => {
@@ -120,15 +203,42 @@ pub async fn handle(
         _ => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     };
 
-    match res {
-        Ok(r) => Ok(r),
-        Err(e) => {
-            warn!("handler error: {e}");
-            Ok(text_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
+    let mut response = res.unwrap_or_else(|e| {
+        warn!("handler error: {e}");
+        text_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    });
+    if is_get && !state.inner.options.cors_origins.is_empty() {
+        let headers = response.headers_mut();
+        headers.append(header::VARY, header::HeaderValue::from_static("origin"));
+        if let Some(value) = state
+            .allowed_origin(origin.as_deref())
+            .and_then(|origin| header::HeaderValue::from_str(&origin).ok())
+        {
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
         }
+    }
+    Ok(response)
+}
+
+fn header_text(req: &Request<Incoming>, name: header::HeaderName) -> Option<String> {
+    req.headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Serve `<64 hex>.tapp` from a loader that re-checks the bytes against the
+/// name, as an immutable response.
+fn content_addressed(
+    name: &str,
+    load: impl FnOnce(&str) -> Result<Option<Vec<u8>>, StorageError>,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let Some(digest) = name.strip_suffix(".tapp") else {
+        return Ok(text_response(StatusCode::NOT_FOUND, "not found"));
+    };
+    match load(digest).map_err(HandlerError::Storage)? {
+        Some(bytes) => Ok(immutable_response(bytes)),
+        None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     }
 }
 
@@ -275,7 +385,10 @@ fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, Handle
     Ok(json_response(StatusCode::OK, &hs))
 }
 
-fn handle_get_entries(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
+fn handle_get_entries(
+    state: &AppState,
+    if_none_match: Option<&str>,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
     let snapshot = state
         .inner
         .storage
@@ -283,7 +396,32 @@ fn handle_get_entries(state: &AppState) -> Result<Response<Full<Bytes>>, Handler
         .map_err(HandlerError::Storage)?;
     match snapshot {
         Some(snapshot) if snapshot_is_current(state, &snapshot) => {
-            Ok(json_response(StatusCode::OK, &snapshot))
+            // Clients revalidate on every visit; the snapshot hash names the
+            // exact signed bytes, so an unchanged catalogue costs a 304.
+            let etag = registry_types::snapshot_hash(&snapshot)
+                .ok()
+                .and_then(|hash| header::HeaderValue::from_str(&format!("\"{hash}\"")).ok());
+            let fresh = etag.as_ref().is_some_and(|etag| {
+                if_none_match.is_some_and(|candidates| {
+                    candidates
+                        .split(',')
+                        .any(|candidate| candidate.trim().as_bytes() == etag.as_bytes())
+                })
+            });
+            let mut response = if fresh {
+                empty_response(StatusCode::NOT_MODIFIED)
+            } else {
+                json_response(StatusCode::OK, &snapshot)
+            };
+            let headers = response.headers_mut();
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-cache"),
+            );
+            if let Some(etag) = etag {
+                headers.insert(header::ETAG, etag);
+            }
+            Ok(response)
         }
         Some(_) => Ok(text_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -503,16 +641,41 @@ fn handle_get_blob(
         .load_payload_blob(blake3_hex)
         .map_err(HandlerError::Storage)?
     {
-        Some(bytes) => Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "application/octet-stream")
-            .header("cache-control", "public, max-age=31536000, immutable")
-            .body(Full::new(Bytes::from(bytes)))
-            .unwrap_or_else(|_| {
-                text_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-            })),
+        Some(bytes) => {
+            // `WebAssembly.compileStreaming` accepts only `application/wasm`,
+            // and a blob's name says nothing about its use, so the type comes
+            // from the WebAssembly 1.0 binary header.
+            let content_type = if bytes.starts_with(b"\0asm\x01\0\0\0") {
+                "application/wasm"
+            } else {
+                "application/octet-stream"
+            };
+            Ok(immutable_response_as(bytes, content_type))
+        }
         None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// Content-addressed bytes: the URL names the content, so every cache may
+/// keep the response forever.
+fn immutable_response(bytes: Vec<u8>) -> Response<Full<Bytes>> {
+    immutable_response_as(bytes, "application/octet-stream")
+}
+
+fn immutable_response_as(bytes: Vec<u8>, content_type: &'static str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(Full::new(Bytes::from(bytes)))
+        .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
+}
+
+fn empty_response(code: StatusCode) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::new()));
+    *response.status_mut() = code;
+    response
 }
 
 #[allow(
