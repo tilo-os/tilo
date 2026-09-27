@@ -6363,6 +6363,23 @@ pub fn run() {
         )
     });
 
+    // Bluetooth pairing agent: BlueZ's default agent for this session, so a
+    // passkey, PIN, confirmation or service authorisation from any pairing
+    // becomes a dialog only the compositor draws, instead of a pairing that
+    // silently fails.
+    let pairing_prompts = crate::bluetooth::PairingPromptHandle::global();
+    pairing_prompts.set_wake(Arc::clone(&session_wake));
+    let bluetooth_agent: Option<
+        crate::session_runtime::Registration<crate::bluetooth::PairingService>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "bluetooth pairing agent",
+            crate::bluetooth::PairingService::start(pairing_prompts),
+            |_| tracing::info!("bluetooth: pairing agent registered with BlueZ"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -9482,6 +9499,7 @@ pub fn run() {
     drop(tray_handle);
     drop(polkit_agent);
     drop(network_secret_agent);
+    drop(bluetooth_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
