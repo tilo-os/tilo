@@ -43,8 +43,9 @@ two successful `build-image.yml` runs. The wrapper checks their source commits
 and binds the signed OCI provenance invocation IDs to the selected OS runs.
 The imager identities bind both medium archives, their verified qcow2 bytes,
 native CI guest proofs, exact source revision, live base, and one imager run
-attempt. Each downloaded artifact is retained in the work directory; each
-archive decompresses directly to one qcow2, with no raw media conversion.
+attempt. The verified qcow2 and signed sidecars are retained in the work
+directory; the downloaded ZIPs are removed after verification. There is no
+raw media conversion.
 
 Run `prepare` only after the realized plan has been reviewed and allocation
 has completed. The `source_raw` path may be new or may name an existing **empty**
@@ -61,6 +62,11 @@ wrapper passes them to `tilo-vm` without logging or storing them:
 python os/dev/windows-direct-credentials.py |
   python os/dev/windows-direct-install.py --input C:\tilo\input.json --work-dir C:\tilo\run prepare
 ```
+
+On a Windows account with the existing CurrentUser DPAPI protected install
+secrets, use `os/dev/windows-direct-credentials-stored.ps1` in place of the
+interactive Python prompt. Pipe it directly into `prepare`; do not save its
+output to a plaintext file.
 
 The prompt helper sends only the JSON through the process pipe; it creates no
 plaintext file. `prepare` prompts only if a WHPX phase still needs to run.
