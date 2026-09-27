@@ -10,6 +10,7 @@
 
 use automerge::AutoCommit;
 use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
     DesktopTree, DropTarget, IdMinter, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
@@ -195,14 +196,37 @@ fn topology_edits_are_mirrored_into_the_document() {
     {
         let (mut tree, mut doc) = seeded();
 
-        let (moved, dest) = tree.reorder_group_within_strip(StripId(1), 10, 5).unwrap();
-        assert!(desktop_doc::reorder_group(
-            &mut doc,
-            StripId(1),
-            &moved,
-            dest
-        ));
-        let tabs = tree.reorder_tab_within_group(10, 0, 1).unwrap();
+        let apply = |tree: &mut DesktopTree, command: DesktopCommand| {
+            apply_command(
+                &mut tree.workspaces[0],
+                &command,
+                &mut || Err("a reorder mints nothing".into()),
+                &mut |_, _| Err("a reorder creates nothing".into()),
+            )
+            .unwrap();
+        };
+        apply(
+            &mut tree,
+            DesktopCommand::ReorderGroup {
+                strip: 1,
+                group: 10,
+                before: None,
+            },
+        );
+        let moved = tree.workspaces[0].strips[0].window_groups[1].clone();
+        assert!(desktop_doc::reorder_group(&mut doc, StripId(1), &moved, 1));
+        apply(
+            &mut tree,
+            DesktopCommand::ReorderTab {
+                location: TabLocation {
+                    strip: 1,
+                    group: 10,
+                    tab: 100,
+                },
+                before: None,
+            },
+        );
+        let tabs = tree.workspaces[0].strips[0].window_groups[1].tabs.clone();
         assert!(desktop_doc::rewrite_group_tabs(&mut doc, 10, &tabs));
         assert_eq!(layout(&read_back(&doc)), layout(&tree));
 

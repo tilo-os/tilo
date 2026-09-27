@@ -18,8 +18,9 @@ use taffy::{NodeId, TaffyTree};
 use tilo_desktop::activity;
 use tilo_desktop::{
     composition::{DesktopSurface, ReconcileOutcome, SurfaceChrome},
-    intents::{DesktopIntent, LocalViewIntent},
+    intents::LocalViewIntent,
     resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest},
+    session_commands::DesktopCommandSink,
 };
 use tilo_desktop_model::apps::{AppCatalogue as _, OpenableApp};
 use tilo_desktop_model::*;
@@ -193,7 +194,10 @@ impl DesktopHandle {
                     .map(WorkspaceId)
                     .ok_or("Invalid navigation identity")?;
                 let mut tree = self.tree.borrow().clone();
-                DesktopRoot::local(&mut tree, LocalViewIntent::Workspace(workspace));
+                tilo_desktop::intents::apply_local_view(
+                    &mut tree,
+                    LocalViewIntent::Workspace(workspace),
+                );
                 active_route(&tree)
             }
             crate::desktop_navigation::Command::Strip {
@@ -220,8 +224,11 @@ impl DesktopHandle {
                     })
                     .ok_or("Strip unavailable")?
                     .id;
-                DesktopRoot::local(&mut tree, LocalViewIntent::Workspace(workspace));
-                DesktopRoot::local(&mut tree, LocalViewIntent::Strip(strip));
+                tilo_desktop::intents::apply_local_view(
+                    &mut tree,
+                    LocalViewIntent::Workspace(workspace),
+                );
+                tilo_desktop::intents::apply_local_view(&mut tree, LocalViewIntent::Strip(strip));
                 active_route(&tree)
             }
             _ => None,
@@ -504,6 +511,47 @@ impl LocalView {
         }
     }
 }
+/// The browser's [`DesktopCommandSink`]: view changes stay in this tab's
+/// local view, bound commands are speculated and queued for the owner.
+struct BrowserCommands<'a> {
+    handle: &'a DesktopHandle,
+    tree: &'a mut DesktopTree,
+    room: &'a str,
+    heads: &'a [[u8; 32]],
+}
+impl DesktopCommandSink for BrowserCommands<'_> {
+    fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
+        read(self.tree)
+    }
+    fn source(
+        &mut self,
+        _room: RoomId,
+    ) -> Result<tilo_desktop_model::commands::CommandSource, String> {
+        if self.heads.is_empty() {
+            return Err("desktop command has no admitted source revision".into());
+        }
+        Ok(tilo_desktop_model::commands::CommandSource {
+            room: self.room.to_owned(),
+            heads: self.heads.to_vec(),
+        })
+    }
+    fn apply_local(&mut self, intent: LocalViewIntent) {
+        DesktopRoot::apply_local(self.handle, self.tree, intent);
+    }
+    fn submit(
+        &mut self,
+        command: tilo_desktop_model::commands::BoundCommand,
+    ) -> Result<(), String> {
+        let mut queue = self.handle.session_requests.borrow_mut();
+        if queue.len() >= 32 {
+            return Err("desktop request queue is full".into());
+        }
+        let invocation = uuid::Uuid::new_v4();
+        DesktopRoot::speculate(self.handle, self.tree, invocation, &command);
+        queue.push((invocation, command));
+        Ok(())
+    }
+}
 pub(crate) struct DesktopRoot {
     source_heads: Vec<[u8; 32]>,
     admitted_room: AutoCommit,
@@ -623,7 +671,7 @@ impl DesktopRoot {
 
     fn apply_local(handle: &DesktopHandle, tree: &mut DesktopTree, intent: LocalViewIntent) {
         let previous = active_route(tree);
-        Self::local(tree, intent);
+        tilo_desktop::intents::apply_local_view(tree, intent);
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
 
@@ -786,64 +834,6 @@ impl DesktopRoot {
             self.failures.push(error);
         }
     }
-    fn local(tree: &mut DesktopTree, intent: LocalViewIntent) {
-        match intent {
-            LocalViewIntent::Workspace(id) => {
-                if tree.workspaces.iter().any(|w| w.id == id) {
-                    tree.active = id;
-                }
-            }
-            LocalViewIntent::Strip(id) => {
-                if let Some(w) = tree
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == tree.active && w.strips.iter().any(|s| s.id == id))
-                {
-                    tree.active_strip.insert(w.id, id);
-                }
-            }
-            LocalViewIntent::Group { strip, group } => {
-                if tree
-                    .workspaces
-                    .iter()
-                    .filter(|w| w.id == tree.active)
-                    .flat_map(|w| &w.strips)
-                    .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
-                {
-                    tree.active_strip.insert(tree.active, strip);
-                    tree.active_group.insert(strip, group);
-                }
-            }
-            other => {
-                for w in &mut tree.workspaces {
-                    for s in &mut w.strips {
-                        for g in &mut s.window_groups {
-                            match other {
-                                LocalViewIntent::Tab { group, tab }
-                                    if group == g.id && g.tabs.iter().any(|t| t.id == tab) =>
-                                {
-                                    g.active_tab = tab;
-                                    if w.id == tree.active {
-                                        tree.active_strip.insert(w.id, s.id);
-                                        tree.active_group.insert(s.id, g.id);
-                                    }
-                                }
-                                LocalViewIntent::Width { group, width } if group == g.id => {
-                                    g.width = width
-                                }
-                                LocalViewIntent::Maximized { group, maximized }
-                                    if group == g.id =>
-                                {
-                                    g.maximized = maximized
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
     pub(crate) fn activity_snapshot(&self) -> Result<activity::ActivitySnapshot, String> {
         if !self.handle.history_available.get() {
             return Err("Workspace history admission unavailable".into());
@@ -1002,7 +992,7 @@ impl DesktopRoot {
                 });
             if let Some((group, tab)) = destination {
                 self.close_activity(ActivityCloseReason::ResourceOpened);
-                Self::local(
+                tilo_desktop::intents::apply_local_view(
                     &mut self.handle.tree.borrow_mut(),
                     LocalViewIntent::Tab { group, tab },
                 );
@@ -1385,22 +1375,25 @@ impl DesktopRoot {
                         group.maximized = group.id == g;
                     }
                 }
-                Self::local(&mut tree, LocalViewIntent::Workspace(w));
-                Self::local(&mut tree, LocalViewIntent::Tab { group: g, tab: t });
+                tilo_desktop::intents::apply_local_view(&mut tree, LocalViewIntent::Workspace(w));
+                tilo_desktop::intents::apply_local_view(
+                    &mut tree,
+                    LocalViewIntent::Tab { group: g, tab: t },
+                );
             }
             Command::Width { permille, .. } => {
                 if !(100..=1000).contains(&permille) {
                     return Err("Width must be between 10% and 100%".into());
                 }
                 self.surface.reveal_on_next_layout(s);
-                Self::local(
+                tilo_desktop::intents::apply_local_view(
                     &mut tree,
                     LocalViewIntent::Maximized {
                         group: g,
                         maximized: false,
                     },
                 );
-                Self::local(
+                tilo_desktop::intents::apply_local_view(
                     &mut tree,
                     LocalViewIntent::Width {
                         group: g,
@@ -1408,7 +1401,7 @@ impl DesktopRoot {
                     },
                 );
             }
-            Command::Maximize { maximized, .. } => Self::local(
+            Command::Maximize { maximized, .. } => tilo_desktop::intents::apply_local_view(
                 &mut tree,
                 LocalViewIntent::Maximized {
                     group: g,
@@ -1532,34 +1525,15 @@ impl DesktopRoot {
                     .push("This desktop service is not available in this peer yet".into()),
             }
         }
+        let mut sink = BrowserCommands {
+            handle: &self.handle,
+            tree: &mut tree,
+            room: &self.resolver.host.room,
+            heads: &self.source_heads,
+        };
         for intent in intents {
-            match intent {
-                DesktopIntent::Local(intent) => Self::apply_local(&self.handle, &mut tree, intent),
-                DesktopIntent::Session(intent) => {
-                    match tilo_desktop::session_commands::bind_intent(
-                        &tree,
-                        tilo_desktop_model::commands::CommandSource {
-                            room: self.resolver.host.room.clone(),
-                            heads: self.source_heads.clone(),
-                        },
-                        intent,
-                    ) {
-                        Ok(command) => {
-                            let mut queue = self.handle.session_requests.borrow_mut();
-                            if queue.len() < 32 {
-                                let invocation = uuid::Uuid::new_v4();
-                                Self::speculate(&self.handle, &tree, invocation, &command);
-                                queue.push((invocation, command));
-                            } else {
-                                self.handle
-                                    .errors
-                                    .borrow_mut()
-                                    .push("desktop request queue is full".into());
-                            }
-                        }
-                        Err(error) => self.handle.errors.borrow_mut().push(error),
-                    }
-                }
+            if let Err(error) = tilo_desktop::session_commands::dispatch(&mut sink, intent) {
+                self.handle.errors.borrow_mut().push(error);
             }
         }
         if let Some((admission, permissions)) = inbox {
@@ -5716,7 +5690,7 @@ mod tests {
         second.id = StripId(9);
         second.window_groups[0].id = 90;
         tree.workspaces[0].strips.push(second);
-        DesktopRoot::local(
+        tilo_desktop::intents::apply_local_view(
             &mut tree,
             LocalViewIntent::Group {
                 strip: StripId(9),
@@ -5726,7 +5700,7 @@ mod tests {
         assert_eq!(tree.active_strip[&tree.active], StripId(9));
         assert_eq!(tree.active_group[&StripId(9)], 90);
         let before = serde_json::to_vec(&tree).unwrap();
-        DesktopRoot::local(
+        tilo_desktop::intents::apply_local_view(
             &mut tree,
             LocalViewIntent::Group {
                 strip: StripId(2),
