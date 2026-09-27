@@ -6484,6 +6484,7 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "crc32fast",
  "hex",
  "libc",
  "reqwest",

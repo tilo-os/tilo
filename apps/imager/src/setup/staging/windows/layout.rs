@@ -348,19 +348,6 @@ pub fn disk_from_layout(
     })
 }
 
-/// IEEE CRC-32 as used by the GPT header and entry array.
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GptHeader {
     pub disk_guid: String,
@@ -402,7 +389,7 @@ pub fn parse_gpt_header(sector_buf: &[u8]) -> ParseResult<GptHeader> {
     if let Some(field) = header.get_mut(16..20) {
         field.fill(0);
     }
-    if crc32(&header) != stored_crc {
+    if crc32fast::hash(&header) != stored_crc {
         return Err("GPT header checksum mismatch".into());
     }
     if u64_at(sector_buf, 24)? != 1 {
@@ -449,7 +436,7 @@ pub fn parse_gpt_entries(buf: &[u8], header: &GptHeader) -> ParseResult<Vec<GptE
     let array = buf
         .get(..total)
         .ok_or_else(|| "GPT entry array truncated".to_string())?;
-    if crc32(array) != header.entries_crc {
+    if crc32fast::hash(array) != header.entries_crc {
         return Err("GPT entry array checksum mismatch".into());
     }
     let mut entries = Vec::new();
