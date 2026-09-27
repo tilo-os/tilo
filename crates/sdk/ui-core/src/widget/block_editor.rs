@@ -1180,6 +1180,12 @@ impl BlockEditor {
         self.dirty = true;
     }
 
+    /// The id local edits are attributed to, if any.
+    #[must_use]
+    pub fn local_author(&self) -> Option<&str> {
+        self.local_author.as_deref()
+    }
+
     pub fn set_local_author(&mut self, author: Option<String>) {
         for b in &mut self.blocks {
             b.line.set_local_author(author.clone());

@@ -233,6 +233,9 @@ impl<R: Resource> Dispatcher<R> {
         self.host
             .borrow_mut()
             .try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)?;
+        if R::annotates(action) {
+            return Ok(());
+        }
         let continues = self
             .last
             .borrow()

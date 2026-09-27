@@ -31,9 +31,28 @@ impl ResourceApp for Document {
     }
 }
 
+/// The same document, edited by a participant whose writing is attributed.
+struct Attributed;
+
+impl ResourceApp for Attributed {
+    type Resource = RichText;
+    const ID: &'static str = "so.tilo.rich-text-attributed-example";
+    const TITLE: &'static str = "Rich text";
+
+    fn view(cx: &mut ViewCx<RichText>) -> Element {
+        let mut surface = tilo_rich_text::RichTextSurface::new();
+        surface.editor_mut().set_local_author(Some("ada".into()));
+        cx.rich_text_in(surface)
+    }
+}
+
 fn open() -> TestApp<Document> {
+    open_as()
+}
+
+fn open_as<A: ResourceApp<Resource = RichText>>() -> TestApp<A> {
     ui::i18n::I18nManager::init("en-US");
-    let mut app = TestApp::<Document>::new().unwrap();
+    let mut app = TestApp::<A>::new().unwrap();
     // Focus the editor the way a person does: click into it.
     let target = app
         .harness()
@@ -54,8 +73,19 @@ fn paragraphs_of(doc: &ui::tilo_resource::Doc) -> Vec<String> {
         .collect()
 }
 
-fn paragraphs(app: &TestApp<Document>) -> Vec<String> {
+fn paragraphs<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<String> {
     app.read_document(paragraphs_of)
+}
+
+fn authors<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<(usize, usize, String)> {
+    app.read_document(|doc| {
+        let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
+        qdoc::model::materialize(doc, &c)
+            .blocks
+            .into_iter()
+            .flat_map(|block| qdoc::author_runs(&block.marks))
+            .collect()
+    })
 }
 
 fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
@@ -148,6 +178,32 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
     assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["first", "second"]);
+}
+
+#[test]
+fn typed_text_is_attributed_to_its_writer_in_the_same_step() {
+    let mut app = open_as::<Attributed>();
+    app.harness().type_text("hello");
+    app.harness().key("Enter");
+    app.harness().type_text("world");
+    assert_eq!(paragraphs(&app), ["hello", "world"]);
+    assert_eq!(
+        authors(&app),
+        [(0, 5, "ada".to_owned()), (0, 5, "ada".to_owned())]
+    );
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["hello", ""]);
+    assert!(app.undo());
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), [""]);
+    assert!(authors(&app).is_empty());
+}
+
+#[test]
+fn text_nobody_is_named_for_stays_unattributed() {
+    let mut app = open();
+    app.harness().type_text("hello");
+    assert!(authors(&app).is_empty());
 }
 
 #[test]

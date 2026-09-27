@@ -7,6 +7,7 @@
 //! typing survive a collaborator's edit, an undo or the host's own
 //! read-back of an edit it just applied.
 
+use std::ops::Range;
 use std::rc::Rc;
 
 use crate::presence::PresenceKey;
@@ -28,6 +29,9 @@ pub struct BlockContent {
     pub nesting: u8,
     /// The fence a code line belongs to.
     pub code_group: Option<String>,
+    /// Who wrote which run of `text`: byte ranges and the writer's id, shown
+    /// as authorship; empty when nobody is attributed.
+    pub authors: Vec<(Range<usize>, String)>,
 }
 
 impl BlockContent {
@@ -41,8 +45,18 @@ impl BlockContent {
             marks: Vec::new(),
             nesting: 0,
             code_group: None,
+            authors: Vec::new(),
         }
     }
+}
+
+/// The runs a line shows as authored, as `content` names them.
+fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
+    content
+        .authors
+        .iter()
+        .map(|(range, author)| (range.start, range.end, author.clone()))
+        .collect()
 }
 
 /// Maps a block id to the presence key collaborators address it by.
@@ -98,7 +112,9 @@ impl Block {
             content.text.as_str()
         };
         let mut line = line_for(&content.kind, text);
+        let authors = author_runs(&content);
         line.set_marks(content.marks);
+        line.set_author_runs(authors);
         Self {
             id: content.id,
             kind: content.kind,
@@ -119,6 +135,12 @@ impl Block {
             marks: self.line.marks().to_vec(),
             nesting: self.nesting,
             code_group: self.code_group.clone(),
+            authors: self
+                .line
+                .author_runs()
+                .iter()
+                .map(|(start, end, author)| (*start..*end, author.clone()))
+                .collect(),
         }
     }
 
@@ -132,8 +154,10 @@ impl Block {
             let focused = self.line.is_focused();
             let caret = self.line.cursor_pos();
             let marks = self.line.marks().to_vec();
+            let authors = self.line.author_runs().to_vec();
             self.line = line_for(&content.kind, self.text());
             self.line.set_marks(marks);
+            self.line.set_author_runs(authors);
             self.line.set_cursor_pos(caret);
             self.line.set_focus(focused);
             self.kind = content.kind.clone();
@@ -149,6 +173,11 @@ impl Block {
         }
         if self.line.marks() != content.marks.as_slice() {
             self.line.set_marks(content.marks.clone());
+            changed = true;
+        }
+        let authors = author_runs(content);
+        if self.line.author_runs() != authors.as_slice() {
+            self.line.set_author_runs(authors);
             changed = true;
         }
         if self.nesting != content.nesting || self.code_group != content.code_group {
@@ -181,6 +210,7 @@ impl BlockEditor {
                     && next.marks.as_slice() == current.line.marks()
                     && next.nesting == current.nesting
                     && next.code_group == current.code_group
+                    && author_runs(next).as_slice() == current.line.author_runs()
             });
         if unchanged {
             return false;
@@ -357,6 +387,20 @@ mod tests {
         let blocks = vec![BlockContent::paragraph("a", "same")];
         let mut editor = editor_with(blocks.clone());
         assert!(!editor.present_blocks(&blocks));
+    }
+
+    #[test]
+    fn who_wrote_a_run_is_shown_and_read_back() {
+        let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
+        let mut authored = BlockContent::paragraph("a", "hello world");
+        authored.authors = vec![(0..5, "ada".into()), (6..11, "grace".into())];
+        assert!(editor.present_blocks(std::slice::from_ref(&authored)));
+        assert_eq!(
+            editor.blocks()[0].line.author_runs(),
+            [(0, 5, "ada".to_owned()), (6, 11, "grace".to_owned())]
+        );
+        assert_eq!(editor.blocks()[0].content(), authored);
+        assert!(!editor.present_blocks(&[authored]));
     }
 
     #[test]

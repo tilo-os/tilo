@@ -397,6 +397,10 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
             .unwrap_or_else(|| ActionContext::for_action("", "", edit));
         self.actions
             .try_dispatch_with_context(doc, self.action_type, &action, context)?;
+        if RichText::annotates(edit) {
+            // Part of the edit that wrote the text, not a step of its own.
+            return Ok(());
+        }
         let step = &mut self.step;
         let continues = step
             .last
