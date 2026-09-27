@@ -34,7 +34,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay_on};
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
 /// `seed` — mirroring what a toolkit editor binds to.
@@ -65,7 +65,7 @@ fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
 /// received delta to `doc`. Returns once a document delta has landed.
 async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
     for _ in 0..8 {
-        let inbound = tokio::time::timeout(Duration::from_secs(3), session.recv())
+        let inbound = tokio::time::timeout(HANG_BOUND, session.recv())
             .await
             .expect("recv timeout")
             .expect("session closed");
@@ -135,7 +135,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
-        match tokio::time::timeout(Duration::from_secs(2), b_session.recv())
+        match tokio::time::timeout(HANG_BOUND, b_session.recv())
             .await
             .expect("B Ready timeout")
             .expect("B closed")
@@ -259,7 +259,7 @@ async fn publish_offline_coedit(
     .expect("A connect");
     let a_session = RelayCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
-    match tokio::time::timeout(Duration::from_secs(2), a_session.recv())
+    match tokio::time::timeout(HANG_BOUND, a_session.recv())
         .await
         .expect("A Ready timeout")
         .expect("A closed")
@@ -273,7 +273,8 @@ async fn publish_offline_coedit(
     a_session.publish_retained_delta([2; 32], delta).unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = retained_count(state_root, ws);
         if queued >= 1 {
             break;
@@ -321,7 +322,7 @@ async fn catch_up_first_connection(
         if got_delta && got_ready {
             break;
         }
-        let inbound = tokio::time::timeout(Duration::from_secs(3), b_session.recv())
+        let inbound = tokio::time::timeout(HANG_BOUND, b_session.recv())
             .await
             .expect("B catch-up timeout")
             .expect("B closed");

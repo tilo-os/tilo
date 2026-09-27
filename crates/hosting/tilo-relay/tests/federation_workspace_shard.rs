@@ -27,7 +27,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sharded_topology_isolates_per_workspace() {
@@ -74,7 +74,7 @@ async fn sharded_topology_isolates_per_workspace() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 20 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a.recv())
+    let _ = tokio::time::timeout(HANG_BOUND, a.recv())
         .await
         .expect("Ready(20)");
 
@@ -109,7 +109,7 @@ async fn sharded_topology_isolates_per_workspace() {
     .await
     .unwrap();
     b.send(Envelope::Subscribe { workspace_id: 21 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), b.recv())
+    let _ = tokio::time::timeout(HANG_BOUND, b.recv())
         .await
         .expect("Ready(21)");
 

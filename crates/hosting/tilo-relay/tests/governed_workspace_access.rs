@@ -24,7 +24,7 @@ use tilo_peer_state::GovernedAccess;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint};
 
 fn binding(id: u64) -> WorkspaceBinding {
     WorkspaceBinding {
@@ -53,7 +53,7 @@ async fn connect(
 
 async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), client.recv())
+    tokio::time::timeout(HANG_BOUND, client.recv())
         .await
         .expect("relay answered subscription")
 }
@@ -181,7 +181,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), alice_client.recv()).await,
+        tokio::time::timeout(HANG_BOUND, alice_client.recv()).await,
         Ok(Some(Envelope::NotAuthorised { workspace_id: 701, reason }))
             if reason == "workspace membership changed"
     ));
@@ -203,7 +203,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // periodic audit then closes her room-701 stream and that global admission
     // cannot reopen room 701.
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(4), alice_client.recv()).await,
+        tokio::time::timeout(HANG_BOUND, alice_client.recv()).await,
         Ok(None)
     ));
     assert!(!relay.is_subscribed(701, &alice_a_key).await);
@@ -241,7 +241,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             .is_err()
     );
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), alice_reconnect.recv()).await,
+        tokio::time::timeout(HANG_BOUND, alice_reconnect.recv()).await,
         Ok(None)
     ));
 

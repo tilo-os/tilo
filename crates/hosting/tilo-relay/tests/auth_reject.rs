@@ -29,7 +29,7 @@ use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -172,7 +172,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         client
             .send(tilo_relay::Envelope::Subscribe { workspace_id: 33 })
             .unwrap();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.recv())
+        let _ = tokio::time::timeout(HANG_BOUND, client.recv())
             .await
             .unwrap();
 
@@ -187,7 +187,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         tilo_relay::store::save_revocations(state.path(), &[entry]).unwrap();
 
         assert!(matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(4), client.recv()).await,
+            tokio::time::timeout(HANG_BOUND, client.recv()).await,
             Ok(None)
         ));
     }

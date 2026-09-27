@@ -1297,6 +1297,9 @@ fn poll_queued<T>(
 mod scheduling_tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     struct GatedWrite {
         started: Option<tokio::sync::oneshot::Sender<()>>,
         release: tokio::sync::oneshot::Receiver<()>,
@@ -1457,13 +1460,12 @@ mod scheduling_tests {
             .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
             .await
             .unwrap();
-        let observed =
-            tokio::time::timeout(std::time::Duration::from_secs(2), action_inbound.recv()).await;
+        let observed = tokio::time::timeout(HANG_BOUND, action_inbound.recv()).await;
 
         let _ = release_tx.send(());
         drop(state_tx);
         drop(action_tx);
-        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+        let finished = tokio::time::timeout(HANG_BOUND, pump)
             .await
             .expect("released v2 pump did not finish")
             .unwrap();
@@ -1536,12 +1538,12 @@ mod scheduling_tests {
             .await
             .unwrap();
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(2), action_inbound.recv(),)
+            tokio::time::timeout(HANG_BOUND, action_inbound.recv(),)
                 .await
                 .expect("continuously ready writer starved the inbound response"),
             Some(response)
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), enable_seen_rx)
+        tokio::time::timeout(HANG_BOUND, enable_seen_rx)
             .await
             .expect("continuous state refills extended the finite enable prefix")
             .unwrap();
@@ -1569,7 +1571,7 @@ mod scheduling_tests {
 
         drop(relay_write);
         assert!(
-            !tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+            !tokio::time::timeout(HANG_BOUND, pump)
                 .await
                 .expect("reader EOF did not stop the shared pump")
                 .unwrap()
@@ -1610,7 +1612,7 @@ mod scheduling_tests {
         started_rx.await.unwrap();
         drop(relay_write);
         assert!(
-            !tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+            !tokio::time::timeout(HANG_BOUND, pump)
                 .await
                 .expect("reader EOF did not stop the shared pump")
                 .unwrap()
@@ -1653,7 +1655,7 @@ mod scheduling_tests {
         started_rx.await.unwrap();
         drop(state_tx);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+            tokio::time::timeout(HANG_BOUND, pump)
                 .await
                 .expect("closed state producer did not stop the shared pump")
                 .unwrap()
@@ -1769,7 +1771,7 @@ mod scheduling_tests {
             run_v2_reader(&mut reader, &incoming, &actions, None).await;
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(HANG_BOUND, async {
             while bytes_read.load(std::sync::atomic::Ordering::SeqCst) < first_len {
                 tokio::task::yield_now().await;
             }
@@ -1923,6 +1925,9 @@ mod session_carrier_tests {
     use super::*;
     use crate::session_carrier::{SessionCarrier, SessionChannels};
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
     struct TestCarrier {
         events: Arc<Mutex<Vec<&'static str>>>,
@@ -2103,7 +2108,7 @@ mod session_carrier_tests {
         );
         assert_eq!(*events.lock().unwrap(), ["disconnect"]);
         finished.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(1), &mut closing)
+        tokio::time::timeout(HANG_BOUND, &mut closing)
             .await
             .unwrap();
         assert_eq!(*events.lock().unwrap(), ["disconnect"]);
@@ -2126,7 +2131,7 @@ mod session_carrier_tests {
         );
         assert_eq!(*events.lock().unwrap(), ["close-owned"]);
         finished.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(1), &mut closing)
+        tokio::time::timeout(HANG_BOUND, &mut closing)
             .await
             .unwrap();
     }

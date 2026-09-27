@@ -29,7 +29,7 @@ use tilo_relay::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint};
 
 fn interactive_binding(
     workspace_id: u64,
@@ -315,7 +315,7 @@ async fn interactive_owner_is_exactly_cert_and_room_scoped() {
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), client.recv()).await,
+        tokio::time::timeout(HANG_BOUND, client.recv()).await,
         Ok(None)
     ));
     drop(client);

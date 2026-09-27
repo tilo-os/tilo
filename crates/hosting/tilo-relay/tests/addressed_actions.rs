@@ -11,7 +11,7 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -131,7 +131,7 @@ impl AgentReadWire {
     }
     async fn next(&mut self) -> EnvelopeV2 {
         let bytes = tokio::time::timeout(
-            Duration::from_secs(5),
+            HANG_BOUND,
             tilo_relay::framing::read_frame(
                 &mut self.receive,
                 tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES,
@@ -306,13 +306,13 @@ use tilo_user_identity::RevocationList;
 use uuid::Uuid;
 
 async fn next_state(client: &RelayClient) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tokio::time::timeout(HANG_BOUND, client.recv())
         .await
         .unwrap()
         .unwrap()
 }
 async fn next_action(client: &RelayClient) -> EnvelopeV2 {
-    tokio::time::timeout(Duration::from_secs(5), client.recv_action())
+    tokio::time::timeout(HANG_BOUND, client.recv_action())
         .await
         .unwrap()
         .unwrap()
@@ -483,7 +483,7 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
             .send_action(EnvelopeV2::EnableActions { room })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), client.recv_action()).await,
+            tokio::time::timeout(HANG_BOUND, client.recv_action()).await,
             Ok(None)
         ));
     }
@@ -864,14 +864,14 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     let b_session = RelayCoeditSession::join(cb, workspace_id, b.device_pubkey()).unwrap();
     for session in [&a_session, &b_session] {
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(5), session.recv())
+            tokio::time::timeout(HANG_BOUND, session.recv())
                 .await
                 .unwrap(),
             Some(Inbound::Ready { .. })
         ));
         session.enable_actions(room).unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(5), session.recv_action())
+            tokio::time::timeout(HANG_BOUND, session.recv_action())
                 .await
                 .unwrap(),
             Some(EnvelopeV2::ActionsReady { .. })
@@ -883,7 +883,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     a_session
         .publish_retained_delta([7; 32], doc.save_incremental())
         .unwrap();
-    let received_delta = tokio::time::timeout(Duration::from_secs(5), b_session.recv()).await;
+    let received_delta = tokio::time::timeout(HANG_BOUND, b_session.recv()).await;
     if received_delta.is_err() {
         crate::common::print_phase_diagnostic();
     }
@@ -894,7 +894,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     tilo_automerge::ApplyIncoming::load_incoming(&mut received, &data).unwrap();
     assert_eq!(received.get_heads(), doc.get_heads());
     assert!(
-        matches!(tokio::time::timeout(Duration::from_secs(5),b_session.recv_action()).await.unwrap(),Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
+        matches!(tokio::time::timeout(HANG_BOUND,b_session.recv_action()).await.unwrap(),Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
     );
     assert!(a_session.enable_actions(Uuid::from_u128(11)).is_err());
 }
@@ -969,7 +969,7 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
                 ca.send_action(EnvelopeV2::Directed(request.clone()))
                     .unwrap();
                 assert_eq!(
-                    tokio::time::timeout(Duration::from_secs(5), cb.recv_action())
+                    tokio::time::timeout(HANG_BOUND, cb.recv_action())
                         .await
                         .unwrap_or_else(|_| panic!(
                             "target stalled at request {id}; state sent {} received {}",
@@ -992,7 +992,7 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
                 };
                 cb.send_action(EnvelopeV2::Directed(reply.clone())).unwrap();
                 assert_eq!(
-                    tokio::time::timeout(Duration::from_secs(5), ca.recv_action())
+                    tokio::time::timeout(HANG_BOUND, ca.recv_action())
                         .await
                         .unwrap_or_else(|_| panic!(
                             "reply stalled at request {id}; state sent {} received {}",

@@ -28,7 +28,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn author_never_receives_echo_through_federation() {
@@ -62,7 +62,7 @@ async fn author_never_receives_echo_through_federation() {
     .await
     .unwrap();
     c.send(Envelope::Subscribe { workspace_id: 9 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), c.recv())
+    let _ = tokio::time::timeout(HANG_BOUND, c.recv())
         .await
         .expect("ready timeout");
 

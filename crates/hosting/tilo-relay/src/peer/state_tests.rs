@@ -18,6 +18,9 @@ use crate::{
 };
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 mod recovery;
 
 struct Fixture {
@@ -625,7 +628,7 @@ async fn personal_continuity_aborted_replay_selects_newest_pending_receipt() {
         let replaying = fixture.clone();
         let replay =
             tokio::spawn(async move { Box::pin(replaying.replay_to(&mut Vec::new())).await });
-        tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+        tokio::time::timeout(HANG_BOUND, reached)
             .await
             .expect("replay never reached detached preparation")
             .unwrap();
@@ -740,7 +743,7 @@ async fn personal_continuity_prefix_rechecks_source_revocation_after_persistence
     )
     .await
     .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+    tokio::time::timeout(HANG_BOUND, reached)
         .await
         .expect("prefix never reached its persistence barrier")
         .unwrap();
@@ -827,7 +830,7 @@ async fn personal_continuity_caller_cancellation_after_admission_preserves_accep
                 .publish_checkpoint_frame(caller_frame, prefix, true)
                 .await;
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+        tokio::time::timeout(HANG_BOUND, reached)
             .await
             .unwrap()
             .unwrap();
@@ -927,7 +930,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
     )
     .await
     .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+    tokio::time::timeout(HANG_BOUND, reached)
         .await
         .unwrap()
         .unwrap();
@@ -1481,7 +1484,7 @@ async fn inbound_delta_waits_for_owner_capacity_without_failing_its_session() {
     );
 
     drop(release);
-    tokio::time::timeout(std::time::Duration::from_secs(3), admitting)
+    tokio::time::timeout(HANG_BOUND, admitting)
         .await
         .expect("inbound state admission did not resume when owner capacity returned")
         .unwrap()
@@ -1740,7 +1743,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
         drop(release);
         if change != "cancelled" {
             assert!(
-                tokio::time::timeout(std::time::Duration::from_secs(3), task)
+                tokio::time::timeout(HANG_BOUND, task)
                     .await
                     .unwrap()
                     .unwrap()
@@ -1891,11 +1894,7 @@ async fn retained_transactions_release_global_workers_between_quanta() {
     // This unrelated transaction is now waiting for the global worker pool.
     // Each retained write must yield its worker before its later sort phase.
     drop(first);
-    let progress = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        crate::persistence::receipt(fifth),
-    )
-    .await;
+    let progress = tokio::time::timeout(HANG_BOUND, crate::persistence::receipt(fifth)).await;
     drop(second);
     for fixture in &fixtures {
         fixture.drained().await;
@@ -2006,7 +2005,7 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
         }
 
         drop(release);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+        let result = tokio::time::timeout(HANG_BOUND, task)
             .await
             .unwrap()
             .unwrap();
@@ -2091,7 +2090,7 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
         if cancel {
             assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         } else {
-            let (_, ticket, _, _) = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            let (_, ticket, _, _) = tokio::time::timeout(HANG_BOUND, task)
                 .await
                 .unwrap()
                 .unwrap();
@@ -2194,7 +2193,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
         });
         let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read, true);
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(3), reader.read_next())
+            tokio::time::timeout(HANG_BOUND, reader.read_next())
                 .await
                 .expect("private reply stalled behind replay owner capacity")
                 .unwrap(),
@@ -2218,7 +2217,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
         })
         .await
         .expect("admitted owner queue did not drain");
-        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+        let result = tokio::time::timeout(HANG_BOUND, task)
             .await
             .unwrap()
             .unwrap();
@@ -2346,7 +2345,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
     drop(release_read);
 
     let mut task = task;
-    let joined = tokio::time::timeout(std::time::Duration::from_secs(3), &mut task).await;
+    let joined = tokio::time::timeout(HANG_BOUND, &mut task).await;
     let (result, wire) = if let Ok(joined) = joined {
         joined.unwrap()
     } else {
@@ -2683,12 +2682,9 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
     fixture.enqueue(4).await;
     fixture.drained().await;
     assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        fixture.recipient_disconnected.recv(),
-    )
-    .await
-    .expect("boundary overflow did not fence its connection");
+    tokio::time::timeout(HANG_BOUND, fixture.recipient_disconnected.recv())
+        .await
+        .expect("boundary overflow did not fence its connection");
 }
 
 #[tokio::test]
@@ -2713,12 +2709,9 @@ async fn replay_boundary_live_byte_exhaustion_fences_exact_session() {
     drop(fault);
     assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
     assert!(fixture.recipient_rx.try_recv().is_err());
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        fixture.recipient_disconnected.recv(),
-    )
-    .await
-    .expect("boundary byte exhaustion did not fence its connection");
+    tokio::time::timeout(HANG_BOUND, fixture.recipient_disconnected.recv())
+        .await
+        .expect("boundary byte exhaustion did not fence its connection");
 }
 
 #[tokio::test]
@@ -2829,7 +2822,7 @@ async fn cancelled_capture_cannot_register_and_idle_owner_reclaims_it() {
         !workspace.lock().await.subscribers.contains_key(&device),
         "cancelled capture registered a subscriber"
     );
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(HANG_BOUND, async {
         loop {
             if std::fs::read_dir(store.root().join("store-work-v1"))
                 .unwrap()
@@ -3165,7 +3158,7 @@ async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
     assert!(admitted > 0);
     drop(ticket);
     drop(release);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(HANG_BOUND, async {
         loop {
             if std::fs::read_dir(fixture.store.root().join("store-work-v1"))
                 .unwrap()

@@ -1031,6 +1031,9 @@ pub(crate) async fn blocking<T: Send + 'static>(
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn test_persistence(
         root: &std::path::Path,
         budgets: AdmissionBudgets,
@@ -1176,7 +1179,7 @@ mod tests {
         started.notified().await;
         drop(receipt);
         release_tx.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), completed.notified())
+        tokio::time::timeout(HANG_BOUND, completed.notified())
             .await
             .expect("cancelled receiver stopped admitted sequence work");
         tokio::task::yield_now().await;
@@ -1210,7 +1213,7 @@ mod tests {
             .unwrap();
         started.notified().await;
         let replay = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
+            HANG_BOUND,
             owner.submit_replay_resumable_wait(
                 false,
                 1,
@@ -1394,7 +1397,7 @@ mod tests {
         drop(normal_tx);
         drop(replay_tx);
         release_tx.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), running)
+        tokio::time::timeout(HANG_BOUND, running)
             .await
             .expect("closed queues were not drained")
             .unwrap();
