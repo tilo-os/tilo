@@ -6661,9 +6661,10 @@ mod tests {
             let _ = result_tx.send(result.map(drop));
         });
         tilo_test_env::recv("the fixture broker to start", &started_rx);
-        let result = result_rx
-            .recv_timeout(SHOVEL_INIT_TIMEOUT * 2)
-            .expect("a pending host handoff must not hang its caller");
+        let result = tilo_test_env::recv(
+            "the caller to give up on the pending host handoff",
+            &result_rx,
+        );
         caller.join().unwrap();
         match result {
             Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
@@ -6701,7 +6702,9 @@ mod tests {
             });
             let _ = result_tx.send(result);
         });
-        let result = result_rx.recv_timeout(SHOVEL_INIT_TIMEOUT * 2 + Duration::from_secs(1));
+        // The route deadline itself is asserted below; this bound only turns
+        // a caller that never returns into a failure.
+        let result = result_rx.recv_timeout(tilo_test_env::hang_bound());
         let elapsed = started.elapsed();
         if result.is_err() {
             // A broken worker-side deadline must not leave this test's broker
@@ -6712,10 +6715,13 @@ mod tests {
             if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
                 caller.join().expect("fixture caller after gate release");
             }
-            panic!("manager failed to return within the bounded startup window");
+            panic!(
+                "gave up waiting for the manager to return from an unacknowledged primary join after {:?}",
+                tilo_test_env::hang_bound()
+            );
         }
         caller.join().expect("bounded fixture caller");
-        match result.expect("manager must return within the bounded startup window") {
+        match result.expect("the manager returned") {
             Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
                 assert_eq!(error.to_string(), PRIMARY_ROUTE_TIMED_OUT);
@@ -7137,9 +7143,9 @@ mod tests {
         }
     }
 
-    /// How often a certified endpoint asked for channel keys within a few
-    /// refresh intervals of joining a route the broker serves as committed
-    /// (`committed`) or as an ordinary op stream.
+    /// How often a certified endpoint asked for channel keys after joining a
+    /// route the broker serves as committed (`committed`: within a few refresh
+    /// intervals) or as an ordinary op stream (once it has asked at all).
     #[cfg(unix)]
     fn channel_key_requests_on_route(committed: bool) -> usize {
         let captures = Captures {
@@ -7175,7 +7181,15 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        std::thread::sleep(CHANNEL_KEY_REFRESH * 3);
+        if committed {
+            // Asking would be the bug, so there is no event to wait for: give
+            // the refresh timer a few ticks in which it must stay quiet.
+            std::thread::sleep(CHANNEL_KEY_REFRESH * 3);
+        } else {
+            tilo_test_env::wait_until("the op route's endpoint to ask for channel keys", || {
+                asked.load(std::sync::atomic::Ordering::Acquire) > 0
+            });
+        }
         let asked = asked.load(std::sync::atomic::Ordering::Acquire);
         drop(manager);
         thread.join().unwrap();
@@ -7183,12 +7197,20 @@ mod tests {
     }
 
     /// A certified identity service that answers its first question at
-    /// once, with `keys`, and every later one only after `slow`.
+    /// once, with `keys`, and holds every later one until `released`.
     #[cfg(unix)]
     struct SlowIdentity {
         keys: Vec<u8>,
         asked: std::sync::atomic::AtomicUsize,
-        slow: Duration,
+        released: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    #[cfg(unix)]
+    impl SlowIdentity {
+        fn release(released: &(std::sync::Mutex<bool>, std::sync::Condvar)) {
+            *released.0.lock().unwrap() = true;
+            released.1.notify_all();
+        }
     }
 
     #[cfg(unix)]
@@ -7203,7 +7225,14 @@ mod tests {
         {
             let first = self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0;
             if !first {
-                thread::sleep(self.slow);
+                let (released, changed) = &*self.released;
+                let _released = changed
+                    .wait_timeout_while(
+                        released.lock().unwrap(),
+                        tilo_test_env::hang_bound(),
+                        |released| !*released,
+                    )
+                    .unwrap();
             }
             Ok(runtime_identity::wire::ChannelKeysReply {
                 access: runtime_identity::wire::ChannelAccess::Ready,
@@ -7236,12 +7265,12 @@ mod tests {
 
     /// An endpoint keeps receiving while its identity service is slow to
     /// answer a key refresh: an op that arrives during the refresh is
-    /// delivered at once, not once the service has answered.
+    /// delivered while the service still has not answered.
     #[test]
     #[cfg(unix)]
     fn a_slow_identity_service_never_holds_up_incoming_ops() {
-        const SLOW: Duration = Duration::from_secs(6);
-        // The op arrives after the first refresh tick, while it waits.
+        // The op arrives after the first refresh tick, which the identity
+        // service holds until the op has been delivered.
         const ARRIVES: Duration = Duration::from_millis(1500);
         let app_id = "so.tilo.test";
         let cluster = Uuid::new_v4();
@@ -7280,6 +7309,7 @@ mod tests {
             scrollback_response: None,
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
@@ -7288,14 +7318,13 @@ mod tests {
                 signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
                     keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
                     asked: std::sync::atomic::AtomicUsize::new(0),
-                    slow: SLOW,
+                    released: Arc::clone(&released),
                 })),
             }),
         )
         .unwrap();
         let mut manager = CollaborationManager::disabled();
         manager.backend = Backend::Transport(Box::new(sdk));
-        let joined = crate::time::now();
         assert!(manager.send(CollabRequest::Hello {
             app_id: app_id.into(),
             cluster_id: cluster,
@@ -7308,7 +7337,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, CollabEvent::Document { .. }))
         });
-        let delivered = joined.elapsed();
+        SlowIdentity::release(&released);
         assert!(
             events.iter().any(|event| matches!(
                 event,
@@ -7317,11 +7346,7 @@ mod tests {
                     ..
                 } if *payload == frame
             )),
-            "the op arrived opened: {events:?}"
-        );
-        assert!(
-            delivered < ARRIVES + SLOW / 2,
-            "the op waited {delivered:?} on a key refresh"
+            "the op must arrive, opened, while the key refresh is held: {events:?}"
         );
         drop(manager);
         thread.join().unwrap();
@@ -8696,7 +8721,7 @@ mod tests {
 
     /// Poll on every wake until the manager leaves `Connecting`.
     fn settle(mgr: &mut CollaborationManager, wakes: &mpsc::Receiver<()>) -> CollaborationState {
-        let deadline = crate::time::now() + SHOVEL_INIT_TIMEOUT * 3;
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let _ = mgr.poll();
             let state = mgr.state();
@@ -8704,9 +8729,12 @@ mod tests {
                 return state;
             }
             let left = deadline.saturating_duration_since(crate::time::now());
-            wakes
-                .recv_timeout(left)
-                .expect("a connecting manager wakes its owner when it settles");
+            assert!(
+                wakes.recv_timeout(left).is_ok(),
+                "gave up waiting for the connecting manager to wake its owner as it settles; \
+                 still Connecting after {:?}",
+                tilo_test_env::hang_bound()
+            );
         }
     }
 
