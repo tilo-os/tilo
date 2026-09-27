@@ -57,11 +57,11 @@ serde = "1.0"
 
 [dependencies.accesskit]
 version = "0.25.0"
-path = "../../accesskit"
+path = "../accesskit-0.25.0"
 
 [dependencies.accesskit_atspi_common]
 version = "0.20.0"
-path = "../atspi-common"
+path = "../accesskit_atspi_common-0.20.0"
 
 [dependencies.async-channel]
 version = "2.1.1"

@@ -83,11 +83,8 @@ static_assertions = "1.1.0"
 tokio-test = "0.4.2"
 zbus_xml = "5.0.2"
 
-[dev-dependencies.atspi-connection]
-path = "../atspi-connection"
-
 [dev-dependencies.atspi-proxies]
-path = "../atspi-proxies"
+path = "../atspi-proxies-0.13.0"
 
 [dev-dependencies.tokio]
 version = "1.38.2"

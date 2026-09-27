@@ -8,7 +8,22 @@ fn request(dir: PathBuf) -> NewAppRequest {
         template: Some(Template::Starter),
         directory: Some(dir),
         ui_path: None,
+        sdk_git: None,
+        sdk_rev: None,
         dry_run: false,
+    }
+}
+
+fn fixture_sdk(workspace_member: bool) -> AppSdk {
+    if workspace_member {
+        AppSdk::Workspace {
+            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+        }
+    } else {
+        AppSdk::Standalone(standalone::Standalone {
+            source: standalone::SdkSource::Checkout(PathBuf::from("../tilo")),
+            baseline: standalone::Baseline::embedded().expect("embedded SDK baseline"),
+        })
     }
 }
 
@@ -2447,7 +2462,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
         let outcome = create_app(request(destination.clone())).expect("create app");
-        assert_eq!(outcome.app_id, "so.tilo.reading.list");
+        assert_eq!(outcome.app_id, "local.dev.reading.list");
         assert!(destination.join("Cargo.toml").is_file());
         let cargo = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         let cargo: toml::Value = toml::from_str(&cargo).unwrap();
@@ -2464,7 +2479,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let main = std::fs::read_to_string(destination.join("src/main.rs")).expect("main");
         assert!(main.contains("ui::framework::run::<reading_list::App>()"));
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
-        assert!(library.contains("pub const APP_ID: &str = \"so.tilo.reading.list\";"));
+        assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
         assert!(library.contains("#[derive(Model, Debug, Clone, PartialEq)]"));
         assert!(library.contains("#[resource(kind = \"generated.profile\""));
         assert!(library.contains("impl ResourceApp for App"));
@@ -2752,7 +2767,7 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
 
         assert_eq!(outcome.destination, destination);
         let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Toolkit ui path ["));
+        assert!(transcript.contains("Toolkit ui path, or `git` for the Tilo repository ["));
         assert!(transcript.contains("invalid toolkit path"));
         assert!(transcript.contains(&format!(
             "Toolkit:     {}",
@@ -2787,7 +2802,10 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert_eq!(outcome.destination, destination);
         let transcript = String::from_utf8(output).unwrap();
         assert!(
-            transcript.contains(&format!("Toolkit ui path [{}]:", discovered.display())),
+            transcript.contains(&format!(
+                "Toolkit ui path, or `git` for the Tilo repository [{}]:",
+                discovered.display()
+            )),
             "{transcript}"
         );
         assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
@@ -2798,6 +2816,38 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
             manifest.contains(&format!("path = {:?}", relative.display().to_string())),
             "{manifest}"
         );
+    }
+
+    // Phase: standalone_wizard_answers_git_to_build_against_the_tilo_repository.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("notes");
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(b"notes\n\n\n1\ngit\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
+
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(
+            transcript.contains("App id [local.dev.notes]:"),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains(&format!("Toolkit:     {}", standalone::DEFAULT_SDK_GIT)),
+            "{transcript}"
+        );
+        assert!(matches!(
+            outcome.sdk,
+            Some(standalone::SdkSource::Git { ref url, .. }) if url == standalone::DEFAULT_SDK_GIT
+        ));
+        let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+        assert!(manifest.contains(standalone::DEFAULT_SDK_GIT), "{manifest}");
     }
 
     // Phase: interactive_wizard_reports_end_of_input_as_cancellation.
@@ -3155,7 +3205,7 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 9);
+        assert_eq!(outcome.files.len(), 13);
     }
 
     // Phase: creation_summary_prints_copyable_commands_for_shell_unsafe_paths.
@@ -3167,6 +3217,7 @@ fn creation_inputs_are_validated_and_printed_safely() {
             files: Vec::new(),
             dry_run: false,
             workspace_member: false,
+            sdk: None,
         };
         let summary = outcome.summary();
         assert!(summary.contains("tilo-app check '/tmp/O'\\''Reilly app'"));
@@ -3242,8 +3293,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "log_browser".into(),
             title: "Log Browser".into(),
             app_id: "so.tilo.log.browser".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Data,
         };
         let source = app_lib(&spec);
@@ -3276,8 +3328,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "qr_code".into(),
             title: "QR Code".into(),
             app_id: "so.tilo.qr.code".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Qr,
         };
         let source = app_lib(&spec);
@@ -3301,8 +3354,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "project_workspace".into(),
             title: "Project Workspace".into(),
             app_id: "so.tilo.project.workspace".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Workspace,
         };
         let source = app_lib(&spec);
@@ -3326,8 +3380,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "project_maker".into(),
             title: "Project Maker".into(),
             app_id: "so.tilo.project.maker".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Graph,
         };
         let files = render(&spec).unwrap();
@@ -3377,8 +3432,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "activity_feed".into(),
             title: "Activity Feed".into(),
             app_id: "so.tilo.activity.feed".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::List,
         };
         let source = app_lib(&spec);
@@ -3408,8 +3464,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "project_browser".into(),
             title: "Project Browser".into(),
             app_id: "so.tilo.project.browser".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Tree,
         };
         let source = app_lib(&spec);
@@ -3436,8 +3493,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "repo_scan".into(),
             title: "Repo Scan".into(),
             app_id: "so.tilo.repo.scan".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Async,
         };
         let source = app_lib(&spec);
@@ -3468,8 +3526,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             crate_name: "notes".into(),
             title: "Notes".into(),
             app_id: "so.tilo.notes".into(),
-            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            workspace_member: true,
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
             template: Template::Document,
         };
         let source = app_lib(&spec);
@@ -3510,11 +3569,12 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 crate_name: "generated_app".into(),
                 title: "Generated App".into(),
                 app_id: "so.tilo.generated.app".into(),
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                workspace_member: true,
+                sdk: AppSdk::Workspace {
+                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                },
                 template,
             };
-            let manifest = cargo_toml(&spec);
+            let manifest = cargo_toml(&spec).expect("render Cargo.toml");
             assert!(!manifest.contains("tilo-actions ="), "{template:?}");
             let source = app_lib(&spec);
             assert!(source.contains("#[derive(Model"), "{template:?}");
@@ -3557,8 +3617,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 crate_name: "notes".into(),
                 title: "Notes".into(),
                 app_id: "so.tilo.notes".into(),
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                workspace_member,
+                sdk: fixture_sdk(workspace_member),
                 template: Template::Starter,
             };
             let readme = app_readme(&spec);
@@ -3599,12 +3658,12 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 crate_name: "notes".into(),
                 title: "Notes".into(),
                 app_id: "so.tilo.notes".into(),
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                workspace_member,
+                sdk: fixture_sdk(workspace_member),
                 template: Template::Starter,
             };
             let manifest: toml::Table =
-                toml::from_str(&cargo_toml(&spec)).expect("generated Cargo.toml");
+                toml::from_str(&cargo_toml(&spec).expect("render Cargo.toml"))
+                    .expect("generated Cargo.toml");
             let hack = manifest
                 .get("dependencies")
                 .and_then(|dependencies| dependencies.get("workspace-hack"));
@@ -3630,8 +3689,9 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 crate_name: "demo".into(),
                 title: "Demo".into(),
                 app_id: "so.tilo.demo".into(),
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-                workspace_member: true,
+                sdk: AppSdk::Workspace {
+                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                },
                 template,
             };
             let actions: serde_json::Value =
@@ -4435,6 +4495,211 @@ fn doctor_accepts_the_cli_only_agent_without_a_published_surface() {
     }));
 }
 
+/// A standalone app builds what the workspace tests: every `[patch]` the SDK's graph uses, the
+/// lockfile, compiler, target flags and profiles, with the SDK from a checkout or from git.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: the checkout and git phases assert the same generated files"
+)]
+fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
+    let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap();
+    let workspace: toml::Table = toml::from_str(&read(&checkout.join("Cargo.toml"))).unwrap();
+    let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
+    let forks = [
+        "automerge",
+        "winit",
+        "vello",
+        "wayland-backend",
+        "rustls-native-certs",
+        "accesskit",
+        "atspi",
+        "rustypipe",
+    ];
+
+    // Phase: a checkout nearby is used in place, by relative path.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let outcome = create_app_from(temp.path(), request(app.clone())).unwrap();
+        assert_eq!(outcome.app_id, "local.dev.reading.list");
+        assert!(outcome.summary().contains("namespace you control"));
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let ui_path = manifest["dependencies"]["ui"]["path"].as_str().unwrap();
+        assert!(Path::new(ui_path).is_relative(), "{ui_path}");
+        assert_eq!(
+            app.join(ui_path).canonicalize().unwrap(),
+            checkout.join("crates/sdk/tilo-app")
+        );
+        let patches = manifest["patch"]["crates-io"].as_table().unwrap();
+        for name in forks {
+            let path = patches
+                .get(name)
+                .and_then(|patch| patch.get("path"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or_else(|| panic!("{name} is not patched by path: {patches:#?}"));
+            assert!(
+                app.join(path).join("Cargo.toml").is_file(),
+                "{name} -> {path}"
+            );
+        }
+        assert!(!patches.contains_key("workspace-hack"));
+        assert!(
+            patches
+                .keys()
+                .all(|name| workspace_patches.contains_key(name))
+        );
+        let profile = &manifest["profile"];
+        assert_eq!(profile["dev"]["debug"].as_str(), Some("line-tables-only"));
+        assert_eq!(
+            profile["dev"]["package"]["automerge"]["opt-level"].as_integer(),
+            Some(3)
+        );
+        assert_eq!(profile["thin-app"]["panic"].as_str(), Some("unwind"));
+        assert_eq!(profile["thin-app"]["inherits"].as_str(), Some("release"));
+
+        assert_eq!(
+            read(&app.join("Cargo.lock")),
+            read(&checkout.join("Cargo.lock"))
+        );
+        let toolchain: toml::Table =
+            toml::from_str(&read(&app.join("rust-toolchain.toml"))).unwrap();
+        let workspace_toolchain: toml::Table =
+            toml::from_str(&read(&checkout.join("rust-toolchain.toml"))).unwrap();
+        assert_eq!(
+            toolchain["toolchain"]["channel"],
+            workspace_toolchain["toolchain"]["channel"]
+        );
+        let config: toml::Table = toml::from_str(&read(&app.join(".cargo/config.toml"))).unwrap();
+        let linux = &config["target"]["cfg(all(target_arch = \"x86_64\", target_os = \"linux\"))"];
+        assert!(
+            linux["rustflags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|flag| flag.as_str() == Some("target-cpu=x86-64-v3"))
+        );
+        assert!(linux.get("runner").is_none(), "{config:#?}");
+        assert!(config.get("source").is_none() && config.get("build").is_none());
+        assert_eq!(read(&app.join(".gitignore")), "/target\n");
+        assert!(doctor_app(&app).unwrap().is_ready());
+    }
+
+    // Phase: without a checkout the SDK and every fork come from one pinned git commit.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let rev = "0123456789abcdef0123456789abcdef01234567";
+        let mut req = request(app.clone());
+        req.sdk_git = Some("https://example.invalid/tilo.git".into());
+        req.sdk_rev = Some(rev.into());
+        let outcome = create_app_from(temp.path(), req).unwrap();
+        assert_eq!(
+            outcome.sdk,
+            Some(standalone::SdkSource::Git {
+                url: "https://example.invalid/tilo.git".into(),
+                rev: Some(rev.into()),
+            })
+        );
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let dependencies = &manifest["dependencies"];
+        for dependency in ["ui", "runtime-dylib"] {
+            assert_eq!(
+                dependencies[dependency]["git"].as_str(),
+                Some("https://example.invalid/tilo.git")
+            );
+            assert_eq!(dependencies[dependency]["rev"].as_str(), Some(rev));
+        }
+        assert_eq!(
+            dependencies["runtime-dylib"]["optional"].as_bool(),
+            Some(true)
+        );
+        let patches = manifest["patch"]["crates-io"].as_table().unwrap();
+        for name in forks {
+            assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
+        }
+        assert!(patches.values().all(|patch| patch.get("path").is_none()));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(report.summary().contains(rev), "{}", report.summary());
+    }
+
+    // Phase: Cargo's caches are never mistaken for a checkout to build against.
+    {
+        let home = Path::new("/home/ada/.cargo");
+        assert!(standalone::in_cargo_cache(
+            &home.join("git/checkouts/tilo-1a2b/0123456/crates/sdk/ui-core")
+        ));
+        assert!(standalone::in_cargo_cache(
+            &home.join("registry/src/index.crates.io-1a2b/tilo-app-cli-0.1.0")
+        ));
+        assert!(!standalone::in_cargo_cache(Path::new(
+            "/home/ada/src/tilo/crates/sdk/ui-core"
+        )));
+    }
+}
+
+/// Inside the Tilo workspace the toolkit is built on its own; a standalone app cannot select it,
+/// so every artifact for its target is linked dynamically and the toolkit comes in as a dependency.
+#[test]
+fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace() {
+    let manifest = Path::new("/apps/notes/Cargo.toml");
+    let args = |step: &ThinDevStep| {
+        step.cargo
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
+    assert_eq!(
+        member.iter().map(|step| step.label).collect::<Vec<_>>(),
+        [
+            "the shared toolkit",
+            "the reload host",
+            "the reload library"
+        ]
+    );
+    assert_eq!(args(&member[0])[..3], ["rustc", "-p", "runtime-dylib"]);
+    assert!(member.iter().all(|step| step.cargo.env.is_empty()));
+    assert!(!args(&member[1]).contains(&"--target".to_owned()));
+
+    let triple = "x86_64-unknown-linux-gnu";
+    let standalone = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::Target(triple.into()),
+        false,
+    );
+    assert_eq!(
+        standalone.iter().map(|step| step.label).collect::<Vec<_>>(),
+        ["the reload library"]
+    );
+    let library = args(&standalone[0]);
+    let target = library.iter().position(|arg| arg == "--target").unwrap();
+    assert_eq!(library[target + 1], triple);
+    assert!(
+        library
+            .windows(2)
+            .any(|pair| pair == ["--crate-type", "cdylib"])
+    );
+    let [(key, flags)] = standalone[0].cargo.env.as_slice() else {
+        panic!("one rustflags variable: {:?}", standalone[0].cargo.env);
+    };
+    assert_eq!(key, "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS");
+    assert!(flags.to_string_lossy().ends_with("-C prefer-dynamic"));
+
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));
+    let temp = tempfile::tempdir().unwrap();
+    assert!(!app_is_workspace_member(temp.path()));
+}
+
 #[test]
 fn every_template_scaffolds_a_portable_app() {
     for template in [
@@ -4953,8 +5218,11 @@ fn in_place_build_stages_a_library_the_open_process_can_load() {
     let staged = std::fs::read_to_string(dev_session_dir(&app).join("reload.path")).unwrap();
     let staged = PathBuf::from(staged.trim());
     assert_eq!(std::fs::read(&staged).unwrap(), b"library");
+    // The fixture is outside the Tilo workspace: the toolkit is a dependency
+    // of the host, not a package Cargo could select.
     let args = std::fs::read_to_string(&log).unwrap();
-    assert!(args.contains("runtime-dylib"), "{args}");
+    assert!(!args.contains("runtime-dylib"), "{args}");
+    assert!(args.contains("--target"), "{args}");
     assert!(args.contains("cdylib"), "{args}");
     assert!(args.contains("prefer-dynamic"), "{args}");
 }
@@ -4974,4 +5242,17 @@ fn seal_script(path: &Path) {
         .unwrap();
     assert!(status.success(), "install {}", path.display());
     std::fs::remove_file(&draft).unwrap();
+}
+
+/// `--ui-path` may name either SDK crate of a checkout; both resolve to the same checkout.
+#[test]
+fn ui_path_accepts_either_sdk_crate() {
+    for crate_dir in ["ui-core", "tilo-app"] {
+        let ui = Path::new("../tilo/crates/sdk").join(crate_dir);
+        assert_eq!(checkout_root_for_ui(&ui), Path::new("../tilo"));
+        assert_eq!(
+            sdk_path_for_ui(&ui),
+            Path::new("../tilo/crates/sdk/tilo-app")
+        );
+    }
 }
