@@ -47,9 +47,9 @@ def build_arguments(value):
             resume.require(re.fullmatch(r'id=aws_(access_key_id|secret_access_key|session_token),src=/[^\s,]+', value),
                            'unexpected cache secret')
     expected = {'TILO_PREBUILT_APPS': '0', 'TILO_PREBUILT_DESKTOP': '0', 'TILO_CARGO_BUILD_JOBS': '2',
-                'TILO_REQUIRE_COMPILER_CACHE': '1', 'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
-                'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
-                'SCCACHE_REGION': 'eu-central-1', 'SCCACHE_S3_USE_SSL': 'true'}
+                'TILO_REQUIRE_COMPILER_CACHE': '1', 'SCCACHE_ENDPOINT': 'https://s3.us-west-2.amazonaws.com',
+                'SCCACHE_BUCKET': 'tilo-ci-sccache-125650147312-us-west-2',
+                'SCCACHE_REGION': 'us-west-2', 'SCCACHE_S3_USE_SSL': 'true'}
     resume.require(all(values.get(k) == v for k,v in expected.items()), 'original build/cache configuration required')
     prefix = values.get('SCCACHE_S3_KEY_PREFIX', '')
     resume.require(len(prefix) <= 128 and re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', prefix), 'canonical cache namespace required')

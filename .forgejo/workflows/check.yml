@@ -4,7 +4,11 @@ name: CI / affected packages
 # and test changed packages, their direct dependants (up to one shard's cost;
 # see REVERSE_TEST_COST_BUDGET) and contract suites. Full native coverage remains
 # mandatory in nightly.yml; this job is the short feedback path.
-# Manual dispatch validates the complete workspace on both native architectures.
+# Queued main push runs are coalesced to the newest (tools/ci/queue_coalesce.py);
+# each main run covers every commit since the last one whose check started, so
+# every main commit is covered by a run of itself or of a later commit.
+# Manual dispatch validates the complete workspace on both native architectures,
+# or, given a base commit, what changed since it.
 on:
   push:
     # Temporary branch triggers while desktop packaging and ARM support are being
@@ -16,6 +20,10 @@ on:
     inputs:
       builder_image:
         description: 'Optional immutable tested builder index (registry.tilo.so/tilo/tilo-builder@sha256:...)'
+        required: false
+        type: string
+      base:
+        description: 'Optional ancestor commit SHA: select what changed since it, as a main push would, instead of the full workspace'
         required: false
         type: string
 
@@ -56,6 +64,15 @@ env:
     (package(tilo-ui) and test(typography_visual_regression::)) or
     (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
     (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   builder:
@@ -121,6 +138,10 @@ jobs:
             # complete branch diff against the current integration branch.
             git fetch origin \
               +refs/heads/main:refs/remotes/origin/main
+          elif [ '${{ github.ref }}' = refs/heads/main ]; then
+            # CI receipts are the selection base's fallback evidence when the
+            # runs API is unavailable (tools/ci/check_base.py).
+            git fetch origin '+refs/notes/tilo-check-ci:refs/notes/tilo-check-ci' || true
           else
             base='${{ github.event.pull_request.base.sha }}'
             if [ -z "$base" ] || [ "$base" = "null" ]; then
@@ -144,6 +165,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
+          DISPATCH_BASE: ${{ github.event.inputs.base }}
+          # Main only: reads the runs API for the last commit whose check started.
+          FORGEJO_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.REGISTRY_TOKEN || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -151,6 +175,13 @@ jobs:
           selection_args=()
           if [ "$EVENT_NAME" = pull_request ]; then
             selection_args+=(--allow-security-skip)
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ -n "$DISPATCH_BASE" ]; then
+            # An explicit base (the lander bisecting a coalesced range) selects
+            # like a main push covering the commits since that base.
+            [[ $DISPATCH_BASE =~ ^[0-9a-f]{40}$ ]] || { echo "::error::base must be a full commit SHA"; exit 1; }
+            git merge-base --is-ancestor "$DISPATCH_BASE" HEAD
+            base=$DISPATCH_BASE
+            selection_args+=(--all-suites)
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
@@ -162,6 +193,14 @@ jobs:
             # branch pushes and could produce a misleading exact-SHA receipt.
             base=origin/main
             selection_args+=(--full)
+          elif [ "$GITHUB_REF" = refs/heads/main ]; then
+            # Queued main runs are coalesced, so github.event.before may never
+            # have been checked. Cover every commit since the last main commit
+            # whose own check run started; without one, check everything.
+            if ! base=$(python3 tools/ci/check_base.py --head HEAD); then
+              base=HEAD^
+              selection_args+=(--full)
+            fi
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base=$PUSH_BEFORE
           fi
@@ -178,9 +217,8 @@ jobs:
           # Every diff-style gate compares with the common ancestor, as package
           # selection does. The pull-request base is main's tip when the event
           # fired; a branch behind it would otherwise be charged with every
-          # Clippy warning main fixed after the branch point. A push to main
-          # extends its previous tip, so there the common ancestor is exactly
-          # github.event.before.
+          # Clippy warning main fixed after the branch point. A main push's base
+          # is a first-parent ancestor, so there the common ancestor is the base.
           base=$(git merge-base "$base" HEAD)
           echo "base=$base" >> "$GITHUB_OUTPUT"
           python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
@@ -276,6 +314,10 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
+      # The runner slot's persistent target/ and Cargo downloads for this trust
+      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
+      volumes:
+        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -285,6 +327,8 @@ jobs:
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
+        with:
+          slot-cache: true
 
       - name: Check native architecture
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -403,6 +447,12 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # Vouch for the sources this job's artifacts were built from, so the
+      # slot's next job keeps them fresh; an unsealed target is rebuilt.
+      - name: Seal the runner slot's target
+        if: always()
+        run: python3 tools/ci/slot_cache.py seal
+
   # Type-checks every target of the shard's complete reverse-dependency
   # closure on architectures that Clippy does not lint (x86_64 gets the same
   # check from Clippy). It links nothing, so it uses the architecture's
@@ -420,6 +470,10 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
+      # The runner slot's persistent target/ and Cargo downloads for this trust
+      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
+      volumes:
+        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -429,6 +483,8 @@ jobs:
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
+        with:
+          slot-cache: true
 
       - name: Prepare build runtime
         run: |
@@ -482,6 +538,10 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Seal the runner slot's target
+        if: always()
+        run: python3 tools/ci/slot_cache.py seal
+
   # Clippy's Rust-level analysis is authoritative once per selected package
   # set on x86_64, and it is also that shard's all-target check; ARM still runs
   # the complete native test and all-target check jobs above, without
@@ -500,6 +560,10 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
+      # The runner slot's persistent target/ and Cargo downloads for this trust
+      # class; prepare-rust-build mounts them (tools/ci/slot_cache.py).
+      volumes:
+        - tilo-slot-cache-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/ci-slot-cache
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -510,6 +574,8 @@ jobs:
       - name: Prepare Rust build caches
         id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
+        with:
+          slot-cache: true
 
       - name: Prepare build runtime
         run: |
@@ -562,6 +628,10 @@ jobs:
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Seal the runner slot's target
+        if: always()
+        run: python3 tools/ci/slot_cache.py seal
 
       # One writer avoids shards and jobs racing to create the same immutable key.
       - name: Save Cargo downloads
@@ -716,6 +786,9 @@ jobs:
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           AFFECTED_RESULT: ${{ steps.aggregate.outcome }}
+          # The run covers every commit after its selection base.
+          COVERS_FROM: ${{ needs.select.outputs.base }}
         run: >-
           tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
           "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin
+          "$COVERS_FROM"

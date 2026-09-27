@@ -3337,6 +3337,56 @@ mod tests {
         }
     }
 
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_input_source_chord_switches_remembers_and_shows_the_layout() {
+        let config = tempfile::tempdir().expect("isolated settings directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let mut values = serde_json::Map::new();
+        values.insert("keyboard_layout".into(), "us".into());
+        values.insert("keyboard_layouts".into(), serde_json::json!(["us", "de"]));
+        settings_store::update_section("input", values).expect("seed two sources");
+
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::ALT);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        let press = key_press(Key::Named(NamedKey::Space));
+        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+
+        assert_eq!(
+            fb.chrome.borrow_mut().take_input_source_request(),
+            Some(1),
+            "the seat and the physical keyboard switch at once"
+        );
+        assert_eq!(
+            settings_store::load_section("input")
+                .get("keyboard_layout")
+                .and_then(serde_json::Value::as_str),
+            Some("de"),
+            "the choice is persisted, so a settings reload keeps it"
+        );
+        let caption = fb.chrome().osd.map(|osd| osd.caption());
+        assert!(
+            matches!(caption.as_deref(), Some("German" | "de")),
+            "the readout names the layout: {caption:?}"
+        );
+        assert!(
+            !fb.host().palette_visible(),
+            "Super+Alt+Space is not the Super+Space search chord"
+        );
+
+        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        assert_eq!(
+            fb.chrome.borrow_mut().take_input_source_request(),
+            Some(0),
+            "the sources wrap around"
+        );
+    }
+
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }

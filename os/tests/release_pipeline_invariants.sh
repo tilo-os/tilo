@@ -47,6 +47,31 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
+# A persistent builder keeps BuildKit state on the runner slot between jobs.
+# Its name carries the trust class, so a pull request never writes state a
+# main build reads, and publications (tags, dispatches, the OS and kernel
+# images) never opt in.
+persistent_ok=1
+for file in "$workflows"/*.yml "$workflows"/*.yaml; do
+  case "$(basename "$file")" in
+    tilo-relay.yaml|registry-server-image.yml) continue ;;
+  esac
+  if grep -Eq '^ +persistent:' "$file"; then
+    printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
+    persistent_ok=0
+  fi
+done
+grep -Fq "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}" "$workflows/tilo-relay.yaml" \
+  && grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
+  && grep -Fq 'name="tilo-$TRUST-$digest"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
+  && grep -Fq 'default: "false"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
+  || persistent_ok=0
+if [ "$persistent_ok" = 1 ]; then
+  ok 'persistent BuildKit state is split by trust class and never reaches publications'
+else
+  bad 'a persistent BuildKit builder can mix trust classes or serve a publication'
+fi
+
 grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
   && grep -Fq 'tilo-kernel-buildcache:{1},mode=min' "$workflows/build-kernel.yml" \
   && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \

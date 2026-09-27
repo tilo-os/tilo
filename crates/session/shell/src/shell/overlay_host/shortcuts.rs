@@ -195,6 +195,7 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::MagnifierZoomIn => "magnify more",
         ShortcutAction::MagnifierZoomOut => "magnify less",
         ShortcutAction::PowerMenu => "open the power menu",
+        ShortcutAction::NextInputSource => "switch to the next keyboard layout",
     }
 }
 

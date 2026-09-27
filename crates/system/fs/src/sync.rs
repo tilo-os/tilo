@@ -35,6 +35,7 @@ use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
@@ -309,13 +310,14 @@ async fn write_namespace_frame(
     send: &mut SendStream,
     frame: &NamespaceFrameV1,
 ) -> std::io::Result<()> {
-    let bytes = postcard::to_allocvec(frame).map_err(std::io::Error::other)?;
-    write_frame(send, &bytes).await
+    Ok(SYNC_FRAMING.write_value_async(send, frame).await?)
 }
 
 async fn read_namespace_frame(recv: &mut RecvStream) -> std::io::Result<NamespaceFrameV1> {
-    let bytes = read_frame(recv).await?;
-    postcard::from_bytes(&bytes).map_err(std::io::Error::other)
+    Ok(SYNC_FRAMING
+        .read_value_async(recv)
+        .await?
+        .ok_or(FrameError::Closed)?)
 }
 
 /// Sends the request that opens a sync-ALPN exchange.
@@ -329,7 +331,7 @@ async fn open_namespace_exchange(
     let (mut send, mut recv) = conn.open_bi().await?;
     let remote = authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
     let request = postcard::to_allocvec(&request)?;
-    write_frame(&mut send, &request).await?;
+    SYNC_FRAMING.write_async(&mut send, &request).await?;
     Ok((remote, send, recv))
 }
 /// Hard cap on a single sync frame (`DoS` guard).
@@ -340,36 +342,10 @@ const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// allocation without bound.
 const MAX_CONCURRENT_SYNC_CONNECTIONS: usize = 4;
 
-async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(data.len())
-        .map_err(|_| std::io::Error::other("sync frame too large to length-prefix"))?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(std::io::Error::other)?;
-    if !data.is_empty() {
-        send.write_all(data).await.map_err(std::io::Error::other)?;
-    }
-    Ok(())
-}
-
-async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    recv.read_exact(&mut len)
-        .await
-        .map_err(std::io::Error::other)?;
-    let n = u32::from_le_bytes(len) as usize;
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    if n > MAX_FRAME {
-        return Err(std::io::Error::other(format!("sync frame too large: {n}")));
-    }
-    let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(std::io::Error::other)?;
-    Ok(buf)
-}
+/// Each round of the sync-mode exchange, in both directions: a
+/// little-endian `u32` length, then the Automerge sync message, which is
+/// empty when that side has nothing to send.
+const SYNC_FRAMING: Framing = Framing::little_endian(MAX_FRAME);
 
 /// A shareable invitation to join a workspace: how to reach a peer + which
 /// gossip topic the workspace uses.
@@ -895,7 +871,11 @@ impl SyncProtocol {
         send: &mut SendStream,
         recv: &mut RecvStream,
     ) -> Result<(), AcceptError> {
-        let request = read_frame(recv).await.map_err(AcceptError::from_err)?;
+        let request = SYNC_FRAMING
+            .read_async(recv)
+            .await
+            .and_then(|frame| frame.ok_or(FrameError::Closed))
+            .map_err(AcceptError::from_err)?;
         let Ok(request) = postcard::from_bytes::<NamespaceRequestV1>(&request) else {
             let _ = send.finish();
             return Ok(());

@@ -47,6 +47,7 @@ filesystem = [
     "dep:cloud-source-icloud",
     "dep:notify",
     "dep:zeroize",
+    "dep:wire-frame",
 ]
 
 [[bin]]
@@ -165,6 +166,7 @@ cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
 notify = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
+wire-frame = { path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
