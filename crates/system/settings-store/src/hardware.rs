@@ -628,6 +628,9 @@ pub struct TabletConfig {
     pub eraser: EraserAction,
     /// Pad button number (libinput's, from zero) to the shortcut it runs.
     pub pad_buttons: BTreeMap<u32, ShortcutAction>,
+    /// The pad button that shows what every control does while held, as
+    /// the mode buttons do. It runs no shortcut of its own.
+    pub pad_map_button: Option<u32>,
     /// Pad ring number to what it does in each mode of its mode group,
     /// indexed by mode. Modes past the end scroll.
     pub pad_rings: BTreeMap<u32, Vec<PadDialAction>>,
@@ -691,6 +694,7 @@ impl Default for TabletConfig {
             third_button: StylusButtonAction::Default,
             eraser: EraserAction::Native,
             pad_buttons: BTreeMap::new(),
+            pad_map_button: None,
             pad_rings: BTreeMap::new(),
             pad_strips: BTreeMap::new(),
         }
@@ -3046,6 +3050,7 @@ mod tests {
             ..TabletConfig::default()
         };
         pen.pad_buttons.insert(3, ShortcutAction::WorkspaceOverview);
+        pen.pad_map_button = Some(1);
         let key = input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen");
         let section = serde_json::json!({
             TABLETS_KEY: {
@@ -3063,6 +3068,7 @@ mod tests {
         );
         assert_eq!(value["lower_button"], "right");
         assert_eq!(value["pad_buttons"]["3"], "workspace_overview");
+        assert_eq!(value["pad_map_button"], 1);
 
         let tablets = tablets_from_section(&section);
         assert_eq!(tablets.get(&key), Some(&pen));

@@ -601,6 +601,9 @@ pub struct ChromeState {
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
+    /// What a tablet pad's controls do, while its mode button (or the
+    /// button its settings pick) is held. See [`crate::shell::pad_map`].
+    pub pad_map: Option<crate::shell::pad_map::PadMap>,
     pub ws_settings_tab: WsTab,
     /// Window-logical bounds of the top-bar workspace pill. Published by the
     /// top bar without bumping revision so the workspace lens can animate
@@ -822,6 +825,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
+            pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
@@ -1944,6 +1948,15 @@ impl ChromeState {
     pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
         crate::shell::osd::raise(&mut self.osd, osd);
         self.bump();
+    }
+
+    /// Show, update or (with `None`) close the pad map, repainting only
+    /// when it changed.
+    pub fn set_pad_map(&mut self, map: Option<crate::shell::pad_map::PadMap>) {
+        if self.pad_map != map {
+            self.pad_map = map;
+            self.bump();
+        }
     }
 
     /// Returns `true` when something was cleared, so the caller can
