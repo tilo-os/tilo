@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use super::{Session, mcp::McpServer};
+use crate::{RuntimeServices, mcp::McpServer};
 
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -161,7 +161,7 @@ pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str,
             "profile path must be absolute",
         ));
     }
-    super::unix::private_directory(profile)?;
+    crate::unix::private_directory(profile)?;
     let paths = [
         ("XDG_CONFIG_HOME", profile.join("config")),
         ("XDG_DATA_HOME", profile.join("data")),
@@ -170,7 +170,7 @@ pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str,
         ("TILO_IDENTITY_ROOT", profile.join("identity")),
     ];
     for (_, path) in &paths {
-        super::unix::private_directory(path)?;
+        crate::unix::private_directory(path)?;
     }
     Ok(paths)
 }
@@ -271,7 +271,7 @@ impl Drop for OwnedChildren {
 
 fn log_file(profile: &Path, index: usize, app_id: &str) -> io::Result<File> {
     let logs = profile.join("logs");
-    super::unix::private_directory(&logs)?;
+    crate::unix::private_directory(&logs)?;
     let safe_id: String = app_id
         .chars()
         .map(|character| {
@@ -289,8 +289,8 @@ fn log_file(profile: &Path, index: usize, app_id: &str) -> io::Result<File> {
         .open(logs.join(format!("{}-{index:03}-{safe_id}.log", std::process::id())))
 }
 
-fn launch_apps(
-    session: &Session,
+fn launch_apps<S: RuntimeServices>(
+    session: &S,
     profile: &Path,
     manifest: ValidatedManifest,
 ) -> io::Result<OwnedChildren> {
@@ -362,25 +362,23 @@ fn protocol_error(code: i32, message: &str) -> Value {
     clippy::significant_drop_tightening,
     reason = "the session holds the profile lock and services until the server loop ends"
 )]
-pub fn serve<R, W>(
+pub fn serve<S, R, W>(
     profile: &Path,
     manifest: ValidatedManifest,
     reader: R,
     mut writer: W,
 ) -> io::Result<()>
 where
+    S: RuntimeServices,
     R: Read + Send + 'static,
     W: Write,
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    let session = Session::start(profile)?;
+    let session = S::start_reporting(profile, &mut |_| {})?;
     let mut server = McpServer::new(
-        session
-            .broker
-            .app_action_broker()
-            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?,
-        session.room.clone(),
-        session.actor.clone(),
+        session.action_host()?,
+        session.room().to_owned(),
+        session.actor().to_owned(),
     );
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
@@ -427,11 +425,11 @@ where
 /// # Errors
 ///
 /// Returns any [`load_manifest`] or [`serve`] error.
-pub fn run(profile: &Path, manifest_path: &Path) -> io::Result<()> {
+pub fn run<S: RuntimeServices>(profile: &Path, manifest_path: &Path) -> io::Result<()> {
     // The complete startup configuration is parsed and validated before
     // profile services or any application process is started.
     let manifest = load_manifest(manifest_path)?;
-    serve(profile, manifest, std::io::stdin(), std::io::stdout())
+    serve::<S, _, _>(profile, manifest, std::io::stdin(), std::io::stdout())
 }
 
 #[cfg(test)]
