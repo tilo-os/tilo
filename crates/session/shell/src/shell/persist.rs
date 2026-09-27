@@ -1,4 +1,5 @@
 use crate::shell::state::{STATE_SCHEMA_VERSION, WorkspaceTree};
+use automerge::AutoCommit;
 use std::path::{Path, PathBuf};
 
 /// Why this session is not the one the state file describes. The
@@ -120,7 +121,12 @@ pub fn fs_capability_export_path() -> PathBuf {
 pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
 
 pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
-    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
+    encode_durable(&durable_tree(tree)?)
+}
+
+/// The tree as it is written to disk: live surfaces become launch records,
+/// and process-local launch progress and session-only grants are dropped.
+fn durable_tree(tree: &WorkspaceTree) -> std::io::Result<WorkspaceTree> {
     // Prove encoded refusal bounds before cloning any tree or serialization buffer.
     super::native_workspace_owner::publication::validate_file_layout(
         NATIVE_STATE_SCHEMA_VERSION,
@@ -143,21 +149,204 @@ pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
     // into its durable label). Preserve the reserve on the exact output shape.
     super::native_workspace_owner::publication::preflight_tree(&durable)
         .map_err(std::io::Error::other)?;
+    Ok(durable)
+}
+
+fn encode_durable(durable: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
+    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
     let mut output = LimitedWriter::new(Vec::new(), MAX_STATE_BYTES);
-    serde_json::to_writer_pretty(&mut output, &durable).map_err(std::io::Error::other)?;
+    serde_json::to_writer_pretty(&mut output, durable).map_err(std::io::Error::other)?;
     Ok(output.into_inner())
 }
 
-/// Publish the complete native state file through its shared writer.
+/// Publish the complete native state file through its shared writer, then
+/// the tree document beside it (see [`state_doc_path`]).
 /// Session-only capabilities and native process surface IDs are not persisted.
 ///
 /// # Errors
 /// Refuses stale authority snapshots, encoded limits, competing writers, and
 /// publication failures. Uncertain publication fences subsequent writes.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    let bytes = encode_tree(tree)?;
+    let mut durable = durable_tree(tree)?;
+    let bytes = encode_durable(&durable)?;
     tree.native_runtime
-        .publish(path, &tree.native_authority, &tree.native_authority, &bytes)
+        .publish(path, &tree.native_authority, &tree.native_authority, &bytes)?;
+    save_doc_beside(&mut durable, path, &bytes);
+    Ok(())
+}
+
+/// Largest tree document this build reads or writes. History only grows,
+/// so this is far above the `state.json` cap.
+const MAX_STATE_DOC_BYTES: usize = 256 * 1024 * 1024;
+
+/// The tree document beside `state.json` (`state.automerge`): the desktop
+/// with its whole change history, which Activity and Replay read. When it is
+/// the companion of the `state.json` beside it, it is authoritative on load.
+pub fn state_doc_path(state: &Path) -> PathBuf {
+    state.with_extension("automerge")
+}
+
+/// Which `state.json` the document was written with, and the actor it was
+/// written as.
+fn state_doc_meta_path(state: &Path) -> PathBuf {
+    let mut s = state_doc_path(state).into_os_string();
+    s.push(".meta");
+    PathBuf::from(s)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StateDocMeta {
+    /// Kept so edits after a restart continue this device's history and are
+    /// attributed like the edits before it. Safe to reuse: the tree document
+    /// is never sent to a peer, so no change from this actor exists that is
+    /// not in the saved document or lost with the process.
+    actor: String,
+    /// blake3 of the `state.json` bytes the document was written with.
+    state_json: String,
+}
+
+fn state_json_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// Write `durable`'s document next to the `state.json` just published from
+/// it. The document first takes on exactly what `state.json` records, so the
+/// two agree on load. Best-effort: `state.json` is already durable, and a
+/// document that fails to write is caught on load by its meta.
+fn save_doc_beside(durable: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
+    durable.commit_room_change();
+    durable.seed_doc_from_cache();
+    let doc = durable.doc.save();
+    if doc.len() > MAX_STATE_DOC_BYTES {
+        tracing::warn!(
+            bytes = doc.len(),
+            "tree document exceeds its size cap; its history is not saved"
+        );
+        return;
+    }
+    let meta = StateDocMeta {
+        actor: durable.doc.get_actor().to_hex_string(),
+        state_json: state_json_digest(state_json),
+    };
+    let Ok(meta) = serde_json::to_vec(&meta) else {
+        return;
+    };
+    // Document before meta: a meta naming this `state.json` must never sit
+    // beside an older document.
+    let written =
+        atomic_file::replace(&state_doc_path(path), &doc, atomic_file::Privacy::OwnerOnly)
+            .and_then(|()| {
+                atomic_file::replace(
+                    &state_doc_meta_path(path),
+                    &meta,
+                    atomic_file::Privacy::OwnerOnly,
+                )
+            });
+    if let Err(error) = written {
+        tracing::warn!(path = %path.display(), %error, "could not save the tree document");
+    }
+}
+
+/// [`save_doc_beside`] for a publication that encoded `tree` itself.
+pub(crate) fn save_doc_for(tree: &WorkspaceTree, path: &Path, state_json: &[u8]) {
+    match durable_tree(tree) {
+        Ok(mut durable) => save_doc_beside(&mut durable, path, state_json),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not save the tree document");
+        }
+    }
+}
+
+enum SavedDoc {
+    Absent,
+    /// Written with the `state.json` being loaded.
+    Current(AutoCommit),
+    /// Written with an earlier `state.json`.
+    Stale(AutoCommit),
+}
+
+fn read_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((cap as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > cap {
+        return Err(std::io::Error::other("tree document exceeds its size cap"));
+    }
+    Ok(bytes)
+}
+
+/// Keep a document that cannot be opened for recovery, out of the way of
+/// the next save.
+fn set_aside_unreadable_doc(doc_path: &Path, error: &dyn std::fmt::Display) {
+    let mut aside = doc_path.as_os_str().to_os_string();
+    aside.push(".unreadable");
+    tracing::error!(
+        path = %doc_path.display(),
+        %error,
+        "tree document cannot be opened; history restarts from state.json"
+    );
+    if let Err(e) = std::fs::rename(doc_path, &aside) {
+        tracing::warn!(path = %doc_path.display(), error = %e, "could not set the unreadable tree document aside");
+    }
+}
+
+fn load_saved_doc(path: &Path, state_json: &[u8]) -> SavedDoc {
+    let doc_path = state_doc_path(path);
+    let bytes = match read_capped(&doc_path, MAX_STATE_DOC_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return SavedDoc::Absent,
+        Err(error) => {
+            set_aside_unreadable_doc(&doc_path, &error);
+            return SavedDoc::Absent;
+        }
+    };
+    let mut doc = match AutoCommit::load(&bytes) {
+        Ok(doc) => doc,
+        Err(error) => {
+            set_aside_unreadable_doc(&doc_path, &error);
+            return SavedDoc::Absent;
+        }
+    };
+    let meta = std::fs::read(state_doc_meta_path(path))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<StateDocMeta>(&bytes).ok());
+    if let Some(actor) = meta
+        .as_ref()
+        .and_then(|meta| hex::decode(&meta.actor).ok())
+        .filter(|actor| !actor.is_empty())
+    {
+        doc.set_actor(automerge::ActorId::from(actor));
+    }
+    if meta.is_some_and(|meta| meta.state_json == state_json_digest(state_json)) {
+        SavedDoc::Current(doc)
+    } else {
+        SavedDoc::Stale(doc)
+    }
+}
+
+/// Adopt the document saved beside `state.json`. A current one is
+/// authoritative: the cache is rebuilt from it. A stale one — left when only
+/// `state.json` was written, by an interrupted save or an older build —
+/// keeps its history but not its content; the seed after load splices
+/// `state.json`'s newer state into it. With no document, that seed starts
+/// the history from `state.json` as one change.
+fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
+    match load_saved_doc(path, state_json) {
+        SavedDoc::Current(doc) => {
+            tree.doc = doc;
+            tree.resync_cache_from_doc();
+        }
+        SavedDoc::Stale(doc) => {
+            tracing::info!(
+                path = %path.display(),
+                "tree document predates state.json; keeping its history and applying state.json"
+            );
+            tree.doc = doc;
+        }
+        SavedDoc::Absent => {}
+    }
 }
 
 /// # Errors
@@ -222,6 +411,10 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
         // Make the migration one-shot and crash-safe. A second restart reads
         // the already-empty replacement rather than making the decision again.
         save_tree_to(&tree, path)?;
+    } else {
+        // Before the repairs below, so they apply to what the document
+        // restores too, and the seed after them records their outcome.
+        attach_saved_doc(&mut tree, path, s.as_bytes());
     }
     // Repair state written by older builds which serialised process-local
     // Wayland surface ids.  This must happen before seeding the room document,
@@ -237,8 +430,10 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // see the retryable state.
     clear_transient_launch_notes(&mut tree);
     tree.prune_local_app_records();
-    // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
-    // nothing and existing workspaces never propagate after restart.
+    // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: for
+    // a current document it writes only what the repairs changed; for a
+    // stale one, what `state.json` has that it lacks; with no document it
+    // is the one-time migration that starts the history.
     tree.seed_doc_from_cache();
     // The `next_id` counter restarts at 1; without seeding, the next
     // allocation collides with a persisted id.
@@ -1246,31 +1441,52 @@ mod tests {
             );
         }
 
-        /// A JSON-only load leaves the automerge doc empty; `load_or_default`
-        /// must seed it from the cache so `current_heads()` reports real history.
-        fn load_or_default_seeds_doc_from_cache() {
+        /// The one-time migration: a `state.json` written before the tree
+        /// document was saved beside it has no history to restore, so
+        /// `load_or_default` starts one from it — a single change holding the
+        /// whole desktop, so peer-sync exports the persisted workspaces
+        /// (C-2 regression).
+        fn a_state_file_without_a_document_starts_its_history_from_it() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
 
-            let original = WorkspaceTree::bootstrap_demo();
+            let mut original = WorkspaceTree::bootstrap_default();
+            original.desktop.workspaces[0].name = "Migrated".into();
             save_tree_to(&original, &path).expect("save");
             // Simulate the writing process exiting and releasing its state-file
-            // writer; the load below may migrate and rewrite the file.
+            // writer.
             drop(original);
+            // What an older build leaves: `state.json` alone.
+            std::fs::remove_file(state_doc_path(&path))
+                .expect("the writer saves the document beside state.json");
+            std::fs::remove_file(state_doc_meta_path(&path)).expect("and the meta that pairs them");
 
             let (mut loaded, notice) = load_or_default(&path);
             assert!(
                 notice.is_none(),
                 "a file this build just wrote must load without a notice"
             );
-            assert!(
-                !loaded.desktop.workspaces.is_empty(),
-                "bootstrap tree must round-trip workspaces"
+            assert_eq!(loaded.desktop.workspaces[0].name, "Migrated");
+            assert_eq!(
+                loaded.doc.get_changes(&[]).len(),
+                1,
+                "with no document to restore, the history starts as one change"
             );
-            assert!(
-                !loaded.current_heads().is_empty(),
-                "load_or_default must seed the automerge doc so peer-sync \
-                 exports the persisted workspaces (C-2 regression)"
+            let mut from_doc = tilo_desktop_model::DesktopTree::default();
+            tilo_desktop_model::desktop_doc::rebuild(&loaded.doc, &mut from_doc);
+            assert_eq!(
+                from_doc
+                    .workspaces
+                    .iter()
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .collect::<Vec<_>>(),
+                loaded
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .collect::<Vec<_>>(),
+                "the migrated document describes the loaded desktop"
             );
         }
 
@@ -1363,8 +1579,125 @@ mod tests {
         }
 
         a_persisted_roster_does_not_come_back_as_presence();
-        load_or_default_seeds_doc_from_cache();
+        a_state_file_without_a_document_starts_its_history_from_it();
         a_pre_rooms_state_file_gains_one_room_and_keeps_it();
+    }
+
+    /// What the Activity pane shows for `tree`: rows as (id, author, summary),
+    /// contributors, named ranges, and the workspace names at each Replay
+    /// checkpoint.
+    type ActivitySnapshot = (
+        Vec<(ui::widget::HistoryEntryId, String, String)>,
+        Vec<String>,
+        Vec<String>,
+        Vec<Vec<String>>,
+    );
+
+    fn activity_of(tree: &mut WorkspaceTree) -> ActivitySnapshot {
+        let mut pane = tilo_desktop::activity::RoomActivityPane::new();
+        pane.set_host(std::rc::Rc::new(
+            crate::shell::room_activity::NativeActivityHost::default(),
+        ));
+        pane.set_scope(
+            crate::shell::room_activity::RoomScope::AllWorkspaces,
+            &*tree,
+        );
+        pane.refresh(tree);
+        assert_eq!(
+            pane.replay_unavailable_checkpoints(),
+            0,
+            "every Replay checkpoint must resolve in the document"
+        );
+        (
+            pane.entries()
+                .iter()
+                .map(|entry| (entry.id, entry.author.name.clone(), entry.summary.clone()))
+                .collect(),
+            pane.contributors().to_vec(),
+            pane.timeline()
+                .named_ranges()
+                .iter()
+                .map(|range| range.label.clone())
+                .collect(),
+            pane.replay_checkpoint_names(),
+        )
+    }
+
+    /// Activity and Replay read the tree document's history. Restarting
+    /// used to rebuild that document from `state.json` as one fresh change,
+    /// so every row, author, name and checkpoint was gone.
+    #[test]
+    fn activity_and_replay_survive_a_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+
+        // Local edits: a rename and a second workspace.
+        tree.desktop.workspaces[0].name = "Launch".into();
+        tree.seed_doc_from_cache();
+        tree.desktop
+            .workspaces
+            .push(crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(0x7e57_0001),
+                "Research",
+            ));
+        tree.seed_doc_from_cache();
+        // A peer's edit, under the peer's own actor.
+        let base = tree.current_heads();
+        let mut peer = tree.doc.fork();
+        peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+        let mut peer_desktop = tree.desktop.clone();
+        peer_desktop.workspaces[1].name = "Ada's research".into();
+        tilo_desktop_model::desktop_doc::seed(&mut peer, &peer_desktop);
+        tilo_resource::history::commit_stamped(&mut peer);
+        let changes: Vec<Vec<u8>> = peer
+            .get_changes(&base)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        tree.apply_changes(&changes)
+            .expect("the peer's change applies");
+        // A named range over the first two rows.
+        let (rows, ..) = activity_of(&mut tree);
+        assert!(rows.len() >= 3, "the fixture must have history: {rows:?}");
+        ui::history_groups::name_range(&mut tree.doc, &rows[0].0, Some(&rows[1].0), "Launch prep");
+        tree.commit_room_change();
+
+        let before = activity_of(&mut tree);
+        let heads = tree.current_heads();
+        let actor = tree.doc.get_actor().clone();
+        assert!(
+            before
+                .0
+                .iter()
+                .any(|(_, author, _)| author.to_lowercase().contains("ada")),
+            "the peer's row must be attributed to the peer: {:?}",
+            before.0
+        );
+        assert_eq!(before.2, vec!["Launch prep".to_string()]);
+        assert!(
+            before
+                .3
+                .contains(&vec!["Launch".to_string(), "Ada's research".to_string()]),
+            "Replay must have a checkpoint showing the current desktop: {:?}",
+            before.3
+        );
+
+        save_tree_to(&tree, &path).expect("save");
+        drop(tree);
+        let mut restarted = load_tree_from(&path).expect("restart");
+
+        assert_eq!(
+            restarted.current_heads(),
+            heads,
+            "a restart neither loses history nor writes any of its own"
+        );
+        assert_eq!(
+            restarted.doc.get_actor(),
+            &actor,
+            "local edits after a restart continue this device's history"
+        );
+        assert_eq!(activity_of(&mut restarted), before);
     }
 
     #[test]
