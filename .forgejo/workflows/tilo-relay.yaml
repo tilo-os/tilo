@@ -332,6 +332,10 @@ jobs:
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
+          # Pull requests and main builds keep their layers and the compile
+          # step's target/ cache mount on the runner slot, each trust class in
+          # its own builder; publications start from a fresh one.
+          persistent: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
       - name: Verify the frozen RPM package set
         env:
