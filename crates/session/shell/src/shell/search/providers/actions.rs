@@ -210,6 +210,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        BLUETOOTH_PAIRING_DECLINE_ID => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         _ => {}
     }
     contract
@@ -1213,6 +1217,12 @@ impl Action {
             |_, _| settle_display_change(false),
         ),
         chrome(
+            BLUETOOTH_PAIRING_DECLINE_ID,
+            "search-action-bluetooth-pairing-decline",
+            "search-action-bluetooth-pairing-decline-subtitle",
+            |_, _| decline_bluetooth_pairing(),
+        ),
+        chrome(
             "capture.open",
             "search-action-capture-open",
             "search-action-capture-open-subtitle",
@@ -1905,6 +1915,24 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
+
+/// Decline the Bluetooth pairing question on screen, or stop the pairing
+/// whose code it displays.
+///
+/// There is deliberately no accepting counterpart. Confirming a pairing
+/// means comparing a code with the device in front of you, or typing the one
+/// it shows; only the person at this machine can do that, on the dialog
+/// itself. An agent or a script can always say no, and never yes.
+fn decline_bluetooth_pairing() -> Result<(), ActionError> {
+    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(
+            "no Bluetooth pairing is waiting".into(),
+        ))
+    }
+}
 
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the

@@ -1192,6 +1192,9 @@ bluetooth-prompt-cancel = Cancel
 bluetooth-prompt-accept-match = They match
 bluetooth-prompt-accept-allow = Allow
 bluetooth-prompt-accept-pair = Pair
+bluetooth-prompt-code-label = Code shown on the device
+bluetooth-prompt-pin-label = PIN for the device
+bluetooth-prompt-a11y-code = Code { $code }
 
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
@@ -1474,6 +1477,8 @@ search-action-display-change-keep = Keep display settings
 search-action-display-change-keep-subtitle = Confirm the display layout that was just applied
 search-action-display-change-revert = Revert display settings
 search-action-display-change-revert-subtitle = Restore the display layout from before the last change
+search-action-bluetooth-pairing-decline = Decline Bluetooth pairing
+search-action-bluetooth-pairing-decline-subtitle = Refuse the pairing request on screen, or stop the pairing whose code it shows
 search-action-capture-open = Capture or float part of the screen
 search-action-capture-open-subtitle = Screenshot, record, or make PiP from one or more regions
 search-action-collaborators-open = Show collaborators
