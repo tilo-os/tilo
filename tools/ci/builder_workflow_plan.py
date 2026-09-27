@@ -15,7 +15,6 @@ REBUILD_PATHS = {
     "os/dev/install-cached-cosign.sh",
     "os/dev/install-aws-cli.sh",
     "os/dev/promote-native-index.py",
-    "os/dev/replicate-builder-index.py",
     "rust-toolchain.toml",
     "tools/ci/check-build-env.sh",
     "tools/ci/install-pdfium.sh",

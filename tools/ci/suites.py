@@ -251,7 +251,10 @@ def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, R
 
 
 def command(suite: str) -> list[str]:
-    return ["python3", suite] if suite.endswith(".py") else ["bash", suite]
+    # Every suite runs without the desktop session of whoever runs it, as the
+    # Rust tests do (tools/cargo-runner.sh).
+    run = ["python3", suite] if suite.endswith(".py") else ["bash", suite]
+    return ["bash", str(ROOT / "tools/with-test-environment.sh"), *run]
 
 
 def run(root: Path, suites: list[str], jobs: int) -> int:

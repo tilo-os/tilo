@@ -84,6 +84,21 @@ pub const LEFT_HANDED_KEY: &str = "input.left_handed";
 pub const ACCEL_PROFILE_KEY: &str = "input.accel_profile";
 pub const GESTURES_KEY: &str = "input.touchpad_gestures";
 pub const COMPOSE_KEY: &str = "input.compose_key";
+pub const CAPS_LOCK_KEY: &str = "input.caps_lock";
+/// The Caps Lock choices, as shown and as stored in `input.caps_lock`.
+pub const CAPS_LOCK_CHOICES: [(&str, Option<&str>); 4] = [
+    ("Caps Lock", None),
+    ("Control", Some("ctrl")),
+    ("Escape", Some("escape")),
+    ("Backspace", Some("backspace")),
+];
+
+fn caps_lock_label(stored: Option<&str>) -> &'static str {
+    CAPS_LOCK_CHOICES
+        .iter()
+        .find(|(_, value)| *value == stored)
+        .map_or("Caps Lock", |(label, _)| label)
+}
 pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
@@ -517,7 +532,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 caption(
-                    "Changes apply to this user session through the compositor. With multiple layouts, Alt+Shift switches temporarily; Super+Space remains global search.",
+                    "Changes apply to this user session through the compositor. With multiple sources, Super+Alt+Space switches to the next one and remembers it.",
                 ),
                 choice_row(
                     "Compose key",
@@ -552,6 +567,23 @@ impl MouseKeyboardPane {
                                 _ => "Disabled",
                             },
                         ),
+                    ),
+                ),
+                choice_row(
+                    "Caps Lock key",
+                    Box::new(
+                        Dropdown::from_state(
+                            CAPS_LOCK_CHOICES
+                                .iter()
+                                .map(|(label, _)| (*label).to_string())
+                                .collect(),
+                            &ui::LocalState::new(
+                                caps_lock_label(self.last.caps_lock.as_deref()).to_string(),
+                            ),
+                        )
+                        .on_action(text_action("caps-lock"))
+                        .with_id("input.caps_lock")
+                        .with_placeholder(caps_lock_label(self.initial.caps_lock.as_deref())),
                     ),
                 ),
             ]),
@@ -801,6 +833,11 @@ impl MouseKeyboardPane {
             let _ = state.put(root, COMPOSE_KEY, compose);
             let _ = state.put(
                 root,
+                CAPS_LOCK_KEY,
+                caps_lock_label(self.initial.caps_lock.as_deref()),
+            );
+            let _ = state.put(
+                root,
                 TOUCHPAD_NATURAL_SCROLL_KEY,
                 automerge::ScalarValue::Boolean(
                     self.initial
@@ -968,6 +1005,16 @@ impl MouseKeyboardPane {
                 let owned = self.last.compose_key.clone();
                 Self::persist_input(|i| i.compose_key = owned);
             }
+        }
+        if let Some(label) = read_str_or_text(state, root, CAPS_LOCK_KEY)
+            && let Some((_, stored)) = CAPS_LOCK_CHOICES
+                .iter()
+                .find(|(choice, _)| *choice == label)
+            && *stored != self.last.caps_lock.as_deref()
+        {
+            self.last.caps_lock = stored.map(str::to_string);
+            let owned = self.last.caps_lock.clone();
+            Self::persist_input(|i| i.caps_lock = owned);
         }
         // Active source is durable preference only. The session compositor's
         // file watch compiles and applies it without a privileged helper.

@@ -3276,7 +3276,11 @@ impl ProtocolHandler for RogueNamespaceServer {
         )
         .await
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let request = read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
+        let request = SYNC_FRAMING
+            .read_async(&mut recv)
+            .await
+            .and_then(|frame| frame.ok_or(FrameError::Closed))
+            .map_err(AcceptError::from_err)?;
         let request: NamespaceRequestV1 = postcard::from_bytes(&request).unwrap();
         if request.mode == NamespaceModeV1::Sync {
             // The requester's first round.
@@ -3599,4 +3603,39 @@ async fn a_read_only_pull_merges_only_a_members_document_of_this_workspace() {
     assert!(has("hosts-later"));
     assert!(!has("other-workspace-secret"));
     other_router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_frames_are_little_endian_length_then_raw_message() {
+    let mut wire = Vec::new();
+    SYNC_FRAMING.write_async(&mut wire, b"ab").await.unwrap();
+    SYNC_FRAMING.write_async(&mut wire, &[]).await.unwrap();
+    assert_eq!(wire, [2, 0, 0, 0, b'a', b'b', 0, 0, 0, 0]);
+
+    let mut reader = &[1, 0, 0, 0, 9, 0, 0, 0, 0][..];
+    assert_eq!(
+        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
+        Some(vec![9])
+    );
+    // An empty message means that side has nothing to send this round.
+    assert_eq!(
+        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
+        Some(Vec::new())
+    );
+    assert_eq!(SYNC_FRAMING.read_async(&mut reader).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn sync_frames_over_sixty_four_mebibytes_or_truncated_are_refused() {
+    let oversized = (64_u32 * 1024 * 1024 + 1).to_le_bytes();
+    assert!(matches!(
+        SYNC_FRAMING.read_async(&mut &oversized[..]).await,
+        Err(FrameError::TooLarge(_))
+    ));
+    for wire in [&[2, 0][..], &[2, 0, 0, 0, 1][..]] {
+        assert!(matches!(
+            SYNC_FRAMING.read_async(&mut &wire[..]).await,
+            Err(FrameError::Truncated)
+        ));
+    }
 }
