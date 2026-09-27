@@ -1,3 +1,7 @@
+use super::workspace::{
+    DESKTOP_WORKSPACE, INVOCATION_JOURNAL, ProfileWorkspace, STANDALONE_WORKSPACE, bootstrap,
+    read_tree,
+};
 use super::*;
 use crate::mcp::McpServer;
 use serde_json::json;
@@ -5,6 +9,11 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
+use tilo_action_broker::services::{
+    AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
+};
+use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
+use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -108,6 +117,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let deadline = tilo_test_env::hang_deadline();
     let roots = loop {
         let roots = session
+            .broker
             .app_action_broker()
             .unwrap()
             .state()
