@@ -1343,11 +1343,6 @@ mod publication_tests {
 #[cfg(all(test, unix))]
 mod durability_runtime_tests {
     use super::*;
-    /// Hang bound for each step the runtime answers, never a speed limit:
-    /// on a loaded runner starting the daemon or joining the relay alone can
-    /// take many seconds, and the step still has to happen for the test to
-    /// mean anything.
-    const HANG: Duration = Duration::from_secs(120);
     #[test]
     fn durability_receive_owner_failure_stops_actual_runtime_after_rejected_input_survives() {
         let runtime = tokio::runtime::Builder::new_current_thread()
