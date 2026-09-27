@@ -57,7 +57,7 @@ case "$mode" in
           export RUSTC_WRAPPER="$path"
           export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
         fi
-        echo "remote compiler cache enabled: $($path --version)"
+        echo "remote compiler cache enabled: $($path --version) backend=${SCCACHE_ENDPOINT:-local}"
       else
         # A present client is not a usable cache when its backend is down.
         # Clearing the wrapper makes cache outages a performance degradation,

@@ -1019,10 +1019,8 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Every CI job gets the same S3 compiler cache and a bucket-scoped
-      # credential from the workflow env, so the image build uses exactly
-      # that. A missing cache fails here instead of compiling uncached for
-      # hours.
+      # Prefer the runner's compiler cache. When that set is incomplete, use
+      # this repository's cache secret. A missing cache compiles without it.
       #
       # A publication never uses it. That credential can write every object
       # in the bucket, and every CI job and agent sandbox holds it, so any of
@@ -1039,6 +1037,8 @@ jobs:
           # clusters/burst-eks-us-west-2/tilo-publication-cache.tf).
           PUBLICATION_CACHE_ROLE_ARN: ${{ vars.TILO_PUBLICATION_CACHE_ROLE_ARN }}
           PUBLICATION_CACHE_BUCKET: ${{ vars.TILO_PUBLICATION_CACHE_BUCKET }}
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           if [[ $PUBLISH == true && -n ${PUBLICATION_CACHE_ROLE_ARN:-} ]]; then
@@ -1092,6 +1092,8 @@ jobs:
             echo '::notice::publication: compiling without the shared compiler cache'
             exit 0
           fi
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then

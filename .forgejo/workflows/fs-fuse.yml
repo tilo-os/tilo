@@ -187,6 +187,8 @@ env:
   TILO_FS_FUSE_REQUIRED: "1"
   TILO_REQUIRE_FUSE: "1"
 
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -262,7 +264,10 @@ jobs:
         run: bash scripts/ci-fuse-preflight.sh
 
       - name: Enable shared compiler cache
-        run: bash tools/ci/sccache.sh prepare
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/tilo-session-lifecycle.sh
@@ -394,7 +399,10 @@ jobs:
           persist-credentials: false
 
       - name: Enable shared compiler cache
-        run: bash tools/ci/sccache.sh prepare
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
 
       # Nextcloud installs itself before it listens; curl's retry bounds it.
       - name: Wait for the servers to serve
@@ -436,7 +444,10 @@ jobs:
           persist-credentials: false
 
       - name: Enable shared compiler cache
-        run: bash tools/ci/sccache.sh prepare
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
 
       - name: Run the conformance suite against live accounts
         run: >-
@@ -506,7 +517,10 @@ jobs:
           uname -r
 
       - name: Enable shared compiler cache
-        run: bash tools/ci/sccache.sh prepare
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
 
       - name: Run the native data plane acceptance suites
         env:
@@ -538,7 +552,10 @@ jobs:
           persist-credentials: false
 
       - name: Enable shared compiler cache
-        run: bash tools/ci/sccache.sh prepare
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
 
       - name: Enforce Files collaboration UX in a fresh overlay
         run: >-

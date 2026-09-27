@@ -11,6 +11,10 @@ concurrency:
   group: nightly
   cancel-in-progress: false
 
+env:
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   # Formatting has its own job. As a step ahead of the tests, one unformatted
   # file stopped every test, check and certification from running, so a
