@@ -114,29 +114,16 @@ fn attr(tag: &str, key: &str) -> Option<String> {
                 let body = rest.get(1..)?;
                 if let Some(end) = body.find(quote) {
                     let matched = body.get(..end)?;
-                    return Some(unescape(matched));
+                    return Some(
+                        quick_xml::escape::unescape(matched)
+                            .map_or_else(|_| matched.to_owned(), std::borrow::Cow::into_owned),
+                    );
                 }
             }
         }
         search = pos + key.len();
     }
     None
-}
-
-fn unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Serialise the store's subscriptions to OPML 2.0, grouping feeds under
@@ -150,7 +137,7 @@ pub fn export(store: &Store) -> String {
 
     // Folders first, each with its feeds nested.
     for folder in store.folders_sorted() {
-        let name = escape(&folder.name);
+        let name = quick_xml::escape::escape(&folder.name);
         let _ = writeln!(out, "    <outline text=\"{name}\" title=\"{name}\">");
         for feed in store.feeds_in_folder(Some(folder.id)) {
             out.push_str(&feed_outline(feed, 6));
@@ -174,9 +161,9 @@ fn feed_outline(feed: &Feed, indent: usize) -> String {
     };
     format!(
         "{pad}<outline type=\"{kind}\" text=\"{0}\" title=\"{0}\" xmlUrl=\"{1}\" htmlUrl=\"{2}\"/>\n",
-        escape(&feed.title),
-        escape(&feed.url),
-        escape(&feed.site_url),
+        quick_xml::escape::escape(&feed.title),
+        quick_xml::escape::escape(&feed.url),
+        quick_xml::escape::escape(&feed.site_url),
     )
 }
 

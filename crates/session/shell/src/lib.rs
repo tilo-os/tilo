@@ -18,13 +18,13 @@ pub mod bluetooth_prompt;
 pub mod collab;
 pub mod compositor;
 pub mod config;
-pub mod device_fleet;
+pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
 pub mod runtime_host;
 
-pub mod identity_registry;
+pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
 pub mod network_secrets;
 pub mod notifications;
