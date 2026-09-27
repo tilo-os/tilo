@@ -393,6 +393,22 @@ pub enum BackendEvent {
     /// An accessibility filter rejected input (a bounce-keys press) and the
     /// user asked to see it: flash the shell's visual alert.
     VisualAlert,
+    /// A physical input device appeared, with the capabilities it really
+    /// has. `id` is stable for the device's lifetime and names it again in
+    /// [`Self::InputDeviceRemoved`].
+    InputDeviceAdded {
+        id: String,
+        capabilities: ui::InputAvailability,
+    },
+    /// The device announced under `id` went away.
+    InputDeviceRemoved {
+        id: String,
+    },
+    /// The class of physical input changed: the person typed, moved a
+    /// pointer, touched the screen or used a controller after using
+    /// something else. Reported by the source of the event, so emulated
+    /// pointer input from a tap still counts as touch.
+    InputUsed(ui::InputModality),
     Redraw,
     Focus(bool),
 }

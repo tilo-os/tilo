@@ -89,6 +89,8 @@ struct Published {
     tag: String,
     disk: disk::Disk,
     dest: PathBuf,
+    direct_boot: Option<disk::DirectBoot>,
+    source_revision: Option<String>,
     auth: disk::AuthHeader,
 }
 
@@ -120,18 +122,23 @@ impl Plan {
                     ));
                 }
             }
-            (None, Some(p)) => lines.push(format!(
-                "  image: published dev disk {} ({} {}, {}{})",
-                p.tag,
-                p.disk.arch,
-                p.disk.format,
-                human_bytes(p.disk.size),
-                if disk::cached(&p.dest, &p.disk) {
-                    ", already downloaded"
-                } else {
-                    ", to download"
+            (None, Some(p)) => {
+                lines.push(format!(
+                    "  image: published dev disk {} ({} {}, {}{})",
+                    p.tag,
+                    p.disk.arch,
+                    p.disk.format,
+                    human_bytes(p.disk.size),
+                    if disk::cached(&p.dest, &p.disk) {
+                        ", already downloaded"
+                    } else {
+                        ", to download"
+                    }
+                ));
+                if p.direct_boot.is_some() {
+                    lines.push("  boot: verified CI direct kernel bundle (WHPX)".into());
                 }
-            )),
+            }
             (None, None) => lines.push("  image: the UTM template".into()),
         }
         if let Some(disk) = &self.disk_path {
@@ -1263,6 +1270,10 @@ impl App {
     /// Everything `vm create` needs, checked before anything is downloaded
     /// or created: the hypervisor and its tools, a local `--image`, the
     /// published disk for the tag, the VM disk path, and free space.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one preflight sequence for all VM creation inputs"
+    )]
     fn preflight_create(
         &mut self,
         facts: &HostFacts,
@@ -1305,7 +1316,12 @@ impl App {
             args.boot_esp.as_deref(),
         )?;
         let published = if image.is_none() && args.template.is_none() {
-            Some(self.resolve_published(args.tag.as_deref(), arch, format)?)
+            Some(self.resolve_published(
+                args.tag.as_deref(),
+                arch,
+                format,
+                choice.adapter == "whpx" && args.direct_boot_bundle.is_none(),
+            )?)
         } else {
             None
         };
@@ -1380,6 +1396,12 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64".into(),
             });
         }
+        if args.direct_boot_bundle.is_some() && args.image.is_none() {
+            return Err(CliError::Unsupported {
+                what: "--direct-boot-bundle with a published disk".into(),
+                alternative: "omit --direct-boot-bundle: vm create downloads and verifies the matching CI bundle automatically; use --image for a local disk".into(),
+            });
+        }
         Ok(())
     }
 
@@ -1414,7 +1436,7 @@ impl App {
         }
         let facts = HostFacts::probe(&mut self.runner);
         let plan = self.preflight_create(&facts, &args, &arch)?;
-        let direct_kernel = args
+        let mut direct_kernel = args
             .direct_boot_bundle
             .as_deref()
             .map(|path| read_direct_boot_bundle(Path::new(path)))
@@ -1448,6 +1470,29 @@ impl App {
             self.receipt.phase("download", || {
                 disk::fetch(runner, &published.disk, &published.dest, &published.auth)
             })?;
+            if let Some(bundle) = &published.direct_boot {
+                let path = self.receipt.phase("direct-boot", || {
+                    disk::fetch_direct_boot(
+                        &mut self.runner,
+                        published.dest.parent().unwrap_or_else(|| Path::new(".")),
+                        bundle,
+                        &published.auth,
+                    )
+                })?;
+                direct_kernel = Some(read_published_direct_boot(
+                    &path,
+                    &published.tag,
+                    &bundle.arch,
+                )?);
+                self.receipt.set(
+                    "direct-boot",
+                    json!({
+                        "tag": published.tag,
+                        "source_revision": published.source_revision,
+                        "manifest": path,
+                    }),
+                );
+            }
             self.receipt.set(
                 "disk",
                 json!({ "tag": published.tag, "file": published.disk.file, "sha256": published.disk.sha256 }),
@@ -1564,6 +1609,7 @@ impl App {
         tag: Option<&str>,
         arch: &str,
         format: &str,
+        auto_direct_boot: bool,
     ) -> Result<Published, CliError> {
         let token = disk::find_token();
         let auth = disk::AuthHeader::new(token.as_ref())?;
@@ -1633,10 +1679,17 @@ impl App {
                         local_build: local_build.clone(),
                     })?;
             let dest = disk::cache_path(tag, &chosen.file);
+            let direct_boot = if auto_direct_boot {
+                Some(manifest.direct_boot_for(tag, arch, &chosen)?)
+            } else {
+                None
+            };
             return Ok(Published {
                 tag: tag.clone(),
                 disk: chosen,
                 dest,
+                direct_boot,
+                source_revision: manifest.source_revision,
                 auth,
             });
         }
@@ -4383,6 +4436,26 @@ fn read_direct_boot_bundle(path: &Path) -> Result<DirectKernel, CliError> {
     Ok(direct)
 }
 
+fn read_published_direct_boot(
+    path: &Path,
+    tag: &str,
+    arch: &str,
+) -> Result<DirectKernel, CliError> {
+    let direct = read_direct_boot_bundle(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let expected_kernel = parent.join(format!("tilo-vm-{tag}-{arch}-direct-Image"));
+    let expected_initrd = parent.join(format!("tilo-vm-{tag}-{arch}-direct-initrd"));
+    if direct.kernel != expected_kernel.display().to_string()
+        || direct.initrd != expected_initrd.display().to_string()
+    {
+        return Err(CliError::Config {
+            path: path.display().to_string(),
+            detail: "kernel and initrd do not name the verified disk companions".into(),
+        });
+    }
+    Ok(direct)
+}
+
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
@@ -4938,6 +5011,39 @@ mod tests {
             .unwrap();
             assert!(read_direct_boot_bundle(&bundle).is_err());
         }
+    }
+
+    #[test]
+    fn published_boot_json_cannot_redirect_to_an_unverified_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = "main-1234567";
+        let arch = "aarch64";
+        let kernel = format!("tilo-vm-{tag}-{arch}-direct-Image");
+        let initrd = format!("tilo-vm-{tag}-{arch}-direct-initrd");
+        std::fs::write(dir.path().join(&kernel), b"kernel").unwrap();
+        std::fs::write(dir.path().join(&initrd), b"initrd").unwrap();
+        std::fs::write(dir.path().join("other-Image"), b"other").unwrap();
+        let path = dir
+            .path()
+            .join(format!("tilo-vm-{tag}-{arch}-direct-boot.json"));
+        let json = |name: &str| {
+            serde_json::json!({
+                "kernel": name,
+                "initrd": initrd,
+                "cmdline": "root=tilo-auto console=ttyS0",
+                "loader_partuuid": "fcdfc623-0563-4f91-9db8-f2b87b98b3ce",
+            })
+        };
+        std::fs::write(&path, json(&kernel).to_string()).unwrap();
+        assert!(read_published_direct_boot(&path, tag, arch).is_ok());
+        std::fs::write(&path, json("other-Image").to_string()).unwrap();
+        assert!(read_published_direct_boot(&path, tag, arch).is_err());
+
+        let mut args = create_args("dev");
+        args.direct_boot_bundle = Some(path.display().to_string());
+        assert!(App::validate_create_options("whpx", &args).is_err());
+        args.image = Some("local.qcow2".into());
+        assert!(App::validate_create_options("whpx", &args).is_ok());
     }
 
     #[test]
