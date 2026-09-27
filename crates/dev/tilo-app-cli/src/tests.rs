@@ -3987,6 +3987,10 @@ fn shot_and_inspection_plans_are_built_strictly() {
 /// manifest, output is not replaced before building, the payload overlay copies nested files and
 /// rejects symlinks, and profile names are safe Cargo arguments.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+)]
 fn packaging_is_scoped_safe_and_never_clobbers_output() {
     // Phase: package_spec_uses_manifest_entrypoint_and_cargo_package_name.
     {
@@ -4092,7 +4096,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
         create_app(request(destination.clone())).expect("create app");
-        let spec = load_app_package_spec(destination.clone()).expect("spec");
+        let spec = load_app_package_spec(destination).expect("spec");
         assert!(spec.thin_feature);
         let payload = temp.path().join("payload");
         std::fs::create_dir_all(payload.join("bin")).expect("payload");
