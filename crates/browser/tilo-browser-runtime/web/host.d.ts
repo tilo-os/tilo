@@ -2,11 +2,12 @@ import type {DesktopNavigationV1} from "./navigation";
 export type * from "./navigation";
 import type {CertifiedActionsV1,PrivateInvocation} from './peer';
 /**
- * What a mount runs: the id of any application compiled into the build
+ * What a mount runs: the id of any installed application
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …; see `applications()`), the
  * Cloud frontend's aliases `writer` and `chat`, or `desktop` for the canonical
- * desktop, which requires an admitted certified peer. An id the build does not
- * contain rejects the mount with `application "…" is not available`.
+ * desktop, which requires an admitted certified peer. An id neither installed
+ * nor resolvable (see `AppResolver`) rejects the mount with
+ * `application "…" is not available`.
  */
 export type Application = 'writer' | 'chat' | 'desktop' | (string & {});
 export interface ApplicationInfo {
@@ -20,8 +21,27 @@ export interface ApplicationInfo {
    */
   scope: 'ordinary' | 'package-primary';
 }
+/**
+ * An app the core does not contain, as a resolver supplies it (the registry
+ * client's `resolveApp` returns this).
+ */
+export interface ResolvedApp {
+  /** The app's side module: compiled, a Response to stream-compile, or its verified bytes. */
+  module: WebAssembly.Module | Response | Uint8Array | ArrayBuffer;
+  /**
+   * The runtime ABI id it was built for (`tilo-runtime/2026.07+wasm.<id>`).
+   * A module for another ABI is refused with `code: 'TILO_RUNTIME_ABI_MISMATCH'`;
+   * the module's own `tilo.runtime_abi` section is checked either way.
+   */
+  abi?: string;
+  /** The app's static assets: asset name to URL. */
+  assets?: Map<string, string>;
+}
+export type AppResolver = (appId: string, options: {signal?: AbortSignal}) => ResolvedApp | Promise<ResolvedApp>;
 export interface RuntimeStatus {
-  phase?: 'gpu-pending' | 'presented' | 'failed' | 'closed';
+  /** `resolving`/`linking`/`linked` report an app installed from a side module (`app`). */
+  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed';
+  app?: string;
   error?: string;
   persistence?: 'committed' | 'failed';
   frames?: number;
@@ -50,6 +70,11 @@ export interface MountOptions {
   signal?: AbortSignal;
   onStatus?: (status: RuntimeStatus) => void;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
+  /**
+   * Resolves `app` when the core does not contain it; defaults to the one
+   * `setAppResolver` set. Resolution starts alongside the core's download.
+   */
+  resolveApp?: AppResolver;
 }
 /** One published action, as `tilo-control actions list` describes it. */
 export interface ActionDescriptor {
@@ -111,8 +136,20 @@ export interface DesktopMount {
 }
 /** Resolves after the first actual GPU presentation. AbortSignal cancels pending initialization. */
 export function mountDesktop(target: HTMLElement, options?: MountOptions): Promise<DesktopMount>;
-/** Every application this build can mount standalone. */
+/** Every application installed now (compiled in or linked), mountable standalone. */
 export function applications(): Promise<ApplicationInfo[]>;
+/** The resolver mounts use when they pass no `resolveApp`. */
+export function setAppResolver(resolver: AppResolver | undefined): void;
+/**
+ * Resolve and link apps before they are mounted, concurrently with each other
+ * and with the core's download; a session restore passes every app it will
+ * open. Resolves to their full ids. Rejects with an AggregateError whose
+ * `failed` maps each app that could not be installed to its error, and whose
+ * `installed` lists the others.
+ */
+export function preloadApps(appIds: string[], options?: {resolveApp?: AppResolver; signal?: AbortSignal}): Promise<string[]>;
+/** A linked app's static assets (name to URL), undefined for compiled-in apps. */
+export function appAssets(appId: string): Map<string, string> | undefined;
 /** Terminal page-host shutdown. Individual peers must use their own cleanup method. */
 export function shutdown(): Promise<void>;
 
