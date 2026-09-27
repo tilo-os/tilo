@@ -58,7 +58,7 @@ impl SearchProvider for EditorProvider {
     ) -> crate::shell::search::SearchProximity {
         super::text_app::proximity_of(chrome, result)
     }
-    /// An exact title scores the ranker maximum - see [`super::text_app::match_score`].
+    /// A title the query starts scores the maximum.
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE
     }

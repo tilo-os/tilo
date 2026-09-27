@@ -19,9 +19,6 @@ use sha2::{Digest as _, Sha256};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 
-#[cfg(test)]
-use ui::search::SearchTextIndex;
-
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
 use crate::remote_accounts::RemoteAccount;
@@ -88,8 +85,7 @@ pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
 }
 
 /// Join independently searchable fields without allowing a query to match
-/// across a label/path boundary.  `SearchTextIndex` supplies the shared packed
-/// exact Unicode suffix index and hard result budget.
+/// across a label/path boundary.
 fn searchable_fields(fields: impl IntoIterator<Item = String>) -> String {
     fields.into_iter().collect::<Vec<_>>().join("\u{1f}")
 }
@@ -467,9 +463,9 @@ mod tests {
     use super::*;
     use crate::favorites::{FavKind, Favorite};
     use std::path::PathBuf;
+    use ui::search::SearchProvider;
     use ui::search::SearchRegistry;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
-    use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchProvider};
 
     fn places() -> Vec<Favorite> {
         vec![
@@ -726,38 +722,6 @@ mod tests {
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
                 .expect("the lazy action matches the search address");
             assert_eq!(spec.id, REMOTE_ACCOUNT_OPEN_ACTION);
-        }
-
-        // --- phase: suffix_index_finds_mid_token_tail_hits_with_a_fixed_result_budget ---
-        {
-            let texts: Vec<_> = (0..(DEFAULT_SEARCH_CANDIDATE_LIMIT + 80))
-                .map(|index| format!("common-{index}"))
-                .chain(std::iter::once("archive-composite-tail".into()))
-                .collect();
-            let index = SearchTextIndex::new(texts.iter());
-
-            // `site` is neither a prefix nor a complete token. The unique tail
-            // posting proves late corpus members remain searchable.
-            assert_eq!(
-                index.matching_ids("site", DEFAULT_SEARCH_CANDIDATE_LIMIT),
-                vec![texts.len() - 1]
-            );
-            // A deliberately common one-character query still never inspects more
-            // than the hard candidate budget.
-            assert_eq!(
-                index
-                    .matching_ids("m", DEFAULT_SEARCH_CANDIDATE_LIMIT)
-                    .len(),
-                DEFAULT_SEARCH_CANDIDATE_LIMIT
-            );
-            // Exact and partial matches follow the same postings path: `common-1`
-            // must not hide the longer `common-10`/`common-100` entries.
-            assert!(
-                index
-                    .matching_ids("common-1", DEFAULT_SEARCH_CANDIDATE_LIMIT)
-                    .len()
-                    > 1
-            );
         }
     }
 

@@ -20,7 +20,7 @@ use crate::query::{BoxQuery, Matching, Used, plan};
 use crate::tokenizer::{GramTokenizer, WordTokenizer};
 use crate::weight::{FieldWeight, INDEXED_WEIGHTS};
 
-pub(crate) const KEY_FIELD: &str = "key";
+const KEY_FIELD: &str = "key";
 const SEGMENT_FIELD: &str = "segment";
 const GRAMS: &str = "tilo_grams";
 const WORDS: &str = "tilo_words";
@@ -150,18 +150,12 @@ pub struct Page {
     /// Matches to skip.
     pub offset: usize,
     pub limit: usize,
-    /// Only records with a larger key.
-    pub after_key: Option<u64>,
 }
 
 impl Page {
     #[must_use]
     pub const fn first(limit: usize) -> Self {
-        Self {
-            offset: 0,
-            limit,
-            after_key: None,
-        }
+        Self { offset: 0, limit }
     }
 }
 
@@ -502,13 +496,7 @@ impl SearchIndex {
         if page.limit == 0 {
             return Hits::default();
         }
-        let plan = plan(
-            &self.fields,
-            self.used,
-            self.matching,
-            query,
-            page.after_key,
-        );
+        let plan = plan(&self.fields, self.used, self.matching, query);
         let searcher = reader.searcher();
         let wanted = page.offset.saturating_add(page.limit).saturating_add(1);
         let mut walk = Walk {
