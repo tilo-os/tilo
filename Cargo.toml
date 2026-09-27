@@ -413,6 +413,7 @@ data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
+miniz_oxide = "0.8"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 
