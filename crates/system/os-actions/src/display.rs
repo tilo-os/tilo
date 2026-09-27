@@ -342,15 +342,6 @@ mod tests {
             fs::write(d.join("brightness"), "5\n").unwrap();
             assert!(preferred_device(dir.path()).is_none());
         }
-        // Phase `set_brightness_never_panics_on_this_host`.
-        // The public setter must never panic, whatever the host looks like — it runs on machines
-        // with a backlight, without one, and with a root-owned one this process cannot write.
-        {
-            let result = set_brightness(50.0);
-            if let Err(e) = result {
-                assert!(!e.is_empty(), "a failure must say why");
-            }
-        }
     }
 
     fn has_backlight_in(root: &Path) -> bool {

@@ -118,6 +118,8 @@ pub struct OverviewTab {
     pub id: TabId,
     pub title: String,
     pub is_active: bool,
+    /// The application the tab shows, drawn by its mark.
+    pub app: crate::shell::window_switcher::WindowApp,
     /// Present collaborators whose published focus points at this tab.
     /// The local person is deliberately absent: an untouched solo workspace
     /// should look like a desktop, not a collaboration dashboard.
@@ -185,6 +187,23 @@ impl RoomCard {
 
     pub fn group_count(&self) -> usize {
         self.strips.iter().map(|strip| strip.groups.len()).sum()
+    }
+
+    /// The applications open in the room, each once, in tree order: what a
+    /// glance at its row should recognise it by.
+    pub fn apps(&self) -> Vec<&crate::shell::window_switcher::WindowApp> {
+        let mut apps: Vec<&crate::shell::window_switcher::WindowApp> = Vec::new();
+        for tab in self
+            .strips
+            .iter()
+            .flat_map(|strip| strip.groups.iter())
+            .flat_map(|group| group.tabs.iter())
+        {
+            if !apps.iter().any(|app| app.key == tab.app.key) {
+                apps.push(&tab.app);
+            }
+        }
+        apps
     }
 }
 
@@ -330,6 +349,7 @@ fn overview_strips(ws: &Workspace, tree: &WorkspaceTree, local: &str) -> Vec<Ove
                                     tab.title.clone()
                                 },
                                 is_active: tab.id == group.active_tab,
+                                app: crate::shell::window_switcher::WindowApp::of(&tab.tile),
                                 people: people
                                     .iter()
                                     .filter(|person| {
@@ -689,6 +709,12 @@ mod room_tests {
             assert_eq!(group.tabs.len(), 2);
             assert_eq!(group.active_title(), "References");
             assert_eq!(group.width_permille, WindowWidth::Wide.permille());
+            let apps: Vec<_> = card.apps().iter().map(|app| app.kind).collect();
+            assert_eq!(
+                apps,
+                [ui::widget::AppKind::Editor, ui::widget::AppKind::Browser],
+                "the room row names each open app once, in tree order"
+            );
         }
 
         fn collaborator_focus_is_attached_to_the_tab_not_the_workspace_header() {

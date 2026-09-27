@@ -407,6 +407,8 @@ pub struct FrameBuilder {
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
     /// Per-output fullscreen client painted above the unchanged tiled scene.
     fullscreen_overlay: Option<(u64, ForeignSurfaceWidget)>,
+    /// The session is locked: a capture sees nothing of the desktop at all.
+    session_locked: bool,
     /// XDG and input-method transient surfaces.  These are intentionally
     /// outside the workspace tree: they follow parent geometry and paint
     /// above the app that owns them without becoming a window/tab.
@@ -627,6 +629,7 @@ impl FrameBuilder {
             osk_overlay: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
+            session_locked: false,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
@@ -1975,6 +1978,12 @@ impl FrameBuilder {
         complete_semantic_content: bool,
     ) -> (Scene, Vec<Rect>) {
         let mut scene = Scene::new();
+        if self.session_locked {
+            return (scene, Vec::new());
+        }
+        // This paint exists only to be captured, so protected surfaces draw
+        // their placeholder wherever they are, on screen or not.
+        let _capture = crate::shell::capture_protection::CapturePaint::begin();
         let rects = self.host.draw_capture_targets(
             target_ids,
             extent,
@@ -1986,6 +1995,99 @@ impl FrameBuilder {
             &self.presence,
         );
         (scene, rects)
+    }
+
+    /// Every window group a capture can target, focused first — what the
+    /// capture studio offers for App and Strip captures.
+    pub fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
+        self.host.capture_targets()
+    }
+
+    /// Tell captures whether the session is locked. While it is, every
+    /// capture of the desktop is the placeholder, whatever the lock screen or
+    /// a stale desktop scene holds.
+    pub fn set_session_locked(&mut self, locked: bool) {
+        self.session_locked = locked;
+    }
+
+    /// The presented scene as a capture may see it: protected windows and
+    /// the shell's secret prompts replaced by the themed placeholder, or the
+    /// whole desktop while the session is locked. Every path that copies the
+    /// desktop off the local display goes through here; the local display
+    /// keeps `presented` untouched. Borrows `presented` when nothing on
+    /// screen is protected.
+    pub fn capture_scene<'s>(&mut self, presented: &'s Scene) -> std::borrow::Cow<'s, Scene> {
+        let mut placeholders = Scene::new();
+        if self.session_locked {
+            let (width, height) = self.viewport;
+            crate::shell::capture_protection::paint_placeholder(
+                &mut placeholders,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, width, height),
+                0.0,
+                &self.theme,
+            );
+            let mut scene = Scene::new();
+            self.compose_layout_scene(&placeholders, &mut scene);
+            return std::borrow::Cow::Owned(scene);
+        }
+        let windows = self.capture_protected_window_rects();
+        let prompts = self.host.secret_prompt_rects();
+        if windows.is_empty() && prompts.is_empty() {
+            return std::borrow::Cow::Borrowed(presented);
+        }
+        let window_radius = f64::from(self.theme.tokens.radii.xl);
+        for rect in windows {
+            // One pixel past the tile, so the client's antialiased edge is
+            // covered too.
+            crate::shell::capture_protection::paint_placeholder(
+                &mut placeholders,
+                Affine::IDENTITY,
+                rect.inflate(1.0, 1.0),
+                window_radius,
+                &self.theme,
+            );
+        }
+        for rect in prompts {
+            crate::shell::capture_protection::paint_placeholder(
+                &mut placeholders,
+                Affine::IDENTITY,
+                rect,
+                ui::chrome::ChromeRole::Panel.radius(&self.theme, rect.height()),
+                &self.theme,
+            );
+        }
+        let mut scene = presented.clone();
+        self.compose_layout_scene(&placeholders, &mut scene);
+        std::borrow::Cow::Owned(scene)
+    }
+
+    /// Where protected client surfaces are drawn on screen, in logical
+    /// desktop coordinates: visible tiles, app-owned floating and fullscreen
+    /// surfaces, and popups the compositor marked protected.
+    fn capture_protected_window_rects(&mut self) -> Vec<Rect> {
+        let protected_tabs: Vec<u64> = {
+            let chrome = self.chrome.borrow();
+            crate::shell::foreign::foreign_tabs(&chrome.tree())
+                .into_iter()
+                .filter(|tab| {
+                    crate::shell::foreign::store().is_capture_protected(tab.surface_id, &tab.app_id)
+                })
+                .map(|tab| tab.surface_id)
+                .collect()
+        };
+        let mut rects: Vec<Rect> = protected_tabs
+            .into_iter()
+            .filter_map(|surface_id| self.host.foreign_surface_rect(surface_id))
+            .collect();
+        rects.extend(
+            self.floating_overlays
+                .iter()
+                .chain(self.fullscreen_overlay.iter())
+                .chain(self.transient_overlays.iter())
+                .filter_map(|(_, widget)| widget.capture_protected_rect()),
+        );
+        rects
     }
 
     /// Append compositor-owned capture surfaces after the clean desktop
@@ -3335,6 +3437,56 @@ mod tests {
             event,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_input_source_chord_switches_remembers_and_shows_the_layout() {
+        let config = tempfile::tempdir().expect("isolated settings directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let mut values = serde_json::Map::new();
+        values.insert("keyboard_layout".into(), "us".into());
+        values.insert("keyboard_layouts".into(), serde_json::json!(["us", "de"]));
+        settings_store::update_section("input", values).expect("seed two sources");
+
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::ALT);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        let press = key_press(Key::Named(NamedKey::Space));
+        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+
+        assert_eq!(
+            fb.chrome.borrow_mut().take_input_source_request(),
+            Some(1),
+            "the seat and the physical keyboard switch at once"
+        );
+        assert_eq!(
+            settings_store::load_section("input")
+                .get("keyboard_layout")
+                .and_then(serde_json::Value::as_str),
+            Some("de"),
+            "the choice is persisted, so a settings reload keeps it"
+        );
+        let caption = fb.chrome().osd.map(|osd| osd.caption());
+        assert!(
+            matches!(caption.as_deref(), Some("German" | "de")),
+            "the readout names the layout: {caption:?}"
+        );
+        assert!(
+            !fb.host().palette_visible(),
+            "Super+Alt+Space is not the Super+Space search chord"
+        );
+
+        fb.dispatch_event(&press, &chord, &mut doc, &root, &mut focus);
+        assert_eq!(
+            fb.chrome.borrow_mut().take_input_source_request(),
+            Some(0),
+            "the sources wrap around"
+        );
     }
 
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {

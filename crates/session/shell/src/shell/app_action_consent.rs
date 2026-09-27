@@ -58,13 +58,13 @@ impl AppActionConsent {
     pub const ALLOWING: [Self; 3] = [Self::Once, Self::Session, Self::Always];
 
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Once => "Allow once",
-            Self::Session => "Allow for this session",
-            Self::Always => "Always allow in this workspace",
-            Self::Deny => "Deny",
-        }
+    pub fn label(self) -> String {
+        crate::shell::i18n::t(match self {
+            Self::Once => "portal-grant-once",
+            Self::Session => "portal-grant-session",
+            Self::Always => "portal-grant-always",
+            Self::Deny => "portal-grant-deny",
+        })
     }
 
     /// How long the grant this answer records lives; `None` records
@@ -82,14 +82,14 @@ impl AppActionConsent {
 
 /// How a risk level reads on the sheet.
 #[must_use]
-pub const fn risk_label(risk: tilo_actions::RiskLevel) -> &'static str {
-    match risk {
-        tilo_actions::RiskLevel::None => "Only shows information",
-        tilo_actions::RiskLevel::Low => "Low risk: an ordinary, reversible change",
-        tilo_actions::RiskLevel::Destructive => "Destructive: can delete or overwrite",
-        tilo_actions::RiskLevel::Privileged => "Privileged: crosses a security boundary",
-        tilo_actions::RiskLevel::Sensitive => "Sensitive: reads or exports private data",
-    }
+pub fn risk_label(risk: tilo_actions::RiskLevel) -> String {
+    crate::shell::i18n::t(match risk {
+        tilo_actions::RiskLevel::None => "portal-risk-none",
+        tilo_actions::RiskLevel::Low => "portal-risk-low",
+        tilo_actions::RiskLevel::Destructive => "portal-risk-destructive",
+        tilo_actions::RiskLevel::Privileged => "portal-risk-privileged",
+        tilo_actions::RiskLevel::Sensitive => "portal-risk-sensitive",
+    })
 }
 
 /// Whoever can answer for the person using an application.

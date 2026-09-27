@@ -370,6 +370,11 @@ struct ForeignEntry {
     last_error: Option<String>,
     /// The tab's rectangle in the logical desktop, published by `apply_layout`; `None` until laid out.
     placement: Option<Rect>,
+    /// A compositor-imposed rectangle that outranks the tab's own while it
+    /// is set — the presenter view moved onto its own screen. The tab keeps
+    /// publishing into `placement`, so clearing this falls straight back to
+    /// the tab size.
+    pinned: Option<Rect>,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
     /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
@@ -411,6 +416,7 @@ impl ForeignEntry {
             seq: 0,
             last_error: None,
             placement: None,
+            pinned: None,
             configured: None,
             configured_extent: None,
             min_size: (0, 0),
@@ -629,6 +635,21 @@ pub struct ForeignFrameStore {
     imports: AtomicU64,
     #[cfg(target_os = "linux")]
     next_capture: AtomicU64,
+    /// Which surfaces a capture must draw as a placeholder — see
+    /// [`crate::shell::capture_protection`].
+    capture_protection: Mutex<CaptureProtection>,
+}
+
+/// Capture-protection requests, kept beside the frames they withhold.
+#[derive(Default)]
+struct CaptureProtection {
+    /// Authenticated shell-ui connections that asked for their app's windows
+    /// to be protected, with the app id the launcher vouched for. Keyed by
+    /// connection so one instance closing does not expose another's windows.
+    apps: HashMap<u64, String>,
+    /// Surfaces the compositor protects on their own account, such as the
+    /// popups of a protected window.
+    surfaces: std::collections::HashSet<SurfaceId>,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -1314,8 +1335,62 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Record that the app behind authenticated shell-ui `connection` does
+    /// (or no longer does) want its windows withheld from captures. Covers
+    /// windows it maps later too, so a new window is never briefly exposed.
+    pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.apps.insert(connection, app_id.to_string());
+        } else {
+            guard.apps.remove(&connection);
+        }
+    }
+
+    /// The connection closed: its request goes with it.
+    pub fn release_capture_protection(&self, connection: u64) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apps
+            .remove(&connection);
+    }
+
+    /// Protect (or stop protecting) one surface regardless of its app.
+    pub fn set_surface_capture_protected(&self, id: SurfaceId, protected: bool) {
+        let mut guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if protected {
+            guard.surfaces.insert(id);
+        } else {
+            guard.surfaces.remove(&id);
+        }
+    }
+
+    /// Whether a capture must draw surface `id`, owned by `app_id`, as a
+    /// placeholder.
+    pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
+        let guard = self
+            .capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.surfaces.contains(&id)
+            || guard.apps.values().any(|app| app == app_id)
+            || crate::shell::capture_protection::holds_secrets(app_id)
+    }
+
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
+        self.capture_protection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .surfaces
+            .remove(&id);
         let mut guard = self
             .entries
             .lock()
@@ -1590,13 +1665,32 @@ impl ForeignFrameStore {
         });
     }
 
-    /// The tab rectangle last published by [`Self::note_placement`].
+    /// Impose `rect` over the tab's own placement until cleared with `None`:
+    /// the client is configured to it and input and popups resolve against
+    /// it, however the strip lays the tab out meanwhile.
+    pub fn pin_placement(&self, id: SurfaceId, rect: Option<Rect>) {
+        self.with_entry(id, |e| {
+            e.pinned = rect;
+        });
+    }
+
+    /// Whether [`Self::pin_placement`] currently holds this surface.
+    pub fn is_pinned(&self, id: SurfaceId) -> bool {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).is_some_and(|e| e.pinned.is_some())
+    }
+
+    /// Where the surface is: a pinned rectangle, else the tab rectangle last
+    /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
         let guard = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.get(&id).and_then(|e| e.placement)
+        guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
     /// Size of the tab rectangle in physical pixels.
@@ -1627,7 +1721,7 @@ impl ForeignFrameStore {
     )]
     pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
-            let rect = e.placement?;
+            let rect = e.pinned.or(e.placement)?;
             let logical = (
                 rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
                 rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
@@ -1855,12 +1949,23 @@ impl ForeignSurfaceWidget {
         self.surface_id
     }
 
+    /// Where this surface is drawn, when a capture must replace it with the
+    /// placeholder; `None` when it is not protected or not laid out.
+    pub fn capture_protected_rect(&self) -> Option<Rect> {
+        (self.rect.width() > 0.0
+            && self.rect.height() > 0.0
+            && store().is_capture_protected(self.surface_id, &self.app_id))
+        .then_some(self.rect)
+    }
+
     /// Place a compositor-owned floating surface without putting it through
     /// the workspace's Taffy tree. The same placement store still drives the
     /// xdg configure handshake, so the client renders at this exact size.
     pub fn place_floating(&mut self, rect: Rect) {
         self.rect = rect;
-        if rect.width() > 0.0 && rect.height() > 0.0 {
+        // A pinned surface's size is the pin's business; recording the
+        // overlay rect as its tab rect would outlive the pin.
+        if rect.width() > 0.0 && rect.height() > 0.0 && !store().is_pinned(self.surface_id) {
             store().note_placement(self.surface_id, rect);
         }
     }
@@ -2119,6 +2224,14 @@ impl Widget for ForeignSurfaceWidget {
             return;
         }
         let radius = f64::from(theme.tokens.radii.xl);
+        if crate::shell::capture_protection::painting_for_capture()
+            && self.capture_protected_rect().is_some()
+        {
+            crate::shell::capture_protection::paint_placeholder(
+                scene, transform, self.rect, radius, theme,
+            );
+            return;
+        }
         let clip = RoundedRect::from_rect(self.rect, radius);
 
         if let Some(image) = self.cached.clone()

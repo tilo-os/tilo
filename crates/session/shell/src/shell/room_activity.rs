@@ -5700,12 +5700,18 @@ impl RoomActivityPane {
                 | LensSelection::Resource(value)
                 | LensSelection::WorkGroup(value),
             ) => Some(value.clone()),
-            ActivityFocus::Author(None) => Some("Everyone".to_string()),
-            ActivityFocus::MorePeople => Some("More people".to_string()),
-            ActivityFocus::Resume => self
-                .resume_target
-                .as_ref()
-                .map(|target| format!("Resume {}", target.label)),
+            ActivityFocus::Author(None) => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-everyone"))
+            }
+            ActivityFocus::MorePeople => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-more-people"))
+            }
+            ActivityFocus::Resume => self.resume_target.as_ref().map(|target| {
+                crate::shell::i18n::t_args(
+                    "a11y-shell-activity-resume",
+                    &[("target", (&target.label).into())],
+                )
+            }),
             ActivityFocus::Brief(index) => self
                 .digest
                 .briefs
@@ -5713,40 +5719,60 @@ impl RoomActivityPane {
                 .map(|brief| brief.title.clone()),
             ActivityFocus::WorkSessionBoundary(boundary) => Some(match boundary.direction {
                 BoundaryDirection::IntoNewer => {
-                    "Move the last action into the newer work session".to_string()
+                    crate::shell::i18n::t("a11y-shell-activity-boundary-newer")
                 }
                 BoundaryDirection::IntoOlder => {
-                    "Move the first action into the older work session".to_string()
+                    crate::shell::i18n::t("a11y-shell-activity-boundary-older")
                 }
             }),
-            ActivityFocus::MoreBriefs => Some("More work sessions".to_string()),
-            ActivityFocus::NewTask => Some("New task".to_string()),
+            ActivityFocus::MoreBriefs => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-more-sessions"))
+            }
+            ActivityFocus::NewTask => Some(crate::shell::i18n::t("a11y-shell-activity-new-task")),
             ActivityFocus::Task(id) => self
                 .tasks
                 .iter()
                 .find(|task| &task.id == id)
                 .map(|task| task.title.clone()),
             ActivityFocus::TaskRoute(route) => Some(route.label().to_string()),
-            ActivityFocus::TaskCreate => Some("Create task".to_string()),
-            ActivityFocus::TaskCancelCompose => Some("Cancel task creation".to_string()),
+            ActivityFocus::TaskCreate => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-create-task"))
+            }
+            ActivityFocus::TaskCancelCompose => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-cancel-task"))
+            }
             ActivityFocus::TaskAction(action) => Some(action.label().to_string()),
-            ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
-            ActivityFocus::Lens(LensSelection::AgentTasks) => Some("Agent tasks".to_string()),
+            ActivityFocus::Lens(LensSelection::All) => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-everything"))
+            }
+            ActivityFocus::Lens(LensSelection::AgentTasks) => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-agent-tasks"))
+            }
             ActivityFocus::Lens(LensSelection::Facet(key, value)) => {
                 Some(format!("{key}: {value}"))
             }
-            ActivityFocus::Lens(LensSelection::Unclassified) => Some("Unclassified".to_string()),
-            ActivityFocus::MoreLenses => Some("More lenses".to_string()),
+            ActivityFocus::Lens(LensSelection::Unclassified) => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-unclassified"))
+            }
+            ActivityFocus::MoreLenses => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-more-lenses"))
+            }
             ActivityFocus::Detail(action) => Some(self.detail_action_label(*action).to_string()),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
-            ActivityFocus::Timeline => Some("History entries".to_string()),
-            ActivityFocus::ReplayBack => Some("Previous checkpoint".to_string()),
+            ActivityFocus::Timeline => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-history-entries"))
+            }
+            ActivityFocus::ReplayBack => Some(crate::shell::i18n::t(
+                "a11y-shell-activity-previous-checkpoint",
+            )),
             ActivityFocus::ReplayPlay => Some(if self.replay_playing {
-                "Pause replay".to_string()
+                crate::shell::i18n::t("a11y-shell-activity-pause-replay")
             } else {
-                "Play replay".to_string()
+                crate::shell::i18n::t("a11y-shell-activity-play-replay")
             }),
-            ActivityFocus::ReplayForward => Some("Next checkpoint".to_string()),
+            ActivityFocus::ReplayForward => {
+                Some(crate::shell::i18n::t("a11y-shell-activity-next-checkpoint"))
+            }
         }
     }
 
@@ -5757,62 +5783,77 @@ impl RoomActivityPane {
     fn access_control(&self, focus: &ActivityFocus) -> Option<AccessControl> {
         use ui::a11y::Role;
 
-        let control = |role, selected, expanded, description: &str| AccessControl {
+        let control = |role, selected, expanded, description: String| AccessControl {
             role,
             selected,
             expanded,
-            description: description.to_string(),
+            description,
         };
         Some(match focus {
             ActivityFocus::Scope(value) => control(
                 Role::RadioButton,
                 self.scope == *value,
                 None,
-                "History scope",
+                crate::shell::i18n::t("a11y-shell-activity-history-scope"),
             ),
-            ActivityFocus::View(value) => {
-                control(Role::Tab, self.view == *value, None, "History view")
-            }
-            ActivityFocus::Period(value) => {
-                control(Role::RadioButton, self.period == *value, None, "Time range")
-            }
+            ActivityFocus::View(value) => control(
+                Role::Tab,
+                self.view == *value,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-history-view"),
+            ),
+            ActivityFocus::Period(value) => control(
+                Role::RadioButton,
+                self.period == *value,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-time-range"),
+            ),
             ActivityFocus::Author(value) => control(
                 Role::RadioButton,
                 self.author == *value,
                 None,
-                "Person filter",
+                crate::shell::i18n::t("a11y-shell-activity-person-filter"),
             ),
-            ActivityFocus::MorePeople => {
-                control(Role::Button, false, None, "Show more contributor filters")
-            }
+            ActivityFocus::MorePeople => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-more-people-description"),
+            ),
             ActivityFocus::Resume => {
                 let target = self.resume_target.as_ref()?;
                 control(
                     Role::Button,
                     false,
                     None,
-                    &format!("Open the last resource you worked on: {}", target.label),
+                    crate::shell::i18n::t_args(
+                        "a11y-shell-activity-resume-description",
+                        &[("target", (&target.label).into())],
+                    ),
                 )
             }
             ActivityFocus::Brief(index) => {
                 let brief = self.digest.briefs.get(*index)?;
-                let change_noun = if brief.changes == 1 {
-                    "change"
-                } else {
-                    "changes"
-                };
-                let mut description = format!(
-                    "{}; last changed {}; {} {} by {}",
-                    brief.detail,
-                    format_relative_time(brief.last_at, self.now()),
-                    brief.changes,
-                    change_noun,
-                    brief
-                        .authors
-                        .iter()
-                        .map(|author| author.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                let mut description = crate::shell::i18n::t_args(
+                    "a11y-shell-activity-brief-description",
+                    &[
+                        ("detail", (&brief.detail).into()),
+                        (
+                            "when",
+                            format_relative_time(brief.last_at, self.now()).into(),
+                        ),
+                        ("count", brief.changes.into()),
+                        (
+                            "authors",
+                            brief
+                                .authors
+                                .iter()
+                                .map(|author| author.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                                .into(),
+                        ),
+                    ],
                 );
                 if self.expanded_brief == Some(*index) {
                     for action in &brief.actions {
@@ -5832,21 +5873,24 @@ impl RoomActivityPane {
                 None,
                 match boundary.direction {
                     BoundaryDirection::IntoNewer => {
-                        "Redraw this boundary by moving one action into the newer work session"
+                        crate::shell::i18n::t("a11y-shell-activity-boundary-newer-description")
                     }
                     BoundaryDirection::IntoOlder => {
-                        "Redraw this boundary by moving one action into the older work session"
+                        crate::shell::i18n::t("a11y-shell-activity-boundary-older-description")
                     }
                 },
             ),
-            ActivityFocus::MoreBriefs => {
-                control(Role::Button, false, None, "Show more work sessions")
-            }
+            ActivityFocus::MoreBriefs => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-more-sessions-description"),
+            ),
             ActivityFocus::NewTask => control(
                 Role::Button,
                 false,
                 None,
-                "Create a workspace task without requiring a model",
+                crate::shell::i18n::t("a11y-shell-activity-new-task-description"),
             ),
             ActivityFocus::Task(id) => {
                 let task = self.tasks.iter().find(|task| &task.id == id)?;
@@ -5858,12 +5902,14 @@ impl RoomActivityPane {
                         "{}; {}; {}; {}",
                         task.status.label(),
                         task.route.label(),
-                        task.assigned_agent
-                            .as_deref()
-                            .map_or("unassigned", |_| "assigned to an agent"),
-                        task.resource
-                            .as_ref()
-                            .map_or("no attached resource", |resource| resource.label.as_str())
+                        task.assigned_agent.as_deref().map_or_else(
+                            || crate::shell::i18n::t("a11y-shell-activity-task-unassigned"),
+                            |_| crate::shell::i18n::t("a11y-shell-activity-task-assigned-agent"),
+                        ),
+                        task.resource.as_ref().map_or_else(
+                            || crate::shell::i18n::t("a11y-shell-activity-task-no-resource"),
+                            |resource| resource.label.clone(),
+                        )
                     ),
                 }
             }
@@ -5871,52 +5917,67 @@ impl RoomActivityPane {
                 Role::RadioButton,
                 self.task_route == *route,
                 None,
-                "Task execution route",
+                crate::shell::i18n::t("a11y-shell-activity-task-route"),
             ),
-            ActivityFocus::TaskCreate | ActivityFocus::TaskCancelCompose => {
-                control(Role::Button, false, None, "Task composer action")
-            }
-            ActivityFocus::TaskAction(_) => {
-                control(Role::Button, false, None, "Selected task action")
-            }
-            ActivityFocus::Lens(value) => {
-                control(Role::RadioButton, self.lens == *value, None, "History lens")
-            }
-            ActivityFocus::MoreLenses => {
-                control(Role::Button, false, None, "Show more history lenses")
-            }
+            ActivityFocus::TaskCreate | ActivityFocus::TaskCancelCompose => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-task-composer-action"),
+            ),
+            ActivityFocus::TaskAction(_) => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-task-action"),
+            ),
+            ActivityFocus::Lens(value) => control(
+                Role::RadioButton,
+                self.lens == *value,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-history-lens"),
+            ),
+            ActivityFocus::MoreLenses => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-more-lenses-description"),
+            ),
             ActivityFocus::Detail(DetailAction::UndoTask) => control(
                 Role::Button,
                 false,
                 None,
-                "Undo every affected record in this agent task; later collaborator edits are kept",
+                crate::shell::i18n::t("a11y-shell-activity-undo-task-description"),
             ),
-            ActivityFocus::Detail(_) => {
-                control(Role::Button, false, None, "Selected history action")
-            }
+            ActivityFocus::Detail(_) => control(
+                Role::Button,
+                false,
+                None,
+                crate::shell::i18n::t("a11y-shell-activity-history-action"),
+            ),
             ActivityFocus::ExplorerPane(value) => control(
                 Role::Tab,
                 self.explorer_pane == *value,
                 None,
-                "Explorer panel",
+                crate::shell::i18n::t("a11y-shell-activity-explorer-panel"),
             ),
             ActivityFocus::Timeline => control(
                 Role::List,
                 true,
                 None,
-                "History entries; use arrow keys to navigate",
+                crate::shell::i18n::t("a11y-shell-activity-timeline-description"),
             ),
             ActivityFocus::ReplayBack | ActivityFocus::ReplayForward => control(
                 Role::Button,
                 false,
                 None,
-                "Move through workspace checkpoints",
+                crate::shell::i18n::t("a11y-shell-activity-checkpoints-description"),
             ),
             ActivityFocus::ReplayPlay => control(
                 Role::Button,
                 self.replay_playing,
                 None,
-                "Play or pause the workspace replay",
+                crate::shell::i18n::t("a11y-shell-activity-replay-description"),
             ),
         })
     }
@@ -5968,20 +6029,12 @@ impl RoomActivityPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Workspace activity")
+            .with_name(crate::shell::i18n::t("a11y-shell-workspace-activity"))
             .with_description(match self.view {
-                ActivityView::CatchUp => {
-                    "A summary of outcomes since this device last viewed the workspace"
-                }
-                ActivityView::Tasks => {
-                    "Durable workspace tasks with resource links, execution routes, and audit trails"
-                }
-                ActivityView::Explore => {
-                    "The complete workspace history with filters and provenance"
-                }
-                ActivityView::Replay => {
-                    "A causal replay of workspace layout and participant activity"
-                }
+                ActivityView::CatchUp => crate::shell::i18n::t("a11y-shell-activity-view-catch-up"),
+                ActivityView::Tasks => crate::shell::i18n::t("a11y-shell-activity-view-tasks"),
+                ActivityView::Explore => crate::shell::i18n::t("a11y-shell-activity-view-explore"),
+                ActivityView::Replay => crate::shell::i18n::t("a11y-shell-activity-view-replay"),
             })
             .with_state(AccessState::new());
         if self.sheet.area() > 0.0 {
@@ -5995,19 +6048,24 @@ impl RoomActivityPane {
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
         if self.timeline_is_visible() {
-            let mut history = AccessNode::new(Role::List).with_name("History entries");
+            let mut history = AccessNode::new(Role::List)
+                .with_name(crate::shell::i18n::t("a11y-shell-activity-history-entries"));
             history.children = (0..self.timeline.visible_len().min(100))
                 .filter_map(|index| self.timeline.visible_entry(index))
                 .map(|entry| {
                     AccessNode::new(Role::ListItem)
                         .with_name(entry.summary.clone())
-                        .with_description(format!("By {}", entry.author.name))
+                        .with_description(crate::shell::i18n::t_args(
+                            "a11y-shell-activity-entry-author",
+                            &[("author", (&entry.author.name).into())],
+                        ))
                 })
                 .collect();
             root.children.push(history);
         }
         if self.view == ActivityView::Tasks {
-            let mut tasks = AccessNode::new(Role::List).with_name("Workspace tasks");
+            let mut tasks = AccessNode::new(Role::List)
+                .with_name(crate::shell::i18n::t("a11y-shell-activity-tasks"));
             tasks.children = self
                 .tasks
                 .iter()
@@ -6022,41 +6080,63 @@ impl RoomActivityPane {
         if let Some(detail) = self.selection_detail() {
             root.children.push(
                 AccessNode::new(Role::Group)
-                    .with_name("Selected history detail")
-                    .with_description(format!(
-                        "{}; {} action{}; by {}",
-                        detail.title,
-                        detail.entry_ids.len(),
-                        if detail.entry_ids.len() == 1 { "" } else { "s" },
-                        detail.authors.join(", ")
+                    .with_name(crate::shell::i18n::t("a11y-shell-activity-selected-detail"))
+                    .with_description(crate::shell::i18n::t_args(
+                        "a11y-shell-activity-selected-detail-description",
+                        &[
+                            ("title", (&detail.title).into()),
+                            ("count", detail.entry_ids.len().into()),
+                            ("authors", detail.authors.join(", ").into()),
+                        ],
                     )),
             );
         }
         if let Some(indexed) = self.selected_agent_run() {
-            let run = &indexed.run;
-            let mut description = format!(
-                "Instruction: {}; assigned by {}; run by {}; reason: {}",
-                run.instruction.as_deref().unwrap_or(&run.label),
-                self.issuer_name(run),
-                self.agent_name(run),
-                run.decision.as_deref().unwrap_or("not recorded")
-            );
-            for step in &run.steps {
-                let _ = write!(
-                    description,
-                    "; {} in {}: {}",
-                    humanize_app_id(&step.app),
-                    step.record,
-                    step.summary
-                );
-            }
+            let description = self.agent_run_accessibility_description(&indexed.run);
             root.children.push(
                 AccessNode::new(Role::Group)
-                    .with_name("Agent task review")
+                    .with_name(crate::shell::i18n::t("a11y-shell-activity-agent-review"))
                     .with_description(description),
             );
         }
         root
+    }
+
+    /// What an agent run reads as to assistive technology: the instruction,
+    /// who issued it, which agent ran it, why, and every step it took.
+    fn agent_run_accessibility_description(&self, run: &AgentRun) -> String {
+        let mut description = crate::shell::i18n::t_args(
+            "a11y-shell-activity-agent-run-description",
+            &[
+                (
+                    "instruction",
+                    run.instruction.as_deref().unwrap_or(&run.label).into(),
+                ),
+                ("issuer", self.issuer_name(run).into()),
+                ("agent", self.agent_name(run).into()),
+                (
+                    "reason",
+                    run.decision
+                        .clone()
+                        .unwrap_or_else(|| {
+                            crate::shell::i18n::t("a11y-shell-activity-reason-not-recorded")
+                        })
+                        .into(),
+                ),
+            ],
+        );
+        for step in &run.steps {
+            description.push_str("; ");
+            description.push_str(&crate::shell::i18n::t_args(
+                "a11y-shell-activity-agent-step",
+                &[
+                    ("app", humanize_app_id(&step.app).into()),
+                    ("record", (&step.record).into()),
+                    ("summary", (&step.summary).into()),
+                ],
+            ));
+        }
+        description
     }
 
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
@@ -6593,15 +6673,21 @@ fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> Stri
             .unwrap_or(SystemTime::UNIX_EPOCH);
         task_audit_line(event, event_time, now)
     });
-    let mut description = format!(
-        "{}; {}; {}; {} audit events",
-        task.status.label(),
-        task.route.label(),
-        task_assignee_label(task),
-        task.audit.len()
+    let mut description = crate::shell::i18n::t_args(
+        "a11y-shell-activity-task-description",
+        &[
+            ("status", task.status.label().into()),
+            ("route", task.route.label().into()),
+            ("assignee", task_assignee_label(task).into()),
+            ("count", task.audit.len().into()),
+        ],
     );
     if let Some(latest) = latest {
-        let _ = write!(description, "; latest: {latest}");
+        description.push_str("; ");
+        description.push_str(&crate::shell::i18n::t_args(
+            "a11y-shell-activity-task-latest",
+            &[("latest", latest.into())],
+        ));
     }
     description
 }

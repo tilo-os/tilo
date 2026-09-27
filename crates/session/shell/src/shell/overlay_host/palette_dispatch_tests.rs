@@ -1125,8 +1125,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             )
             .unwrap();
         let rows = shortcut_reference_rows(&shortcuts);
-        assert!(rows.contains(&("Global search", "Alt+G".into())));
-        assert!(!rows.contains(&("Global search", "Super+K".into())));
+        assert!(rows.contains(&("Global search".into(), "Alt+G".into())));
+        assert!(!rows.contains(&("Global search".into(), "Super+K".into())));
     }
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {

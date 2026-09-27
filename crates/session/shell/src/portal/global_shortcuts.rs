@@ -394,11 +394,11 @@ impl GlobalShortcutsService for ShellGlobalShortcutsService {
                     .and_then(canonical_accelerator);
                 let status = accelerator.as_deref().and_then(|accelerator| {
                     if self.is_reserved(accelerator) {
-                        Some("Reserved by Tilo. Choose another shortcut.".into())
+                        Some(crate::shell::i18n::t("portal-shortcut-reserved"))
                     } else if let Some(app_id) = installed.get(accelerator) {
-                        Some(format!(
-                            "Already used by {}. Choose another shortcut.",
-                            safe_app_name(app_id)
+                        Some(crate::shell::i18n::t_args(
+                            "portal-shortcut-taken",
+                            &[("app", safe_app_name(app_id).into())],
                         ))
                     } else {
                         None
@@ -1319,11 +1319,10 @@ fn portal_trigger_for_accelerator(accelerator: &str) -> String {
 
 fn safe_app_name(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
-        app_id
-            .rsplit('.')
-            .next()
-            .unwrap_or("another application")
-            .replace(['-', '_'], " ")
+        app_id.rsplit('.').next().map_or_else(
+            || crate::shell::i18n::t("portal-shortcut-another-app"),
+            |name| name.replace(['-', '_'], " "),
+        )
     })
 }
 
