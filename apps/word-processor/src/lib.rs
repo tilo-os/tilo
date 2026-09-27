@@ -476,16 +476,13 @@ pub mod recovery {
         }
     }
 
-    /// A small, dependency-free, deterministic 64-bit FNV-1a hash. Used to derive
+    /// A deterministic 64-bit FNV-1a hash. Used to derive
     /// a filesystem-safe, **stable** recovery filename from a document's path
     /// (stable across runs and Rust versions, unlike `DefaultHasher`).
     fn fnv1a(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
-        }
-        h
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, bytes);
+        std::hash::Hasher::finish(&hasher)
     }
 
     /// The recovery file path for a document. Stable for a given target: the
