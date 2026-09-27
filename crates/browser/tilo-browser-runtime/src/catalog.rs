@@ -247,6 +247,7 @@ mod tests {
             record_kind: books.record_kind.clone(),
             required: Vec::new(),
             optional: Vec::new(),
+            opens: &[],
             create: books.create,
         }));
         assert!(matches!(

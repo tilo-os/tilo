@@ -377,6 +377,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: owned_declared_directory_factory,
     };
     let permissions = Rc::new(RefCell::new(

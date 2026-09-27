@@ -14,6 +14,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("notes.notebook"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |context, target, restore| create_component(context, &target, &restore),
     });
 pub fn definition() -> &'static ApplicationDefinition {

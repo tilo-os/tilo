@@ -9,6 +9,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("chat.workspace"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |context, target, _| create(context, &target),
     });
 pub fn definition() -> &'static ApplicationDefinition {

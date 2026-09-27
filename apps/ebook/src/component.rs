@@ -15,6 +15,7 @@ fn books_definition(create: ui::application::ComponentFactory) -> ApplicationDef
         record_kind: RecordKind::new("ebook.library"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create,
     }
 }

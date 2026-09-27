@@ -530,6 +530,7 @@ mod native_process_tests {
             record_kind: crate::record::RecordKind::new("host.probe"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: rejected_factory,
         }
     }
