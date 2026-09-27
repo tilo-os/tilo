@@ -311,8 +311,16 @@ where
 /// The session bus, connected once on the session runtime and shared by
 /// every MPRIS conversation. `None` when there is no session bus; the next
 /// call tries again.
+///
+/// This crate's unit tests have no bus at all: a media command or pause sent
+/// by one of them must never reach a player of whoever runs the tests. The
+/// integration tests hand the process a scratch bus address instead
+/// (`tests/dbus_runtime_context.rs`).
 async fn session_bus() -> Option<zbus::Connection> {
     static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    if cfg!(test) {
+        return None;
+    }
     BUS.get_or_try_init(zbus::Connection::session)
         .await
         .map_err(|error| {
@@ -1613,8 +1621,9 @@ mod tests {
             assert!(report_from_observation(&stopped, &[browser()]).is_none());
         }
 
-        /// Must survive a machine with no session bus and no player — which
-        /// is exactly what CI is.
+        /// Must survive a machine with no session bus and no player. Unit
+        /// tests have no bus (see `session_bus`), so the command reaches no
+        /// player.
         fn send_dispatches_without_waiting_on_the_bus() {
             let started = std::time::Instant::now();
             let (tx, _outcomes) = mpsc::channel();
@@ -1623,8 +1632,7 @@ mod tests {
             });
             let elapsed = started.elapsed();
             assert!(dispatched, "the session runtime takes the command");
-            // The bus round trip happens on the session runtime; a dev machine
-            // with a player delivers an outcome later, CI (no bus) never does.
+            // Any bus round trip happens on the session runtime, never here.
             assert!(
                 elapsed < DEADLINE,
                 "the input path must not wait on the bus: took {elapsed:?}"
