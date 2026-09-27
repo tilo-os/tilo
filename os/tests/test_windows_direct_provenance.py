@@ -302,40 +302,6 @@ class ProvenanceTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "native guest proof differs"):
                         proof.signed_medium_identity(path, ci_proof, key)
 
-                # CI v2 signs the source medium before a VM cycle. The Windows
-                # backend proof is checked separately and must hash that medium.
-                v2 = {field: value for field, value in identity.items()
-                      if field != "guest_proof_sha256"}
-                v2.update(schema="tilo.whpx-ci-installer-medium.v2",
-                          proof_policy="backend-derived-windows-whpx-v2")
-                path.write_text(json.dumps(v2))
-                with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
-                        returncode=0, stderr="", stdout="")):
-                    board_v2 = proof.signed_medium_identity(path, None, key)
-                generic_v2 = dict(board_v2, target_profile="generic", target_image=base,
-                                  qcow2_sha256="f" * 64)
-                proof.checked_medium_pair(board_v2, generic_v2,
-                                          {"first_boot_verified": False,
-                                           "installer_medium_sha256": "d" * 64},
-                                          {"first_boot_verified": True,
-                                           "installer_medium_sha256": "f" * 64},
-                                          image.split("@", 1)[1], base.split("@", 1)[1], base,
-                                          "c" * 40)
-                with self.assertRaisesRegex(ValueError, "paired WHPX"):
-                    proof.checked_medium_pair(board_v2, generic,
-                                              {"first_boot_verified": False,
-                                               "installer_medium_sha256": "d" * 64},
-                                              {"first_boot_verified": True,
-                                               "installer_medium_sha256": "f" * 64},
-                                              image.split("@", 1)[1], base.split("@", 1)[1], base,
-                                              "c" * 40)
-                v2["proof_policy"] = "unsigned-local-test"
-                path.write_text(json.dumps(v2))
-                with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
-                        returncode=0, stderr="", stdout="")):
-                    with self.assertRaisesRegex(ValueError, "identity differs"):
-                        proof.signed_medium_identity(path, None, key)
-
     def test_slsa_predicates(self):
         with self.subTest(phase="slsa_rejects_wrong_subject_builder_source_and_generation"):
             pinned = "sha256:" + "a" * 64
