@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "dist/**"
+      - "os/usr/share/tilo/community.toml"
       - "flake.nix"
       - "flake.lock"
       - ".cargo/config.toml"

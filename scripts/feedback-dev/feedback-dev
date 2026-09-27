@@ -58,6 +58,24 @@ WINDOW_TITLES = {
 OPTIONAL_SESSIONS = ("teammate",)
 RELAY_PORT = int(os.environ.get("FEEDBACK_DEV_RELAY_PORT", "47831"))
 MIN_AVAILABLE_MIB = int(os.environ.get("FEEDBACK_DEV_MIN_MIB", "3072"))
+# Sessions that dial the relay directly (TILO_COLLAB_HOSTS). None: every one.
+COLLAB_HOST_SESSIONS: tuple[str, ...] | None = None
+
+
+def use_location(data: pathlib.Path, runtime: pathlib.Path, keyring_password: str,
+                 collab_host_sessions: tuple[str, ...] | None = None) -> None:
+    """Run these steps somewhere else, as a library.
+
+    `scripts/community-ops/tilo-community` stands up the production
+    community with the same steps, keeping the team's identity in its own
+    custody directory and keyring password rather than this tool's.
+    """
+    global DATA, RUNTIME, STATE, KEYRING_PASSWORD, COLLAB_HOST_SESSIONS
+    DATA = data
+    RUNTIME = runtime
+    STATE = data / "state.json"
+    KEYRING_PASSWORD = keyring_password
+    COLLAB_HOST_SESSIONS = collab_host_sessions
 
 BINARIES = (
     "shell", "tilo-control", "tilo-launcher", "tilo-relay", "tilo-relay-admin",
@@ -395,7 +413,7 @@ def session_env(name: str, headless: bool) -> dict:
     if trusted_publishers(name).exists():
         env["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = str(trusted_publishers(name))
     endpoint = load_state().get("relay_endpoint")
-    if endpoint:
+    if endpoint and (COLLAB_HOST_SESSIONS is None or name in COLLAB_HOST_SESSIONS):
         env["TILO_COLLAB_HOSTS"] = json.dumps([endpoint])
     if headless:
         env["TILO_HEADLESS_SIZE"] = "1280x800"
@@ -821,10 +839,12 @@ def ensure_invite(room: str) -> str:
     return invite
 
 
-def write_community_config(invite: str) -> None:
-    path = DATA / "community.toml"
+def write_community_config(invite: str, path: pathlib.Path | None = None,
+                           header: str = "# Written by scripts/feedback-dev/feedback-dev; "
+                                         "read by both shells.\n") -> None:
+    path = path or DATA / "community.toml"
     text = (
-        "# Written by scripts/feedback-dev/feedback-dev; read by both shells.\n"
+        header +
         "[community]\n"
         f'invite = "{invite}"\n\n'
         "[team]\n"

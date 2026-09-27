@@ -281,6 +281,14 @@ How the pieces fit:
   `/usr/share/tilo/community.toml`, or from `TILO_COMMUNITY_CONFIG`. The host
   binds that pair's room on first use and admits exactly those two people.
 
+The real community is stood up and run by `scripts/community-ops/tilo-community`,
+on the same steps as the local `scripts/feedback-dev/feedback-dev`. The team's
+identity stays in an operator's custody directory. The relay
+(`os/containers/tilo-relay/community`) receives only its paired room-host
+identity and a public record of what it hosts (`tilo-relay-admin community
+export` / `install`). `community.toml` is a build input: release images and
+packages refuse to build without a configured one.
+
 Votes are reactions: Commenter already means "comment or reaction". Status
 (open, planned, fixed in generation N) is a typed chat action that only an
 Editor can take. "Fixed in generation N" is matched against the reporter's
