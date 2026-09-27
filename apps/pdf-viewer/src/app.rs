@@ -6213,7 +6213,7 @@ mod tests {
             // Exercise the production worker, not load_path's synchronous test
             // substitute. The host checks out records before calling sync.
             app.queue_worker_open(&b);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 record_frame(&mut app, &mut st, &mut set, &mut room);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6253,7 +6253,7 @@ mod tests {
             let mut st = ui::State::new();
             let original = st.doc.get_heads();
             app.queue_worker_open(&path);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6299,7 +6299,7 @@ mod tests {
                 let mut state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
                     app.drain_raster_events(&mut state);
@@ -9039,7 +9039,7 @@ mod tests {
             let mut app = PdfApp::empty();
             let mut st = ui::State::new();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));

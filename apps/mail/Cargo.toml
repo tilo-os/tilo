@@ -93,6 +93,7 @@ rcgen.workspace = true
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

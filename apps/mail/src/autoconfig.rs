@@ -570,7 +570,7 @@ mod tests {
                     ))
                     .unwrap();
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -593,7 +593,7 @@ mod tests {
             cancellation.store(true, Ordering::Relaxed);
             assert!(
                 receiver
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap()
                     .is_none()
             );
