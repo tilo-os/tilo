@@ -3418,9 +3418,12 @@ impl CapnpBrokerState {
                         .map_or_else(
                             |_| Err(ActionDirectoryBridgeError::TimedOut),
                             |result| {
-                                result
-                                    .map(ActionDirectoryBridgeResponse::Page)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                result.map(ActionDirectoryBridgeResponse::Page).map_err(
+                                    |error| {
+                                        tracing::debug!(%error, "an app's action directory did not answer a query");
+                                        ActionDirectoryBridgeError::Unavailable
+                                    },
+                                )
                             },
                         );
                         reply.send(response);
@@ -3453,9 +3456,12 @@ impl CapnpBrokerState {
                         .map_or_else(
                             |_| Err(ActionDirectoryBridgeError::TimedOut),
                             |result| {
-                                result
-                                    .map(ActionDirectoryBridgeResponse::Resolution)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                result.map(ActionDirectoryBridgeResponse::Resolution).map_err(
+                                    |error| {
+                                        tracing::debug!(%error, "an app's action directory did not resolve an action");
+                                        ActionDirectoryBridgeError::Unavailable
+                                    },
+                                )
                             },
                         );
                         reply.send(response);
@@ -7755,6 +7761,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let route = self.route();
+        tracing::debug!(
+            peer = self.peer_id,
+            app = %app_id,
+            cluster = %route.cluster_id,
+            record = %route.record_id,
+            "an application published its action directory"
+        );
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {

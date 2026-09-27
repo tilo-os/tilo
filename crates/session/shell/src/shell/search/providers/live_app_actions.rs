@@ -698,7 +698,16 @@ impl LiveAppActionsProvider {
             }
             match pending.receiver.poll_ready() {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    tracing::trace!(
+                        peer = key.0,
+                        rows = page.rows.len(),
+                        "a directory page arrived"
+                    );
                     ready.push((key.clone(), page, pending.initial_page));
+                    false
+                }
+                PendingPoll::Ready(Err(error)) => {
+                    tracing::debug!(peer = key.0, %error, "an app's directory refused a page");
                     false
                 }
                 PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
@@ -1419,6 +1428,15 @@ impl LiveAppActionsProvider {
             .next()
             .is_none()
             .then_some((app, permission, cluster, record, resource, action))
+    }
+
+    /// Whether `id` names a row of an app's live directory (an action or a
+    /// resource), rather than an action the app published eagerly.
+    pub fn is_directory_id(id: &str) -> bool {
+        matches!(
+            id.split(ID_SEPARATOR).next(),
+            Some("directory" | "directory-resource")
+        )
     }
 
     pub fn capability_target(
