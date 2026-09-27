@@ -225,9 +225,6 @@ runtime-fs = { path = "../../runtime/runtime-fs" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 # The app identity service: broker, registry, device fleet, provisioning.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-# The compositor-free runtime host serves its apps' document media from the
-# same content store and capability implementation as the filesystem daemon.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
