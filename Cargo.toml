@@ -686,6 +686,11 @@ incremental = false
 inherits = "release"
 panic = "unwind"
 lto = false
+# Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
+# release links in CI and the image) is inherited by thin-app unless the child
+# profile names its own value. The wrapper also forces one unit on each tapp
+# crate; this keeps their dependencies on the same size-oriented setting.
+codegen-units = 1
 
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
