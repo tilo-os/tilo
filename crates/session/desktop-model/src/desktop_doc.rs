@@ -546,6 +546,18 @@ pub fn append_workspace(
     true
 }
 
+/// Remove a workspace entry: the person left its room. `false` when the
+/// document does not hold the workspace.
+pub fn remove_workspace(doc: &mut AutoCommit, workspace_id: WorkspaceId) -> bool {
+    let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY) else {
+        return false;
+    };
+    let index = (0..doc.length(&list)).find(|&i| {
+        obj(doc, &list, i).and_then(|entry| uint(doc, &entry, "id")) == Some(workspace_id.raw())
+    });
+    index.is_some_and(|index| doc.delete(&list, index).is_ok())
+}
+
 /// Record which workspace is showing.
 pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));

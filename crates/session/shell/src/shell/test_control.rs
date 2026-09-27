@@ -170,7 +170,11 @@ pub enum Command {
     /// ships (`/usr/share/tilo/community.toml`, or `TILO_COMMUNITY_CONFIG`).
     /// Answers the room's status: its channel class and this session's role.
     CommunityJoin,
-    /// The community room as this session knows it, or `{"joined": false}`.
+    /// Leave the Tilo community room and remember that the person left, so
+    /// none of their devices joins it again on its own.
+    CommunityLeave,
+    /// The community room as this session knows it, or `{"joined": false}`
+    /// with the person's membership choice.
     CommunityStatus,
     /// Open this person's private feedback room: the direct room with the
     /// configured Tilo team principal.
@@ -685,6 +689,7 @@ pub fn dispatch_command<S: ControlState>(
             Vec::new(),
         ),
         Command::CommunityJoin
+        | Command::CommunityLeave
         | Command::CommunityStatus
         | Command::CommunityTeamRoom
         | Command::CommunityDirectRoom { .. }
@@ -1124,6 +1129,7 @@ fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
     use crate::shell::peer_sync_overlay::CommunityRequest;
     let request = match cmd {
         Command::CommunityJoin => CommunityRequest::Join,
+        Command::CommunityLeave => CommunityRequest::Leave,
         Command::CommunityStatus => CommunityRequest::Status,
         Command::CommunityTeamRoom => CommunityRequest::OpenTeamRoom,
         Command::CommunityDirectRoom { person, label } => CommunityRequest::OpenDirectRoom {

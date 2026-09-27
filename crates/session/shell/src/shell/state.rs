@@ -4163,6 +4163,37 @@ impl WorkspaceTree {
         true
     }
 
+    /// Leave the durable room `room`: its workspace and everything this tree
+    /// held for it go, here and in the desktop document, and the change is
+    /// persisted. The room itself goes on for its other members. The last
+    /// durable workspace is never left, so there is always one to show.
+    pub fn leave_room(&mut self, room: RoomId) -> bool {
+        let durable = self
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| !workspace.ephemeral)
+            .count();
+        let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room && !workspace.ephemeral)
+        else {
+            return false;
+        };
+        if durable < 2 {
+            return false;
+        }
+        let workspace = self.desktop.workspaces.remove(index);
+        tilo_desktop_model::desktop_doc::remove_workspace(&mut self.doc, workspace.id);
+        self.forget_workspace_state(&workspace);
+        tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.flush_to_disk();
+        true
+    }
+
     /// Give the ephemeral workspace `workspace` a fresh room, keeping its
     /// strips and windows: what ran in the old room stays there and is
     /// forgotten with it. Returns `(old, new)`.

@@ -280,6 +280,22 @@ How the pieces fit:
   team)`. The shell reads the team principal from
   `/usr/share/tilo/community.toml`, or from `TILO_COMMUNITY_CONFIG`. The host
   binds that pair's room on first use and admits exactly those two people.
+- **Member by default.** Being in the community is the point of the alpha,
+  so nobody is asked. Once a session has an identity, a community is
+  configured and the network is up, the shell redeems the standing invitation
+  and opens the team's direct room (`ShellNetwork::keep_community`, the one
+  path native, other distros and hosted sessions share). It asks the hosts
+  again with back-off while they cannot be reached. A refusal by the
+  community's host is final for that invitation
+  (`tilo.community.refused_invite`); a release that ships another one is
+  asked once more. First setup says it in one line.
+- **Leaving.** `tilo.community.membership` (`auto` or `left`) is the person's
+  choice, kept in the settings store as a personal setting, so it follows
+  them to every device. A device that learns `left` leaves the room: its
+  workspace goes from the desktop and the device stops following it. Nothing
+  joins it again until the person chooses "Join the community". Both are
+  offered as shell actions (`community.leave`, `community.join`), in
+  Settings > Users and as `tilo-control community leave|join`.
 
 The real community is stood up and run by `scripts/community-ops/tilo-community`,
 on the same steps as the local `scripts/feedback-dev/feedback-dev`. The team's

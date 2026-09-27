@@ -138,6 +138,9 @@ policies! {
         // each device resolves them against its own vault and runtime.
         "tilo.agent_providers.profiles",
         "tilo.agent_providers.assignments",
+        // Leaving the Tilo Community is the person's choice, so no device
+        // of theirs joins it again on its own.
+        "tilo.community.membership",
     ],
     DeviceLocal => [
         "tilo.audio.output_device",
@@ -217,6 +220,9 @@ policies! {
         "tilo.updates.last_checked",
         "tilo.continuity.audit",
         "tilo.history.seen_frontiers",
+        // The community invitation this device's host refused, so it is not
+        // redeemed again until a release ships a different one.
+        "tilo.community.refused_invite",
     ],
 }
 

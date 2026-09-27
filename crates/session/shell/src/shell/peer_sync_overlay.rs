@@ -42,6 +42,8 @@ pub enum PeerSyncRequest {
 pub enum CommunityRequest {
     /// Join the community room from the OS's standing invitation.
     Join,
+    /// Leave the community room and remember that the person left.
+    Leave,
     /// Report the community room as this session knows it.
     Status,
     /// Create a public room governed by this machine.

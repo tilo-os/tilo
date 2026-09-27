@@ -262,18 +262,19 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     Ok(Invocation { socket, command })
 }
 
-/// Parse `community join|status|team-room|direct-room PERSON [LABEL]`.
+/// Parse `community join|leave|status|team-room|direct-room PERSON [LABEL]`.
 fn parse_community_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
         ParseError::Usage(
-            "community requires `join`, `status`, `team-room` or `direct-room` (try --help)"
+            "community requires `join`, `leave`, `status`, `team-room` or `direct-room` (try --help)"
                 .to_string(),
         )
     })?;
     let wire = match verb {
         "join" => json!({ "op": "community_join" }),
+        "leave" => json!({ "op": "community_leave" }),
         "status" => json!({ "op": "community_status" }),
         "team-room" => json!({ "op": "community_team_room" }),
         "direct-room" => {
@@ -291,7 +292,7 @@ fn parse_community_command<'a>(
         }
         other => {
             return Err(ParseError::Usage(format!(
-                "community: unknown verb `{other}` (join, status, team-room, direct-room)"
+                "community: unknown verb `{other}` (join, leave, status, team-room, direct-room)"
             )));
         }
     };
@@ -1162,6 +1163,8 @@ fn print_usage() {
          \x20 replay status                 transport and step list (`chrome.replay`)\n\
          \x20 community join                join the Tilo community room from the OS's\n\
          \x20                               standing invitation; prints its class and your role\n\
+         \x20 community leave               leave the Tilo community room; none of your devices\n\
+         \x20                               joins it again until you `community join`\n\
          \x20 community status              the community room as this session knows it\n\
          \x20 community team-room           open your private feedback room with the Tilo team\n\
          \x20 community direct-room PERSON [LABEL]\n\

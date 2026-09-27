@@ -128,15 +128,19 @@ can read other people's reports there, vote on them with reactions, reply to
 them, and get to know people you might later message directly or invite to a
 workspace.
 
-- You join it only when you first send something publicly. The window says so
-  ("sending joins the Tilo Community"). Sending privately never joins it.
+- You are in it from the start: once your identity is set up and you are
+  online, Tilo joins it for you and opens your private conversation with the
+  Tilo team. First setup says so in one line; nobody asks.
 - Everyone in it is a Commenter: they can post, reply, and react. Only the
   Tilo team can change a report's status.
 - The community is public and **not encrypted**. Treat anything you post
   there like a post on a public forum.
-- The community appears as a workspace named **Tilo Community**. There is no
-  one-click way to leave it yet. Until there is, you can ignore it, and you
-  can still choose the private destination for everything you send.
+- The community appears as a workspace named **Tilo Community**. To leave
+  it, choose **Leave the community** in Settings > Users, or run the "Leave
+  the community" action. Leaving applies to all your devices: none of them
+  joins it again until you choose **Join the community** there. Whether you
+  are in it or not, you can choose the private destination for everything
+  you send.
 
 ## What replay means for your privacy
 

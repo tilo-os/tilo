@@ -902,6 +902,44 @@ pub struct RoomStatus {
     pub members: usize,
 }
 
+/// How often the session looks at whether it is where the person wants to be
+/// in the Tilo Community. Joins themselves back off on their own schedule
+/// ([`crate::shell::community::AutoJoin`]).
+const COMMUNITY_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The configured community's standing invitation and the room it names.
+///
+/// # Errors
+///
+/// The community is not configured, or its invitation does not validate, is
+/// not a standing one or names no room.
+fn configured_community() -> Result<(String, crate::shell::state::RoomId), String> {
+    let config = crate::shell::community::load().map_err(|error| error.to_string())?;
+    let invite = config.invite.ok_or_else(|| {
+        format!(
+            "no community invitation is configured in {}",
+            config.source.display()
+        )
+    })?;
+    let parsed = crate::network::invite::validate_invite_token(&invite)?;
+    if !parsed.standing {
+        return Err("the configured community invitation is not a standing invitation".into());
+    }
+    let room = crate::shell::state::RoomId::parse(&parsed.room_id)
+        .ok_or_else(|| "the community invitation names no room".to_string())?;
+    Ok((invite, room))
+}
+
+/// [`ShellNetwork::keep_community`]'s state.
+#[derive(Default)]
+struct CommunityRuntime {
+    auto: crate::shell::community::AutoJoin,
+    checked: Option<std::time::Instant>,
+    /// The room topic, hosts and invitation id (hex) being redeemed, so a
+    /// refusal by the community's own host is told from any other host's.
+    redeeming: Option<(u64, Vec<iroh::EndpointId>, String)>,
+}
+
 /// Messages held for devices whose identity has not arrived yet; see
 /// [`ShellNetwork`]'s `unidentified_host_messages`. Bounded per device and in
 /// the number of devices, dropping the oldest, so an unauthenticated flood
@@ -1312,6 +1350,8 @@ pub struct ShellNetwork {
     /// Retained shell-room messages sent or received per room topic, so a
     /// room checkpoint names exactly the ones it holds.
     retained_coverage: Mutex<std::collections::HashMap<u64, crate::network::coverage::CoverageLog>>,
+    /// Keeps this session in the Tilo Community ([`Self::keep_community`]).
+    community: Mutex<CommunityRuntime>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -1751,6 +1791,7 @@ impl ShellNetwork {
             room_admissions: Mutex::new(std::collections::HashMap::new()),
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
             retained_coverage: Mutex::new(std::collections::HashMap::new()),
+            community: Mutex::new(CommunityRuntime::default()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -2783,9 +2824,16 @@ impl ShellNetwork {
             |status: RoomStatus| serde_json::to_value(status).map_err(|error| error.to_string());
         match request {
             CommunityRequest::Join => status(self.join_community()?),
+            CommunityRequest::Leave => self.leave_community(),
             CommunityRequest::Status => match self.community_status()? {
                 Some(room) => status(room),
-                None => Ok(serde_json::json!({ "joined": false })),
+                None => Ok(serde_json::json!({
+                    "joined": false,
+                    "membership": settings_store::community::membership_in(
+                        &settings_store::load()
+                    )
+                    .as_str(),
+                })),
             },
             CommunityRequest::CreatePublicRoom { name } => status(self.create_public_room(&name)?),
             CommunityRequest::IssueStandingInvite {
@@ -2953,24 +3001,65 @@ impl ShellNetwork {
     /// ships ([`crate::shell::community`]), or report it if already joined.
     /// The room's hosts admit this device while the room's owner is away.
     ///
+    /// Everyone is a member by default ([`Self::keep_community`]); asking to
+    /// join is also the person's choice to be one again after leaving, on
+    /// every device, and asks once more after a refusal.
+    ///
     /// # Errors
     ///
     /// The community is not configured, its invitation does not validate or
     /// is not a standing one, or joining fails.
     pub fn join_community(&self) -> Result<RoomStatus, String> {
-        let config = crate::shell::community::load().map_err(|error| error.to_string())?;
-        let invite = config.invite.ok_or_else(|| {
-            format!(
-                "no community invitation is configured in {}",
-                config.source.display()
-            )
-        })?;
-        let parsed = crate::network::invite::validate_invite_token(&invite)?;
-        if !parsed.standing {
-            return Err("the configured community invitation is not a standing invitation".into());
+        use settings_store::community::{Membership, membership_in, refused_invite_in};
+        let (invite, room) = configured_community()?;
+        let settings = settings_store::load();
+        if membership_in(&settings) != Membership::Auto || refused_invite_in(&settings).is_some() {
+            settings_store::community::set_membership(Membership::Auto)
+                .map_err(|error| format!("membership not saved: {error}"))?;
         }
-        let room = crate::shell::state::RoomId::parse(&parsed.room_id)
-            .ok_or_else(|| "the community invitation names no room".to_string())?;
+        if let Ok(mut runtime) = self.community.lock() {
+            runtime.auto.reset();
+            runtime.checked = None;
+        }
+        self.enter_community(&invite, room)
+    }
+
+    /// Leave the Tilo community room and remember that the person left, so
+    /// none of their devices joins it again on its own. "Join the
+    /// community" ([`Self::join_community`]) is how they come back.
+    ///
+    /// # Errors
+    ///
+    /// The choice cannot be saved, or the room cannot be left.
+    pub fn leave_community(&self) -> Result<serde_json::Value, String> {
+        use settings_store::community::{Membership, membership_in};
+        if membership_in(&settings_store::load()) != Membership::Left {
+            settings_store::community::set_membership(Membership::Left)
+                .map_err(|error| format!("membership not saved: {error}"))?;
+        }
+        if let Ok(mut runtime) = self.community.lock() {
+            runtime.auto.reset();
+            runtime.checked = None;
+            runtime.redeeming = None;
+        }
+        if let Ok((_, room)) = configured_community()
+            && self.room_status(room).is_ok()
+        {
+            self.leave_room(room)?;
+        }
+        Ok(serde_json::json!({
+            "joined": false,
+            "membership": Membership::Left.as_str(),
+        }))
+    }
+
+    /// Hold the community room and redeem its invitation, or report it if
+    /// already held.
+    fn enter_community(
+        &self,
+        invite: &str,
+        room: crate::shell::state::RoomId,
+    ) -> Result<RoomStatus, String> {
         let tree_handle = self.tree_handle()?;
         let joined = tree_handle
             .read()
@@ -2980,9 +3069,143 @@ impl ShellNetwork {
             .any(|workspace| workspace.room == room);
         if !joined {
             let local = tree_handle.write().append_empty_workspace("Tilo Community");
-            self.accept_invite(local, &invite)?;
+            self.accept_invite(local, invite)?;
         }
         self.room_status(room)
+    }
+
+    /// Keep this session where the person wants to be in the Tilo
+    /// Community, from [`Self::tick`]. Everyone is a member by default: with
+    /// an identity and a configured community, the session joins once the
+    /// network is up, asks the community's hosts again with back-off while
+    /// they cannot be reached, and opens the private room with the Tilo
+    /// team once it is in. A person who left (`tilo.community.membership =
+    /// left`, on any device) is never joined again, and a device that
+    /// learns it leaves the room. A refusal by the community's host is
+    /// remembered for that invitation and not asked again.
+    fn keep_community(&self, now: std::time::Instant) {
+        use crate::shell::community::{Observed, Step};
+        let Ok(mut runtime) = self.community.lock() else {
+            return;
+        };
+        if runtime
+            .checked
+            .is_some_and(|checked| now.saturating_duration_since(checked) < COMMUNITY_CHECK_EVERY)
+        {
+            return;
+        }
+        runtime.checked = Some(now);
+        let Ok((invite, room)) = configured_community() else {
+            runtime.auto.next(now, &Observed::default());
+            return;
+        };
+        let invite_hex = hex::encode(crate::network::invite::invite_id(&invite));
+        let settings = settings_store::load();
+        let status = self.room_status(room).ok();
+        let observed = Observed {
+            identity: self.host_identity.is_some(),
+            invite: Some(invite_hex.clone()),
+            membership: settings_store::community::membership_in(&settings),
+            refused_invite: settings_store::community::refused_invite_in(&settings)
+                .map(str::to_string),
+            held: status.is_some(),
+            admitted: status.as_ref().is_some_and(|status| status.role.is_some()),
+        };
+        let step = runtime.auto.next(now, &observed);
+        match step {
+            Step::Wait => {}
+            Step::Join | Step::Redeem => {
+                let hosts = crate::network::invite::validate_invite_token(&invite)
+                    .map(|parsed| parsed.host_addrs.iter().map(|host| host.id).collect())
+                    .unwrap_or_default();
+                runtime.redeeming = Some((room_topic_id(room), hosts, invite_hex));
+                runtime.auto.attempted(now);
+                drop(runtime);
+                let outcome = if step == Step::Join {
+                    self.enter_community(&invite, room).map(|_| ())
+                } else {
+                    self.redeem_invite(room, &invite);
+                    self.publish_sync_requests();
+                    Ok(())
+                };
+                if let Err(error) = outcome {
+                    tracing::warn!(%error, "community: joining did not start; trying again later");
+                }
+            }
+            Step::OpenTeamRoom => {
+                runtime.auto.team_room_opened();
+                runtime.redeeming = None;
+                drop(runtime);
+                if let Err(error) = self.open_team_direct_room() {
+                    tracing::info!(%error, "community: no private room with the Tilo team");
+                }
+            }
+            Step::RecordRefusal | Step::Leave => {
+                runtime.redeeming = None;
+                drop(runtime);
+                if step == Step::RecordRefusal
+                    && let Err(error) =
+                        settings_store::community::set_refused_invite(Some(&invite_hex))
+                {
+                    tracing::warn!(%error, "community: the refusal could not be remembered");
+                }
+                if observed.held
+                    && let Err(error) = self.leave_room(room)
+                {
+                    tracing::warn!(%error, "community: could not leave the room");
+                }
+            }
+        }
+    }
+
+    /// A workspace host refused this device on room topic `ws` for good (a
+    /// busy host is asked again after a back-off). When it is the
+    /// community's host refusing the invitation being redeemed, the refusal
+    /// is final for that invitation ([`Self::keep_community`]).
+    fn note_host_refusal(&self, ws: u64, peer: iroh::EndpointId, reason: &str) {
+        let Ok(mut runtime) = self.community.lock() else {
+            return;
+        };
+        let Some((topic, hosts, invite)) = runtime.redeeming.clone() else {
+            return;
+        };
+        if topic == ws && hosts.contains(&peer) {
+            tracing::warn!(%reason, "community: the community's host refused this device");
+            runtime.auto.refused(&invite);
+            runtime.checked = None;
+        }
+    }
+
+    /// Leave `room`: its workspace goes from this person's desktop, here and
+    /// in the desktop document their devices share, and this device stops
+    /// following its topic and asking its hosts. The room goes on for its
+    /// other members.
+    ///
+    /// # Errors
+    ///
+    /// The room is not held here, or it is the last workspace.
+    pub fn leave_room(&self, room: crate::shell::state::RoomId) -> Result<(), String> {
+        let tree_handle = self.tree_handle()?;
+        if !tree_handle.write().leave_room(room) {
+            return Err(format!(
+                "room {room} is not held here, or it is the last workspace"
+            ));
+        }
+        let ws = room_topic_id(room);
+        if let Ok(mut joined) = self.joined_topics.lock() {
+            joined.remove(&ws);
+        }
+        if let Ok(mut pending) = self.pending_redemptions.lock() {
+            pending.remove(&room);
+        }
+        if let Ok(mut admissions) = self.room_admissions.lock() {
+            admissions.remove(&room);
+        }
+        if let Ok(mut coverage) = self.retained_coverage.lock() {
+            coverage.remove(&ws);
+        }
+        let _ = self.cmd_tx.try_send(NetCmd::LeaveWorkspace { ws });
+        Ok(())
     }
 
     /// Grant `person` (a person id) `role` in `room`, which this machine
@@ -3846,9 +4069,25 @@ impl ShellNetwork {
             return Err("peer-sync command queue is full; try accepting the invite again".into());
         }
         self.publish_identity_announcement(room);
-        // Dial the authenticated address carried by the invite.
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
+        self.redeem_invite(room, token);
+        replica.request_sync();
+        let outgoing = replica.drain_outgoing();
+        drop(replica);
+        for msg in outgoing {
+            let _ = self.publish_message(msg);
+        }
+        Ok(room)
+    }
+
+    /// Redeem `token` for `room`, which this session already holds: attach
+    /// it to the room's sync requests until governance arrives, ask the
+    /// room's hosts to admit this device when it is a standing invitation,
+    /// and dial the authenticated addresses it carries. Asked again when an
+    /// admission has not arrived, because the hosts may not have been
+    /// reachable the first time.
+    fn redeem_invite(&self, room: crate::shell::state::RoomId, token: &str) {
         if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
             if let Ok(mut pending) = self.pending_redemptions.lock() {
                 pending.insert(room, crate::network::invite::invite_id(token));
@@ -3884,13 +4123,6 @@ impl ShellNetwork {
                 }
             }
         }
-        replica.request_sync();
-        let outgoing = replica.drain_outgoing();
-        drop(replica);
-        for msg in outgoing {
-            let _ = self.publish_message(msg);
-        }
-        Ok(room)
     }
 
     fn publish_identity_announcement(&self, room: crate::shell::state::RoomId) {
@@ -5190,6 +5422,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.keep_community(std::time::Instant::now());
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -5219,6 +5452,16 @@ impl ShellNetwork {
                     relays.insert((ws, peer));
                 }
                 self.handle_host_ready(ws, peer);
+            }
+            NetEvent::HostRefused {
+                ws,
+                peer,
+                refusal,
+                reason,
+            } => {
+                if refusal.is_final() {
+                    self.note_host_refusal(ws, peer, &reason);
+                }
             }
             NetEvent::PeerJoined { ws, .. } => {
                 self.publish_sync_requests();
@@ -7280,6 +7523,7 @@ pub(crate) fn shell_network_for_test(
         room_admissions: Mutex::new(std::collections::HashMap::new()),
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
         retained_coverage: Mutex::new(std::collections::HashMap::new()),
+        community: Mutex::new(CommunityRuntime::default()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -12580,7 +12824,7 @@ mod tests {
         team: Option<Arc<ShellNetwork>>,
         token: String,
         relay: tilo_relay::Relay,
-        _state: tempfile::TempDir,
+        state: tempfile::TempDir,
     }
 
     #[allow(
@@ -12733,7 +12977,7 @@ mod tests {
             team: team_net,
             token,
             relay,
-            _state: state,
+            state,
         }
     }
 
@@ -12757,6 +13001,159 @@ mod tests {
         net.accept_invite(local, &community.token)
             .expect("the standing invite is accepted");
         (net, person_root, device)
+    }
+
+    /// Point this OS at `community`'s invitation and name the person `seed`
+    /// derives, in `home`; returns the person's root.
+    fn configure_community(
+        community: &HostedCommunity,
+        home: &mut tilo_test_env::TestHome,
+        seed: u8,
+    ) -> ed25519_dalek::SigningKey {
+        let config = home.root().join("community.toml");
+        std::fs::write(
+            &config,
+            format!("[community]\ninvite = \"{}\"\n", community.token),
+        )
+        .expect("community config");
+        let person_root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        home.env()
+            .set(crate::shell::community::COMMUNITY_CONFIG_ENV, &config)
+            .set("TILO_USER_ID", person_of(&person_root));
+        person_root
+    }
+
+    /// A fresh networked session of `person_root`, not yet in the community.
+    async fn fresh_session(person_root: &ed25519_dalek::SigningKey) -> ShellNetwork {
+        let device = certified_device(
+            person_root,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            "Ada",
+        );
+        let mut tree = WorkspaceTree::default();
+        tree.append_empty_workspace("Ada");
+        let net = Box::pin(networked_shell(tree, &device)).await;
+        assert!(net.join_default_workspace());
+        net
+    }
+
+    fn holds(net: &ShellNetwork, room: RoomId) -> bool {
+        workspace_state(net, room).is_some()
+    }
+
+    /// Everyone is in the Tilo Community by default: a fresh session joins
+    /// it on its own once the network is up and the host admits it. A person
+    /// who leaves, from any of their devices, is taken out and never joined
+    /// again until they choose to join.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fresh_session_joins_the_community_and_one_who_left_is_never_rejoined() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        let room = community.room;
+        let person = configure_community(&community, &mut home, 0xF1);
+        let net = Box::pin(fresh_session(&person)).await;
+
+        let joined = tick_until(&net, 60, |net| {
+            net.community_status()
+                .ok()
+                .flatten()
+                .is_some_and(|status| status.role.is_some())
+        })
+        .await;
+        assert!(
+            joined,
+            "a fresh session joins the community without being asked: {:?}",
+            net.community_status()
+        );
+
+        // Left on another device: the choice roams in the person's
+        // settings, and this device follows it.
+        settings_store::community::set_membership(settings_store::community::Membership::Left)
+            .expect("leave");
+        assert!(
+            tick_until(&net, 10, |net| !holds(net, room)).await,
+            "a device that learns the person left leaves the room"
+        );
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(6) {
+            net.tick();
+            assert!(!holds(&net, room), "a person who left is never rejoined");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let status = net
+            .join_community()
+            .expect("joining again is the person's choice");
+        assert_eq!(status.room, room.to_string());
+        assert_eq!(
+            settings_store::community::membership_in(&settings_store::load()),
+            settings_store::community::Membership::Auto
+        );
+    }
+
+    /// A session whose person left the community before it started never
+    /// joins it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_whose_person_left_never_joins() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        settings_store::community::set_membership(settings_store::community::Membership::Left)
+            .expect("left");
+        let person = configure_community(&community, &mut home, 0xF2);
+        let net = Box::pin(fresh_session(&person)).await;
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(6) {
+            net.tick();
+            assert!(!holds(&net, community.room), "never joined");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The community's host refusing the invitation is final for that
+    /// invitation: the session leaves what it started, remembers the
+    /// refusal, and does not ask again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refused_join_is_not_retried() {
+        let mut home = tilo_test_env::TestHome::new().expect("test home");
+        let community = Box::pin(hosted_community(false)).await;
+        let room = community.room;
+        let store = community
+            .state
+            .path()
+            .join("workspaces")
+            .join(room_topic_id(room).to_string());
+        let mut hosting = tilo_relay::public_room::PublicRoomHosting::load(&store)
+            .expect("hosting")
+            .expect("the room is hosted");
+        for invite in &mut hosting.invites {
+            invite.revoked = true;
+        }
+        hosting.save(&store).expect("revoke");
+        let person = configure_community(&community, &mut home, 0xF3);
+        let net = Box::pin(fresh_session(&person)).await;
+
+        let invite = hex::encode(crate::network::invite::invite_id(&community.token));
+        let refused = tick_until(&net, 60, |net| {
+            settings_store::community::refused_invite_in(&settings_store::load())
+                == Some(invite.as_str())
+                && !holds(net, room)
+        })
+        .await;
+        assert!(
+            refused,
+            "the host's refusal is remembered and the room left: held={}, settings={:?}",
+            holds(&net, room),
+            settings_store::load()
+        );
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(8) {
+            net.tick();
+            assert!(
+                !holds(&net, room),
+                "a refused invitation is not asked again"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     /// The acceptance path for the community room: the team creates a public

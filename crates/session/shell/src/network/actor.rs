@@ -345,6 +345,15 @@ pub enum NetEvent {
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
     HostReady { ws: WorkspaceId, peer: PeerId },
+    /// A workspace host refused this device's subscription to the workspace,
+    /// for `reason`: it does not carry the room, would not admit this device
+    /// with the invitation it presented, or is busy (`refusal` says which).
+    HostRefused {
+        ws: WorkspaceId,
+        peer: PeerId,
+        refusal: tilo_relay_protocol::transport::Refusal,
+        reason: String,
+    },
     Msg {
         ws: WorkspaceId,
         peer: PeerId,
@@ -498,8 +507,11 @@ enum HostEvent {
         author: EndpointId,
         msg: NeighbourMsg,
     },
-    /// The host refused the room; `Closed` follows.
-    Refused(tilo_relay_protocol::transport::Refusal),
+    /// The host refused the room, for `reason`; `Closed` follows.
+    Refused {
+        refusal: tilo_relay_protocol::transport::Refusal,
+        reason: String,
+    },
     Closed,
 }
 
@@ -1020,6 +1032,7 @@ impl ActorState {
                     }
                 }
                 self.subscribers.remove(&ws);
+                self.host_redemptions.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
                 self.pending_surface_frames.remove(&ws);
                 if let Some(task) = self.surface_fanout_tasks.remove(&ws) {
@@ -2362,7 +2375,7 @@ impl ActorState {
                 peer: author,
                 msg,
             }),
-            HostEvent::Refused(refusal) => {
+            HostEvent::Refused { refusal, reason } => {
                 if self.host_retries.refused(ws, peer, refusal) {
                     tracing::info!(
                         ws,
@@ -2371,7 +2384,12 @@ impl ActorState {
                         "not asking the workspace host for this room again until its membership or the host changes"
                     );
                 }
-                None
+                Some(NetEvent::HostRefused {
+                    ws,
+                    peer,
+                    refusal,
+                    reason,
+                })
             }
             HostEvent::Closed => {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
@@ -3530,7 +3548,7 @@ fn spawn_host_pump(
                         .send(InternalEvent::Host {
                             ws,
                             peer: host,
-                            event: HostEvent::Refused(refusal),
+                            event: HostEvent::Refused { refusal, reason },
                         })
                         .await;
                     // A refused session carries nothing; publishing on it

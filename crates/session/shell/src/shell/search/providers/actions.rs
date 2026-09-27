@@ -289,6 +289,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "feedback.record.stop"
         | "feedback.record.capture-recent"
         | "feedback.recent-buffer.set"
+        | "community.leave"
+        | "community.join"
         | "remark.record.stop"
         | "remark.record.recent"
         | "remark.send"
@@ -902,6 +904,27 @@ pub fn apply(
         .ok_or_else(|| ActionError::Refused(format!("no shell action `{id}`")))?;
     let bound = ActionArgs::bind_json(action.params, args).map_err(ActionError::Arguments)?;
     (action.apply)(st, &bound)
+}
+
+/// Remember whether the person is in the Tilo Community; the shell's network
+/// joins or leaves the room to match.
+fn set_community_membership(
+    membership: settings_store::community::Membership,
+) -> Result<(), ActionError> {
+    settings_store::community::set_membership(membership)
+        .map_err(|error| ActionError::Refused(format!("setting not saved: {error}")))
+}
+
+/// Whether `id` is offered as the person's choice stands: "Leave the
+/// community" while they are in, "Join the community" once they left.
+fn community_action_offered(id: &str) -> bool {
+    use settings_store::community::{Membership, membership_in};
+    let membership = || membership_in(&settings_store::load());
+    match id {
+        "community.leave" => membership() == Membership::Auto,
+        "community.join" => membership() == Membership::Left,
+        _ => true,
+    }
 }
 
 /// A chrome toggle: no parameters, and nothing that can fail.
@@ -1605,6 +1628,21 @@ impl Action {
                     .map_err(|error| ActionError::Refused(format!("setting not saved: {error}")))
             },
         },
+        // Everyone is in the Tilo Community by default. Leaving is
+        // remembered for the person, so none of their devices joins again
+        // on its own; the network follows the choice within a second.
+        chrome(
+            "community.leave",
+            "search-action-community-leave",
+            "search-action-community-leave-subtitle",
+            |_, _| set_community_membership(settings_store::community::Membership::Left),
+        ),
+        chrome(
+            "community.join",
+            "search-action-community-join",
+            "search-action-community-join-subtitle",
+            |_, _| set_community_membership(settings_store::community::Membership::Auto),
+        ),
         // The remark surface: saying something about any part of any app,
         // to Tilo or to a colleague. Every step is one of these, so the
         // pointer, the keyboard, agents and tilo-control share one path.
@@ -2591,6 +2629,9 @@ impl SearchProvider for ActionsProvider {
             {
                 continue;
             }
+            if !community_action_offered(action.id) {
+                continue;
+            }
             // The remark surface offers its steps only while one is being
             // written; opening it is always offered.
             if !crate::shell::remark::offered(action.id, &ctx.chrome.remark) {
@@ -3526,10 +3567,19 @@ mod tests {
                 doc: &doc,
                 doc_root: &automerge::ROOT,
             });
+            // Of joining and leaving the community, only the one that
+            // changes the person's current choice.
             assert!(
                 Action::ALL
                     .iter()
+                    .filter(|action| community_action_offered(action.id))
                     .all(|action| out.iter().any(|result| result.id == action.id))
+            );
+            assert_eq!(
+                out.iter()
+                    .filter(|result| result.id.starts_with("community."))
+                    .count(),
+                1
             );
             assert!(out.iter().all(|r| r.score == 0));
         }

@@ -210,3 +210,37 @@ fn render_onboarding_matrix() {
     }
     println!("OOBE review PNGs: {}", root.display());
 }
+
+/// The Ready page's one line about the Tilo Community, in light, dark and
+/// high contrast, at the top and scrolled to the bottom.
+#[test]
+#[ignore = "review tool: needs an offscreen wgpu adapter and writes PNGs"]
+fn render_community_line() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("onboarding-community");
+    std::fs::create_dir_all(&root).expect("create OOBE screenshot directory");
+    for (theme_label, theme) in [
+        ("light", Theme::light()),
+        ("dark", Theme::dark()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        for (width, height) in [(1280, 800), (800, 600)] {
+            for (community, bottom) in [(true, false), (true, true), (false, false)] {
+                let mut view = state_view("ready").with_community(community);
+                let mut renderer = OffscreenRenderer::new(width, height);
+                let name = match (community, bottom) {
+                    (false, _) => "without",
+                    (true, false) => "community",
+                    (true, true) => "community-bottom",
+                };
+                render_view(
+                    &mut view,
+                    &theme,
+                    &mut renderer,
+                    &root.join(format!("{width}x{height}-{theme_label}-{name}.png")),
+                    bottom,
+                );
+            }
+        }
+    }
+    println!("OOBE community PNGs: {}", root.display());
+}

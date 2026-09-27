@@ -501,11 +501,10 @@ pub fn build_widget_scene(widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scen
 /// from the viewport so responsive acceptance captures can prove both layout
 /// mode and large-text behaviour at their exact requested dimensions.
 pub fn build_widget_scene_with_text_scale(
-    mut widget: Box<dyn Widget>,
+    widget: Box<dyn Widget>,
     viewport: (u32, u32),
     text_scale: Option<f32>,
 ) -> Scene {
-    let (w, h) = viewport;
     // `TILO_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
     // `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`); defaults to dark.
     let theme = std::env::var("TILO_SHOTS_THEME")
@@ -517,6 +516,17 @@ pub fn build_widget_scene_with_text_scale(
             std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
             Some("1" | "true" | "yes" | "on")
         ));
+    build_widget_scene_with_theme(widget, viewport, &theme)
+}
+
+/// Build a scene under an explicit `theme`, so one process can capture the
+/// same widget in several themes.
+pub fn build_widget_scene_with_theme(
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    theme: &Theme,
+) -> Scene {
+    let (w, h) = viewport;
     widget.set_motion_reduced(theme.reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -532,7 +542,7 @@ pub fn build_widget_scene_with_text_scale(
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     widget.sync(&mut state.doc, &state.root);
     let root = taffy
         .new_with_children(
@@ -574,7 +584,7 @@ pub fn build_widget_scene_with_text_scale(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
