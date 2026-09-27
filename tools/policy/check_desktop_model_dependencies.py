@@ -18,7 +18,9 @@ crate, tokio by feature unification — so the rule is on its own edges.)
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for the host and for ``wasm32-unknown-unknown``, so a
 default feature that pulls a host stack into a shared dependency is caught
-too. Resolving a graph does not need the wasm32 target installed.
+too. The generated ``workspace-hack`` crate only unifies compilation features;
+prune its artificial edges while retaining all real paths to forbidden stacks.
+Resolving a graph does not need the wasm32 target installed.
 """
 
 from __future__ import annotations
@@ -89,6 +91,10 @@ def reached_packages(
         "--format",
         "{p}",
     ]
+    # desktop-model excludes the hack entirely; cargo tree rejects pruning a
+    # package absent from its graph. Only the drawn desktop needs this filter.
+    if package == "tilo-desktop":
+        command += ["--prune", "workspace-hack"]
     if target:
         command += ["--target", target]
     if depth is not None:
