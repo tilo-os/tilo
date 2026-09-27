@@ -7866,6 +7866,11 @@ fn cargo_toml(spec: &AppSpec) -> String {
             repo.join("vendor/vello_shaders").to_string_lossy(),
         )
     };
+    let license = if spec.workspace_member {
+        "license.workspace = true\n"
+    } else {
+        "license = \"AGPL-3.0-only\"\n"
+    };
     let extras = format!("{lints}{patches}");
     let sdk_path = sdk_path_for_ui(&spec.ui_path);
     let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
@@ -7873,8 +7878,9 @@ fn cargo_toml(spec: &AppSpec) -> String {
         |crates| crates.join("runtime/runtime-dylib"),
     );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\n{lints}",
         name = spec.package_name,
+        license = license,
         crate_name = spec.crate_name,
         sdk_path = sdk_path.to_string_lossy(),
         runtime = runtime_path.to_string_lossy(),
