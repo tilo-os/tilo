@@ -340,8 +340,20 @@ impl App {
         let Some(confirmed) = self.document_history.take_confirmed_restore() else {
             return;
         };
-        let author = Some(self.local_author().clone());
-        let result = crate::standalone_history::apply_restore(&mut self.state, &confirmed, author);
+        let author = self.local_author().clone();
+        let result = self.apply_history_restore(&confirmed, author);
+        self.document_history.report_restore(&result);
+    }
+
+    /// The one write behind every restore, from the History pane or an
+    /// action: one attributed, undoable change, persisted like any other.
+    pub(super) fn apply_history_restore(
+        &mut self,
+        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
+        author: crate::permissions::UserId,
+    ) -> Result<bool, HistoryError> {
+        let result =
+            crate::standalone_history::apply_restore(&mut self.state, confirmed, Some(author));
         if matches!(result, Ok(true)) {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -355,7 +367,7 @@ impl App {
             }
         }
         let _ = self.with_history_host(StandaloneHistoryHost::refresh);
-        self.document_history.report_restore(&result);
+        result
     }
 
     #[cfg(feature = "native")]
@@ -836,6 +848,8 @@ impl App {
             return;
         }
         self.history_chrome_enabled = true;
+        // The published History resource exists only where History does.
+        self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
         self.layout.structure_dirty = true;
@@ -1087,7 +1101,7 @@ mod tests {
             assert!(!app.action_ui_routes(&open).is_empty());
         }
 
-        // Case `native_history_local_door_preserves_root_and_excludes_broker_resources`.
+        // Case `native_history_chrome_stays_local_while_history_is_published_gated`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1122,10 +1136,36 @@ mod tests {
                 original,
                 std::ptr::from_ref(app.root_widget.as_ref())
             ));
+            let published = app.publication_resources();
             assert!(
-                app.collect_resources()
+                published
                     .iter()
-                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
+                    .chain(app.collect_resources().iter())
+                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:")),
+                "the pane's session, selection and review controls stay local"
+            );
+            let history = tilo_actions::door::survey(&published)
+                .into_iter()
+                .filter(|descriptor| {
+                    descriptor.address.resource == super::super::history_actions::RESOURCE
+                })
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            use tilo_actions::PermissionRequirement::{Read, Write};
+            assert_eq!(
+                history,
+                [
+                    ("history.close", Write),
+                    ("history.compare", Write),
+                    ("history.list", Read),
+                    ("history.open", Read),
+                    ("history.restore", Write),
+                    ("history.view_at", Write),
+                ]
+                .into_iter()
+                .map(|(action, permission)| (action.to_owned(), permission))
+                .collect(),
+                "the broker gates each History action on the permission it declares"
             );
             let snapshot = app.document_history_snapshot().unwrap().unwrap();
             app.select_document_history(&[snapshot.entries[0].id])

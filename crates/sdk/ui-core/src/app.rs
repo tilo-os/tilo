@@ -46,6 +46,9 @@ mod bound_record_sync;
 mod close_admission;
 mod document_history;
 mod handoff;
+mod history_actions;
+#[cfg(test)]
+mod history_actions_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
