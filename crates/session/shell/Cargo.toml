@@ -367,7 +367,7 @@ reis = { version = "0.7.1", features = ["calloop"] }
 # Session-lock unlock reuses the greeter's greetd/PAM conversation
 # (`greetd_client::verify_password` — verify credentials without starting a
 # session) so login and unlock share one non-leaky auth path.
-greeter = { path = "../greeter" }
+greetd-client = { path = "../greetd-client" }
 # Session-owned Windows compatibility broker. The shell supplies the trusted
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../../windows/compat-service" }

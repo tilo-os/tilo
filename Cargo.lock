@@ -5095,6 +5095,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "greetd-client"
+version = "0.1.0"
+dependencies = [
+ "greetd_ipc",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "greetd_ipc"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5112,7 +5121,7 @@ dependencies = [
  "automerge",
  "bounded-command",
  "console-control",
- "greetd_ipc",
+ "greetd-client",
  "serde_json",
  "taffy",
  "tilo-ui",
@@ -13065,7 +13074,7 @@ dependencies = [
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
- "greeter",
+ "greetd-client",
  "gstreamer-app",
  "hex",
  "image",
