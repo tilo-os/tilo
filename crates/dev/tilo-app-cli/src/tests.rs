@@ -4409,16 +4409,7 @@ fn outcome_path(outcome: DevCandidate) -> PathBuf {
 /// that never writes it; a loaded runner can take seconds to start one.
 #[cfg(unix)]
 fn wait_for_file(path: &Path) {
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(30)) else {
-        panic!("clock cannot represent the wait deadline");
-    };
-    while Instant::now() < deadline {
-        if path.is_file() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("timed out waiting for {}", path.display());
+    tilo_test_env::wait_until(path.display(), || path.is_file());
 }
 
 #[test]

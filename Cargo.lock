@@ -2484,6 +2484,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -9739,6 +9740,7 @@ dependencies = [
  "tilo-crypto",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
  "zbus",
@@ -13059,6 +13061,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-test-env",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -14747,6 +14750,7 @@ dependencies = [
  "tempfile",
  "tilo-app-package",
  "tilo-headless-schema",
+ "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -15380,6 +15384,7 @@ dependencies = [
  "test-http",
  "tilo-clock",
  "tilo-net",
+ "tilo-test-env",
  "url",
  "workspace-hack",
 ]
@@ -15487,6 +15492,7 @@ dependencies = [
  "serde_json",
  "tilo-callstream",
  "tilo-rt",
+ "tilo-test-env",
  "tokio",
  "workspace-hack",
  "xdg-paths",
