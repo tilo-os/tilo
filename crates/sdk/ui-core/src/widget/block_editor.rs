@@ -217,6 +217,14 @@ impl BlockKind {
             _ => 0,
         }
     }
+
+    /// The kind a bound block list spells as `stored` (`paragraph`,
+    /// `heading2`, `bullet:1`, `checklist:0:1`, `code:rust`, …), when it is
+    /// a valid spelling: how an owner reads blocks it stored in that form.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        let kind = kind_from_str(stored);
+        (kind_to_str(&kind) == stored).then_some(kind)
+    }
 }
 
 pub struct Block {
@@ -4732,9 +4740,7 @@ fn accessible_kind_name(kind: &BlockKind) -> &'static str {
 }
 
 fn valid_existing_kind(kind: &str) -> bool {
-    // Round-trip through the same parser/serializer the CRDT uses, so the
-    // accept/reject rule cannot drift from `kind_from_str` / `kind_to_str`.
-    kind_to_str(&kind_from_str(kind)) == kind
+    BlockKind::from_stored(kind).is_some()
 }
 
 fn kind_from_str(s: &str) -> BlockKind {

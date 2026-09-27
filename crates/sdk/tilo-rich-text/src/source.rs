@@ -16,7 +16,7 @@ use ui::automerge::{ChangeHash, ObjId};
 use ui::framework::{Dispatcher, Live, ResourceSelection};
 use ui::presence::PresenceKey;
 use ui::tilo_actions::{Action, ActionContext, ActionError};
-use ui::tilo_resource::{Demand, Doc, Resource, Tracker};
+use ui::tilo_resource::{Demand, Doc, ModelError, Resource, Tracker};
 use ui::widget::PresenceKeyFn;
 
 /// Everything the editor reads.
@@ -140,11 +140,47 @@ struct FrameworkSink<A> {
 
 /// The state of rich text under one field, kept current as the document
 /// changes by re-reading what changed.
-struct FieldState {
-    root: ObjId,
+pub(crate) struct FieldState {
+    pub(crate) root: ObjId,
     tracker: Tracker,
-    state: RichTextState,
+    pub(crate) state: RichTextState,
     revision: u64,
+}
+
+impl FieldState {
+    /// The rich text under `root`, every paragraph read, with changes
+    /// tracked from here.
+    pub(crate) fn read(doc: &mut Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
+        let mut state = RichText::read_under(doc, &root)?;
+        RichText::load(&mut state, doc, &all())?;
+        let mut tracker = Tracker::new();
+        tracker.start(doc);
+        Ok(Self {
+            root,
+            tracker,
+            state,
+            revision,
+        })
+    }
+
+    /// Re-read what changed since the last read; `true` when anything did.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the change cannot be placed; a fresh
+    /// [`read`](Self::read) is then the way back.
+    pub(crate) fn refresh(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
+        let state = &self.state;
+        let delta = self
+            .tracker
+            .delta_located(doc, &|obj| RichText::locate(state, obj));
+        if delta.is_empty() {
+            return Ok(false);
+        }
+        RichText::refresh_under(&mut self.state, doc, &delta)?;
+        RichText::load(&mut self.state, doc, &all())?;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(true)
+    }
 }
 
 /// Rich text stored in a field of another resource, edited through that
@@ -256,25 +292,12 @@ impl<A> RichTextField<A> {
     }
 
     fn reread(&mut self, doc: &mut Doc, root: ObjId) {
-        let read = RichText::read_under(doc, &root).and_then(|mut state| {
-            RichText::load(&mut state, doc, &all())?;
-            Ok(state)
-        });
-        match read {
-            Ok(state) => {
-                let mut tracker = Tracker::new();
-                tracker.start(doc);
-                let revision = self
-                    .field
-                    .as_ref()
-                    .map_or(0, |field| field.revision.wrapping_add(1));
-                self.field = Some(FieldState {
-                    root,
-                    tracker,
-                    state,
-                    revision,
-                });
-            }
+        let revision = self
+            .field
+            .as_ref()
+            .map_or(0, |field| field.revision.wrapping_add(1));
+        match FieldState::read(doc, root, revision) {
+            Ok(field) => self.field = Some(field),
             Err(error) => {
                 tracing::warn!(%error, "rich-text field unreadable");
                 self.field = None;
@@ -308,18 +331,8 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
         let Some(field) = &mut self.field else {
             return;
         };
-        let state = &field.state;
-        let delta = field
-            .tracker
-            .delta_located(doc, &|obj| RichText::locate(state, obj));
-        if delta.is_empty() {
-            return;
-        }
-        let refreshed = RichText::refresh_under(&mut field.state, doc, &delta)
-            .and_then(|()| RichText::load(&mut field.state, doc, &all()));
-        match refreshed {
-            Ok(()) => field.revision = field.revision.wrapping_add(1),
-            Err(_) => self.reread(doc, root),
+        if field.refresh(doc).is_err() {
+            self.reread(doc, root);
         }
     }
 
