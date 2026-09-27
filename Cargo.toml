@@ -495,7 +495,7 @@ zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
 # through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
-fuser = "0.17.0"
+fuser = "0.18.0"
 notify = { version = "8", default-features = false }
 landlock = "0.4"
 seccompiler = "0.5"
