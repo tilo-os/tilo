@@ -77,6 +77,7 @@ jobs:
             cargo fmt --version
             cargo deny --version
             cargo machete --version
+            cargo hakari --version
             for tool in git python3 jq rg node gpg curl diff which; do
               command -v "$tool"
             done
