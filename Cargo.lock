@@ -12817,6 +12817,7 @@ dependencies = [
  "compat-service",
  "desktop-policy",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "file-explorer",
  "fluent",
  "fs",

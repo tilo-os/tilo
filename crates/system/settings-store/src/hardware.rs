@@ -1458,6 +1458,8 @@ pub enum ShortcutAction {
     PowerMenu,
     /// Switch to the next keyboard input source.
     NextInputSource,
+    /// Open the emoji picker over the focused text field.
+    EmojiPicker,
 }
 
 impl ShortcutAction {
@@ -2096,6 +2098,8 @@ impl Default for ShortcutConfig {
             // Super+Space is global search; the Alt-modified chord is the
             // nearest free spelling of the GNOME/Windows convention.
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
+            // Windows' emoji panel key; GNOME uses Super+. for the same.
+            (ShortcutAction::EmojiPicker, super_chord(".")),
         ]
         .into_iter()
         .collect();
@@ -2595,6 +2599,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomIn), "Super+Alt+=");
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -2740,7 +2745,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 43);
+            assert_eq!(cfg.bindings.len(), 44);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

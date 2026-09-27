@@ -58,6 +58,7 @@ pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod editor_app;
+pub mod emoji_picker;
 pub mod fabric_clock;
 mod file_picker_overlay;
 pub mod fixed_chords;
