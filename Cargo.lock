@@ -13068,6 +13068,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -14983,6 +14984,35 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
