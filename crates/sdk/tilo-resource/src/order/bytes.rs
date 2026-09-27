@@ -112,9 +112,177 @@ fn after(l: &[u8]) -> Vec<u8> {
     v
 }
 
+/// A key strictly between `lo` and `hi` that differs with `salt`, so two
+/// replicas inserting into the same gap at once, each with its own salt,
+/// almost always get distinct keys, and a later insert fits between them.
+///
+/// Between two bounds it lies a salted fraction of the way across, within
+/// the middle half of the gap; after the last key it counts one up in the
+/// digit before two salt digits, so a run of appends keeps its length.
+pub fn between_salted(lo: Option<&[u8]>, hi: Option<&[u8]>, salt: u16) -> Vec<u8> {
+    match hi {
+        None => after_salted(lo.unwrap_or(&[]), salt),
+        Some(h) => across(lo.unwrap_or(&[]), h, salt),
+    }
+}
+
+/// `lo + (hi - lo) * f` for `f` in `[1/4, 3/4)` chosen by `salt` (requires
+/// `lo < hi`).
+fn across(lo: &[u8], hi: &[u8], salt: u16) -> Vec<u8> {
+    let width = lo.len().max(hi.len()).max(1);
+    // `hi - lo`, least-significant digit first; `hi > lo`, so nothing is
+    // borrowed out of the top digit.
+    let mut gap = vec![0u8; width];
+    let mut borrow = 0u16;
+    for i in (0..width).rev() {
+        let h = u16::from(hi.get(i).copied().unwrap_or(0));
+        let taken = u16::from(lo.get(i).copied().unwrap_or(0)).saturating_add(borrow);
+        // A digit plus a borrow is at most 256, so the widened sums are exact.
+        let (digit, next) = if h >= taken {
+            (h.saturating_sub(taken), 0)
+        } else {
+            (h.saturating_add(256).saturating_sub(taken), 1)
+        };
+        borrow = next;
+        if let Some(slot) = gap.get_mut(i) {
+            *slot = u8::try_from(digit).unwrap_or(0);
+        }
+    }
+    // `gap * n / 65536`, with `n` in `[16384, 49152)`: two digits longer.
+    let n = 16_384u32.saturating_add(u32::from(salt % 32_768));
+    let mut part = vec![0u8; width.saturating_add(2)];
+    let mut carry = 0u32;
+    for i in (0..width).rev() {
+        // A digit times `n` plus a carry stays far below `u32::MAX`.
+        let value = u32::from(gap.get(i).copied().unwrap_or(0))
+            .saturating_mul(n)
+            .saturating_add(carry);
+        if let Some(slot) = part.get_mut(i.saturating_add(2)) {
+            *slot = u8::try_from(value & 0xff).unwrap_or(0);
+        }
+        carry = value >> 8;
+    }
+    // The product is below 1, so what is carried out is the two top digits.
+    if let Some(slot) = part.get_mut(1) {
+        *slot = u8::try_from(carry & 0xff).unwrap_or(0);
+    }
+    if let Some(slot) = part.first_mut() {
+        *slot = u8::try_from((carry >> 8) & 0xff).unwrap_or(0);
+    }
+    // `lo + part`, below `hi` and so below 1: nothing carries out.
+    let mut out = vec![0u8; part.len()];
+    let mut carry = 0u16;
+    for i in (0..part.len()).rev() {
+        let total = u16::from(lo.get(i).copied().unwrap_or(0))
+            .saturating_add(u16::from(part.get(i).copied().unwrap_or(0)))
+            .saturating_add(carry);
+        let [digit, next] = total.to_le_bytes();
+        if let Some(slot) = out.get_mut(i) {
+            *slot = digit;
+        }
+        carry = u16::from(next);
+    }
+    while out.len() > 1 && out.last() == Some(&0) {
+        out.pop();
+    }
+    out
+}
+
+/// A key after `l` ending in two salt digits.
+fn after_salted(l: &[u8], salt: u16) -> Vec<u8> {
+    let [high, low] = salt.to_be_bytes();
+    let salted = |mut head: Vec<u8>| {
+        // The last digit is never zero, so the key keeps its length.
+        head.extend_from_slice(&[high, low | 1]);
+        head
+    };
+    let mut v = l.to_vec();
+    while v.len() > 1 && v.last() == Some(&0) {
+        v.pop();
+    }
+    if v.len() < APPEND_DIGITS.saturating_add(2) {
+        v.resize(APPEND_DIGITS.saturating_add(2), 0);
+    }
+    let head = v.len().saturating_sub(2);
+    let mut counted = v.get(..head).unwrap_or(&[]).to_vec();
+    if let Some(i) = counted.iter().rposition(|&b| b < 255) {
+        counted.truncate(i.saturating_add(1));
+        if let Some(last) = counted.last_mut() {
+            *last = last.saturating_add(1);
+        }
+        counted.resize(head, 0);
+        return salted(counted);
+    }
+    // Every counted digit is 255: count on past all of `l`.
+    let mut longer = v;
+    longer.extend(std::iter::repeat_n(0, APPEND_DIGITS.saturating_sub(1)));
+    longer.push(1);
+    salted(longer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn salted_keys_stay_within_their_bounds_and_differ_by_salt() {
+        use Ordering::Less;
+        type Bound = Option<Vec<u8>>;
+        let bounds: [(Bound, Bound); 6] = [
+            (None, None),
+            (Some(vec![10]), Some(vec![11])),
+            (Some(vec![10, 255, 255]), Some(vec![11])),
+            (None, Some(vec![0, 0, 1])),
+            (Some(vec![255, 255, 255, 255, 255]), None),
+            (
+                Some(vec![1, 2, 3, 4, 5, 6, 7]),
+                Some(vec![1, 2, 3, 4, 5, 6, 8]),
+            ),
+        ];
+        for (lo, hi) in bounds {
+            let mut keys = Vec::new();
+            for salt in [0, 2, 7_000, 20_001, 32_767] {
+                let key = between_salted(lo.as_deref(), hi.as_deref(), salt);
+                if let Some(lo) = &lo {
+                    assert_eq!(cmp(lo, &key), Less, "{lo:?} < {key:?}");
+                }
+                if let Some(hi) = &hi {
+                    assert_eq!(cmp(&key, hi), Less, "{key:?} < {hi:?}");
+                }
+                keys.push(key);
+            }
+            let mut distinct = keys.clone();
+            distinct.sort();
+            distinct.dedup();
+            assert_eq!(distinct.len(), keys.len(), "{keys:?}");
+        }
+    }
+
+    #[test]
+    fn a_later_insert_fits_between_two_made_at_once() {
+        let (lo, hi) = (vec![64u8], vec![192u8]);
+        let one = between_salted(Some(&lo), Some(&hi), 11);
+        let other = between_salted(Some(&lo), Some(&hi), 12_345);
+        let (first, second) = if cmp(&one, &other).is_lt() {
+            (one, other)
+        } else {
+            (other, one)
+        };
+        let middle = between_salted(Some(&first), Some(&second), 99);
+        assert!(cmp(&first, &middle).is_lt() && cmp(&middle, &second).is_lt());
+    }
+
+    #[test]
+    fn a_run_of_salted_appends_keeps_its_length() {
+        let mut key = between_salted(None, None, 5);
+        let length = key.len();
+        for salt in 0..2_000u16 {
+            let next = between_salted(Some(&key), None, salt.wrapping_mul(7_919));
+            assert!(cmp(&key, &next).is_lt());
+            key = next;
+        }
+        assert_eq!(key.len(), length);
+    }
 
     #[test]
     fn between_orders_strictly_within_its_bounds() {

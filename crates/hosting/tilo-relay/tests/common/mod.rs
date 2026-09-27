@@ -217,6 +217,9 @@ pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Wait until `relay` has accepted `peer`'s subscription to `workspace`.
 ///
 /// For a federation link this is the moment from which a delta published on
@@ -224,25 +227,23 @@ pub async fn client_endpoint() -> Endpoint {
 /// earlier is not, so a test waits for it instead of sleeping and hoping the
 /// handshake finished in time.
 pub async fn wait_until_subscribed(relay: &Relay, workspace: u64, peer: &[u8; 32]) {
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+    tilo_test_env::within("the federated peer subscribed to the workspace", async {
         while !relay.is_subscribed(workspace, peer).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("the federated peer subscribed to the workspace");
+    .await;
 }
 
-/// Poll `cond` up to `attempts * 20ms` waiting for it to return
-/// true.
-pub async fn wait_for(mut cond: impl FnMut() -> bool, attempts: u32) -> bool {
-    for _ in 0..attempts {
-        if cond() {
-            return true;
+/// Poll `cond` until it holds, failing the test naming `what` if it never
+/// does.
+pub async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    tilo_test_env::within(what, async {
+        while !cond() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    cond()
+    })
+    .await;
 }
 
 #[allow(

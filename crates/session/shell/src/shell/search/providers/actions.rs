@@ -210,62 +210,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        BLUETOOTH_PAIRING_DECLINE_ID => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         _ => {}
     }
     contract
-}
-
-/// Viewer-local workspace view rows (switch workspace, open the activity
-/// sheet in a given view). Mirrors
-/// `tilo_desktop::activity::view_actions::workspace_view_descriptors`, read
-/// from the shell's own desktop model; the request names workspaces by raw id
-/// and `ChromeState::request_workspace_view` resolves it back.
-fn workspace_view_descriptors(
-    tree: &crate::shell::state::DesktopTree,
-    activity_available: bool,
-) -> Vec<tilo_desktop::activity::view_actions::WorkspaceViewDescriptor> {
-    use tilo_desktop::activity::ActivityView;
-    use tilo_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
-    let mut result = tree
-        .workspaces
-        .iter()
-        .map(|workspace| WorkspaceViewDescriptor {
-            id: format!("workspace.select.{}", workspace.id.0),
-            label: format!("Switch to {}", workspace.name),
-            request: WorkspaceViewRequest::Select {
-                workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-            },
-        })
-        .collect::<Vec<_>>();
-    if activity_available && let Some(workspace) = tree.active_workspace() {
-        for (id, label, view) in [
-            (
-                "room.activity.open",
-                "Review workspace activity",
-                ActivityView::CatchUp,
-            ),
-            (
-                "room.activity.explore",
-                "Explore workspace activity",
-                ActivityView::Explore,
-            ),
-            (
-                "room.activity.replay",
-                "Replay workspace activity",
-                ActivityView::Replay,
-            ),
-        ] {
-            result.push(WorkspaceViewDescriptor {
-                id: id.into(),
-                label: label.into(),
-                request: WorkspaceViewRequest::OpenActivity {
-                    workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-                    view,
-                },
-            });
-        }
-    }
-    result
 }
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
@@ -498,12 +449,12 @@ fn apply_permission_profile_action(
                 tree.doc_insert_capability(workspace_id, &capability);
             }
         }
-        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use crate::shell::workspace_settings::PermissionProfileOperation;
+        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use tilo_desktop::workspace_settings::PermissionProfileOperation;
             let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
             let operation =
-                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
@@ -522,7 +473,7 @@ fn apply_permission_profile_action(
                 .active_workspace()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
                 .actor_for_person(&actor);
-            crate::shell::workspace_settings::apply_app_action_operation(
+            crate::shell::workspace_governance::apply_app_action_operation(
                 &mut tree,
                 workspace_id,
                 &person,
@@ -873,7 +824,7 @@ impl Action {
             "search-action-settings-open",
             "search-action-settings-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
             },
         ),
@@ -882,7 +833,7 @@ impl Action {
             "search-action-settings-members-open",
             "search-action-settings-members-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
             },
         ),
@@ -891,7 +842,7 @@ impl Action {
             "search-action-settings-privacy-open",
             "search-action-settings-privacy-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
             },
         ),
@@ -900,7 +851,7 @@ impl Action {
             "search-action-settings-apps-open",
             "search-action-settings-apps-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
             },
         ),
@@ -1213,6 +1164,12 @@ impl Action {
             |_, _| settle_display_change(false),
         ),
         chrome(
+            BLUETOOTH_PAIRING_DECLINE_ID,
+            "search-action-bluetooth-pairing-decline",
+            "search-action-bluetooth-pairing-decline-subtitle",
+            |_, _| decline_bluetooth_pairing(),
+        ),
+        chrome(
             "capture.open",
             "search-action-capture-open",
             "search-action-capture-open-subtitle",
@@ -1257,9 +1214,12 @@ impl Action {
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
-                let followable = crate::shell::overlay_host::collaborator_roster_rows(&st.tree())
-                    .into_iter()
-                    .any(|row| row.id == id && row.followable);
+                let followable = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && row.followable);
                 if !followable {
                     return Err(ActionError::Refused(format!(
                         "`{id}` is not a connected, followable collaborator in this workspace"
@@ -1398,7 +1358,7 @@ impl Action {
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject};
-                use crate::shell::workspace_settings::AgentAuthorityPreset;
+                use tilo_desktop::workspace_settings::AgentAuthorityPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -1905,6 +1865,24 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
+
+/// Decline the Bluetooth pairing question on screen, or stop the pairing
+/// whose code it displays.
+///
+/// There is deliberately no accepting counterpart. Confirming a pairing
+/// means comparing a code with the device in front of you, or typing the one
+/// it shows; only the person at this machine can do that, on the dialog
+/// itself. An agent or a script can always say no, and never yes.
+fn decline_bluetooth_pairing() -> Result<(), ActionError> {
+    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(
+            "no Bluetooth pairing is waiting".into(),
+        ))
+    }
+}
 
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
@@ -1967,7 +1945,7 @@ fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract 
     if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
-            reason: "Quick Settings service is unavailable".into(),
+            reason: t("search-action-quick-settings-unavailable"),
         };
     }
     contract
@@ -2282,12 +2260,16 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        let descriptors = workspace_view_descriptors(&ctx.chrome.tree().desktop, true);
+        let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree().desktop,
+            true,
+        );
+        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
             let Some(score) = match_score(
                 &needle_lower,
                 &descriptor.label.to_lowercase(),
-                "workspace activity history",
+                &view_keywords,
                 &descriptor.id,
             ) else {
                 continue;
@@ -2299,7 +2281,7 @@ impl SearchProvider for ActionsProvider {
                 provider_id: self.id().into(),
                 id: descriptor.id,
                 title: descriptor.label,
-                subtitle: Some("Local workspace view".into()),
+                subtitle: Some(t("search-action-workspace-view-subtitle")),
                 badge: None,
                 score,
                 params: vec![],
@@ -2400,7 +2382,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -2443,7 +2425,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -2611,7 +2593,7 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
@@ -2654,7 +2636,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -2981,7 +2963,7 @@ mod tests {
                 matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
             );
             assert!(
-                !chrome.borrow().notifications.is_empty(),
+                !chrome.borrow().notifications().is_empty(),
                 "the person still receives useful visible feedback"
             );
         }
@@ -3286,7 +3268,7 @@ mod tests {
             assert!(state.overlays.ws_settings);
             assert_eq!(
                 state.ws_settings_tab,
-                crate::shell::workspace_settings::WsTab::Permissions
+                tilo_desktop::workspace_settings::WsTab::Permissions
             );
         }
 

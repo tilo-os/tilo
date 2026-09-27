@@ -2858,7 +2858,9 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::SetParagraphStyle { blocks, .. }
         | RichTextAction::ApplyNamedStyle { blocks, .. }
         | RichTextAction::SetBlockAttr { blocks, .. }
-        | RichTextAction::RemoveBlocks { blocks } => tilo_actions::InteractionAnchor::Objects {
+        | RichTextAction::ClearBlockAttr { blocks, .. }
+        | RichTextAction::RemoveBlocks { blocks }
+        | RichTextAction::MoveBlocks { blocks, .. } => tilo_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
         RichTextAction::SetPageMargins { .. }
@@ -2912,6 +2914,7 @@ fn describe(action: &RichTextAction) -> String {
         }
         RichTextAction::InsertParagraph { .. } => "insert paragraph".to_string(),
         RichTextAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
+        RichTextAction::MoveBlocks { blocks, .. } => format!("move {} block(s)", blocks.len()),
         RichTextAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
         other => format!("{other:?}"),
     }
@@ -4335,7 +4338,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let offers = loop {
                 assert!(Instant::now() < deadline, "both app catalogues must arrive");
                 session.refresh_catalogue().unwrap();

@@ -716,7 +716,7 @@ mod tests {
             assert!(cache.has_pending(), "the request is in flight");
             assert_eq!(cache.state(id), WaveformState::Pending);
 
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             while cache.has_pending() && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
                 cache.drain();

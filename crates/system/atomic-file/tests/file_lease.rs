@@ -20,13 +20,12 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const CHILD_MARKER: &str = "TILO_ATOMIC_FILE_LEASE_CHILD";
 const CHILD_PATH: &str = "TILO_ATOMIC_FILE_LEASE_PATH";
 const CHILD_READY: &str = "TILO_ATOMIC_FILE_LEASE_READY";
 const CHILD_TEST: &str = "child_holds_exclusive_lease";
-const CHILD_TIMEOUT: Duration = Duration::from_secs(10);
 const BLOCKED_OBSERVATION: Duration = Duration::from_millis(250);
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -233,14 +232,14 @@ fn blocking_acquisition_completes_after_another_process_releases() {
             .send(FileLease::acquire(waiter_file, LeaseMode::Exclusive))
             .unwrap();
     });
-    attempting_rx.recv_timeout(CHILD_TIMEOUT).unwrap();
+    tilo_test_env::recv("the waiter to start acquiring", &attempting_rx);
     assert!(matches!(
         acquired_rx.recv_timeout(BLOCKED_OBSERVATION),
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
 
     child.release_and_wait();
-    let acquired = acquired_rx.recv_timeout(CHILD_TIMEOUT).unwrap();
+    let acquired = tilo_test_env::recv("the blocked acquisition", &acquired_rx);
     assert!(
         acquired.is_ok(),
         "blocking acquisition failed: {acquired:?}"
@@ -292,20 +291,12 @@ impl LeaseChild {
     }
 
     fn wait_until_ready(&mut self) {
-        let deadline = Instant::now().checked_add(CHILD_TIMEOUT).unwrap();
-        loop {
-            if self.ready.is_file() {
-                return;
-            }
+        tilo_test_env::wait_until("the lease child to become ready", || {
             if let Some(status) = self.child_mut().try_wait().unwrap() {
                 panic!("lease child exited before signaling readiness: {status}");
             }
-            assert!(
-                Instant::now() < deadline,
-                "lease child did not become ready"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            self.ready.is_file()
+        });
     }
 
     fn release_and_wait(&mut self) {
@@ -329,14 +320,9 @@ impl LeaseChild {
     }
 
     fn wait_until_exit(&mut self) -> ExitStatus {
-        let deadline = Instant::now().checked_add(CHILD_TIMEOUT).unwrap();
-        loop {
-            if let Some(status) = self.child_mut().try_wait().unwrap() {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "lease child did not exit");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_for("the lease child to exit", || {
+            self.child_mut().try_wait().unwrap()
+        })
     }
 
     fn child_mut(&mut self) -> &mut Child {

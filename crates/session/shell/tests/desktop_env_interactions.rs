@@ -666,7 +666,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
     // Dragging a tab pill to a new slot inside its own group must reorder
     // the persisted `tabs` list — the whole wire from `TabBar` release
     // through `pending_tab_reorder` to
-    // `WorkspaceTree::reorder_tab_within_group`.
+    // the desktop controller's committed tab reorder.
     {
         // Three tabs so there are gaps to drop into.
         let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);

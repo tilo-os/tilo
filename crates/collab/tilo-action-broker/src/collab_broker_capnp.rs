@@ -9976,7 +9976,7 @@ pub(super) fn spawn_configured(
 /// # Errors
 ///
 /// Returns an error if the socket at `path` does not appear and accept a
-/// connection within about 2 seconds — the accept loop in [`spawn`] may
+/// connection within 30 seconds — the accept loop in [`spawn`] may
 /// not have bound yet, or the broker never started.
 pub async fn dial_capnp_for_test(
     path: PathBuf,
@@ -9987,11 +9987,13 @@ pub async fn dial_capnp_for_test(
     ),
     std::io::Error,
 > {
-    // Retry-with-backoff ~2s: the accept loop may not have bound yet.
+    // Retry until the accept loop has bound; the bound only catches a broker
+    // that never starts, since a loaded machine can delay the bind for seconds.
     let stream = {
         let mut last_err: Option<std::io::Error> = None;
         let mut stream = None;
-        for _ in 0..50 {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(30) {
             match tokio::net::UnixStream::connect(&path).await {
                 Ok(s) => {
                     stream = Some(s);
@@ -10009,7 +10011,7 @@ pub async fn dial_capnp_for_test(
                 return Err(last_err.unwrap_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        "capnp socket did not appear within 2s",
+                        "capnp socket did not appear within 30s",
                     )
                 }));
             }
@@ -10283,6 +10285,7 @@ pub mod tests {
     use std::time::SystemTime;
 
     #[cfg(test)]
+    #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
@@ -10544,9 +10547,7 @@ pub mod tests {
                 Ok(71_u64)
             })
         });
-        effect_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("operation reached its admitted effect");
+        tilo_test_env::recv("operation reached its admitted effect", &effect_rx);
         state.request_stop();
         release_tx.send(()).expect("release operation");
         assert_eq!(
@@ -10612,15 +10613,13 @@ pub mod tests {
                 &CrdtRoute::cluster("self-drop-room"),
             );
         }));
-        sink_finished
-            .recv_timeout(Duration::from_secs(2))
-            .expect("broker-thread public sink completed without self-join");
+        tilo_test_env::recv(
+            "broker-thread public sink completed without self-join",
+            &sink_finished,
+        );
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(
             surviving_facade.peer_action_attachment().is_err(),
             "facade retained across thread exit is inert"
@@ -10693,16 +10692,14 @@ pub mod tests {
                 &CrdtRoute::cluster("off-thread-room"),
             );
         });
-        sink_finished
-            .recv_timeout(Duration::from_secs(2))
-            .expect("off-thread sink drop joined broker without deadlock");
+        tilo_test_env::recv(
+            "off-thread sink drop joined broker without deadlock",
+            &sink_finished,
+        );
         caller.join().expect("off-thread fanout caller");
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists());
     }
 
@@ -10767,18 +10764,16 @@ pub mod tests {
                 .send(facade.peer_action_attachment())
                 .expect("send facade result");
         });
-        let result = result_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("owner health callback returned without join deadlock");
+        let result = tilo_test_env::recv(
+            "owner health callback returned without join deadlock",
+            &result_rx,
+        );
         assert!(
             result.is_err(),
             "shutdown requested by the health callback fences its facade result"
         );
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists());
         let reopened = InvocationJournal::open(&journal_root)
             .expect("health callback shutdown releases journal");
@@ -10911,10 +10906,7 @@ pub mod tests {
             .expect("attached broker state")
             .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists(), "unwind releases owned socket custody");
         assert!(
             facade.peer_action_attachment().is_err(),
