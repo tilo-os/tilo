@@ -6,8 +6,8 @@ files to an automation branch named after the files' SHA-256 and call this
 script, which checks that branch, digest and references agree before opening
 (or re-finding) the pull request.
 
-Every pin lands on its own: the kernel builds on its own signed buildroot, so
-the frozen RPM index and the kernels never have to move together.
+Every pin lands on its own. Frozen RPM snapshots resolve by package-set
+fingerprint and are not promoted through this script.
 
 FORGEJO_TOKEN must be able to read and create pull requests on the repository;
 the workflows pass secrets.RELEASE_TOKEN. The token that pushes the branch
@@ -29,7 +29,6 @@ import urllib.request
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-kernel@sha256:([0-9a-f]{64})$")
-RPMS_REF = re.compile(r"^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 WPE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 KERNEL_BUILDROOT_REF = re.compile(
@@ -54,16 +53,6 @@ def kernel_contents(x86_ref: str, arm_ref: str) -> str:
         "",
     ))
 
-
-def rpms_contents(rpms_ref: str, source_revision: str) -> str:
-    """Return the canonical os/rpms-snapshot.env for the frozen RPM index."""
-    return "\n".join((
-        "# Digest-pinned frozen RPM repository used by os/Containerfile.",
-        "# Updated by the snapshot-rpms workflow when the package set changes.",
-        f"RPMS_REF={rpms_ref}",
-        f"RPMS_SOURCE_REVISION={source_revision}",
-        "",
-    ))
 
 
 def wpe_contents(x86_ref: str, arm_ref: str) -> str:
@@ -104,21 +93,6 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
                     "signed native kernel buildroot."),
     }
 
-
-def rpms_snapshot(args, parser) -> tuple[str, dict]:
-    if RPMS_REF.fullmatch(args.rpms_ref) is None:
-        parser.error("--rpms-ref must be an immutable tilo/rpms sha256 reference")
-    if REVISION.fullmatch(args.source_revision or "") is None:
-        parser.error("--source-revision must be the full commit the index was built from")
-    return rpms_contents(args.rpms_ref, args.source_revision), {
-        "label": "RPM",
-        "branch_prefix": "automation/rpm-snapshot-",
-        "title": "build(os): refresh native RPM snapshot index",
-        "summary": ("Automated promotion of the signed, provenance-verified "
-                    "two-architecture frozen RPM index. The kernel builds on "
-                    "its own signed buildroot, so this pin does not invalidate "
-                    "the pinned kernels."),
-    }
 
 
 def wpe_snapshot(args, parser) -> tuple[str, dict]:
@@ -209,11 +183,6 @@ def promote() -> int:
     kernel.add_argument("--x86-ref", required=True)
     kernel.add_argument("--arm-ref", required=True)
     kernel.set_defaults(snapshot=kernel_snapshot)
-    rpms = kinds.add_parser("rpms", help="the two-architecture frozen RPM index")
-    rpms.add_argument("--rpms-ref", required=True)
-    rpms.add_argument("--source-revision", required=True,
-                      help="the commit the index was built from")
-    rpms.set_defaults(snapshot=rpms_snapshot)
     wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
     wpe.add_argument("--x86-ref", required=True)
     wpe.add_argument("--arm-ref", required=True)

@@ -260,9 +260,15 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: os/dev/require-cosign-authority.sh
 
+  ensure-rpms:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    uses: ./.forgejo/workflows/snapshot-rpms.yml
+    secrets: inherit
+
   build-and-push:
-    needs: [plan, signing-preflight]
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    needs: [plan, signing-preflight, ensure-rpms]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') && needs.ensure-rpms.result == 'success' }}
     strategy:
       # Each native lane validates and caches its own architecture. One lane
       # failing must not cancel the other's hours of build; promotion still
@@ -631,51 +637,12 @@ jobs:
       - name: Load BASE_REF (mirrored Fedora bootc base)
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
 
-      # Pin the frozen RPM repo the build installs from (cross-time reproducible).
-      # Only the RPMS_REF= line — $GITHUB_ENV has no comment syntax, so the file's
-      # leading `#` lines would corrupt the env (RPMS_REF ended up empty).
-      - name: Authenticate RPMS_REF (frozen package snapshot)
+      # Resolve the frozen RPM repo by package-set fingerprint. ensure-rpms
+      # creates the set-<fingerprint> tag when missing; resolve verifies it.
+      - name: Resolve RPMS_REF (frozen package snapshot)
         run: |
           set -euo pipefail
-          . os/rpms-snapshot.env
-          [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
-            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
-            exit 1
-          }
-          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
-          digest="${RPMS_REF##*@}"
-          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
-          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
-          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
-          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
-          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
-          provenance="$(cosign verify-attestation --key keys/cosign.pub \
-            --type slsaprovenance1 "$RPMS_REF")"
-          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
-            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
-            --arg package_amd64_sha256 "$package_amd64_sha256" \
-            --arg package_arm64_sha256 "$package_arm64_sha256" '
-              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(
-                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
-                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
-                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
-                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
-                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
-                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
-                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-                )
-            ' >/dev/null || {
-              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
-              exit 1
-            }
-          platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
-            '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
-          [ "$platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] || {
-            printf 'frozen RPM index has unexpected platforms: %s\n' "$platforms" >&2
-            exit 1
-          }
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
 
       # Branch/PR runs validate the OS integration boundary. Browser engine
@@ -2214,7 +2181,7 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           export TILO_RELEASE_CHILDREN_JSON="$child_dependencies"
           source <(grep '^BASE_REF=' os/base-snapshot.env)
-          source <(grep '^RPMS_REF=' os/rpms-snapshot.env)
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           . os/kernel-snapshot.env
           export BASE_REF RPMS_REF
           export TILO_KERNEL_REFS_JSON="$(jq -cn \

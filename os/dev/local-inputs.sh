@@ -4,10 +4,9 @@
 # build the production image here; it exports what os/dev/build-image.sh reads
 # and says what it chose and why. Anything already set in the environment wins.
 #
-#   RPM snapshot   the published one (os/rpms-snapshot.env) when it carries this
-#                  checkout's package set; otherwise os/dev/build-local-rpms.sh
-#                  builds one, reused while the package set is unchanged
-#                  (TILO_RPMS_TRUST=unsigned).
+#   RPM snapshot   the published set-<fingerprint> tag when resolve-rpm-snapshot.sh
+#                  verifies it; otherwise os/dev/build-local-rpms.sh builds one,
+#                  reused while the package set is unchanged (TILO_RPMS_TRUST=unsigned).
 #   kernel         the pinned signed one (os/kernel-snapshot.env) when the
 #                  registry still has it; otherwise the newest CI-built kernel
 #                  for this architecture whose signed provenance binds a signed
@@ -34,7 +33,10 @@ case "$_li_arch" in
 esac
 # shellcheck disable=SC1091
 . "$TILO_OS_DIR/base-snapshot.env"
-_li_published_rpms="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
+_li_published_rpms=""
+if _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>/dev/null)"; then
+  _li_published_rpms="$_li_resolved"
+fi
 _li_pin="$(sed -n "s/^$_li_pin_var=//p" "$TILO_OS_DIR/kernel-snapshot.env")"
 _li_buildroot="$(sed -n "s/^$_li_buildroot_var=//p" "$TILO_OS_DIR/kernel-buildroot-snapshot.env")"
 _li_cache="$TILO_OUTPUT/local-inputs"
@@ -58,11 +60,11 @@ export TILO_WITH_BROWSER TILO_ALLOW_EMPTY_SERIES TILO_OFFICIAL_REGISTRY_OWNER_PU
 # --- RPM snapshot --------------------------------------------------------------
 if [ -n "${RPMS_REF:-}" ]; then
   msg "local inputs: RPM snapshot = $RPMS_REF (from the environment)"
-elif bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$_li_published_rpms" >/dev/null 2>&1; then
+elif [ -n "$_li_published_rpms" ]; then
   RPMS_REF="$_li_published_rpms"
-  msg "local inputs: RPM snapshot = the published $RPMS_REF (it carries this checkout's package set)"
+  msg "local inputs: RPM snapshot = the published $RPMS_REF (fingerprint-resolved)"
 else
-  msg "local inputs: the published RPM snapshot lacks this checkout's package set; building a local one"
+  msg "local inputs: no published fingerprint snapshot; building a local one"
   RPMS_REF="$("$TILO_OS_DIR/dev/build-local-rpms.sh")" || die "the local RPM snapshot build failed (see above)"
   TILO_RPMS_TRUST=unsigned
   msg "local inputs: RPM snapshot = $RPMS_REF (local, TILO_RPMS_TRUST=unsigned)"

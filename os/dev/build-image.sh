@@ -207,9 +207,14 @@ fi
 # An explicit RPMS_REF is useful for validating a just-built snapshot before it
 # is published and pinned. Do not let the tracked default silently overwrite it.
 _tilo_rpms_ref_override="${RPMS_REF:-}"
-[ -f "$TILO_OS_DIR/rpms-snapshot.env" ] && . "$TILO_OS_DIR/rpms-snapshot.env"
-RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run the snapshot-rpms workflow or follow os/docs/rpm-snapshot-packaging.md"
+if [ -n "$_tilo_rpms_ref_override" ]; then
+  RPMS_REF="$_tilo_rpms_ref_override"
+elif RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"; then
+  :
+else
+  die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+fi
+[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.

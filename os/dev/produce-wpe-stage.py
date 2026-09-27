@@ -186,14 +186,19 @@ def main():
                               'disk_capacity_proven': False}
         write('inputs.json', inputs)
         pins = {}
-        for variable, filename in (('base', 'base-snapshot.env'), ('rpms', 'rpms-snapshot.env'),
+        for variable, filename in (('base', 'base-snapshot.env'),
                                    ('kernel', 'kernel-snapshot.env')):
-            key = {'base': 'BASE_REF', 'rpms': 'RPMS_REF', 'kernel': 'KERNEL_RPMS_REF'}[variable]
+            key = {'base': 'BASE_REF', 'kernel': 'KERNEL_RPMS_REF'}[variable]
             values = re.findall('^' + key + r'=((?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
                                 (REPO / 'os' / filename).read_text(), re.MULTILINE)
             if len(values) != 1:
                 raise ValueError('immutable dependency parse inputs required')
             pins[variable] = values[0]
+        rpms = subprocess.check_output([str(REPO / 'os/dev/resolve-rpm-snapshot.sh')],
+                                       text=True).strip()
+        if not re.fullmatch(r'registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}', rpms):
+            raise ValueError('immutable dependency parse inputs required')
+        pins['rpms'] = rpms
         script = artifact.read_bounded(REPO / 'os/dev/build-wpe.sh', 2 * 1024 * 1024).decode()
         archives = []
         for variable in ('LIBWPE', 'FDO', 'WPEWK'):
