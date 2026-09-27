@@ -10,11 +10,13 @@ use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use std::collections::HashMap;
 use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::widget::{TextInput, Widget};
 
-use crate::input_controls::InputEventCtx;
+use tilo_rich_text::RichTextView;
+use ui::text_render::{TextRenderer, TextWeight};
+
+use crate::input_controls::{InputEventCtx, NoteEditor};
 use crate::model::{AnnoKind, Annotation, HiColor};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
@@ -31,41 +33,21 @@ pub(crate) enum CommentAction {
     Delete(Uuid),
 }
 
-pub(crate) enum CommentSemanticOutcome {
-    Changed(Uuid, String),
-    Focused,
-}
-
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
     action: CommentAction,
 }
 
+#[derive(Default)]
 pub(crate) struct CommentOverlay {
     group: Option<Uuid>,
     anchor: Option<(f64, f64, f64, f64)>,
     hits: Vec<Hit>,
-    editing: Option<Uuid>,
-    editor: TextInput,
-}
-
-impl Default for CommentOverlay {
-    fn default() -> Self {
-        Self {
-            group: None,
-            anchor: None,
-            hits: Vec::new(),
-            editing: None,
-            editor: TextInput::local()
-                .with_id("ebook_highlight_comment")
-                .with_font_size(13.0)
-                .with_plain_chrome()
-                .multiline(true)
-                .with_enter_submits(true)
-                .with_placeholder("Write a comment…"),
-        }
-    }
+    /// The comment being written, in the SDK editor bound to it.
+    editor: Option<NoteEditor>,
+    /// Each comment as written, one read-only view per comment id.
+    views: HashMap<Uuid, RichTextView>,
 }
 
 impl CommentOverlay {
@@ -116,16 +98,15 @@ impl CommentOverlay {
                 )
             })
             .collect::<Vec<_>>();
-        if let Some(editing) = self.editing {
-            let mut editor = self
-                .editor
+        if let Some(editing) = self.editor.as_ref() {
+            let mut editor = editing
                 .accessibility()
                 .unwrap_or_else(|| AccessNode::new(Role::MultilineTextInput));
             editor.name = Some("Comment text".into());
             controls.push(
                 editor
-                    .with_bounds(self.editor.get_rect())
-                    .with_action_target(format!("books.comments.input:{editing}")),
+                    .with_bounds(editing.rect())
+                    .with_action_target(format!("books.comments.input:{}", editing.id())),
             );
         }
         controls.extend(comments.into_iter().map(|comment| {
@@ -158,25 +139,20 @@ impl CommentOverlay {
         })
     }
 
+    /// An assistive technology's action on the comment being written.
+    /// Returns whether it was the editor's.
     pub(crate) fn perform_editor_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
         state: &mut AutoCommit,
         root: &ObjId,
-    ) -> Option<CommentSemanticOutcome> {
-        let id = self.editing?;
-        if target != format!("books.comments.input:{id}") {
-            return None;
-        }
-        if !self.editor.perform_action(action, state, root) {
-            return None;
-        }
-        self.editor
-            .take_dirty()
-            .map_or(Some(CommentSemanticOutcome::Focused), |text| {
-                Some(CommentSemanticOutcome::Changed(id, text))
-            })
+    ) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        target == format!("books.comments.input:{}", editor.id())
+            && editor.perform_action(action, state, root)
     }
 }
 
@@ -224,22 +200,43 @@ fn comment_display(a: &Annotation) -> String {
     }
 }
 
-/// Wrapped height of each comment row, in reading order.
-fn comment_row_heights(
-    tr: &mut TextRenderer,
-    comments: &[Annotation],
-    editing: Option<Uuid>,
-    text_w: f32,
-) -> Vec<f64> {
-    comments
-        .iter()
-        .map(|a| {
-            if editing == Some(a.id) {
-                return 76.0;
-            }
-            f64::from(tr.measure(&comment_display(a), 13.0, Some(text_w)).1).max(18.0) + 16.0
-        })
-        .collect()
+impl CommentOverlay {
+    /// Height of each comment row, in reading order: the comment as
+    /// written (measured with the view that draws it), or the editor while
+    /// it is being written.
+    fn comment_row_heights(
+        &mut self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        comments: &[Annotation],
+        text_w: f32,
+    ) -> Vec<f64> {
+        let editing = self.editing_id();
+        let editor_h = self.editor.as_ref().map(|editor| editor.rect().height());
+        comments
+            .iter()
+            .map(|a| {
+                if editing == Some(a.id) {
+                    return editor_h.map_or(76.0, |h| (h + 12.0).max(76.0));
+                }
+                let text_h = if a.note.trim().is_empty() {
+                    f64::from(tr.measure(&comment_display(a), 13.0, Some(text_w)).1)
+                } else {
+                    let view = self.views.entry(a.id).or_insert_with(comment_view);
+                    view.show(&a.blocks);
+                    view.layout(Rect::new(0.0, 0.0, f64::from(text_w), 0.0), theme, tr)
+                };
+                text_h.max(18.0) + 16.0
+            })
+            .collect()
+    }
+}
+
+/// A read-only view of one comment, in comment type.
+fn comment_view() -> RichTextView {
+    let mut view = RichTextView::new();
+    view.editor_mut().set_body_size(13.0);
+    view
 }
 
 impl CommentOverlay {
@@ -262,51 +259,51 @@ impl CommentOverlay {
         self.group.is_some()
     }
 
-    pub(crate) fn begin_editing(&mut self, id: Uuid, text: &str) {
-        self.editing = Some(id);
-        self.editor.set_text(text);
-        self.editor.set_focus(true);
+    /// Write comment `id` in the SDK editor; it shows the comment on the
+    /// next sync.
+    pub(crate) fn begin_editing(&mut self, id: Uuid) {
+        self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…"));
     }
 
     pub(crate) fn finish_editing(&mut self) {
-        self.editing = None;
-        self.editor.set_focus(false);
+        self.editor = None;
     }
 
     pub(crate) fn editing_id(&self) -> Option<Uuid> {
-        self.editing
+        self.editor.as_ref().map(NoteEditor::id)
     }
 
-    /// Route native editing events through the shared multiline input. The
-    /// overlay owns transient editing state and emits only domain-ready text.
-    pub(crate) fn handle_event(
-        &mut self,
-        ctx: &mut InputEventCtx<'_>,
-    ) -> (Option<(Uuid, String)>, bool) {
-        let Some(id) = self.editing else {
-            return (None, false);
-        };
-        let mut focus_target = None;
-        self.editor.handle_event(
-            ctx.event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            ctx.state,
-            ctx.root,
-            ctx.handled,
-            &mut focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
-        if focus_target.is_some() {
-            self.editor.set_focus(true);
+    /// Bring the comment being written up to date with the document.
+    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.sync(state, root);
         }
-        let changed = self.editor.take_dirty().map(|text| (id, text));
-        let submitted = self.editor.take_submit();
-        if submitted {
+    }
+
+    /// The undo boundary the comment's last edit opened, for the host.
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.editor.as_mut().and_then(NoteEditor::take_committed)
+    }
+
+    /// Whether a typed word keeps its undo step open.
+    pub(crate) fn keeps_step_open(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(NoteEditor::keeps_step_open)
+    }
+
+    /// Route native editing events to the comment being written. Returns
+    /// whether the person finished it (Enter or Escape), which closes the
+    /// editor; the text is already in the document.
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
+        let Some(editor) = self.editor.as_mut() else {
+            return false;
+        };
+        let finished = editor.handle_event(ctx).is_some();
+        if finished {
             self.finish_editing();
         }
-        (changed, submitted)
+        finished
     }
 
     pub(crate) fn set_anchor(&mut self, anchor: Option<(f64, f64, f64, f64)>) {
@@ -466,33 +463,36 @@ impl CommentOverlay {
                 delete.x0 - rhythm::SIBLING,
                 delete.y1,
             );
-            let editing = self.editing == Some(annotation.id);
+            let editing = self.editing_id() == Some(annotation.id);
             if editing {
                 paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
             }
-            if editing {
-                self.editor.apply_layout_external(Rect::new(
-                    ix0 + 8.0,
-                    y + 6.0,
-                    edit.x0 - rhythm::RELATED,
-                    y + height - 6.0,
-                ));
-                self.editor
-                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
-            } else {
-                let text = comment_display(annotation);
+            if let (true, Some(editor)) = (editing, self.editor.as_mut()) {
+                editor.layout(
+                    Rect::new(ix0 + 8.0, y + 6.0, edit.x0 - rhythm::RELATED, y + 6.0),
+                    theme,
+                    tr,
+                );
+                editor.draw(scene, t, tr, theme);
+            } else if annotation.note.trim().is_empty() {
                 tr.draw_text(
                     scene,
-                    &text,
+                    &comment_display(annotation),
                     13.0,
-                    if annotation.note.trim().is_empty() {
-                        colors.text_dim
-                    } else {
-                        colors.text_primary
-                    },
+                    colors.text_dim,
                     t * Affine::translate((ix0 + 10.0, y + 8.0)),
                     Some(text_w),
                 );
+            } else {
+                let view = self.views.entry(annotation.id).or_insert_with(comment_view);
+                view.show(&annotation.blocks);
+                let x0 = ix0 + 10.0;
+                view.layout(
+                    Rect::new(x0, y + 8.0, x0 + f64::from(text_w), y + 8.0),
+                    theme,
+                    tr,
+                );
+                view.draw(scene, t, tr, theme);
             }
             let delete_hover = delete.contains(cursor);
             paint::close(
@@ -595,7 +595,9 @@ impl CommentOverlay {
         let inner_w = (cw - pad * 2.0) as f32;
         let text_w = inner_w - 52.0;
         let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let row_heights = comment_row_heights(tr, &comments, self.editing, text_w);
+        let row_heights = self.comment_row_heights(tr, theme, &comments, text_w);
+        self.views
+            .retain(|id, _| comments.iter().any(|comment| comment.id == *id));
 
         let header_h = 28.0;
         let gap = 8.0;
@@ -685,8 +687,12 @@ mod tests {
         a
     }
 
-    /// Card controls win over the dismiss hit, close clears stale geometry, and the editor uses shared selection editing and submit.
+    /// Card controls win over the dismiss hit, close clears stale geometry, and the editor writes the comment as typed.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case"
+    )]
     fn comment_overlay_hit_testing_and_editing() {
         // --- phase: card_controls_win_over_the_full_window_dismiss_hit ---
         {
@@ -751,41 +757,48 @@ mod tests {
             assert!(overlay.hit_test(Point::ZERO).is_none());
         }
 
-        // --- phase: comment_editor_uses_shared_selection_editing_and_submit ---
+        // --- phase: comment_editor_writes_the_comment_as_typed_and_enter_finishes ---
         {
-            let id = Uuid::new_v4();
-            let mut overlay = CommentOverlay::default();
-            overlay.begin_editing(id, "hello");
-            overlay.editor.select_all();
             let mut doc = AutoCommit::new();
+            let comment = annotation(AnnoKind::Note, Uuid::new_v4(), "");
+            let id = comment.id;
+            crate::doc::BooksDoc::upsert_annotation(&mut doc, &comment);
+            doc.commit();
+            let mut overlay = CommentOverlay::default();
+            overlay.begin_editing(id);
+            overlay.sync(&mut doc, &automerge::ROOT);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
-            let mut handled = false;
-
-            let (changed, submitted) = overlay.handle_event(&mut InputEventCtx {
-                event: &key(Key::Character("world".into())),
-                scale_factor: 1.0,
-                modifiers,
-                state: &mut doc,
-                root: &automerge::ROOT,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-                handled: &mut handled,
-            });
-            assert_eq!(changed, Some((id, "world".into())));
-            assert!(!submitted);
-
-            let (_, submitted) = overlay.handle_event(&mut InputEventCtx {
-                event: &key(Key::Named(NamedKey::Enter)),
-                scale_factor: 1.0,
-                modifiers,
-                state: &mut doc,
-                root: &automerge::ROOT,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-                handled: &mut handled,
-            });
-            assert!(submitted);
+            let press = |overlay: &mut CommentOverlay, doc: &mut AutoCommit, key: WindowEvent| {
+                let mut handled = false;
+                overlay.handle_event(&mut InputEventCtx {
+                    event: &key,
+                    scale_factor: 1.0,
+                    modifiers,
+                    state: doc,
+                    root: &automerge::ROOT,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                    handled: &mut handled,
+                })
+            };
+            for ch in ["o", "k"] {
+                assert!(!press(
+                    &mut overlay,
+                    &mut doc,
+                    key(Key::Character(ch.into()))
+                ));
+            }
+            let stored = crate::doc::BooksDoc::list_annotations(&doc)
+                .into_iter()
+                .find(|annotation| annotation.id == id)
+                .unwrap();
+            assert_eq!(stored.note, "ok", "written as typed");
+            assert!(press(
+                &mut overlay,
+                &mut doc,
+                key(Key::Named(NamedKey::Enter))
+            ));
             assert_eq!(overlay.editing_id(), None);
         }
     }

@@ -46,6 +46,34 @@ impl ActionCx {
         }
     }
 
+    /// A context for ids minted part-way through an action that has already
+    /// written: seeded like [`Self::for_apply`] but from the heads the action
+    /// started from, so reading them does not commit its writes so far as a
+    /// separate change.
+    #[must_use]
+    pub fn for_write(doc: &Doc, payload: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-resource/write-seed/v1");
+        if let Some((group, position)) = crate::group::current_member() {
+            hasher.update(b"member");
+            hasher.update(&group);
+            hasher.update(&position.to_le_bytes());
+        } else {
+            hasher.update(doc.get_actor().to_bytes());
+            let mut heads = automerge::transaction::Transactable::base_heads(doc);
+            heads.sort();
+            for head in heads {
+                hasher.update(&head.0);
+            }
+        }
+        hasher.update(payload);
+        Self {
+            seed: *hasher.finalize().as_bytes(),
+            minted: 0,
+            now_ms: 0,
+        }
+    }
+
     /// A fresh id, unique to this action and stable under replay.
     pub fn id(&mut self) -> Id {
         let mut hasher = blake3::Hasher::new();
