@@ -15531,6 +15531,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-search"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "tantivy",
+ "tracing",
+ "unicode-normalization",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
@@ -15625,6 +15636,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui-graph",
@@ -15636,7 +15648,6 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
- "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -18934,7 +18945,6 @@ dependencies = [
  "guillotiere",
  "half",
  "harfrust",
- "hashbrown 0.15.5",
  "hashbrown 0.16.1",
  "hashbrown 0.17.1",
  "hayro-syntax",
@@ -19045,6 +19055,7 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syntect",
+ "tantivy",
  "thiserror 2.0.18",
  "time",
  "time-macros",
