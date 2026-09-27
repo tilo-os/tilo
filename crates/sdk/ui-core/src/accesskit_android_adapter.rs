@@ -11,9 +11,9 @@
 //! view's position on screen.
 //!
 //! NativeActivity takes the window's input queue, so the hover events
-//! TalkBack's explore-by-touch produces reach native code rather than the
-//! view's hover listener. Swipe navigation and double-tap activation work;
-//! touch exploration needs those hover events forwarded to the view.
+//! TalkBack's explore-by-touch produces reach native code first. The
+//! vendored winit leaves them unhandled, which sends them on to the view
+//! hierarchy and the provider's hover listener on the decor view.
 //!
 //! The framework throws when an accessibility event is sent from the UI
 //! thread while no service is enabled, and accesskit_android 0.8 raises its
