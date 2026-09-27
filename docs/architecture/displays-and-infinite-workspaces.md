@@ -26,19 +26,38 @@ never straddles a seam, panning one display never reveals another display's
 windows, and no window is drawn twice. Order within a display is the strip's
 own order.
 
+Every display stacks all of the workspace's strips in its own height, the way
+a single display does. The strips' rows are laid out down one column across
+the whole desktop, and each display takes every strip's share of that column
+— the same proportions and gaps — within its own work area below its top bar.
+A display therefore shows every strip's groups that belong to it, whatever
+part of the column happens to pass over it: on a monitor stacked above a
+laptop, the first strip is no longer only on the monitor and the second only
+on the laptop.
+
 - New windows open on the display with focus. Focus moves between displays
   with the pointer, and with Super+Left/Right past a display's first or last
   window.
 - Super+Ctrl+Shift+Left/Right moves the focused group to the neighbouring
   display (Super+Shift+Left/Right keeps reordering within a display). Both
   are rebindable in Settings → Keyboard shortcuts.
+- Dragging a group by its tab bar, with the pointer or a finger, reorders it
+  among its display's groups; dropping it on another display moves it there,
+  at the gap it was dropped in. Like the chord, that is a move the group
+  keeps: a display coming back no longer reclaims it.
 - Unplugging a display moves its groups to the nearest remaining display,
   in their own order, after that display's focused group. Each remembers the
   display it came from and returns when that display is plugged back in,
   unless it was moved to another display in the meantime.
 
-Displays are identified by the compositor's output id, which the DRM backend
-mints per `(device, connector)`; `OutputId(0)` is the primary.
+Groups belong to the physical monitor, not to the connector or output number
+it happens to have. The partition keys everything it remembers by the same
+identity token display layouts are saved under
+(`settings_store::hardware::DisplaySet`): the EDID make, model and serial,
+with the connector appended only to tell identical monitors apart, or the
+connector alone for a sink without a readable EDID. A restart, or moving the
+cables to other ports, renumbers the compositor's output ids but brings every
+group back to the monitor it was on. `OutputId(0)` is the primary.
 
 Mirroring makes two connectors observe the same viewport origin. It is output
 duplication, not a second copy of the workspace. Settings must choose a mode

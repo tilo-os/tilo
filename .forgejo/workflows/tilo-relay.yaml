@@ -63,6 +63,16 @@ on:
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
       - "crates/system/fs-content/**"
+      - "crates/dev/test-http/**"
+      - "crates/system/accounts/**"
+      - "crates/system/cloud-source/**"
+      - "crates/system/cloud-source-dav/**"
+      - "crates/system/cloud-source-dropbox/**"
+      - "crates/system/cloud-source-gdrive/**"
+      - "crates/system/cloud-source-icloud/**"
+      - "crates/system/cloud-source-onedrive/**"
+      - "crates/system/secret-vault/**"
+      - "crates/system/tilo-dav/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -125,6 +135,16 @@ on:
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
       - "crates/system/fs-content/**"
+      - "crates/dev/test-http/**"
+      - "crates/system/accounts/**"
+      - "crates/system/cloud-source/**"
+      - "crates/system/cloud-source-dav/**"
+      - "crates/system/cloud-source-dropbox/**"
+      - "crates/system/cloud-source-gdrive/**"
+      - "crates/system/cloud-source-icloud/**"
+      - "crates/system/cloud-source-onedrive/**"
+      - "crates/system/secret-vault/**"
+      - "crates/system/tilo-dav/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -332,6 +352,10 @@ jobs:
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
+          # Pull requests and main builds keep their layers and the compile
+          # step's target/ cache mount on the runner slot, each trust class in
+          # its own builder; publications start from a fresh one.
+          persistent: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
       - name: Verify the frozen RPM package set
         env:

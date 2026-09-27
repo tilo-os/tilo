@@ -70,6 +70,8 @@ pub mod screen_dim;
 pub mod selection;
 pub mod session_env;
 #[cfg(target_os = "linux")]
+pub mod shortcut_inhibit;
+#[cfg(target_os = "linux")]
 pub mod state;
 pub mod surface_outputs;
 #[cfg(target_os = "linux")]
@@ -77,11 +79,17 @@ pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;
 #[cfg(target_os = "linux")]
+pub mod tablet;
+#[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
 #[cfg(target_os = "linux")]
+pub mod window_previews;
+#[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
+#[cfg(target_os = "linux")]
+pub(crate) mod xwayland_composer;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

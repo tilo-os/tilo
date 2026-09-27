@@ -755,6 +755,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// The input-source chord chose this source. The native compositor
+    /// drains it and switches the seat and the physical keyboard at once;
+    /// the persisted choice reaches them again on the settings poll.
+    input_source_request: Option<usize>,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -888,6 +892,7 @@ impl ChromeState {
             next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
             fullscreen_toggle_requested: false,
+            input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
@@ -1056,6 +1061,15 @@ impl ChromeState {
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_toggle_requested)
+    }
+
+    pub fn request_input_source(&mut self, index: usize) {
+        self.input_source_request = Some(index);
+        self.bump();
+    }
+
+    pub fn take_input_source_request(&mut self) -> Option<usize> {
+        self.input_source_request.take()
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {

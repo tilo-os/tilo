@@ -18,9 +18,7 @@ use vello::Scene;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-#[cfg(test)]
-use winit::keyboard::NamedKey;
-use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
 #[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
@@ -1244,6 +1242,7 @@ impl ShellDriver {
             "launchpad" => self.scene_launchpad(),
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
+            "window-switcher" => self.scene_window_switcher(),
             "portal-permission" => self.scene_portal_permission(),
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
@@ -1641,6 +1640,14 @@ impl ShellDriver {
         );
         self.click_at(invite.center());
         self.step_frames(2);
+    }
+
+    /// The Alt+Tab switcher (`window_switcher.rs`): Alt held past the
+    /// reveal delay over the demo desktop's windows.
+    fn scene_window_switcher(&mut self) {
+        self.set_modifiers(ModifiersState::ALT);
+        self.press_key(&Key::Named(NamedKey::Tab));
+        self.step_frames(12);
     }
 
     /// The display sheet (`projection_overlay.rs`, Win+P), settled
@@ -2391,6 +2398,7 @@ impl ShellDriver {
         "launchpad",
         "peer-sync",
         "projection",
+        "window-switcher",
         "portal-permission",
         "notifications",
         "notifications-one",

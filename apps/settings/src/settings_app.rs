@@ -1386,6 +1386,10 @@ impl SettingsApp {
                 prefs.input.tap_drag = enabled;
                 "tap and drag updated"
             }
+            crate::actions::InputOperation::SetTapDragLock { enabled } => {
+                prefs.input.tap_drag_lock = enabled;
+                "tap-and-drag lock updated"
+            }
             crate::actions::InputOperation::SetDisableWhileTyping { enabled } => {
                 prefs.input.disable_while_typing = enabled;
                 "disable while typing updated"
@@ -1402,15 +1406,27 @@ impl SettingsApp {
                 prefs.input.touchpad_gestures = enabled;
                 "touchpad gestures updated"
             }
+            crate::actions::InputOperation::SetTouchpadEnabled { enabled } => {
+                prefs.input.touchpad_enabled = enabled;
+                if enabled {
+                    "touchpad turned on"
+                } else {
+                    "touchpad turned off"
+                }
+            }
+            crate::actions::InputOperation::SetTouchpadDisabledOnExternalMouse { enabled } => {
+                prefs.input.touchpad_disabled_on_external_mouse = enabled;
+                "touchpad mouse handoff updated"
+            }
             crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
                 prefs.input.touchpad_click_method =
-                    crate::panes::mouse_keyboard::click_method_for_label(&method)
+                    crate::panes::mouse_keyboard::click_method_for_id(&method)
                         .ok_or_else(|| "unsupported touchpad click method".to_string())?;
                 "touchpad click method updated"
             }
             crate::actions::InputOperation::SetTouchpadScrollMethod { method } => {
                 prefs.input.touchpad_scroll_method =
-                    crate::panes::mouse_keyboard::scroll_method_for_label(&method)
+                    crate::panes::mouse_keyboard::scroll_method_for_id(&method)
                         .ok_or_else(|| "unsupported touchpad scroll method".to_string())?;
                 "touchpad scroll method updated"
             }
@@ -1442,6 +1458,15 @@ impl SettingsApp {
                     _ => return Err("unsupported compose key".into()),
                 };
                 "compose key updated"
+            }
+            crate::actions::InputOperation::SetCapsLock { behavior } => {
+                prefs.input.caps_lock = crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
+                    .iter()
+                    .find(|(label, _)| *label == behavior)
+                    .ok_or("unsupported Caps Lock behavior")?
+                    .1
+                    .map(str::to_string);
+                "Caps Lock behavior updated"
             }
             crate::actions::InputOperation::SetActiveSource { label } => {
                 let id = crate::input_sources::installed_catalog()
@@ -2025,13 +2050,8 @@ impl Widget for SettingsApp {
                     tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Add { kind },
                 ) => {
-                    let kind = match kind.as_str() {
-                        "mail" => crate::accounts::AccountKind::Mail,
-                        "caldav" => crate::accounts::AccountKind::CalDav,
-                        "webdav" => crate::accounts::AccountKind::WebDav,
-                        "nextcloud" => crate::accounts::AccountKind::Nextcloud,
-                        _ => return Err("unknown account kind".into()),
-                    };
+                    let kind = crate::accounts::AccountKind::from_slug(&kind)
+                        .ok_or_else(|| "unknown account kind".to_string())?;
                     self.account_commands
                         .set(Some(crate::panes::accounts::AccountViewCommand::Add(kind)));
                     Ok(true)
@@ -2200,15 +2220,12 @@ impl Widget for SettingsApp {
                     .get(&accounts::AccountId::from(id.clone()))
                     .cloned()
                     .ok_or_else(|| "account no longer exists".to_string())?;
-                let account_kind = match stored.type_id.as_str() {
-                    "email" => crate::accounts::AccountKind::Mail,
-                    "caldav" => crate::accounts::AccountKind::CalDav,
-                    "webdav" => crate::accounts::AccountKind::WebDav,
-                    "nextcloud" => crate::accounts::AccountKind::Nextcloud,
-                    _ => return Err("unsupported account type".into()),
-                };
+                let account_kind =
+                    crate::accounts::AccountKind::from_type_id(stored.type_id.as_str())
+                        .ok_or_else(|| "unsupported account type".to_string())?;
                 crate::panes::accounts::AccountsPane::remove_account(
                     &self.account_root,
+                    &self.account_root.custodian(),
                     account_kind,
                     &id,
                 )?;
@@ -2232,11 +2249,27 @@ impl Widget for SettingsApp {
                 let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
                     "this account has no saved credential; sign in again first".to_string()
                 })?;
-                let tester = std::sync::Arc::clone(&self.account_tester);
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                std::thread::spawn(move || {
-                    let _ = sender.send(tester.test(&account, &secret));
-                });
+                if crate::accounts::AccountKind::from_type_id(account.type_id.as_str())
+                    .is_some_and(crate::accounts::AccountKind::is_cloud_storage)
+                {
+                    // A cloud grant is verified by asking the provider for a
+                    // fresh access token, which custody also hands off.
+                    let custodian = self.account_root.custodian();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(
+                            custodian
+                                .publish(&account_id, true)
+                                .map(|()| "The provider accepted the saved sign-in".to_string())
+                                .map_err(|error| error.to_string()),
+                        );
+                    });
+                } else {
+                    let tester = std::sync::Arc::clone(&self.account_tester);
+                    std::thread::spawn(move || {
+                        let _ = sender.send(tester.test(&account, &secret));
+                    });
+                }
                 self.account_probe = Some((invocation, receiver));
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
