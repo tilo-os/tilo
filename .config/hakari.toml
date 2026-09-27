@@ -18,6 +18,13 @@ resolver = "2"
 # patch and resolve crates.io's empty workspace-hack 0.1.0 instead, so neither
 # their lockfiles nor a wasm32 build take on the host dependency set.
 workspace-hack-line-style = "version-only"
+#
+# The unified set is native (tokio `net` pulls mio, which refuses wasm32), and
+# most of it lands in the hack's unconditional `[dependencies]`. Members the
+# browser also builds for wasm32 therefore name the hack under
+# `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`; manage-deps
+# accepts that, and tools/policy/check_wasm_workspace_hack.py names a member
+# that picked up the unconditional line.
 
 # CI builds and tests Linux on both architectures. Other hosts (Imager on
 # Windows and macOS) still receive the platform-independent section.

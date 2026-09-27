@@ -30,7 +30,9 @@ export function createFontLoader({
     const assets=new Map();
     for(const asset of value.assets){
       if(!asset||typeof asset.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._\[\]-]*$/.test(asset.name)||
-        !Number.isSafeInteger(asset.bytes)||asset.bytes<1||!/^[0-9a-f]{64}$/.test(asset.sha256)||typeof asset.startup!=='boolean'||assets.has(asset.name)){
+        !Number.isSafeInteger(asset.bytes)||asset.bytes<1||!/^[0-9a-f]{64}$/.test(asset.sha256)||typeof asset.startup!=='boolean'||assets.has(asset.name)||
+        // A content-addressed release names the file by its digest.
+        (asset.path!==undefined&&asset.path!==`fonts/${asset.sha256}${/\.[a-z]+$/.exec(asset.name.toLowerCase())?.[0]??''}`)){
         throw Error('invalid canonical font asset descriptor');
       }
       assets.set(asset.name,Object.freeze({...asset}));
@@ -57,7 +59,7 @@ export function createFontLoader({
     return bytes;
   }
   async function load(asset){
-    const url=new URL(`./fonts/${asset.name}`,root);
+    const url=new URL(asset.path?`./${asset.path}`:`./fonts/${asset.name}`,root);
     if(url.origin!==root.origin)throw Error('font asset crossed its release origin');
     try{return await verify(asset,await (await fetchRequired(url)).arrayBuffer());}
     catch(error){

@@ -20,9 +20,14 @@ use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 
 /// Grammars match lines without their trailing `\n`, which is how every
 /// caller already splits its text.
+/// Without `syntax-definitions` (the browser toolkit core) the set is empty
+/// and every language highlights as plain text.
 fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(two_face::syntax::extra_no_newlines)
+    #[cfg(feature = "syntax-definitions")]
+    return SET.get_or_init(two_face::syntax::extra_no_newlines);
+    #[cfg(not(feature = "syntax-definitions"))]
+    return SET.get_or_init(SyntaxSet::default);
 }
 
 /// Map a scope stack to the kind of its innermost classified scope, or `None`
