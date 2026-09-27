@@ -53,9 +53,11 @@ web_cargo() {
   (cd "$repo" && cargo "$1" --locked --profile "$web_profile" --target "$web_target" -j "$web_jobs" "${@:2}")
 }
 
-# Package ids (name@version) in each root's graph: {"<root>": [...]}.
+# Package ids (name@version) in each root's graph: {"<root>": [...]}. Proc
+# macros and what they depend on build for the host, so they are no part of
+# the core a side module links against.
 web_graph() {
-  (cd "$repo" && cargo tree --locked --target "$web_target" -e normal --prefix none --no-dedupe -f '{p}' "$@") |
+  (cd "$repo" && cargo tree --locked --target "$web_target" -e normal,no-proc-macro --prefix none --no-dedupe -f '{p}' "$@") |
     node "$web_scripts/side-module.mjs" graph
 }
 
