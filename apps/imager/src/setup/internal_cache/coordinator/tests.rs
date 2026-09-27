@@ -1099,11 +1099,14 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                 let t = worker.start(server.release(&bytes)).unwrap();
                 wait(&worker, Phase::Ready);
                 worker.consume(&t).unwrap();
+                let deadline = tilo_test_env::hang_deadline();
                 let mut in_consumer = entered.0.lock().unwrap();
                 while !*in_consumer {
+                    let now = Instant::now();
+                    assert!(now < deadline, "the worker never entered the consumer");
                     in_consumer = entered
                         .1
-                        .wait_timeout(in_consumer, Duration::from_secs(3))
+                        .wait_timeout(in_consumer, deadline - now)
                         .unwrap()
                         .0;
                 }
