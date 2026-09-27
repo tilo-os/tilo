@@ -26,7 +26,7 @@ use tokio::time::timeout;
 
 // These integration tests mount a real FUSE filesystem, which needs
 // `/dev/fuse` (+ fusermount3). Minimal CI containers don't have it, so
-// `spawn_mount2` fails with NotFound — skip cleanly there rather than
+// `spawn_mount` fails with NotFound — skip cleanly there rather than
 // panicking; this gates on capability, it does not weaken any assertion.
 // The FUSE lane sets TILO_REQUIRE_FUSE=1, turning a missing device into a
 // failure instead of a silently skipped contract.
@@ -404,7 +404,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
                 .with_acl(acl.clone(), ALICE);
             let mut cfg_a = Config::default();
             cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
-            let sa = fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a)
+            let sa = fuser::spawn_mount(alice_fs, alice_dir.path(), &cfg_a)
                 .expect("spawn alice session");
             wait_for_mount(alice_dir.path()).await;
 
@@ -428,8 +428,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             let bob_fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_acl(acl, BOB);
             let mut cfg_b = Config::default();
             cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
-            let sb =
-                fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
+            let sb = fuser::spawn_mount(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
             wait_for_mount(bob_dir.path()).await;
 
             let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
@@ -679,8 +678,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mut config = Config::default();
             config.mount_options = options;
 
-            let session =
-                fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &mount_path, &config).expect("spawn FUSE session");
             wait_for_mount(&mount_path).await;
 
             // Projection: the tree is visible.
@@ -726,7 +724,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
-            let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
             // create + write
@@ -775,7 +773,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_non_utf8".into())];
-            let session = fuser::spawn_mount2(fs, first_mount.path(), &config).unwrap();
+            let session = fuser::spawn_mount(fs, first_mount.path(), &config).unwrap();
             wait_for_mount(first_mount.path()).await;
 
             let mut original = first_mount.path().to_path_buf();
@@ -802,7 +800,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(reopened, hydrator, heuristics);
-            let session = fuser::spawn_mount2(fs, second_mount.path(), &config).unwrap();
+            let session = fuser::spawn_mount(fs, second_mount.path(), &config).unwrap();
             wait_for_mount(second_mount.path()).await;
             let mut after_restart = second_mount.path().to_path_buf();
             after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
@@ -835,7 +833,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
-            let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
             std::fs::create_dir(path.join("dir")).expect("mkdir");
@@ -888,7 +886,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
-            let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
             // A markdown document: recognized, stored as a CRDT, round-trips.
@@ -957,7 +955,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
-            let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
             assert_eq!(
@@ -1008,7 +1006,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let fs = QuickFS::new(namespace, hydrator, heuristics);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_replace_handle".to_string())];
-            let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
             let source = path.join("source.bin");
@@ -1068,7 +1066,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_unlink_handle".to_string())];
             let session =
-                fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
+                fuser::spawn_mount(fs, mount_dir.path(), &config).expect("spawn FUSE session");
             wait_for_mount(mount_dir.path()).await;
 
             let path = mount_dir.path().join("same-name.bin");
@@ -1123,7 +1121,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_two_writers".to_string())];
             let session =
-                fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
+                fuser::spawn_mount(fs, mount_dir.path(), &config).expect("spawn FUSE session");
             wait_for_mount(mount_dir.path()).await;
 
             let path = mount_dir.path().join("shared.bin");
@@ -1224,7 +1222,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
                 .unwrap();
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_signed_replace".to_string())];
-            let session = fuser::spawn_mount2(quick_fs, mount_dir.path(), &config)
+            let session = fuser::spawn_mount(quick_fs, mount_dir.path(), &config)
                 .expect("spawn signed FUSE session");
             wait_for_mount(mount_dir.path()).await;
 
@@ -1384,7 +1382,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let dir = tempdir().unwrap();
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
-    let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
+    let session = fuser::spawn_mount(fs, dir.path(), &config).expect("spawn FUSE session");
     wait_for_mount(dir.path()).await;
     ViewFixture {
         session,
@@ -1884,7 +1882,7 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
     let dir = tempdir().unwrap();
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
-    let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
+    let session = fuser::spawn_mount(fs, dir.path(), &config).expect("spawn FUSE session");
     wait_for_mount(dir.path()).await;
     DocumentFixture {
         session,
