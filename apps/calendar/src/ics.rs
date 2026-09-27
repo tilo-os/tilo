@@ -611,13 +611,10 @@ fn parse_participant(line: &ContentLine) -> Option<Attendee> {
 }
 
 fn stable_external_attendee_id(email: &str) -> Uuid {
-    fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
-        const PRIME: u64 = 0x0000_0100_0000_01B3;
-        for &byte in bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash
+    fn fnv1a(bytes: &[u8], key: u64) -> u64 {
+        let mut hasher = fnv::FnvHasher::with_key(key);
+        std::hash::Hasher::write(&mut hasher, bytes);
+        std::hash::Hasher::finish(&hasher)
     }
     let normalized = email.trim().to_ascii_lowercase();
     let hi = fnv1a(normalized.as_bytes(), 0xcbf2_9ce4_8422_2325);
