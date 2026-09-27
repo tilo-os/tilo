@@ -351,7 +351,7 @@ mod tests {
 
     use winit::keyboard::{Key, NamedKey};
 
-    use super::super::AccessibleOverlay;
+    use super::super::LayerId;
     use super::*;
     use crate::shell::chrome_state::{Chrome, ChromeState};
     use crate::shell::now_playing::tests::{FakeSource, player};
@@ -409,7 +409,7 @@ mod tests {
         assert!(rect.y1 <= host.rect.y1);
         assert!(
             host.accessible_overlay_order()
-                .contains(&AccessibleOverlay::NowPlaying)
+                .contains(&LayerId::NowPlaying)
         );
         assert!(
             host.quick_settings_semantic_rects()
@@ -508,7 +508,7 @@ mod tests {
         let index = host
             .accessible_overlay_order()
             .iter()
-            .position(|overlay| *overlay == AccessibleOverlay::NowPlaying)
+            .position(|overlay| *overlay == LayerId::NowPlaying)
             .expect("the card is published");
         let node = host.now_playing_accessibility().expect("card node");
         assert!(!node.children.is_empty());

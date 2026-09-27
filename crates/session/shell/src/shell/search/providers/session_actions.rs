@@ -5,15 +5,58 @@
 //! destructive, confirm, at-most-once contract.  Headless development tools
 //! can address it exactly without synthesising pointer input.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::{t, t_args};
+use crate::shell::search::action_api::{ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 pub const PROVIDER_ID: &str = "session";
 pub const LOGOUT_ID: &str = "logout";
+
+/// The power flyout's other rows, by action id: they share its labels, and
+/// the host's session executor runs them from the chrome queue.
+type QueuedAction = (
+    &'static str,
+    os_actions::SessionAction,
+    &'static str,
+    &'static str,
+);
+
+const QUEUED_ACTIONS: [QueuedAction; 5] = [
+    (
+        "lock",
+        os_actions::SessionAction::Lock,
+        "power-lock",
+        "power-lock-detail",
+    ),
+    (
+        "switch-user",
+        os_actions::SessionAction::SwitchUser,
+        "power-switch-user",
+        "power-switch-user-detail",
+    ),
+    (
+        "suspend",
+        os_actions::SessionAction::Suspend,
+        "power-suspend",
+        "power-suspend-detail",
+    ),
+    (
+        "restart",
+        os_actions::SessionAction::Restart,
+        "power-restart",
+        "power-restart-detail",
+    ),
+    (
+        "shut-down",
+        os_actions::SessionAction::ShutDown,
+        "power-shut-down",
+        "power-shut-down-detail",
+    ),
+];
 
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
@@ -22,12 +65,16 @@ pub const LOGOUT_ID: &str = "logout";
 #[derive(Clone, Debug, Default)]
 pub struct SessionActionPolicy {
     inhibitors: Rc<RefCell<tilo_power_mgmt::InhibitRegistry>>,
+    /// Whether the display manager can open a greeter beside this session.
+    /// Without it, Switch user is offered by no entry point.
+    user_switching: Rc<Cell<bool>>,
 }
 
 impl SessionActionPolicy {
     pub fn new(inhibitors: tilo_power_mgmt::InhibitRegistry) -> Self {
         Self {
             inhibitors: Rc::new(RefCell::new(inhibitors)),
+            user_switching: Rc::default(),
         }
     }
 
@@ -35,6 +82,15 @@ impl SessionActionPolicy {
     /// compositor's portal backend.
     pub fn attach(&self, inhibitors: tilo_power_mgmt::InhibitRegistry) {
         *self.inhibitors.borrow_mut() = inhibitors;
+    }
+
+    pub fn set_user_switching(&self, supported: bool) {
+        self.user_switching.set(supported);
+    }
+
+    /// Whether this session offers `action` at all.
+    pub fn offers(&self, action: os_actions::SessionAction) -> bool {
+        action != os_actions::SessionAction::SwitchUser || self.user_switching.get()
     }
 
     fn inhibit_scope(action: os_actions::SessionAction) -> Option<u32> {
@@ -87,6 +143,36 @@ impl SessionActionPolicy {
     }
 }
 
+fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions::ActionContract {
+    let tags = vec!["desktop".into(), "session".into(), id.into()];
+    match action {
+        os_actions::SessionAction::Lock => tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Write,
+            risk: tilo_actions::RiskLevel::Low,
+            confirmation: tilo_actions::ConfirmationPolicy::None,
+            retry: tilo_actions::RetryPolicy::Idempotent,
+            tags,
+            ..tilo_actions::ActionContract::default()
+        },
+        os_actions::SessionAction::Suspend => tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Admin,
+            risk: tilo_actions::RiskLevel::Low,
+            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+            retry: tilo_actions::RetryPolicy::AtMostOnce,
+            tags,
+            ..tilo_actions::ActionContract::default()
+        },
+        _ => tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Admin,
+            risk: tilo_actions::RiskLevel::Destructive,
+            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+            retry: tilo_actions::RetryPolicy::AtMostOnce,
+            tags,
+            ..tilo_actions::ActionContract::default()
+        },
+    }
+}
+
 fn logout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         permission: tilo_actions::PermissionRequirement::Admin,
@@ -130,17 +216,78 @@ impl SearchProvider for SessionActionsProvider {
             return Vec::new();
         }
         let needle = ctx.needle.trim().to_lowercase();
+        let mut results: Vec<SearchResult> = QUEUED_ACTIONS
+            .iter()
+            .filter(|(_, action, ..)| self.policy.offers(*action))
+            .filter_map(|&entry| {
+                let title = t(entry.2);
+                let matches = needle.is_empty()
+                    || title.to_lowercase().contains(&needle)
+                    || entry.0.contains(&needle);
+                matches.then(|| self.queued_result(entry, title, &needle))
+            })
+            .collect();
+        if let Some(logout) = self.logout_result(&needle) {
+            results.insert(1.min(results.len()), logout);
+        }
+        results
+    }
+}
+
+/// A confirmed session action is invocable only with `confirm: true`; the
+/// executor refuses an argument the action does not declare.
+fn confirmation_params(contract: &tilo_actions::ActionContract) -> Vec<ActionParam> {
+    match contract.confirmation {
+        tilo_actions::ConfirmationPolicy::Confirm => vec![ActionParam::required(
+            "confirm",
+            ParamType::Boolean,
+            "Explicitly confirm this session action",
+        )],
+        _ => Vec::new(),
+    }
+}
+
+impl SessionActionsProvider {
+    fn queued_result(&self, entry: QueuedAction, title: String, needle: &str) -> SearchResult {
+        let (id, action, _, detail_key) = entry;
+        let contract = queued_contract(id, action);
+        let policy = self.policy.clone();
+        SearchResult {
+            kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            provider_id: PROVIDER_ID.into(),
+            id: id.into(),
+            title,
+            subtitle: Some(t(detail_key)),
+            badge: Some(t("search-badge-session")),
+            score: if needle.is_empty() { 0 } else { 100 },
+            params: confirmation_params(&contract),
+            contract: Some(contract),
+            on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args| {
+                policy
+                    .admit(action)
+                    .map_err(crate::shell::search::action_api::ActionError::Refused)?;
+                chrome.borrow_mut().request_session_action(action);
+                Ok(())
+            }),
+            on_invoke: None,
+            on_begin_invoke: None,
+        }
+    }
+
+    fn logout_result(&self, needle: &str) -> Option<SearchResult> {
         let title = t("search-session-logout");
         if !needle.is_empty()
-            && !title.to_lowercase().contains(&needle)
-            && !"log out".contains(&needle)
-            && !"logout".contains(&needle)
-            && !LOGOUT_ID.contains(&needle)
+            && !title.to_lowercase().contains(needle)
+            && !"log out".contains(needle)
+            && !"logout".contains(needle)
+            && !LOGOUT_ID.contains(needle)
         {
-            return Vec::new();
+            return None;
         }
+        let contract = logout_contract();
         let policy = self.policy.clone();
-        vec![SearchResult {
+        Some(SearchResult {
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -149,8 +296,8 @@ impl SearchProvider for SessionActionsProvider {
             subtitle: Some(t("search-session-logout-detail")),
             badge: Some(t("search-badge-session")),
             score: if needle.is_empty() { 0 } else { 100 },
-            params: Vec::new(),
-            contract: Some(logout_contract()),
+            params: confirmation_params(&contract),
+            contract: Some(contract),
             on_open: Rc::new(move |_doc, _root, _chrome: &Chrome, _args| {
                 policy
                     .begin(os_actions::SessionAction::Logout)
@@ -158,7 +305,7 @@ impl SearchProvider for SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
-        }]
+        })
     }
 }
 
@@ -166,9 +313,138 @@ impl SearchProvider for SessionActionsProvider {
 mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
-    use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+    use crate::shell::search::action_api::{ActionCatalog, AllVisible, ArgValue, ResourceRef};
     use crate::shell::search::{SearchRegistry, SearchScope};
     use automerge::{AutoCommit, ROOT};
+    use tilo_actions::{ConfirmationPolicy as Confirm, RiskLevel as Risk};
+
+    fn confirmed() -> (String, ArgValue) {
+        ("confirm".into(), ArgValue::Boolean(true))
+    }
+
+    fn exact_catalog(policy: &SessionActionPolicy, chrome: &Chrome, id: &str) -> ActionCatalog {
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(SessionActionsProvider::new(policy.clone())));
+        let state = chrome.borrow();
+        ActionCatalog::build_exact(
+            &registry,
+            PROVIDER_ID,
+            id,
+            SearchScope::All,
+            None,
+            &state,
+            &AutoCommit::new(),
+            &ROOT,
+            &AllVisible,
+        )
+    }
+
+    #[test]
+    fn every_power_flyout_row_is_a_typed_action_queued_for_the_session_executor() {
+        // Phase `each_row_is_exactly_addressable_with_a_contract_matching_its_risk`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+            policy.set_user_switching(true);
+            for (id, risk, confirmation) in [
+                ("lock", Risk::Low, Confirm::None),
+                ("suspend", Risk::Low, Confirm::Confirm),
+                ("switch-user", Risk::Destructive, Confirm::Confirm),
+                ("restart", Risk::Destructive, Confirm::Confirm),
+                ("shut-down", Risk::Destructive, Confirm::Confirm),
+            ] {
+                let actions = exact_catalog(&policy, &chrome, id).enumerate();
+                let [action] = actions.as_slice() else {
+                    panic!("{id}: expected exactly one action, got {}", actions.len());
+                };
+                let contract = action.contract.as_ref().expect("session contract");
+                assert_eq!(contract.risk, risk, "{id}");
+                assert_eq!(contract.confirmation, confirmation, "{id}");
+            }
+        }
+
+        // Phase `switch_user_is_offered_only_where_the_display_manager_supports_it`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+            assert!(
+                exact_catalog(&policy, &chrome, "switch-user")
+                    .enumerate()
+                    .is_empty()
+            );
+            policy.set_user_switching(true);
+            assert_eq!(
+                exact_catalog(&policy, &chrome, "switch-user")
+                    .enumerate()
+                    .len(),
+                1
+            );
+        }
+
+        // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+            let mut doc = AutoCommit::new();
+            let catalog = exact_catalog(&policy, &chrome, "restart");
+            let restart = catalog
+                .select(&ResourceRef::new(PROVIDER_ID, "restart"))
+                .expect("exact session action");
+            assert!(
+                restart.invoke(&mut doc, &ROOT, &chrome, []).is_err(),
+                "a destructive session action needs explicit confirmation"
+            );
+            assert!(
+                chrome
+                    .borrow_mut()
+                    .take_session_action_requests()
+                    .is_empty()
+            );
+            restart
+                .invoke(&mut doc, &ROOT, &chrome, [confirmed()])
+                .expect("confirmed restart is admitted");
+            exact_catalog(&policy, &chrome, "lock")
+                .select(&ResourceRef::new(PROVIDER_ID, "lock"))
+                .expect("exact session action")
+                .invoke(&mut doc, &ROOT, &chrome, [])
+                .expect("lock needs no confirmation");
+            assert_eq!(
+                chrome.borrow_mut().take_session_action_requests(),
+                vec![
+                    os_actions::SessionAction::Restart,
+                    os_actions::SessionAction::Lock
+                ]
+            );
+            assert!(
+                !chrome.borrow_mut().take_session_lock_request(),
+                "a typed lock reaches the executor, not the lock edge directly"
+            );
+        }
+
+        // Phase `an_inhibited_action_is_refused_before_it_is_queued`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
+            let _hold = inhibitors.acquire_for(
+                "Call is sharing the screen",
+                tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
+            );
+            let policy = SessionActionPolicy::new(inhibitors);
+            policy.set_user_switching(true);
+            let error = exact_catalog(&policy, &chrome, "switch-user")
+                .select(&ResourceRef::new(PROVIDER_ID, "switch-user"))
+                .expect("exact session action")
+                .invoke(&mut AutoCommit::new(), &ROOT, &chrome, [confirmed()])
+                .expect_err("an inhibitor refuses the typed action like the flyout row");
+            assert!(format!("{error:?}").contains("Call is sharing the screen"));
+            assert!(
+                chrome
+                    .borrow_mut()
+                    .take_session_action_requests()
+                    .is_empty()
+            );
+        }
+    }
 
     #[test]
     fn logout_is_addressable_confirmed_and_inhibited_only_like_the_power_menu() {
@@ -203,6 +479,13 @@ mod tests {
                 tilo_actions::ConfirmationPolicy::Confirm
             );
             assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .any(|param| param.name.as_ref() == "confirm"),
+                "a confirmed contract must declare the argument that satisfies it"
+            );
         }
 
         // Phase `typed_logout_policy_refuses_the_same_portal_inhibitor_as_the_power_menu`.
