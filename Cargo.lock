@@ -3,22 +3,6 @@
 version = 4
 
 [[package]]
-name = "ab_glyph"
-version = "0.2.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01c0457472c38ea5bd1c3b5ada5e368271cb550be7a4ca4a0b4634e9913f6cc2"
-dependencies = [
- "ab_glyph_rasterizer",
- "owned_ttf_parser",
-]
-
-[[package]]
-name = "ab_glyph_rasterizer"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
-
-[[package]]
 name = "accesskit"
 version = "0.25.0"
 source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
@@ -167,6 +151,7 @@ dependencies = [
  "bounded-command",
  "cloud-source",
  "getrandom 0.4.3",
+ "hex",
  "private-fs",
  "secret-vault",
  "serde",
@@ -2155,6 +2140,7 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "cloud-source",
  "cloud-source-dav",
@@ -2195,6 +2181,7 @@ dependencies = [
  "chrono",
  "cloud-source",
  "cloud-source-gdrive",
+ "hex",
  "md-5",
  "reqwest",
  "serde",
@@ -2218,6 +2205,7 @@ dependencies = [
  "cloud-source-icloud",
  "getrandom 0.4.3",
  "hex",
+ "mime_guess",
  "num-bigint 0.5.1",
  "pbkdf2",
  "reqwest",
@@ -3454,6 +3442,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "image",
+ "qdoc-rich-text",
  "roxmltree 0.20.0",
  "runtime-dylib",
  "serde",
@@ -3467,6 +3456,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "unicode-bidi",
@@ -3646,6 +3636,8 @@ dependencies = [
  "miniz_oxide",
  "serde",
  "serde_json",
+ "tilo-search",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -4481,6 +4473,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fs-content",
+ "hex",
  "libc",
  "workspace-hack",
 ]
@@ -6490,6 +6483,7 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "automerge",
+ "base64",
  "blake3",
  "block-devices",
  "bounded-command",
@@ -8076,6 +8070,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "md-5",
+ "mime_guess",
  "pim-lines",
  "qdoc-codecs",
  "qdoc-rich-text",
@@ -9700,15 +9695,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "owned_ttf_parser"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
-dependencies = [
- "ttf-parser",
-]
-
-[[package]]
 name = "ownedbytes"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9963,6 +9949,7 @@ dependencies = [
  "automerge",
  "fnv",
  "image",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9974,6 +9961,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-pdf",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "uuid",
@@ -12473,9 +12461,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2a4360b9abcdcee43809e6fc11d6d61ca5d25734026a8fc46c2883eea3f13f"
 dependencies = [
- "ab_glyph",
  "log",
- "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -13135,7 +13121,6 @@ dependencies = [
  "thumbnail",
  "tilo-action-broker",
  "tilo-actions",
- "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-isolate",
@@ -13149,6 +13134,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -14503,6 +14489,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "hex",
  "postcard",
  "regex",
  "serde",
@@ -14545,6 +14532,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-resource",
+ "tilo-search",
  "tilo-ui",
  "tracing",
  "workspace-hack",
@@ -14687,6 +14675,7 @@ dependencies = [
  "ebook",
  "ed25519-dalek 3.0.0",
  "futures",
+ "hex",
  "iroh",
  "iroh-base",
  "js-sys",
@@ -15136,6 +15125,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-installed-apps"
+version = "0.1.0"
+dependencies = [
+ "desktop-policy",
+ "launcher",
+ "package-store",
+ "tempfile",
+ "tilo-app-package",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [
@@ -15557,8 +15558,13 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
  "fs",
+ "launcher",
+ "launcher-macos",
  "libc",
+ "package-store",
  "runtime-fs",
  "runtime-identity",
  "serde",
@@ -15566,9 +15572,11 @@ dependencies = [
  "tempfile",
  "tilo-action-broker",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
@@ -15668,6 +15676,7 @@ dependencies = [
  "jni 0.21.1",
  "libc",
  "media",
+ "mime_guess",
  "ndk",
  "ndk-context",
  "percent-encoding",
@@ -17413,6 +17422,7 @@ dependencies = [
  "advisory-lock",
  "anyhow",
  "automerge",
+ "fnv",
  "gstreamer",
  "gstreamer-app",
  "media",
@@ -19057,7 +19067,6 @@ dependencies = [
  "naga",
  "nix 0.31.3",
  "nom 7.1.3",
- "notify",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-integer",

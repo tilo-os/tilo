@@ -10329,6 +10329,12 @@ impl Widget for WordProcessorWidget {
                 self.view.ruler_visible = !self.view.ruler_visible;
             }
             WordProcessorOperation::ToggleOutline => self.outline.toggle(),
+            // Hosted, the framework's History is the only History surface.
+            WordProcessorOperation::ToggleHistory | WordProcessorOperation::ShowRevision { .. }
+                if self.hosted() =>
+            {
+                return Ok(false);
+            }
             WordProcessorOperation::ToggleHistory => self.history.toggle(),
             WordProcessorOperation::NavigateTo { block, start, end } => {
                 self.navigate_to_range(doc, &block, start, end)?;
@@ -12059,6 +12065,7 @@ impl WordProcessorWidget {
             }
             ToolAction::ToggleRuler => self.view.ruler_visible = !self.view.ruler_visible,
             ToolAction::ToggleOutline => self.outline.toggle(),
+            ToolAction::ToggleHistory if self.hosted() => {}
             ToolAction::ToggleHistory => {
                 self.history.toggle();
                 if self.history.is_open() {
@@ -12135,6 +12142,9 @@ impl WordProcessorWidget {
             ToolAction::ToggleHistory,
             ToolAction::InsertToc,
         ]);
+        if self.hosted() {
+            overflow.retain(|action| *action != ToolAction::ToggleHistory);
+        }
         for action in overflow {
             menu.push(MenuItem::action(tool_action_a11y_label(action), || {}));
             actions.push(Some(CtxAction::Tool(action)));
@@ -13651,21 +13661,27 @@ impl WordProcessorWidget {
             ),
         ]);
         // Navigation: outline pane toggle + table-of-contents generator.
-        specs.extend([
-            toolbar_item(
-                ToolAction::ToggleOutline,
-                t("toolbar-outline"),
-                72.0,
-                self.outline.is_open(),
-            ),
-            toolbar_item(
+        specs.extend([toolbar_item(
+            ToolAction::ToggleOutline,
+            t("toolbar-outline"),
+            72.0,
+            self.outline.is_open(),
+        )]);
+        // Hosted, History is the framework's surface; one control opens it.
+        if !self.hosted() {
+            specs.push(toolbar_item(
                 ToolAction::ToggleHistory,
                 t("toolbar-history"),
                 68.0,
                 self.history.is_open(),
-            ),
-            toolbar_item(ToolAction::InsertToc, t("toolbar-toc"), 48.0, false),
-        ]);
+            ));
+        }
+        specs.push(toolbar_item(
+            ToolAction::InsertToc,
+            t("toolbar-toc"),
+            48.0,
+            false,
+        ));
         specs
     }
 

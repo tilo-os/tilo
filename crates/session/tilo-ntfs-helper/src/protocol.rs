@@ -44,16 +44,7 @@ fn hash(domain: &[u8], parts: &[&[u8]]) -> String {
     hex::encode(h.finalize())
 }
 fn unhex(text: &str) -> io::Result<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return Err(invalid());
-    }
-    text.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            u8::from_str_radix(std::str::from_utf8(pair).map_err(io::Error::other)?, 16)
-                .map_err(io::Error::other)
-        })
-        .collect()
+    hex::decode(text).map_err(|_| invalid())
 }
 /// Hashes complete native facts using domain separation and length encoding.
 /// Hardware/partition binding is performed separately by the retained Linux claim owner.

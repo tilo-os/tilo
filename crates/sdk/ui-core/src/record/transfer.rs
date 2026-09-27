@@ -44,19 +44,34 @@ pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 /// Key, in a record's meta map, marking a record that left its room.
 pub(super) const RETIRED: &str = "retired";
 
+/// Where a moved record went and who moved it, as its retirement records.
+/// Anyone who can read the old record learns only these ids; whether they
+/// can see the destination is for their own desktop to say.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Successor {
+    /// The room the record now lives in.
+    pub room: String,
+    /// Its id there.
+    pub record: String,
+    /// The person who moved it.
+    pub by: String,
+}
+
 /// Why a record is retired, as stamped into its last change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Retirement {
     /// Moved to another room; the successor there carries its history.
-    Moved,
+    /// `None` only for a stamp that no longer says where.
+    Moved(Option<Successor>),
     /// Imported for a transfer that did not complete; nothing ever opened it.
     Abandoned,
 }
 
 impl Retirement {
-    fn as_str(self) -> &'static str {
+    fn reason(&self) -> &'static str {
         match self {
-            Self::Moved => "moved",
+            Self::Moved(_) => "moved",
             Self::Abandoned => "abandoned",
         }
     }
@@ -89,18 +104,64 @@ impl From<durable_store::StoreError> for TransferError {
 /// The retirement stamped into `doc`, when it has left its room.
 pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     let meta = meta_ro(doc)?;
-    match string_at(doc, &meta, RETIRED) {
-        StringAt::String(reason) if reason == Retirement::Abandoned.as_str() => {
-            Some(Retirement::Abandoned)
+    let stamp = match object_at(doc, &meta, RETIRED, ObjType::Map) {
+        ObjectAt::Object(stamp) => stamp,
+        ObjectAt::Missing => {
+            // Present in some other shape: retired all the same.
+            return (!matches!(string_at(doc, &meta, RETIRED), StringAt::Missing))
+                .then_some(Retirement::Moved(None));
         }
-        StringAt::String(_) | StringAt::Invalid => Some(Retirement::Moved),
-        StringAt::Missing => None,
+        ObjectAt::Invalid => return Some(Retirement::Moved(None)),
+    };
+    let field = |key: &str| match string_at(doc, &stamp, key) {
+        StringAt::String(value) => Some(value),
+        StringAt::Missing | StringAt::Invalid => None,
+    };
+    if field("reason").as_deref() == Some("abandoned") {
+        return Some(Retirement::Abandoned);
     }
+    let successor = match (field("room"), field("record"), field("by")) {
+        (Some(room), Some(record), Some(by)) => Some(Successor { room, record, by }),
+        _ => None,
+    };
+    Some(Retirement::Moved(successor))
 }
 
 /// Whether `doc` is a record that left its room.
 pub fn is_retired(doc: &AutoCommit) -> bool {
     retirement(doc).is_some()
+}
+
+/// Stamp `doc` retired, in one change of its own, unless it already is.
+/// The shell does this to a record at rest; an app does it to the live
+/// document it shows, so the stamp travels to everyone holding that record
+/// over its normal route.
+///
+/// # Errors
+/// A document whose metadata cannot hold the stamp.
+pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), TransferError> {
+    if is_retired(doc) {
+        return Ok(());
+    }
+    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
+    let meta = meta_obj(doc).ok_or(RecordOpenError::IdentityMismatch)?;
+    let stamp = doc
+        .put_object(&meta, RETIRED, ObjType::Map)
+        .map_err(automerge)?;
+    doc.put(&stamp, "reason", why.reason()).map_err(automerge)?;
+    if let Retirement::Moved(Some(successor)) = why {
+        doc.put(&stamp, "room", successor.room.as_str())
+            .map_err(automerge)?;
+        doc.put(&stamp, "record", successor.record.as_str())
+            .map_err(automerge)?;
+        doc.put(&stamp, "by", successor.by.as_str())
+            .map_err(automerge)?;
+    }
+    doc.commit_with(CommitOptions::default().with_message(match why {
+        Retirement::Moved(_) => "tilo.record.moved-out".to_owned(),
+        Retirement::Abandoned => "tilo.record.transfer-abandoned".to_owned(),
+    }));
+    Ok(())
 }
 
 /// What a transfer takes out of the source room.
@@ -180,6 +241,26 @@ pub fn read(
     origin: &Origin,
 ) -> Result<AutoCommit, TransferError> {
     let doc = decode(store, &origin.key(package, room)?)?;
+    origin.validate(&doc, room)?;
+    Ok(doc)
+}
+
+/// [`read`] as of `heads`: what the document held before its app stamped
+/// it retired, which is everything a move still has to bring along.
+///
+/// # Errors
+/// As [`read`], and heads the stored document does not contain.
+pub fn read_until(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+    origin: &Origin,
+    heads: &[ChangeHash],
+) -> Result<AutoCommit, TransferError> {
+    let mut stored = decode(store, &origin.key(package, room)?)?;
+    let doc = stored
+        .fork_at(heads)
+        .map_err(|error| TransferError::Automerge(error.to_string()))?;
     origin.validate(&doc, room)?;
     Ok(doc)
 }
@@ -361,7 +442,7 @@ pub fn retire(
     package: &str,
     room: &str,
     origin: &Origin,
-    why: Retirement,
+    why: &Retirement,
 ) -> Result<(), TransferError> {
     let key = origin.key(package, room)?;
     let _writer = writer(store, &key)?;
@@ -370,13 +451,7 @@ pub fn retire(
         return Ok(());
     }
     origin.validate(&doc, room)?;
-    let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
-    doc.put(&meta, RETIRED, why.as_str())
-        .map_err(|error| TransferError::Automerge(error.to_string()))?;
-    doc.commit_with(CommitOptions::default().with_message(match why {
-        Retirement::Moved => "tilo.record.moved-out".to_owned(),
-        Retirement::Abandoned => "tilo.record.transfer-abandoned".to_owned(),
-    }));
+    stamp_retired(&mut doc, why)?;
     persist(store, &key, &mut doc)
 }
 
@@ -418,6 +493,39 @@ mod tests {
             Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
             _ => None,
         }
+    }
+
+    fn moved() -> Retirement {
+        Retirement::Moved(Some(Successor {
+            room: TO.into(),
+            record: "uuid:successor".into(),
+            by: "person:ada".into(),
+        }))
+    }
+
+    #[test]
+    fn a_retirement_travels_as_one_change_and_is_read_back_whole() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "body", "draft").unwrap();
+        doc.commit();
+        let before = doc.get_heads();
+        stamp_retired(&mut doc, &moved()).unwrap();
+        assert_eq!(retirement(&doc), Some(moved()));
+        assert_eq!(doc.get_changes(&before).len(), 1);
+        let mut peer = doc.fork_at(&before).unwrap();
+        assert!(!is_retired(&peer));
+        peer.merge_incoming(&mut doc).unwrap();
+        assert_eq!(
+            retirement(&peer),
+            Some(moved()),
+            "a peer holding it learns it moved"
+        );
+        stamp_retired(&mut doc, &Retirement::Abandoned).unwrap();
+        assert_eq!(
+            retirement(&doc),
+            Some(moved()),
+            "the first retirement stands"
+        );
     }
 
     fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
@@ -466,7 +574,7 @@ mod tests {
             .unwrap();
         old_writer.try_flush().unwrap();
         assert!(matches!(
-            retire(&store, PACKAGE, FROM, &origin, Retirement::Moved),
+            retire(&store, PACKAGE, FROM, &origin, &moved()),
             Err(TransferError::Busy)
         ));
         drop(old_writer);
@@ -475,7 +583,7 @@ mod tests {
         assert_eq!(changes_since(&last, &known), 1);
         assert_eq!(catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(), 1);
         assert_eq!(catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(), 0);
-        retire(&store, PACKAGE, FROM, &origin, Retirement::Moved).unwrap();
+        retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
 
         let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
         assert_eq!(
@@ -495,7 +603,7 @@ mod tests {
             Err(RecordOpenError::Retired)
         ));
         let retired = decode(&store, &key(PACKAGE, FROM, &checkout.id).unwrap()).unwrap();
-        assert_eq!(retirement(&retired), Some(Retirement::Moved));
+        assert_eq!(retirement(&retired), Some(moved()));
         assert_eq!(
             body(&retired).as_deref(),
             Some("first draft, last words"),
@@ -559,13 +667,13 @@ mod tests {
 
         assert!(
             matches!(
-                retire(&store, PACKAGE, FROM, &origin, Retirement::Moved),
+                retire(&store, PACKAGE, FROM, &origin, &moved()),
                 Err(TransferError::Busy)
             ),
             "not while the app still writes it"
         );
         drop(app);
-        retire(&store, PACKAGE, FROM, &origin, Retirement::Moved).unwrap();
+        retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
         assert!(matches!(
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))

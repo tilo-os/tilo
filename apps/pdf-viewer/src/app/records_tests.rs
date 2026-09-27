@@ -444,11 +444,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         });
         app.commit_drag(&mut state.doc);
         app.create_note(&mut state.doc, 1, (250.0, 30.0));
-        app.editing
-            .as_mut()
-            .unwrap()
-            .input
-            .insert_at_cursor("Please confirm");
+        app.editing.as_mut().unwrap().set_text("Please confirm");
         app.commit_edit(&mut state.doc);
         let name = app
             .field_widgets_on(1)
@@ -456,7 +452,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             .find(|w| w.name == "name")
             .expect("the name field is on page 1");
         app.activate_field(&mut state.doc, &name);
-        app.editing.as_mut().unwrap().input.set_text("Grace Hopper");
+        app.editing.as_mut().unwrap().set_text("Grace Hopper");
         app.commit_edit(&mut state.doc);
         let agree = app
             .field_widgets_on(1)

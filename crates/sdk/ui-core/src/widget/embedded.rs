@@ -194,11 +194,10 @@ impl<W: Widget + 'static> Embedded<W> {
         path: &ObjId,
         handled: &mut bool,
     ) {
-        // An event before the first layout (a key typed as the widget opens)
-        // still reaches it: its tree is built with the default theme, and
-        // the next layout replaces it.
+        // Keys can reach a field before it is first laid out (typing right
+        // after it opens); give the widget its tree so they are not lost.
         if self.root.is_none() {
-            self.rebuild(&Theme::default());
+            self.rebuild(&Theme::dark());
         }
         let Some(root) = self.root else {
             return;

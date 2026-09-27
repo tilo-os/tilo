@@ -59,7 +59,7 @@ use ui::widget::{
 };
 
 use crate::chrome::{self as chrome, pointer_target, rhythm};
-use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
+use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
@@ -2940,7 +2940,7 @@ impl BooksApp {
             let id = draft.id;
             self.perform_action(doc, &draft.into_action());
             self.composing = Some(id);
-            self.note_composer.open(id, "");
+            self.note_composer.open(id);
         }
     }
 
@@ -2953,13 +2953,13 @@ impl BooksApp {
     }
 
     fn on_edit_note(&mut self, id: Uuid) {
-        if let Some(note) = self
+        if self
             .annotations
             .iter()
-            .find(|a| a.id == id && a.kind == AnnoKind::Note)
+            .any(|a| a.id == id && a.kind == AnnoKind::Note)
         {
             self.composing = Some(id);
-            self.note_composer.open(id, &note.note);
+            self.note_composer.open(id);
             self.notes_flap.open();
             self.notes_scroll_to_annotation = Some(id);
         }
@@ -3038,17 +3038,17 @@ impl BooksApp {
             .into_action();
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
-            self.comment_overlay.begin_editing(id, "");
+            self.comment_overlay.begin_editing(id);
         }
     }
 
     fn on_edit_comment(&mut self, id: Uuid) {
-        if let Some(comment) = self
+        if self
             .annotations
             .iter()
-            .find(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
+            .any(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
         {
-            self.comment_overlay.begin_editing(id, &comment.note);
+            self.comment_overlay.begin_editing(id);
         }
     }
 
@@ -4189,33 +4189,25 @@ impl BooksApp {
         }
     }
 
-    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: &str) -> bool {
-        let Some(id) = self.composing else {
-            return false;
+    /// Close an editor whose note or comment a collaborator deleted.
+    fn close_orphaned_editors(&mut self) {
+        let live = |id: Uuid| {
+            self.annotations
+                .iter()
+                .any(|annotation| annotation.id == id)
         };
-        self.set_annotation_text(doc, id, text)
-    }
-
-    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: &str) -> bool {
-        if !self
-            .annotations
-            .iter()
-            .any(|annotation| annotation.id == id)
-        {
-            if self.composing == Some(id) {
-                self.composing = None;
-                self.note_composer.close();
-            }
-            if self.comment_overlay.editing_id() == Some(id) {
-                self.comment_overlay.finish_editing();
-            }
-            return false;
+        let composing_gone = self.note_composer.id().is_some_and(|id| !live(id));
+        let comment_gone = self
+            .comment_overlay
+            .editing_id()
+            .is_some_and(|id| !live(id));
+        if composing_gone {
+            self.composing = None;
+            self.note_composer.close();
         }
-        // Editors use the same action builder as the canonical resource tree.
-        // This keeps typed input undoable/replayable instead of smuggling a
-        // direct CRDT mutation around the action executor.
-        self.perform_action(doc, &crate::actions::edit_note_action(id, text));
-        true
+        if comment_gone {
+            self.comment_overlay.finish_editing();
+        }
     }
 
     fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
@@ -4974,7 +4966,16 @@ impl Widget for BooksApp {
     /// Hand the host the heads captured before an on-page affordance
     /// dispatched its annotation action. Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        self.actions
+            .take_committed()
+            .or_else(|| self.note_composer.take_committed())
+            .or_else(|| self.comment_overlay.take_committed())
+    }
+
+    /// A word typed into a note or comment is one undo step, kept open for
+    /// its next letters.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.note_composer.keeps_step_open() || self.comment_overlay.keeps_step_open()
     }
 
     /// Make books, chapters and annotations findable through canonical
@@ -4998,10 +4999,15 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
+        // Notes written before their text was rich text come across once.
+        BooksDoc::migrate_annotation_text(doc);
+        self.close_orphaned_editors();
+        self.note_composer.sync(doc, path);
+        self.comment_overlay.sync(doc, path);
         self.drain_portal();
         self.drain_import_worker(doc);
         self.commit_pending_share(doc);
@@ -5032,7 +5038,7 @@ impl Widget for BooksApp {
                 let aid = a.id;
                 BooksDoc::upsert_annotation(doc, &a);
                 self.composing = Some(aid);
-                self.note_composer.open(aid, &a.note);
+                self.note_composer.open(aid);
             }
         }
         if self.shot_comments && !self.comment_overlay.is_open() {
@@ -5693,13 +5699,10 @@ impl Widget for BooksApp {
             }
             return false;
         }
-        if let Some(outcome) = self
+        if self
             .comment_overlay
             .perform_editor_semantic_action(target, action, doc, path)
         {
-            if let CommentSemanticOutcome::Changed(id, text) = outcome {
-                self.set_annotation_text(doc, id, &text);
-            }
             self.refresh_from_doc(doc);
             self.dirty = true;
             return true;
@@ -5709,9 +5712,6 @@ impl Widget for BooksApp {
             .perform_semantic_action(target, action, doc, path)
         {
             match outcome {
-                NoteSemanticOutcome::Changed(text) => {
-                    self.set_composing_text(doc, &text);
-                }
                 NoteSemanticOutcome::Save => {
                     self.finish_composing(doc);
                 }
@@ -5869,23 +5869,17 @@ impl Widget for BooksApp {
 impl BooksApp {
     fn forward_shared_input_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut input_handled = false;
-        let (comment_text, comment_submitted) = self
+        // The editors write the text as it is typed; finishing only closes.
+        if self
             .comment_overlay
-            .handle_event(&mut ctx.reborrow(&mut input_handled));
-        if let Some((id, text)) = comment_text {
-            self.set_annotation_text(ctx.state, id, &text);
-        }
-        if comment_submitted {
+            .handle_event(&mut ctx.reborrow(&mut input_handled))
+        {
             input_handled = true;
         }
-
-        let (note_text, submit) = self
+        if self
             .note_composer
-            .handle_event(&mut ctx.reborrow(&mut input_handled));
-        if let Some(text) = note_text {
-            self.set_composing_text(ctx.state, &text);
-        }
-        if submit {
+            .handle_event(&mut ctx.reborrow(&mut input_handled))
+        {
             self.finish_composing(ctx.state);
             input_handled = true;
         }

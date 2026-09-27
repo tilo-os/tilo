@@ -4,15 +4,20 @@
 import errno
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / 'dev/probe-kvm.py'
-spec = importlib.util.spec_from_file_location('probe_kvm', SOURCE)
-probe = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(probe)
+if sys.platform.startswith('linux'):
+    SOURCE = Path(__file__).resolve().parents[1] / 'dev/probe-kvm.py'
+    spec = importlib.util.spec_from_file_location('probe_kvm', SOURCE)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+else:
+    probe = None
 
 
+@unittest.skipUnless(sys.platform.startswith('linux'), 'KVM ioctls require Linux')
 class ProbeKvmTests(unittest.TestCase):
     def test_architecture_mismatch_skips_device(self):
         with patch.object(probe.platform, 'machine', return_value='aarch64'), \
