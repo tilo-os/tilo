@@ -307,6 +307,20 @@ pub trait ContinuationServices: Send + Sync {
     ///
     /// Returns a message when the host cannot clear the metadata.
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
+    /// One application instance answering a handoff request, or reporting
+    /// that the document it shows arrived retired. `message` is an encoded
+    /// `ui::collaboration::handoff::HandoffReport`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host does not take handoff reports.
+    fn handoff(
+        &self,
+        room: RoomId,
+        app: String,
+        instance: u64,
+        message: Vec<u8>,
+    ) -> Result<(), String>;
 }
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
 pub trait WorkspaceControlServices: Send + Sync {

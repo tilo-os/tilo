@@ -7,6 +7,7 @@ license.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
 
 [dependencies]
+hex = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
@@ -14,7 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-net = { path = "../tilo-net", features = ["blocking"] }
 # The in-memory Drive server behind `fake-server`.
-md-5 = { version = "0.11", optional = true }
+md-5 = { workspace = true, optional = true }
 sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
 test-http = { path = "../../dev/test-http", optional = true }
@@ -24,7 +25,7 @@ workspace-hack = { version = "0.1" }
 # `cloud_source_gdrive::fake::FakeDrive`, an in-memory Drive API v3 server on
 # the shared test responder, for this crate's conformance run and the storage
 # daemon's end-to-end tests. Test support only.
-fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2"]
+fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
 
 [dev-dependencies]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }

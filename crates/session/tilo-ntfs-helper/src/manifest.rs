@@ -25,16 +25,7 @@ fn kind(v: &Value) -> io::Result<&str> {
     text(v, "kind")
 }
 fn unhex(s: &str) -> io::Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return Err(bad());
-    }
-    s.as_bytes()
-        .chunks_exact(2)
-        .map(|p| {
-            u8::from_str_radix(std::str::from_utf8(p).map_err(io::Error::other)?, 16)
-                .map_err(io::Error::other)
-        })
-        .collect()
+    hex::decode(s).map_err(|_| bad())
 }
 fn units(s: &str) -> io::Result<Vec<u16>> {
     let b = unhex(s)?;

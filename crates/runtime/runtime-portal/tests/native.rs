@@ -17,7 +17,9 @@ fn child() -> Command {
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("TILO_RUNTIME_STANDALONE")
-        .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID");
+        .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
+        .env_remove("TILO_RUNTIME_BINARY")
+        .env_remove("XDG_CURRENT_DESKTOP");
     command
 }
 #[test]
@@ -247,4 +249,83 @@ async fn adopting_service_descriptor_restores_close_on_exec() {
         "SDK-owned service leaked into subsequent execs"
     );
     drop(client);
+}
+
+#[test]
+fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_inside_it() {
+    let root = std::env::temp_dir().join(format!("tilo-host-choice-test-{}", std::process::id()));
+    let both = root.join("both");
+    let standalone_only = root.join("standalone-only");
+    for directory in [&both, &standalone_only] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let host = |directory: &std::path::Path, name: &str| {
+        let path = directory.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\necho HOST {name}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    host(&both, "tilo-runtime");
+    host(&both, "tilo-runtime-mcp");
+    host(&standalone_only, "tilo-runtime");
+    let explicit = host(&root, "explicit-host");
+    let run = |path: &std::path::Path, desktop: Option<&str>, binary: Option<&std::path::Path>| {
+        let mut command = child();
+        command.env("PATH", path);
+        if let Some(desktop) = desktop {
+            command.env("XDG_CURRENT_DESKTOP", desktop);
+        }
+        if let Some(binary) = binary {
+            command.env("TILO_RUNTIME_BINARY", binary);
+        }
+        command.output().unwrap()
+    };
+    // The re-executed test prints libtest's header before the host runs.
+    let chose = |output: &std::process::Output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("HOST ").map(str::to_owned))
+    };
+
+    // Stock macOS or a foreign Linux desktop: the standalone runtime first.
+    let foreign = run(&both, None, None);
+    assert_eq!(
+        chose(&foreign).as_deref(),
+        Some("tilo-runtime"),
+        "case foreign"
+    );
+    let other_desktop = run(&both, Some("GNOME"), None);
+    assert_eq!(
+        chose(&other_desktop).as_deref(),
+        Some("tilo-runtime"),
+        "case GNOME"
+    );
+    // Inside the Tilo desktop: the session's host.
+    let tilo = run(&both, Some("tilo"), None);
+    assert_eq!(
+        chose(&tilo).as_deref(),
+        Some("tilo-runtime-mcp"),
+        "case tilo"
+    );
+    // ...and never a second authority beside it.
+    let missing = run(&standalone_only, Some("tilo"), None);
+    assert_eq!(
+        missing.status.code(),
+        Some(21),
+        "case tilo without its host"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("tilo-runtime-mcp"),
+        "case tilo without its host"
+    );
+    // The explicit binary overrides either choice.
+    for desktop in [None, Some("tilo")] {
+        let chosen = run(&both, desktop, Some(&explicit));
+        assert_eq!(
+            chose(&chosen).as_deref(),
+            Some("explicit-host"),
+            "case explicit {desktop:?}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

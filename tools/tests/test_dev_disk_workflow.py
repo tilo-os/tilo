@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forgejo/workflows/dev-disk.yml"
 OS_RELEASE = ROOT / ".forgejo/workflows/build-image.yml"
 PUBLISH = ROOT / "os/dev/publish-dev-disk.sh"
+CANDIDATE = ROOT / "os/dev/publish-dev-disk-candidate.sh"
 CHECK = ROOT / "os/dev/check-dev-vm.sh"
 STORE = ROOT / "os/dev/ci-native-podman-store.sh"
 
@@ -155,6 +156,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
             build = job(self.source, "build")
             disk = step(build, "Install the dev image to a bootable disk")
             self.assertIn('TILO_SKIP_BUILD: "1"', disk)
+            self.assertIn('TILO_QCOW2_COMPRESS: "1"', disk)
             self.assertIn("./os/dev/build-image.sh", disk)
             self.assertIn(
                 "TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}",
@@ -166,11 +168,28 @@ class DevDiskWorkflowTests(unittest.TestCase):
             order = [
                 "Build the dev image FROM the verified base",
                 "Install the dev image to a bootable disk",
+                "Publish unvalidated installed disk candidate",
                 "Boot the disk and reach tilo-vmd over SSH",
                 "Publish this architecture's dev image and disk",
             ]
             positions = [build.index(f"- name: {name}") for name in order]
             self.assertEqual(positions, sorted(positions))
+        with self.subTest(phase='candidate is explicit and cannot commit a validated tag'):
+            build = job(self.source, "build")
+            candidate = step(build, "Publish unvalidated installed disk candidate")
+            self.assertIn("./os/dev/publish-dev-disk-candidate.sh", candidate)
+            self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", candidate)
+            self.assertIn('echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"', build)
+            self.assertIn('echo "DEV_IMAGE_DIGEST=$actual" >> "$GITHUB_ENV"', build)
+            source = CANDIDATE.read_text(encoding="utf-8")
+            self.assertIn("https://tilo.sh/dev/disk-candidate/v1", source)
+            self.assertIn('validation:"unvalidated"', source)
+            self.assertIn("/tilo-vm-disk-candidate/$version", source)
+            self.assertNotIn("/tilo-vm-disk/$DEV_TAG", source)
+            for field in ("sourceRevision:", "diskToolingRevision:", "imageDigest:", "baseChildDigest:", "sha256:"):
+                self.assertIn(field, source)
+            self.assertLess(source.index('"$repo/tools/upload_immutable_packages.sh" "$uploads"'),
+                            source.index('manifest=candidate.json'))
         with self.subTest(phase='uploads use the package token without an integration audience'):
             publish = step(job(self.source, "build"), "Publish this architecture's dev image and disk")
             self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish)
@@ -232,6 +251,12 @@ class PublishScriptTests(unittest.TestCase):
             self.assertIn("-O vhdx -o subformat=dynamic", self.source)
             self.assertIn('package="$package_api/tilo-vm-disk/$DEV_TAG"', self.source)
             self.assertIn("*'.svc.cluster.local'*", self.source)
+        with self.subTest(phase='already-compressed CI disk is published without a second copy'):
+            self.assertIn('"compression-type" == "zstd"', self.source)
+            self.assertIn('ln -- "$SOURCE_DISK" "$out/$file"', self.source)
+            candidate = CANDIDATE.read_text(encoding="utf-8")
+            self.assertIn('sha256sum "$SOURCE_DISK"', candidate)
+            self.assertNotIn('qemu-img convert', candidate)
         with self.subTest(phase='disk manifest records separate tooling revision'):
             self.assertIn("DISK_TOOLING_REVISION", self.source)
             self.assertIn('[[ $DISK_TOOLING_REVISION =~ ^[0-9a-f]{40}$ ]]', self.source)

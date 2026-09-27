@@ -25,6 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+base64.workspace = true
 crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
 advisory-lock = { path = "../../crates/system/advisory-lock" }

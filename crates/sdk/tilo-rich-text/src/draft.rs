@@ -238,6 +238,30 @@ mod tests {
     }
 
     #[test]
+    fn a_mention_and_an_emoji_go_through_the_field_as_edits() {
+        let mut field = Field::new(SubmitKey::Enter);
+        field.type_text("hi ");
+        field
+            .host
+            .widget_mut()
+            .insert_mention(&mut field.doc, "u-ada", "@Ada");
+        field.host.widget_mut().insert_text(&mut field.doc, "🎉");
+        let draft = field.host.widget().source();
+        assert_eq!(draft.plain_text(), "hi @Ada 🎉");
+        let blocks = draft.blocks();
+        assert_eq!(
+            blocks[0].marks,
+            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+        );
+        let clip = &draft.clip_blocks()[0];
+        assert!(
+            clip.marks
+                .iter()
+                .any(|mark| mark.name == "mention" && (mark.start, mark.end) == (3, 7))
+        );
+    }
+
+    #[test]
     fn an_embedded_field_sends_with_its_key_and_cancels_with_escape() {
         let mut field = Field::new(SubmitKey::ModEnter);
         field.type_text("hi");

@@ -207,6 +207,11 @@ impl<W: Widget + 'static> Embedded<W> {
         path: &ObjId,
         handled: &mut bool,
     ) {
+        // Keys can reach a field before it is first laid out (typing right
+        // after it opens); give the widget its tree so they are not lost.
+        if self.root.is_none() {
+            self.rebuild(&Theme::dark());
+        }
         let Some(root) = self.root else {
             return;
         };

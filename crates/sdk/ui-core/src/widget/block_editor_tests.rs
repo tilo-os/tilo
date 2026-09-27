@@ -2345,3 +2345,32 @@ fn toolbar_commands_format_the_focused_block() {
         Mark::ExternalLink("https://b.test".into())
     )));
 }
+
+#[test]
+fn a_mention_replaces_its_typed_query_as_one_marked_run() {
+    let mut e = BlockEditor::new();
+    e.set_blocks(vec![Block::paragraph("hi @ad")]);
+    e.focus_block(0, CursorPlacement::End);
+    assert_eq!(e.text_before_caret(), Some("hi @ad"));
+    e.select_before_caret("@ad".len());
+    assert!(e.insert_mention("u-ada", "@Ada"));
+    assert_eq!(e.blocks[0].line.value(), "hi @Ada ");
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+    );
+    assert_eq!(
+        e.blocks[0].line.cursor_pos(),
+        8,
+        "the caret is after the space"
+    );
+    assert!(e.insert_text("🎉"));
+    assert_eq!(e.blocks[0].line.value(), "hi @Ada 🎉");
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))],
+        "text typed after a mention does not join it"
+    );
+    e.set_read_only(true);
+    assert!(!e.insert_text("x"), "a read-only editor takes nothing");
+}

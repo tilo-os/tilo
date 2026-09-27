@@ -1564,9 +1564,13 @@ impl PdfApp {
         );
         scene.fill(Fill::NonZero, base, render::paper(theme), None, &r);
         scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(Editing {
+            input: EditInput::Plain(input),
+            ..
+        }) = self.editing.as_mut()
+        {
             draw_inline_editor(
-                &mut editing.input,
+                input,
                 scene,
                 base,
                 tr,
@@ -1617,9 +1621,13 @@ impl PdfApp {
             &r,
         );
         scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(Editing {
+            input: EditInput::Plain(input),
+            ..
+        }) = self.editing.as_mut()
+        {
             draw_inline_editor(
-                &mut editing.input,
+                input,
                 scene,
                 base,
                 tr,
@@ -2613,55 +2621,84 @@ impl PdfApp {
 
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
         let s = f64::from(tr.text_scale()).clamp(1.0, 2.0);
-        // The body shows the live edit buffer while this comment is focused.
-        let editing_body = self
-            .editing
-            .as_ref()
-            .filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
-        let body_text = editing_body.map_or(cm.body.as_str(), Editing::text);
-        let body_probe = if body_text.is_empty() { "M" } else { body_text };
-        let (_, bh) = tr.measure(
-            body_probe,
-            self.type_px.sm,
-            Some(Self::comment_body_wrap(inner_w, s)),
-        );
+        let line = f64::from(tr.measure("M", self.type_px.sm, None).1);
+        // The body is the live editor while this comment is focused, else its
+        // text as written (a line's height when empty, for the hint).
+        let body_wrap = f64::from(Self::comment_body_wrap(inner_w, s));
+        let bh = match self.editing_field(&EditTarget::CommentBody(cm.id.clone())) {
+            Some(field) => field.rect().height().max(line),
+            None if cm.body.is_empty() => line,
+            None => {
+                self.comment_view_height(tr, comment_view_key(&cm.id, None), &cm.blocks, body_wrap)
+            }
+        };
         // Header band, then the body, then a 12px bottom pad. The band's
         // height is `comment_body_top`, the same value the header layout
         // paints with.
-        let mut card_h = Self::comment_body_top(s) + f64::from(bh) + 12.0 * s;
+        let mut card_h = Self::comment_body_top(s) + bh + 12.0 * s;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
+        let reply_wrap = f64::from(Self::comment_reply_wrap(inner_w, s));
         for r in &cm.replies {
-            let (_, rh) = tr.measure(
-                &r.body,
-                self.type_px.sm,
-                Some(Self::comment_reply_wrap(inner_w, s)),
-            );
-            reply_heights.push(f64::from(rh));
-            card_h += 16.0 * s + f64::from(rh) + 8.0 * s;
+            let rh = if r.body.is_empty() {
+                line
+            } else {
+                self.comment_view_height(
+                    tr,
+                    comment_view_key(&cm.id, Some(&r.id)),
+                    &r.blocks,
+                    reply_wrap,
+                )
+            };
+            reply_heights.push(rh);
+            card_h += 16.0 * s + rh + 8.0 * s;
         }
         // Reply-compose row: a slim "Reply" affordance, or the open field.
-        let composing = self
-            .editing
-            .as_ref()
-            .filter(|e| e.target == EditTarget::Reply(cm.id.clone()));
-        let compose_h = if let Some(e) = composing {
-            let probe = if e.text().is_empty() { "M" } else { e.text() };
-            let (_, fh) = tr.measure(
-                probe,
-                self.type_px.sm,
-                Some(Self::comment_compose_wrap(inner_w, s)),
-            );
-            8.0 * s + f64::from(fh).max(15.0 * s) + 16.0 * s
-        } else {
-            8.0 * s + 24.0 * s
+        let compose_h = match self.editing_field(&EditTarget::Reply(cm.id.clone())) {
+            Some(field) => 8.0 * s + field.rect().height().max(line).max(15.0 * s) + 16.0 * s,
+            None => 8.0 * s + 24.0 * s,
         };
         card_h += compose_h;
         CommentMetrics {
             card_h,
-            body_h: f64::from(bh),
+            body_h: bh,
             reply_heights,
             compose_h,
         }
+    }
+
+    /// The comment editor open on `target`, if it is the edit in progress.
+    fn editing_field(&self, target: &EditTarget) -> Option<&CommentField> {
+        match self.editing.as_ref() {
+            Some(Editing {
+                target: editing,
+                input: EditInput::Rich(field),
+            }) if editing == target => Some(field),
+            _ => None,
+        }
+    }
+
+    /// A read-only view of a comment or reply, in comment type.
+    fn comment_view(&self) -> RichTextView {
+        let mut view = RichTextView::new();
+        view.editor_mut().set_body_size(self.type_px.sm);
+        view
+    }
+
+    /// The height `blocks` take shown at `width`, measured with the view
+    /// that draws them.
+    fn comment_view_height(
+        &self,
+        tr: &mut TextRenderer,
+        key: String,
+        blocks: &[ui::widget::BlockContent],
+        width: f64,
+    ) -> f64 {
+        // Only the type scale reaches layout; colours are the painting theme's.
+        let theme = Theme::dark().with_text_scale(tr.text_scale());
+        let mut views = self.comment_views.borrow_mut();
+        let view = views.entry(key).or_insert_with(|| self.comment_view());
+        view.show(blocks);
+        view.layout(Rect::new(0.0, 0.0, width, 0.0), &theme, tr)
     }
 
     /// Wrap width of a comment card's body text. The body is painted from
@@ -2848,18 +2885,7 @@ impl PdfApp {
             self.draw_comment_header_row(scene, base, tr, theme, cm, &hdr, out);
             let yy =
                 self.draw_comment_body(scene, base, tr, theme, card, cm, &hdr, &m, inner_w, out);
-            let yy = Self::draw_comment_replies(
-                scene,
-                base,
-                tr,
-                theme,
-                card,
-                cm,
-                &m,
-                inner_w,
-                yy,
-                self.type_px.sm,
-            );
+            let yy = self.draw_comment_replies(scene, base, tr, theme, card, cm, &m, inner_w, yy);
             self.draw_comment_composer(scene, base, tr, theme, card, cm, &m, yy, out);
 
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
@@ -3025,20 +3051,19 @@ impl PdfApp {
                 &RoundedRect::from_rect(body_hit, f64::from(theme.tokens.radii.sm)),
             );
             *out.edit_rect = body_hit;
-            // The shared multiline TextInput owns the text, caret, and
-            // selection while this comment is focused. It's positioned so
-            // its text baseline lands where the static body draws (the
-            // widget insets its content by ML_PAD 10×8 px).
-            if let Some(editing) = self.editing.as_mut() {
-                draw_inline_editor(
-                    &mut editing.input,
-                    scene,
-                    base,
-                    tr,
+            // The SDK editor owns the text, caret and selection while this
+            // comment is focused, set where the static body draws.
+            if let Some(Editing {
+                input: EditInput::Rich(field),
+                ..
+            }) = self.editing.as_mut()
+            {
+                field.layout(
+                    Rect::new(body_x, body_top, body_x + f64::from(body_wrap), body_top),
                     theme,
-                    Point::new(body_x, body_top),
-                    (body_wrap, m.body_h),
+                    tr,
                 );
+                field.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
         } else if cm.body.is_empty() {
             tr.draw_text(
@@ -3050,14 +3075,17 @@ impl PdfApp {
                 Some(body_wrap),
             );
         } else {
-            tr.draw_text(
-                scene,
-                &cm.body,
-                self.type_px.sm,
-                theme.text_primary,
-                base * Affine::translate((body_x, body_top)),
-                Some(body_wrap),
+            let mut views = self.comment_views.borrow_mut();
+            let view = views
+                .entry(comment_view_key(&cm.id, None))
+                .or_insert_with(|| self.comment_view());
+            view.show(&cm.blocks);
+            view.layout(
+                Rect::new(body_x, body_top, body_x + f64::from(body_wrap), body_top),
+                theme,
+                tr,
             );
+            view.draw(scene, base, tr, theme);
         }
         out.hits
             .push((SidebarHit::EditComment(cm.id.clone()), body_hit));
@@ -3071,6 +3099,7 @@ impl PdfApp {
         reason = "threads the same comment-card draw context as draw_comments"
     )]
     fn draw_comment_replies(
+        &self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -3080,7 +3109,6 @@ impl PdfApp {
         m: &CommentMetrics,
         inner_w: f64,
         mut yy: f64,
-        reply_px: f32,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
@@ -3110,14 +3138,23 @@ impl PdfApp {
                 TextWeight::Semibold,
             );
             yy += 14.0 * s;
-            tr.draw_text(
-                scene,
-                &r.body,
-                reply_px,
-                theme.tokens.colors.text_primary,
-                base * Affine::translate((card.x0 + 24.0 * s, yy)),
-                Some(Self::comment_reply_wrap(inner_w, s)),
+            let x0 = card.x0 + 24.0 * s;
+            let mut views = self.comment_views.borrow_mut();
+            let view = views
+                .entry(comment_view_key(&cm.id, Some(&r.id)))
+                .or_insert_with(|| self.comment_view());
+            view.show(&r.blocks);
+            view.layout(
+                Rect::new(
+                    x0,
+                    yy,
+                    x0 + f64::from(Self::comment_reply_wrap(inner_w, s)),
+                    yy,
+                ),
+                theme,
+                tr,
             );
+            view.draw(scene, base, tr, theme);
             yy += reply_h + 10.0 * s;
         }
         yy
@@ -3175,17 +3212,14 @@ impl PdfApp {
             let rwrap = Self::comment_compose_wrap(card.width(), s);
             let tx = field.x0 + 10.0 * s;
             let ty = field.y0 + 8.0 * s;
-            // The shared TextInput draws the reply text + caret + selection.
-            if let Some(editing) = self.editing.as_mut() {
-                draw_inline_editor(
-                    &mut editing.input,
-                    scene,
-                    base,
-                    tr,
-                    theme,
-                    Point::new(tx, ty),
-                    (rwrap, field.height() - 16.0 * s),
-                );
+            // The SDK editor draws the reply text, caret and selection.
+            if let Some(Editing {
+                input: EditInput::Rich(reply),
+                ..
+            }) = self.editing.as_mut()
+            {
+                reply.layout(Rect::new(tx, ty, tx + f64::from(rwrap), ty), theme, tr);
+                reply.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
             out.hits
                 .push((SidebarHit::ReplyField(cm.id.clone()), field));
@@ -3444,10 +3478,7 @@ impl PdfApp {
             card.y1 - 6.0,
         );
         let name_shown: String = if editing_signer {
-            self.editing
-                .as_ref()
-                .map(|e| e.text().to_string())
-                .unwrap_or_default()
+            self.editing.as_ref().map(Editing::text).unwrap_or_default()
         } else {
             self.signer_name.clone()
         };
@@ -3460,9 +3491,13 @@ impl PdfApp {
                 &RoundedRect::from_rect(name_hit, f64::from(theme.tokens.radii.sm)),
             );
             *out.edit_rect = name_hit;
-            if let Some(editing) = self.editing.as_mut() {
+            if let Some(Editing {
+                input: EditInput::Plain(input),
+                ..
+            }) = self.editing.as_mut()
+            {
                 draw_inline_editor(
-                    &mut editing.input,
+                    input,
                     scene,
                     base,
                     tr,

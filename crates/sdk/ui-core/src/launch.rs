@@ -749,6 +749,22 @@ impl LaunchSpec {
         )
     }
 
+    /// A fresh instance of the live root for History's read-only preview.
+    #[cfg(feature = "native")]
+    fn history_preview_root(
+        &self,
+        args: &LaunchArgs,
+    ) -> impl Fn() -> Result<Box<dyn Widget>, String> + 'static {
+        let live_root = self.live_root;
+        let live_root_with_args = self.live_root_with_args;
+        let args = args.clone();
+        move || match (live_root_with_args, live_root) {
+            (Some(factory), _) => factory(&args).map_err(|error| error.to_string()),
+            (None, Some(factory)) => Ok(factory()),
+            (None, None) => Err("launch specification has no live root".into()),
+        }
+    }
+
     #[cfg(feature = "native")]
     fn screenshot_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         self.shot_root
@@ -1841,12 +1857,20 @@ fn finalize_native_app_with_constructor(
     let root_history = root
         .history_registration()
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    // A second root may only be built where the spec builds it and the host,
+    // not the root, owns persistence: a preview must never open a store.
+    let preview_root = (spec.legacy_preparer.is_none()
+        && matches!(persistence, LegacyPersistencePolicy::Host))
+    .then(|| spec.history_preview_root(args));
     let mut app = crate::collaboration::native_initial::transfer_to_app(|| {
         construct(scope, state, root, domain)
     })
     .map_err(LaunchError::Operation)?
     .with_autosave(autosave)
     .with_legacy_persistence(persistence);
+    if let Some(preview_root) = preview_root {
+        app = app.with_history_preview_root(preview_root);
+    }
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }

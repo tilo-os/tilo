@@ -33,6 +33,19 @@ pub fn fold_char(scalar: char, out: &mut impl FnMut(char)) {
         return;
     }
     for lower in scalar.to_lowercase() {
+        // Ligatures and typographic quotes that have no compatibility
+        // decomposition: "coeur" finds "cœur", "strasse" finds "Straße".
+        let spelled = match lower {
+            'œ' => "oe",
+            'æ' => "ae",
+            'ß' => "ss",
+            '\u{2018}' | '\u{2019}' => "'",
+            _ => "",
+        };
+        if !spelled.is_empty() {
+            spelled.chars().for_each(&mut *out);
+            continue;
+        }
         if keeps_composition(lower) {
             out(lower);
             continue;
@@ -70,6 +83,10 @@ mod tests {
         assert_eq!(fold("ÅNGSTRÖM"), "angstrom");
         assert_eq!(fold("Ｔｏｋｙｏ ﬁle"), "tokyo file");
         assert_eq!(fold("Ἀθῆναι"), "αθηναι");
+        assert_eq!(
+            fold("Cœur Straße Æsir Côte d’Ivoire"),
+            "coeur strasse aesir cote d'ivoire"
+        );
         // Canonically equivalent spellings fold alike.
         assert_eq!(fold("e\u{301}"), fold("é"));
     }
