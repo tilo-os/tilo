@@ -1290,6 +1290,9 @@ pub struct WordProcessorWidget {
     /// Where the document is read from: the framework's live state when
     /// hosted, the editor's own incremental reader when standalone.
     source: crate::framework::StateSource,
+    /// The kept state changed in a sync made mid-edit, and the views have
+    /// not yet been refreshed from it.
+    source_unseen: bool,
     /// What was last copied out of the state, to copy only what changed.
     copied: CopiedParts,
     /// Hosted, the operations the editor wrote directly (an import into the
@@ -1573,6 +1576,7 @@ impl WordProcessorWidget {
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
+            source_unseen: false,
             copied: CopiedParts::default(),
             direct_writes: 0,
             pointer: Point::ZERO,
@@ -1877,10 +1881,30 @@ impl WordProcessorWidget {
                 for action in &envelopes {
                     self.perform_action(state, action);
                 }
+                // A caret waiting on a block the edit created settles on the
+                // kept order, brought up to date, not on a listed body.
+                let next = if next.pending.is_some() {
+                    self.sync_source(state);
+                    let body = self.kept_body();
+                    next.settle_in(state, body.as_deref())
+                } else {
+                    next
+                };
                 self.adopt_local_view(&next, state);
                 true
             }
         }
+    }
+
+    /// Bring the kept state up to date with `state` in the middle of an edit;
+    /// the next refresh still copies what changed into the views.
+    fn sync_source(&mut self, state: &mut AutoCommit) {
+        self.source_unseen |= self.source.sync(state);
+    }
+
+    /// The kept body order, once there is kept state.
+    fn kept_body(&self) -> Option<std::rc::Rc<qdoc_rich_text::BodyOrder>> {
+        self.source.with(|s| std::rc::Rc::clone(s.body()))
     }
 
     /// Make `next` (an editing primitive's result, settled against the
@@ -2025,7 +2049,12 @@ impl WordProcessorWidget {
     /// stable id is discovered from the synchronous before/after set solely to
     /// update the local caret; it is minted by the action's pinned actor.
     fn enter_via_action(&mut self, state: &mut AutoCommit) {
-        if self.edit_via_primitive(state, crate::actions::editing::new_paragraph) {
+        // The paragraph that follows the caret is read off the kept order.
+        self.sync_source(state);
+        let body = self.kept_body();
+        if self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::new_paragraph_in(view, doc, body.as_deref())
+        }) {
             return;
         }
         if self.inner.has_selection() {
@@ -2091,7 +2120,7 @@ impl WordProcessorWidget {
             ),
         );
         let new_block = if body {
-            self.source.sync(state);
+            self.sync_source(state);
             self.source
                 .with(|doc| {
                     let order = doc.body();
@@ -3711,7 +3740,7 @@ impl WordProcessorWidget {
         if self.inner.containers.is_none() {
             return;
         }
-        let moved = self.source.sync(state);
+        let moved = self.source.sync(state) | std::mem::take(&mut self.source_unseen);
         if let Some(body) = self.source.with(|s| std::rc::Rc::clone(s.body())) {
             self.body_order = body;
         }

@@ -1668,18 +1668,24 @@ pub struct BodyEnd {
 /// Read the last body block, `None` for an empty body.
 pub fn body_end(doc: &AutoCommit, c: &Containers) -> Option<BodyEnd> {
     let id = qdoc::model::blocks_in_order(doc, c).pop()?;
+    Some(body_end_at(doc, c, id))
+}
+
+/// Read `id` as the last body block, for a caller that knows which block is
+/// last (from a kept body order) and so need not list the body.
+pub fn body_end_at(doc: &AutoCommit, c: &Containers, id: String) -> BodyEnd {
     let kind = qdoc::model::block_kind(doc, c, &id);
     let chars = qdoc::model::block_text(doc, c, &id)
         .unwrap_or_default()
         .chars()
         .count();
     let text_block = matches!(kind.as_deref(), Some("paragraph" | "heading" | "list_item"));
-    Some(BodyEnd {
+    BodyEnd {
         id,
         kind,
         chars,
         text_block,
-    })
+    }
 }
 
 fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
