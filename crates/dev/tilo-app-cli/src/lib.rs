@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+mod json;
 pub mod portability;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -7107,6 +7108,14 @@ impl CreateOutcome {
     #[must_use]
     pub fn summary(&self) -> String {
         let destination = shell_display_path(&self.destination);
+        if self.dry_run {
+            let mut summary = self.headline();
+            for file in &self.files {
+                let shown = file.strip_prefix(&self.destination).unwrap_or(file);
+                let _ = write!(summary, "\n  {}", shown.display());
+            }
+            return summary;
+        }
         let develop = format!("tilo-app dev {destination}");
         let verify = format!("tilo-app check {destination}");
         format!(
@@ -8170,44 +8179,53 @@ fn app_readme(spec: &AppSpec) -> String {
         "{{\"resource\":{resource:?},\"action\":{action:?},\"arguments\":{arguments}}}"
     );
     let _ = writeln!(out, "```");
+    let sections: [(&str, &[&str]); 4] = [
+        (
+            "Develop: run the app, rebuilding and reloading it as you edit",
+            &["tilo-app dev", "tilo-app run", "tilo-app test"],
+        ),
+        (
+            "Verify: `check` runs lints, structure, formatting, Clippy, tests, certification and audited scenarios",
+            &[
+                "tilo-app check --fix",
+                "tilo-app scenario run",
+                "tilo-app scenario run --artifacts target/scenario-artifacts",
+                "tilo-app scenario run --audit --artifacts target/scenario-artifacts",
+                "tilo-app shot",
+                "tilo-app inspect --actions tests/headless-actions.json",
+                "tilo-app inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json",
+            ],
+        ),
+        (
+            "Grow: add screens, components, scenarios and translations",
+            &[
+                "tilo-app add component profile-card --template form",
+                "tilo-app add component project-tree --template tree",
+                "tilo-app add component activity-list --template list",
+                "tilo-app add component results-table --template table",
+                "tilo-app add component article-body --template text",
+                "tilo-app add screen settings --template settings",
+                "tilo-app add scenario empty-state",
+                "tilo-app add locale de-DE",
+                "tilo-app locale sync",
+            ],
+        ),
+        (
+            "Ship: build, sign and verify an installable package",
+            &["tilo-app package"],
+        ),
+    ];
+    for (heading, commands) in sections {
+        let _ = writeln!(out, "\n{heading}:\n\n```bash");
+        for command in commands {
+            let _ = writeln!(out, "{command}");
+        }
+        let _ = writeln!(out, "```");
+    }
     let _ = writeln!(
         out,
-        "\nValidate the native SDK, action surface, scenarios, and package metadata with one command:\n"
+        "\nEvery command accepts `--json` and then writes one JSON document to stdout, for scripts and agents."
     );
-    let _ = writeln!(out, "```bash");
-    let _ = writeln!(out, "tilo-app check --fix");
-    let _ = writeln!(out, "tilo-app test");
-    let _ = writeln!(out, "tilo-app dev");
-    let _ = writeln!(out, "tilo-app run");
-    let _ = writeln!(out, "tilo-app add component profile-card --template form");
-    let _ = writeln!(out, "tilo-app add component project-tree --template tree");
-    let _ = writeln!(out, "tilo-app add component activity-list --template list");
-    let _ = writeln!(out, "tilo-app add component results-table --template table");
-    let _ = writeln!(out, "tilo-app add component article-body --template text");
-    let _ = writeln!(out, "tilo-app add screen settings --template settings");
-    let _ = writeln!(out, "tilo-app add scenario empty-state");
-    let _ = writeln!(out, "tilo-app scenario run");
-    let _ = writeln!(
-        out,
-        "tilo-app scenario run --artifacts target/scenario-artifacts"
-    );
-    let _ = writeln!(
-        out,
-        "tilo-app scenario run --audit --artifacts target/scenario-artifacts"
-    );
-    let _ = writeln!(out, "tilo-app add locale de-DE");
-    let _ = writeln!(out, "tilo-app locale sync");
-    let _ = writeln!(out, "tilo-app shot");
-    let _ = writeln!(
-        out,
-        "tilo-app inspect --actions tests/headless-actions.json"
-    );
-    let _ = writeln!(
-        out,
-        "tilo-app inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
-    );
-    let _ = writeln!(out, "tilo-app package");
-    let _ = writeln!(out, "```");
     let _ = writeln!(
         out,
         "\nCargo remains available directly with `cargo test` and `cargo run`."
