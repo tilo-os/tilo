@@ -17,6 +17,24 @@ use crate::convert::content_of;
 use crate::edit::{self, Host};
 use crate::source::{Hosted, RichTextField, RichTextSource};
 
+/// The key that sends what an embedded field holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitKey {
+    /// Enter sends; Shift+Enter breaks the line (a chat composer).
+    Enter,
+    /// Ctrl+Enter (Cmd+Enter) sends; Enter starts a paragraph (a comment).
+    ModEnter,
+}
+
+/// How the person finished with an embedded field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldOutcome {
+    /// They sent what they wrote.
+    Submit,
+    /// They let it go (Escape).
+    Cancel,
+}
+
 /// The toolkit's [`BlockEditor`] showing rich text and editing it through
 /// the document's own actions.
 ///
@@ -34,6 +52,10 @@ use crate::source::{Hosted, RichTextField, RichTextSource};
 pub struct RichTextSurface<S = Hosted> {
     editor: BlockEditor,
     source: S,
+    /// Set for a field embedded in a form or a thread: the key that sends
+    /// what was written, with Escape cancelling.
+    submit: Option<SubmitKey>,
+    outcome: Option<FieldOutcome>,
     /// What the editor was last shown, and the paragraph each entry was
     /// read from: an entry is converted again only when its paragraph
     /// changed.
@@ -94,6 +116,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
         Self {
             editor: default_editor(),
             source,
+            submit: None,
+            outcome: None,
             presented: Vec::new(),
             sources: Vec::new(),
             cursor: None,
@@ -111,6 +135,79 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self.cursor = None;
         self.keyed = false;
         self
+    }
+
+    /// Make this a field embedded in a form or a thread: `key` sends what it
+    /// holds and Escape cancels, both reported by [`Self::take_outcome`]
+    /// instead of reaching the editor.
+    #[must_use]
+    pub fn with_submit(mut self, key: SubmitKey) -> Self {
+        self.submit = Some(key);
+        self
+    }
+
+    /// Show what the source holds now, without a document: for a source that
+    /// keeps its own ([`Draft`](crate::Draft)) after it was reset.
+    pub fn present_now(&mut self) {
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+    }
+
+    /// Whether the person sent or cancelled since the last call.
+    pub fn take_outcome(&mut self) -> Option<FieldOutcome> {
+        self.outcome.take()
+    }
+
+    /// Send or cancel as if the person had, for a Send button or a click
+    /// outside.
+    pub fn finish(&mut self, outcome: FieldOutcome) {
+        self.outcome = Some(outcome);
+    }
+
+    /// What the editor shows, as the document holds it.
+    #[must_use]
+    pub fn blocks(&self) -> &[BlockContent] {
+        &self.presented
+    }
+
+    /// The outcome `event` asks for, in an embedded field.
+    fn outcome_of(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> Option<FieldOutcome> {
+        use ui::winit::event::{ElementState, KeyEvent};
+        use ui::winit::keyboard::{Key, NamedKey};
+        let key = self.submit?;
+        if !self.editor.is_focused() || self.editor.has_open_popup() {
+            return None;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(named),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let held = modifiers.state();
+        let command = held.control_key() || held.super_key();
+        match named {
+            NamedKey::Escape => Some(FieldOutcome::Cancel),
+            NamedKey::Enter => match key {
+                SubmitKey::Enter if !held.shift_key() && !command && !held.alt_key() => {
+                    Some(FieldOutcome::Submit)
+                }
+                SubmitKey::ModEnter if command => Some(FieldOutcome::Submit),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The hint an empty document shows.
@@ -469,6 +566,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     }
 
     fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
+            self.outcome = Some(outcome);
+            *ctx.handled = true;
+            return;
+        }
         self.editor.handle_event(
             event,
             ctx.scale_factor,

@@ -407,6 +407,7 @@ impl WordProcessor {
                 level: int("level"),
                 ordered: bool_("ordered"),
                 align: str_("align"),
+                attrs: std::collections::BTreeMap::default(),
             });
         }
         (plain.join("\n"), blocks)

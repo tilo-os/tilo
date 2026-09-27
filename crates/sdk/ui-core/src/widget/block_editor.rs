@@ -543,6 +543,8 @@ pub struct BlockEditor {
     /// Lines measured and blocks painted since a test last reset them.
     #[cfg(test)]
     stack_measures: usize,
+    /// Shows its blocks without taking input: a message or comment as sent.
+    read_only: bool,
     #[cfg(test)]
     painted_blocks: usize,
     dirty: bool,
@@ -704,6 +706,7 @@ impl BlockEditor {
             layout_theme_fingerprint: None,
             #[cfg(test)]
             stack_measures: 0,
+            read_only: false,
             #[cfg(test)]
             painted_blocks: 0,
             dirty: true,
@@ -1057,6 +1060,9 @@ impl BlockEditor {
     }
 
     pub fn set_focus(&mut self, focused: bool) {
+        if focused && self.read_only {
+            return;
+        }
         if self.find_visible {
             self.is_focused = focused;
             self.find_field.set_focused(focused);
@@ -1199,6 +1205,36 @@ impl BlockEditor {
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
+    }
+
+    /// Show the blocks without taking input or focus: a read-only view of
+    /// rich text (a sent message, a comment reply).
+    #[must_use]
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.set_read_only(read_only);
+        self
+    }
+
+    /// Stop or resume taking input and focus.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+        if read_only {
+            Self::set_focus(self, false);
+        }
+        self.dirty = true;
+    }
+
+    /// Whether the editor shows its blocks without taking input.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Whether a menu or popover of the editor is open and takes Escape and
+    /// Enter itself (the slash menu, a link picker, find).
+    #[must_use]
+    pub fn has_open_popup(&self) -> bool {
+        self.slash_menu.is_visible() || self.link_popover.is_visible() || self.find_visible
     }
 
     /// The id local edits are attributed to, if any.
@@ -7719,6 +7755,9 @@ impl Widget for BlockEditor {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.read_only {
+            return;
+        }
         let typing = self.typing_position(event, *modifiers);
         self.handle_event_unscoped(
             event,
