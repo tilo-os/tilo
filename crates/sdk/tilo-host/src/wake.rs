@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, Weak};
 
 type Sink = Arc<dyn Fn(WakeEvent) + Send + Sync>;
@@ -312,6 +313,36 @@ impl WakeHandle {
     }
 }
 
+/// The answering end of a request made under a wake scope, such as a system
+/// chooser's. Sending the answer wakes that scope's event loop, so an answer
+/// that arrives while the app is idle is drawn without waiting for input.
+pub struct Reply<T> {
+    sender: Sender<T>,
+    wake: WakeHandle,
+}
+
+/// A reply channel for a request made now, under the current wake scope.
+pub fn reply<T>() -> (Reply<T>, Receiver<T>) {
+    let (sender, receiver) = channel();
+    (
+        Reply {
+            sender,
+            wake: WakeHandle::new(),
+        },
+        receiver,
+    )
+}
+
+impl<T> Reply<T> {
+    pub fn send(self, answer: T) {
+        // The requester may have moved on (window closed); a dead channel
+        // needs no wake.
+        if self.sender.send(answer).is_ok() {
+            self.wake.wake();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,5 +601,31 @@ mod tests {
             WakeHandle::new().wake();
             assert!(outer.accepts(&rx.try_recv().unwrap()));
         }
+    }
+
+    #[test]
+    fn a_reply_wakes_the_scope_that_asked_once_answered() {
+        let (scope, wakes) = bound_scope();
+        let (answer, answers) = {
+            let _entry = scope.enter();
+            reply()
+        };
+        assert!(matches!(wakes.try_recv(), Err(TryRecvError::Empty)));
+        std::thread::spawn(move || answer.send("picked"))
+            .join()
+            .unwrap();
+        assert_eq!(answers.try_recv(), Ok("picked"));
+        let wake = wakes.try_recv().unwrap();
+        assert!(scope.accepts(&wake));
+        assert!(wake.requires_sync());
+
+        // Nobody is listening any more: no wake for an answer nobody reads.
+        let (answer, answers) = {
+            let _entry = scope.enter();
+            reply::<()>()
+        };
+        drop(answers);
+        answer.send(());
+        assert!(matches!(wakes.try_recv(), Err(TryRecvError::Empty)));
     }
 }

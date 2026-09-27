@@ -7,11 +7,16 @@ use cosmic_text::{FontSystem, fontdb};
 use tilo_font_catalog::MANIFEST;
 use tilo_font_catalog::{Asset, Face, Manifest, Scope};
 
+#[cfg(all(target_os = "android", feature = "native"))]
+mod android;
 mod fallback;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
 mod windows;
+
+#[cfg(all(target_os = "android", feature = "native"))]
+pub(crate) use android::android_font_system;
 
 /// Share verified font data across native Windows renderers. Each renderer
 /// keeps its own shaping caches while font bytes and discovery are reused.

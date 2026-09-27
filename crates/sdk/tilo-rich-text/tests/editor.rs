@@ -165,6 +165,22 @@ fn bold_typed_after_ctrl_b_is_stored_as_a_mark() {
 }
 
 #[test]
+fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
+    let mut app = open();
+    app.harness().type_text("first");
+    app.harness().key("Enter");
+    app.harness().type_text("second");
+    app.harness().set_modifiers(&["alt".into()]);
+    app.harness().key("ArrowUp");
+    app.harness().set_modifiers(&[]);
+    assert_eq!(paragraphs(&app), ["second", "first"]);
+    let last = app.versions().pop().unwrap();
+    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["first", "second"]);
+}
+
+#[test]
 fn typed_text_is_attributed_to_its_writer_in_the_same_step() {
     let mut app = open_as::<Attributed>();
     app.harness().type_text("hello");
@@ -188,22 +204,6 @@ fn text_nobody_is_named_for_stays_unattributed() {
     let mut app = open();
     app.harness().type_text("hello");
     assert!(authors(&app).is_empty());
-}
-
-#[test]
-fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
-    let mut app = open();
-    app.harness().type_text("first");
-    app.harness().key("Enter");
-    app.harness().type_text("second");
-    app.harness().set_modifiers(&["alt".into()]);
-    app.harness().key("ArrowUp");
-    app.harness().set_modifiers(&[]);
-    assert_eq!(paragraphs(&app), ["second", "first"]);
-    let last = app.versions().pop().unwrap();
-    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
-    assert!(app.undo());
-    assert_eq!(paragraphs(&app), ["first", "second"]);
 }
 
 #[test]

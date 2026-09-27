@@ -59,6 +59,15 @@ pub trait FilePicker: Send + Sync {
     fn pick_multiple(&self, request: PickRequest) -> MultiChannel;
     /// A single-file Open chooser that delivers the already-open descriptor.
     fn open_file(&self, request: PickRequest) -> OpenFileChannel;
+    /// A Save chooser that delivers the chosen destination already open for
+    /// writing, for hosts whose documents have no path the app can write to.
+    /// Hosts that answer Save with a path keep this default refusal.
+    fn save_file(&self, request: PickRequest) -> OpenFileChannel {
+        let _ = request;
+        answered(OpenFileOutcome::Failed(
+            "this host answers Save with a path; use `PickRequest::send`".to_string(),
+        ))
+    }
     /// Open a local path with its default handler, or reveal its folder.
     fn launch(&self, request: LaunchRequest) -> LaunchChannel;
 }

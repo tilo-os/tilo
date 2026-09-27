@@ -45,5 +45,7 @@ pub mod mpris;
 pub mod native;
 pub mod png;
 pub mod portal;
+#[cfg(any(all(feature = "native", target_os = "android"), test))]
+mod saf;
 pub mod time;
 pub mod wake;

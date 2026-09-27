@@ -207,9 +207,14 @@ fi
 # An explicit RPMS_REF is useful for validating a just-built snapshot before it
 # is published and pinned. Do not let the tracked default silently overwrite it.
 _tilo_rpms_ref_override="${RPMS_REF:-}"
-[ -f "$TILO_OS_DIR/rpms-snapshot.env" ] && . "$TILO_OS_DIR/rpms-snapshot.env"
-RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run the snapshot-rpms workflow or follow os/docs/rpm-snapshot-packaging.md"
+if [ -n "$_tilo_rpms_ref_override" ]; then
+  RPMS_REF="$_tilo_rpms_ref_override"
+elif RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"; then
+  :
+else
+  die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+fi
+[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
@@ -545,8 +550,26 @@ else
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/prepare-wpe-stage.py" \
       --architecture "$TILO_WINDOWS_ARCH" --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" \
       --cache "$TILO_WPE_BUILD_CACHE_REF" --repo "$TILO_REPO" \
-      --assets "$TILO_REPO/os/external-assets/cache" \
-      --base "$BASE_REF" --rpms "$RPMS_REF" --kernel "$KERNEL_RPMS_REF" --wpe "$WPE_BUILDROOT_REF")
+      --assets "$TILO_REPO/os/external-assets/cache" --wpe "$WPE_BUILDROOT_REF")
+    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
+    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  elif [ "$TILO_WITH_BROWSER" = 1 ]; then
+    # Compile only from os/Containerfile.wpe, then consume the immutable stage.
+    # Never fall back into a second compile recipe inside os/Containerfile.
+    : "${TILO_WPE_SOURCE_DATE_EPOCH:=0}"
+    _tilo_wpe_iid="$(mktemp)"
+    podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile.wpe" \
+      --layers --skip-unused-stages=true --network=none --target wpe-builder-1 \
+      --iidfile "$_tilo_wpe_iid" \
+      --source-date-epoch "$TILO_WPE_SOURCE_DATE_EPOCH" --rewrite-timestamp \
+      --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+      --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
+      --build-arg "TILO_WPE_SOURCE_DATE_EPOCH=$TILO_WPE_SOURCE_DATE_EPOCH" \
+      --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
+      "$TILO_REPO" \
+      || { rm -f "$_tilo_wpe_iid"; die "isolated WPE recipe build failed"; }
+    _tilo_wpe_id="$(tr -d '[:space:]' < "$_tilo_wpe_iid")"
+    rm -f "$_tilo_wpe_iid"
     [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
     _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
   fi

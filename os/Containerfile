@@ -26,9 +26,9 @@
 # the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
 # regardless of when. RPMS_REF (registry.tilo.so/tilo/rpms@sha256:...) comes from
-# os/rpms-snapshot.env via the build scripts.
+# resolve-rpm-snapshot.sh via the build scripts.
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
-# new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
+# new set-<fingerprint> tag), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
 # All three ARGs are declared here (before the first FROM) so they're in
 # scope for FROM directives. An `ARG NAME` placed between two FROMs is
@@ -62,7 +62,7 @@ ARG TILO_WITH_WINDOWS=1
 # TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
 #
-# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source.
+# The engine compiles in os/Containerfile.wpe (libwpe + wpebackend-fdo + wpewebkit).
 # Measure cold and warm durations on the selected native runner; no universal
 # build-time estimate applies across hardware. Nothing about the boot chain
 # (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
@@ -241,37 +241,15 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 
 
 # ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
-# The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
-# stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
-# tarballs by the same script developers use locally (os/dev/build-wpe.sh).
-# Configured for prefix=/usr and staged into /wpe: the rust builder overlays
-# it to link `browser --features wpe`, the final image copies it into the
-# rootfs.
-#
-# Fedora's source BuildRequires are resolved only by the protected WPE
-# buildroot snapshot workflow. Production builds consume that per-architecture
-# image by digest and therefore have no Fedora mirror path in this stage.
+# Compilation lives only in os/Containerfile.wpe. Image entrypoints
+# (os/dev/build-image.sh, the WPE producer, and adoption/import) supply the
+# completed stage as `--build-context wpe-builder=container-image://…`. This
+# stage exists so a forgotten context fails closed instead of compiling here
+# and invalidating WPE receipts on unrelated OS recipe edits.
 FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
-ARG WPE_BUILD_JOBS=8
-# The engine carries its own dependency epoch, independent of the OS release.
-# Taking the OS commit time here would give every commit a new cache key for
-# the longest compile in the image, although no engine input changed.
-# Expose it to compiler/build tools as well as the layer timestamp normalizer.
-ARG TILO_WPE_SOURCE_DATE_EPOCH=0
-ENV SOURCE_DATE_EPOCH=${TILO_WPE_SOURCE_DATE_EPOCH}
-RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
-    && test "$(cat /usr/lib/tilo/wpe-buildroot-arch)" = "$(uname -m)"
-
-COPY os/dev/build-wpe.sh /build-wpe.sh
-RUN --mount=type=cache,target=/wpe-cache \
-    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    started=$(date +%s) \
-    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=wpe elapsed_seconds=%s exit_code=%s\n" "$(( $(date +%s) - started ))" "$status"; exit "$status"' EXIT \
-    && TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
-    TILO_WPE_PREFIX=/usr TILO_WPE_DESTDIR=/wpe \
-    JOBS="$WPE_BUILD_JOBS" \
-    bash /build-wpe.sh build \
-    && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+RUN printf '%s\n' \
+      'WPE compilation lives in os/Containerfile.wpe; supply --build-context wpe-builder=…' >&2 \
+    && exit 1
 
 
 # ---- Stage 1a-off: the same stage with no engine in it ----------------------

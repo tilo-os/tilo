@@ -16,6 +16,23 @@ display-tools-caption = Diese Programme ordnen Ihre Bildschirme neu an, ohne jed
 display-tools-forget = Wieder nachfragen
 display-tools-forgotten = Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
 
+# Displays pane: HDR
+display-hdr = HDR
+display-hdr-description = Hellere Spitzlichter und kräftigere Farben für HDR-Spiele, -Videos und -Fotos
+display-hdr-sdr-brightness = Helligkeit von SDR-Inhalten
+display-hdr-sdr-brightness-description = Wie hell alles, was nicht HDR ist, bei eingeschaltetem HDR erscheint
+display-hdr-unsupported = Von diesem Bildschirm nicht unterstützt
+display-hdr-driver-unsupported = Der Grafiktreiber kann kein HDR-Signal an diesen Bildschirm senden
+display-hdr-format-unsupported = Die Grafikkarte konnte auf diesem Bildschirm kein 10-Bit-Bild anzeigen
+display-hdr-driver-rejected = Der Grafiktreiber hat das Einschalten von HDR abgelehnt, daher bleibt dieser Bildschirm bei SDR
+
+# Displays pane: variable refresh rate
+display-vrr = Variable Bildwiederholrate
+display-vrr-description = Schaltet sich bei Spielen und Videos im Vollbild von selbst ein
+display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
+display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
+display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad
