@@ -8,7 +8,7 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
-use crate::search::list_filter::ListFilter;
+use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 use tilo_search::FieldWeight;
@@ -108,9 +108,9 @@ pub type DismissCallback = Box<dyn FnMut()>;
 
 pub struct ChannelBrowser {
     entries: Vec<ChannelEntry>,
-    /// Names and space names of `entries`, indexed on the first query after
-    /// they change.
-    entry_filter: Option<ListFilter>,
+    /// Names and space names of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Mirrors the command-palette model so the same keyboard contract
     /// (arrow, shift+arrow, Ctrl+A/C/V/X) works inside the search input.
@@ -148,7 +148,7 @@ impl ChannelBrowser {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            entry_filter: None,
+            entry_index: ListIndex::default(),
             query: String::new(),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
@@ -177,7 +177,6 @@ impl ChannelBrowser {
     /// typing.
     pub fn set_entries(&mut self, entries: Vec<ChannelEntry>) {
         self.entries = entries;
-        self.entry_filter = None;
         self.rebuild();
     }
 
@@ -281,31 +280,22 @@ impl ChannelBrowser {
         self.visible.clear();
         // A hit on the channel name or the parent space name, so typing a
         // space prefix drills in.
-        let matching = if self.query.trim().is_empty() {
-            None
-        } else {
-            let entries = &self.entries;
-            self.entry_filter
-                .get_or_insert_with(|| {
-                    ListFilter::new(entries.iter().map(|entry| {
-                        [
-                            (entry.name.as_str(), FieldWeight::TITLE),
-                            (entry.space_name.as_str(), FieldWeight::SUBTITLE),
-                        ]
-                    }))
-                })
-                .matching(&self.query)
-        };
+        let ranks = self.entry_index.ranks(
+            &self.query,
+            self.entries.iter().map(|entry| {
+                [
+                    (entry.name.as_str(), FieldWeight::TITLE),
+                    (entry.space_name.as_str(), FieldWeight::SUBTITLE),
+                ]
+            }),
+        );
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(filter) = &self.space_filter
                 && &e.space_name != filter
             {
                 continue;
             }
-            if matching
-                .as_ref()
-                .is_some_and(|matching| !matching.contains(&i))
-            {
+            if ranks.get(i).is_none_or(Option::is_none) {
                 continue;
             }
             self.visible.push(i);

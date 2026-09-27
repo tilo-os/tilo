@@ -44,11 +44,27 @@ fn tiers_rank_exact_prefix_word_prefix_and_infix_matches() {
         ranked,
         [
             (0, Some(MatchTier::Exact.percent())),
-            (1, Some(MatchTier::Prefix.percent())),
-            (2, Some(MatchTier::WordPrefix.percent())),
+            (1, Some(MatchTier::PrefixWord.percent())),
+            (2, Some(MatchTier::Word.percent())),
         ]
     );
-    assert_eq!(rank(&index, "dun"), Some(100 * 88 / 100));
+    // The start of a longer word ranks below a whole word.
+    let words = titles(&["dunes", "sand dunes"]);
+    assert_eq!(rank(&words, "dune"), Some(MatchTier::Prefix.percent()));
+    assert_eq!(
+        words
+            .search("dune", Page::first(8))
+            .hits
+            .get(1)
+            .and_then(|hit| hit.rank),
+        Some(MatchTier::WordPrefix.percent())
+    );
+    // Letters and digits are separate words.
+    assert_eq!(
+        rank(&titles(&["report2026"]), "2026"),
+        Some(MatchTier::Word.percent())
+    );
+    assert_eq!(rank(&index, "dun"), Some(MatchTier::Prefix.percent()));
     let infix = index.search("undan", Page::first(8)).hits;
     assert_eq!(infix.len(), 1);
     assert_eq!(infix[0].rank, Some(MatchTier::Contains.percent()));
@@ -290,4 +306,39 @@ fn many_records_find_a_late_one() {
     assert_eq!(broad.hits.len(), 10);
     assert!(broad.more);
     assert!(index.index_bytes() > 0);
+}
+
+#[test]
+fn custom_ranks_and_scores_reorder_hits() {
+    fn whole_words_first(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
+        match tier {
+            MatchTier::Word => Some(90),
+            MatchTier::Prefix => Some(50),
+            MatchTier::WordPrefix => Some(40),
+            MatchTier::Contains => Some(30),
+            _ => tier.rank_in(weight),
+        }
+    }
+    let documents = || {
+        [
+            Document::new(0)
+                .field("opening", FieldWeight::TITLE)
+                .signals(0, 7),
+            Document::new(1)
+                .field("xdg-open", FieldWeight::TITLE)
+                .signals(-40, 3),
+            Document::new(2)
+                .field("open", FieldWeight::TITLE)
+                .signals(5, 4),
+        ]
+    };
+    let mut index = SearchIndex::default().with_ranks(whole_words_first);
+    index.replace_all(documents());
+    index.commit().unwrap();
+    assert_eq!(keys(&index, "open"), [2, 1, 0]);
+    let scored = index.search_scored("open", Page::first(8), |signals| {
+        signals.rank.unwrap_or(0) + signals.boost - i32::try_from(signals.length).unwrap_or(0)
+    });
+    let order: Vec<_> = scored.hits.iter().map(|hit| (hit.key, hit.score)).collect();
+    assert_eq!(order, [(2, 101), (1, 47), (0, 43)]);
 }

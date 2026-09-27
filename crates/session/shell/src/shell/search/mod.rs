@@ -57,7 +57,7 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
         Some(MatchTier::Exact) => 4.0,
         Some(MatchTier::Prefix) => 2.5,
         Some(MatchTier::WordPrefix) => 1.5,
-        Some(MatchTier::Contains) => 1.0,
+        Some(_) => 1.0,
         None => {
             result.subtitle.as_deref().map_or(0.0, |subtitle| {
                 match ui::search::rank::match_tier(&needle, &ui::search::fold_search_text(subtitle))
@@ -71,25 +71,54 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
     }
 }
 
-/// The shared ranker's rank of `fields` for `needle`, on the shell
-/// providers' `0..=MAX_PROVIDER_SCORE` scale. A title prefix is already a
-/// perfect hit for a provider — it is what a person types to launch or
-/// open something — so the scale tops out there; [`lexical_strength`]
-/// still separates an exact title from a prefix across providers.
-pub(crate) fn rank_fields(needle: &str, fields: &[ui::search::RankField<'_>]) -> Option<i32> {
-    ui::search::field_rank(needle, fields).map(provider_score)
-}
-
 /// Top of every shell provider's ranker-derived score.
 pub(crate) const MAX_PROVIDER_SCORE: i32 = 100;
 
-/// Map a shared field rank onto the provider scale; see [`rank_fields`].
-pub(crate) fn provider_score(rank: i32) -> i32 {
-    let perfect = ui::search::MatchTier::Prefix.rank_in(ui::search::FieldWeight::TITLE);
-    rank.clamp(0, perfect)
-        .saturating_mul(MAX_PROVIDER_SCORE)
-        .checked_div(perfect)
-        .unwrap_or(MAX_PROVIDER_SCORE)
+/// Map a field rank onto the provider scale; see
+/// [`ui::search::system::provider_score`].
+pub(crate) use ui::search::system::provider_score;
+
+/// The score of a row another app's own search already matched for
+/// `needle`: how the needle meets its visible title, else its subtitle, on
+/// the provider scale and never below 1 (the app matched it somewhere).
+pub(crate) fn remote_score(needle: &str, title: &str, subtitle: &str) -> i32 {
+    use ui::search::{FieldWeight, fold_search_text, rank::match_tier};
+    let needle = fold_search_text(needle.trim());
+    if needle.is_empty() {
+        return 0;
+    }
+    let rank = match_tier(&needle, &fold_search_text(title))
+        .and_then(|tier| tier.rank_in(FieldWeight::TITLE))
+        .or_else(|| {
+            match_tier(&needle, &fold_search_text(subtitle))?.rank_in(FieldWeight::SUBTITLE)
+        })
+        .unwrap_or(0);
+    provider_score(rank).max(1)
+}
+
+/// Keep the `rows` a provider built for one query that match `needle`,
+/// each scored by its rank on the provider scale. `fields` holds each row's
+/// searchable text, in row order; `index` keeps it indexed while it stays
+/// the same.
+pub(crate) fn rank_rows(
+    index: &ui::search::ListIndex,
+    needle: &str,
+    rows: Vec<SearchResult>,
+    fields: &[Vec<(String, ui::search::FieldWeight)>],
+) -> Vec<SearchResult> {
+    let ranks = index.ranks(
+        needle,
+        fields
+            .iter()
+            .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+    );
+    rows.into_iter()
+        .zip(ranks)
+        .filter_map(|(mut row, rank)| {
+            row.score = provider_score(rank?);
+            Some(row)
+        })
+        .collect()
 }
 
 /// A deliberately small contextual preference: proximity should settle close

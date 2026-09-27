@@ -77,13 +77,18 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
 }
 #[test]
 fn application_identity_and_metadata_share_native_match_bands() {
+    let index = crate::search::ListIndex::default();
+    let score = |query: &str, name, id, category, description| {
+        index.ranks(query, [application_fields(name, id, category, description)])[0]
+            .map(provider_score)
+    };
     // The id's last segment names exactly one app and ranks as its name.
     assert_eq!(
-        application_match_score("hex-editor", "hex editor", "so.tilo.hex-editor", None, None),
+        score("hex-editor", "hex editor", "so.tilo.hex-editor", None, None),
         Some(100)
     );
     // A multi-word query may span metadata fields, below a name match.
-    let spanning = application_match_score(
+    let spanning = score(
         "office spreadsheet",
         "sheets",
         "so.tilo.sheets",
@@ -92,7 +97,7 @@ fn application_identity_and_metadata_share_native_match_bands() {
     );
     assert!(spanning.is_some_and(|score| score < 100), "{spanning:?}");
     assert_eq!(
-        application_match_score("missing", "calculator", "so.tilo.calculator", None, None),
+        score("missing", "calculator", "so.tilo.calculator", None, None),
         None
     );
 }

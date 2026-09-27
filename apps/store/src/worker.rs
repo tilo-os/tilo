@@ -159,6 +159,9 @@ struct State {
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
     search_index: StoreSearchIndex,
+    /// The catalogue's names and descriptions, indexed while they stay the
+    /// same.
+    item_index: ui::search::ListIndex,
 }
 
 fn run(
@@ -184,6 +187,7 @@ fn run(
         searches: LruMap::new(CACHE_CAP),
         details: LruMap::new(CACHE_CAP),
         search_index,
+        item_index: ui::search::ListIndex::default(),
     };
     refresh(&mut state);
     if !send(
@@ -422,13 +426,16 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
     let items = if let Some(cached) = state.searches.get(&query).cloned() {
         cached
     } else {
-        let tilo = state
+        let candidates: Vec<&StoreItem> = state
             .base_items
             .iter()
-            .filter(|item| {
-                matches!(item.source, StoreSource::Tilo { .. }) && item.matches_query(&query)
-            })
-            .cloned()
+            .filter(|item| matches!(item.source, StoreSource::Tilo { .. }))
+            .collect();
+        let ranks = crate::model::relevance(&state.item_index, &query, &candidates);
+        let tilo = candidates
+            .into_iter()
+            .zip(ranks)
+            .filter_map(|(item, rank)| rank.map(|_| item.clone()))
             .collect();
         let flatpak = crate::flathub_client::search(&query)
             .unwrap_or_default()
@@ -829,6 +836,7 @@ mod tests {
             searches: LruMap::new(CACHE_CAP),
             details: LruMap::new(CACHE_CAP),
             search_index,
+            item_index: ui::search::ListIndex::default(),
         }
     }
 

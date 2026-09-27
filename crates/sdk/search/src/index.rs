@@ -1,27 +1,27 @@
 //! [`SearchIndex`]: a retained set of records, searchable through tantivy.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
 use tantivy::collector::TopDocs;
-use tantivy::columnar::ColumnValues;
-use tantivy::query::{BooleanQuery, ConstScoreQuery, EnableScoring, Occur, Query};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, Schema, TextFieldIndexing, TextOptions,
 };
 use tantivy::{
-    DocAddress, DocId, DocSet, Index, IndexReader, IndexWriter, ReloadPolicy, Score, Searcher,
-    SegmentReader, SingleSegmentIndexWriter, TERMINATED, TantivyDocument, Term,
+    DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader,
+    SingleSegmentIndexWriter, TantivyDocument, Term,
 };
 
-use crate::query::{BoxQuery, Matching, Used, plan};
+use crate::query::{FIELD_BASE, Matching, Used, compile};
 use crate::tokenizer::{GramTokenizer, WordTokenizer};
-use crate::weight::{FieldWeight, INDEXED_WEIGHTS};
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
 
 const KEY_FIELD: &str = "key";
 const SEGMENT_FIELD: &str = "segment";
+const BOOST_FIELD: &str = "boost";
+const LENGTH_FIELD: &str = "length";
 const GRAMS: &str = "tilo_grams";
 const WORDS: &str = "tilo_words";
 
@@ -70,6 +70,7 @@ pub struct Document {
     key: u64,
     fields: Vec<(String, FieldWeight)>,
     body: Option<Arc<dyn BodySource>>,
+    signals: (i32, u32),
 }
 
 impl fmt::Debug for Document {
@@ -79,6 +80,7 @@ impl fmt::Debug for Document {
             .field("key", &self.key)
             .field("fields", &self.fields)
             .field("body", &self.body.is_some())
+            .field("signals", &self.signals)
             .finish()
     }
 }
@@ -91,7 +93,16 @@ impl Document {
             key,
             fields: Vec::new(),
             body: None,
+            signals: (0, 0),
         }
+    }
+
+    /// Per-record numbers a custom score reads ([`Signals`]): a boost, and
+    /// a length such as the name's.
+    #[must_use]
+    pub const fn signals(mut self, boost: i32, length: u32) -> Self {
+        self.signals = (boost, length);
+        self
     }
 
     /// Add a short field, found and ranked by its weight. Values never
@@ -134,6 +145,18 @@ pub struct Hit {
     /// The field rank (`0..=`[`MAX_FIELD_RANK`](crate::MAX_FIELD_RANK)) of a
     /// field match; `None` for a match in body text alone.
     pub rank: Option<i32>,
+    /// The ordering score: the rank, or what a custom score made of it.
+    pub score: i32,
+}
+
+/// What a custom score ([`SearchIndex::search_scored`]) sees of one hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signals {
+    /// As [`Hit::rank`].
+    pub rank: Option<i32>,
+    /// The record's [`Document::signals`].
+    pub boost: i32,
+    pub length: u32,
 }
 
 /// One page of matches, best first.
@@ -163,6 +186,8 @@ impl Page {
 pub(crate) struct Fields {
     pub key: Field,
     pub segment: Field,
+    pub boost: Field,
+    pub length: Field,
     pub grams: [Field; INDEXED_WEIGHTS.len()],
     /// Words of title fields, for typo matching.
     pub title_words: Field,
@@ -184,6 +209,8 @@ fn schema() -> (Schema, Fields) {
     );
     let key = builder.add_u64_field(KEY_FIELD, INDEXED | FAST);
     let segment = builder.add_u64_field(SEGMENT_FIELD, INDEXED | FAST);
+    let boost = builder.add_i64_field(BOOST_FIELD, FAST);
+    let length = builder.add_u64_field(LENGTH_FIELD, FAST);
     let gram_fields =
         std::array::from_fn(|slot| builder.add_text_field(&format!("grams{slot}"), grams.clone()));
     let title_words = builder.add_text_field("title_words", words.clone());
@@ -194,6 +221,8 @@ fn schema() -> (Schema, Fields) {
         Fields {
             key,
             segment,
+            boost,
+            length,
             grams: gram_fields,
             title_words,
             body_grams,
@@ -248,6 +277,7 @@ pub struct SearchIndex {
     /// memory; searches then find nothing.
     reader: Option<IndexReader>,
     matching: Matching,
+    ranks: Ranks,
     used: Used,
     documents: BTreeMap<u64, Document>,
     pending: BTreeSet<u64>,
@@ -286,6 +316,7 @@ impl SearchIndex {
             index,
             reader,
             matching,
+            ranks: MatchTier::rank_in,
             used: Used::default(),
             documents: BTreeMap::new(),
             pending: BTreeSet::new(),
@@ -297,11 +328,18 @@ impl SearchIndex {
     /// commit.
     #[must_use]
     pub fn detached(&self) -> Self {
-        let mut copy = Self::new(self.matching);
+        let mut copy = Self::new(self.matching).with_ranks(self.ranks);
         copy.documents.clone_from(&self.documents);
         copy.used = self.used;
         copy.rebuild = true;
         copy
+    }
+
+    /// Rank tiers with `ranks` instead of [`MatchTier::rank_in`].
+    #[must_use]
+    pub fn with_ranks(mut self, ranks: Ranks) -> Self {
+        self.ranks = ranks;
+        self
     }
 
     /// Number of records.
@@ -396,6 +434,8 @@ impl SearchIndex {
         let mut record = TantivyDocument::default();
         record.add_u64(fields.key, document.key);
         record.add_u64(fields.segment, RECORD_SEGMENT);
+        record.add_i64(fields.boost, i64::from(document.signals.0));
+        record.add_u64(fields.length, u64::from(document.signals.1));
         for (text, weight) in &document.fields {
             let slot = weight.slot();
             if let Some(grams) = fields.grams.get(slot) {
@@ -485,57 +525,99 @@ impl SearchIndex {
 
     /// One page of matches for `query`, from the last commit.
     ///
-    /// Hits come best rank first, and in index order within a rank; body
-    /// hits follow every field hit, by BM25. An empty query browses every
-    /// record in index order.
+    /// Hits come best rank first, and in key order within a rank; body hits
+    /// follow every field hit, by BM25. An empty query browses every record
+    /// in key order.
     #[must_use]
     pub fn search(&self, query: &str, page: Page) -> Hits {
+        self.search_scored(query, page, |signals| signals.rank.unwrap_or(0))
+    }
+
+    /// [`Self::search`], ordering field hits by `score` of their
+    /// [`Signals`] instead of their rank. Body hits still follow them.
+    #[must_use]
+    pub fn search_scored(
+        &self,
+        query: &str,
+        page: Page,
+        score: impl Fn(Signals) -> i32 + Clone + Send + Sync + 'static,
+    ) -> Hits {
         let Some(reader) = &self.reader else {
             return Hits::default();
         };
-        if page.limit == 0 {
-            return Hits::default();
-        }
-        let plan = plan(&self.fields, self.used, self.matching, query);
         let searcher = reader.searcher();
-        let wanted = page.offset.saturating_add(page.limit).saturating_add(1);
-        let mut walk = Walk {
-            searcher: &searcher,
-            columns: searcher
-                .segment_readers()
-                .iter()
-                .map(|reader| {
-                    Some((
-                        u64_column(reader, KEY_FIELD)?,
-                        u64_column(reader, SEGMENT_FIELD)?,
-                    ))
-                })
-                .collect(),
-            wanted,
-            hits: Vec::new(),
-            seen: HashSet::new(),
-        };
-        let walked = plan
-            .stages
-            .iter()
-            .try_for_each(|stage| match stage.query() {
-                Some(query) => walk.stage(stage.rank, query.as_ref()),
-                None => Ok(()),
-            })
-            .and_then(|()| match plan.body {
-                Some(body) => walk.body(body, plan.body_order),
-                None => Ok(()),
-            });
-        if let Err(error) = walked {
-            tracing::warn!(%error, "search failed");
+        // Never ask the collector for more slots than there are documents.
+        let documents = usize::try_from(searcher.num_docs()).unwrap_or(usize::MAX);
+        let limit = page.limit.min(documents.saturating_sub(page.offset));
+        if limit == 0 {
             return Hits::default();
         }
-        let more = walk.hits.len() > page.offset.saturating_add(page.limit);
-        let hits = walk
-            .hits
+        let Some(compiled) = compile(&self.fields, self.used, self.matching, self.ranks, query)
+        else {
+            return Hits::default();
+        };
+        let collector = TopDocs::with_limit(limit.saturating_add(1))
+            .and_offset(page.offset)
+            .tweak_score(move |segment_reader: &SegmentReader| {
+                let fast = segment_reader.fast_fields();
+                let u64s = |name: &str| {
+                    fast.u64(name)
+                        .ok()
+                        .map(|column| column.first_or_default_col(0))
+                };
+                let keys = u64s(KEY_FIELD);
+                let segments = u64s(SEGMENT_FIELD);
+                let lengths = u64s(LENGTH_FIELD);
+                let boosts = fast
+                    .i64(BOOST_FIELD)
+                    .ok()
+                    .map(|column| column.first_or_default_col(0));
+                let score = score.clone();
+                move |doc: DocId, raw: Score| {
+                    let value = |column: &Option<Arc<dyn tantivy::columnar::ColumnValues<u64>>>,
+                                 default| {
+                        column
+                            .as_ref()
+                            .map_or(default, |column| column.get_val(doc))
+                    };
+                    let signals = Signals {
+                        rank: (raw >= FIELD_BASE).then(|| rank_of(raw)),
+                        boost: boosts.as_ref().map_or(0, |column| {
+                            i32::try_from(column.get_val(doc)).unwrap_or_default()
+                        }),
+                        length: u32::try_from(value(&lengths, 0)).unwrap_or(u32::MAX),
+                    };
+                    let ordered = signals.rank.map_or(0, |_| score(signals));
+                    (
+                        signals.rank.is_some(),
+                        ordered,
+                        raw,
+                        Reverse(value(&keys, 0)),
+                        Reverse(value(&segments, RECORD_SEGMENT)),
+                        signals.rank,
+                    )
+                }
+            });
+        let found = match searcher.search(compiled.as_ref(), &collector) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::warn!(%error, "search failed");
+                return Hits::default();
+            }
+        };
+        let more = found.len() > limit;
+        let hits = found
             .into_iter()
-            .skip(page.offset)
-            .take(page.limit)
+            .take(limit)
+            .map(
+                |((_, score, _, Reverse(key), Reverse(segment), rank), _)| Hit {
+                    key,
+                    segment: (segment != RECORD_SEGMENT)
+                        .then(|| usize::try_from(segment).unwrap_or(usize::MAX)),
+                    rank,
+                    score,
+                },
+            )
             .collect();
         Hits { hits, more }
     }
@@ -552,120 +634,10 @@ impl SearchIndex {
     }
 }
 
-/// Collects hits stage by stage until a page is full.
-struct Walk<'a> {
-    searcher: &'a Searcher,
-    /// Each segment's key and body-segment columns.
-    columns: Vec<Option<(Column, Column)>>,
-    wanted: usize,
-    hits: Vec<Hit>,
-    seen: HashSet<DocAddress>,
-}
-
-type Column = Arc<dyn ColumnValues<u64>>;
-
-fn u64_column(reader: &SegmentReader, name: &str) -> Option<Column> {
-    reader
-        .fast_fields()
-        .u64(name)
-        .ok()
-        .map(|column| column.first_or_default_col(0))
-}
-
-impl Walk<'_> {
-    fn remaining(&self) -> usize {
-        self.wanted.saturating_sub(self.hits.len())
-    }
-
-    fn push(&mut self, address: DocAddress, key: u64, segment: u64, rank: Option<i32>) {
-        self.seen.insert(address);
-        self.hits.push(Hit {
-            key,
-            segment: (segment != RECORD_SEGMENT)
-                .then(|| usize::try_from(segment).unwrap_or(usize::MAX)),
-            rank,
-        });
-    }
-
-    /// Records of one rank, in key order, until the page is full. Each
-    /// segment is read only as far as the page needs.
-    fn stage(&mut self, rank: i32, query: &dyn Query) -> tantivy::Result<()> {
-        let remaining = self.remaining();
-        if remaining == 0 {
-            return Ok(());
-        }
-        let weight = query.weight(EnableScoring::disabled_from_searcher(self.searcher))?;
-        let mut found: Vec<(u64, u64, DocAddress)> = Vec::new();
-        for (ordinal, (reader, columns)) in self
-            .searcher
-            .segment_readers()
-            .iter()
-            .zip(&self.columns)
-            .enumerate()
-        {
-            let Ok(ordinal) = u32::try_from(ordinal) else {
-                break;
-            };
-            let Some((keys, segments)) = columns else {
-                continue;
-            };
-            let mut scorer = weight.scorer(reader, 1.0)?;
-            let mut taken = 0usize;
-            let mut doc = scorer.doc();
-            while doc != TERMINATED && taken < remaining {
-                let address = DocAddress::new(ordinal, doc);
-                if !reader.is_deleted(doc) && !self.seen.contains(&address) {
-                    found.push((keys.get_val(doc), segments.get_val(doc), address));
-                    taken = taken.saturating_add(1);
-                }
-                doc = scorer.advance();
-            }
-        }
-        found.sort_unstable_by_key(|(key, segment, _)| (*key, *segment));
-        for (key, segment, address) in found.into_iter().take(remaining) {
-            self.push(address, key, segment, Some(rank));
-        }
-        Ok(())
-    }
-
-    /// Body matches not already found, by BM25.
-    fn body(&mut self, body: BoxQuery, order: Option<BoxQuery>) -> tantivy::Result<()> {
-        let remaining = self.remaining();
-        if remaining == 0 {
-            return Ok(());
-        }
-        let found: BoxQuery = Box::new(ConstScoreQuery::new(body, 0.0));
-        let query: BoxQuery = match order {
-            Some(order) => Box::new(BooleanQuery::new(vec![
-                (Occur::Must, found),
-                (Occur::Should, order),
-            ])),
-            None => found,
-        };
-        // Records already found as field hits can take at most that many
-        // places of the top list.
-        let collector = TopDocs::with_limit(remaining.saturating_add(self.seen.len())).tweak_score(
-            |reader: &SegmentReader| {
-                let keys = u64_column(reader, KEY_FIELD);
-                let segments = u64_column(reader, SEGMENT_FIELD);
-                move |doc: DocId, score: Score| {
-                    let key = keys.as_ref().map_or(0, |keys| keys.get_val(doc));
-                    let segment = segments
-                        .as_ref()
-                        .map_or(RECORD_SEGMENT, |segments| segments.get_val(doc));
-                    (score, Reverse(key), Reverse(segment))
-                }
-            },
-        );
-        let top = self.searcher.search(query.as_ref(), &collector)?;
-        for ((_, Reverse(key), Reverse(segment)), address) in top {
-            if self.remaining() == 0 {
-                break;
-            }
-            if !self.seen.contains(&address) {
-                self.push(address, key, segment, None);
-            }
-        }
-        Ok(())
-    }
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a field score is FIELD_BASE plus a rank of at most a few hundred"
+)]
+fn rank_of(score: Score) -> i32 {
+    (score - FIELD_BASE).floor() as i32
 }

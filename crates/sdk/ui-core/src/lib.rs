@@ -310,7 +310,7 @@ pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
 pub use search::{
-    FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult, fuzzy_score,
+    FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{

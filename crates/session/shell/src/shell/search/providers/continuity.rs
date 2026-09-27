@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use ui::search::{FieldWeight, RankField};
+use ui::search::{FieldWeight, ListIndex};
 
 use super::actions::ACTION_ID_WEIGHT;
 
@@ -92,16 +92,13 @@ pub(crate) fn audio_route_action_id(node_id: u32) -> String {
     )
 }
 
-/// The shared ranker over an action's title, identity and description.
-fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(title, FieldWeight::TITLE),
-            RankField::new(id, ACTION_ID_WEIGHT),
-            RankField::new(subtitle, FieldWeight::SUBTITLE),
-        ],
-    )
+/// An action row's searchable title, identity and description.
+fn action_fields(title: &str, subtitle: &str, id: &str) -> Vec<(String, FieldWeight)> {
+    vec![
+        (title.to_owned(), FieldWeight::TITLE),
+        (id.to_owned(), ACTION_ID_WEIGHT),
+        (subtitle.to_owned(), FieldWeight::SUBTITLE),
+    ]
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
@@ -1102,6 +1099,7 @@ fn page_results(
 
 fn device_projection(
     bridge: &DeviceFabricBridge,
+    ranker: &ListIndex,
     ctx: SearchContext<'_>,
     view: &DeviceFabricView,
 ) -> (String, Vec<SearchResult>) {
@@ -1119,14 +1117,17 @@ fn device_projection(
             )
         }),
     );
+    let fields: Vec<_> = actions
+        .iter()
+        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
+        .collect();
     let results = actions
         .into_iter()
-        .filter_map(|entry| {
-            let score = matches(ctx.needle, &entry.title, &entry.subtitle, &entry.id)?;
+        .map(|entry| {
             let bridge = Rc::clone(bridge);
             let expected = entry.action.clone();
             let confirm = entry.confirm;
-            Some(SearchResult {
+            SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: DEVICE_PROVIDER_ID.into(),
@@ -1134,7 +1135,7 @@ fn device_projection(
                 title: entry.title,
                 subtitle: Some(entry.subtitle),
                 badge: None,
-                score,
+                score: 0,
                 params: confirmation_params(confirm),
                 contract: Some(contract(confirm)),
                 on_open: Rc::new(move |_doc, _root, _chrome, args| {
@@ -1143,19 +1144,27 @@ fn device_projection(
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
-            })
+            }
         })
         .collect();
-    (revision, results)
+    (
+        revision,
+        crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
+    )
 }
 
 pub struct DeviceContinuityActionsProvider {
     bridge: DeviceFabricBridge,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
 }
 
 impl DeviceContinuityActionsProvider {
     pub fn new(bridge: DeviceFabricBridge) -> Self {
-        Self { bridge }
+        Self {
+            bridge,
+            ranker: ListIndex::default(),
+        }
     }
 }
 
@@ -1176,7 +1185,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         (self.bridge)(DeviceFabricUiAction::Snapshot).map_or_else(
             |_| "continuity-device-unavailable".into(),
-            |view| device_projection(&self.bridge, *ctx, &view).0,
+            |view| device_projection(&self.bridge, &self.ranker, *ctx, &view).0,
         )
     }
 
@@ -1187,7 +1196,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         let Ok(view) = (self.bridge)(DeviceFabricUiAction::Snapshot) else {
             return Vec::new();
         };
-        device_projection(&self.bridge, ctx, &view).1
+        device_projection(&self.bridge, &self.ranker, ctx, &view).1
     }
 
     fn query_page(
@@ -1202,7 +1211,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         let Ok(view) = (self.bridge)(DeviceFabricUiAction::Snapshot) else {
             return SearchPage::exhausted("continuity-device-unavailable", Vec::new());
         };
-        let (revision, results) = device_projection(&self.bridge, ctx, &view);
+        let (revision, results) = device_projection(&self.bridge, &self.ranker, ctx, &view);
         page_results(revision, results, cursor, budget)
     }
 }
@@ -1276,6 +1285,7 @@ fn call_actions(
 fn call_projection(
     realtime: &RealtimeContinuityBridge,
     device_bridge: &DeviceFabricBridge,
+    ranker: &ListIndex,
     ctx: SearchContext<'_>,
     view: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
     devices: &DeviceFabricView,
@@ -1294,15 +1304,18 @@ fn call_projection(
             )
         }),
     );
+    let fields: Vec<_> = actions
+        .iter()
+        .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
+        .collect();
     let results = actions
         .into_iter()
-        .filter_map(|entry| {
-            let score = matches(ctx.needle, &entry.title, &entry.subtitle, &entry.id)?;
+        .map(|entry| {
             let realtime = Rc::clone(realtime);
             let device_bridge = Rc::clone(device_bridge);
             let expected = entry.action.clone();
             let confirm = entry.confirm;
-            Some(SearchResult {
+            SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: CALL_PROVIDER_ID.into(),
@@ -1310,7 +1323,7 @@ fn call_projection(
                 title: entry.title,
                 subtitle: Some(entry.subtitle),
                 badge: None,
-                score,
+                score: 0,
                 params: confirmation_params(confirm),
                 contract: Some(contract(confirm)),
                 on_open: Rc::new(move |_doc, _root, _chrome, args| {
@@ -1332,20 +1345,29 @@ fn call_projection(
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
-            })
+            }
         })
         .collect();
-    (revision, results)
+    (
+        revision,
+        crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
+    )
 }
 
 pub struct CallContinuityActionsProvider {
     realtime: RealtimeContinuityBridge,
     devices: DeviceFabricBridge,
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
 }
 
 impl CallContinuityActionsProvider {
     pub fn new(realtime: RealtimeContinuityBridge, devices: DeviceFabricBridge) -> Self {
-        Self { realtime, devices }
+        Self {
+            realtime,
+            devices,
+            ranker: ListIndex::default(),
+        }
     }
 }
 
@@ -1370,7 +1392,15 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return "continuity-call-devices-unavailable".into();
         };
-        call_projection(&self.realtime, &self.devices, *ctx, &view, &devices).0
+        call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            *ctx,
+            &view,
+            &devices,
+        )
+        .0
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -1383,7 +1413,15 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return Vec::new();
         };
-        call_projection(&self.realtime, &self.devices, ctx, &view, &devices).1
+        call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            ctx,
+            &view,
+            &devices,
+        )
+        .1
     }
 
     fn query_page(
@@ -1401,8 +1439,14 @@ impl SearchProvider for CallContinuityActionsProvider {
         let Ok(devices) = (self.devices)(DeviceFabricUiAction::Snapshot) else {
             return SearchPage::exhausted("continuity-call-devices-unavailable", Vec::new());
         };
-        let (revision, results) =
-            call_projection(&self.realtime, &self.devices, ctx, &view, &devices);
+        let (revision, results) = call_projection(
+            &self.realtime,
+            &self.devices,
+            &self.ranker,
+            ctx,
+            &view,
+            &devices,
+        );
         page_results(revision, results, cursor, budget)
     }
 }
@@ -1413,7 +1457,11 @@ const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
 
 /// The palette's door to the top bar's "Continue <app> from <device>"
 /// offer: accept it (focus that tab here) or dismiss it.
-pub struct ContinueFromDeviceProvider;
+#[derive(Default)]
+pub struct ContinueFromDeviceProvider {
+    /// The rows' searchable text, indexed while it stays the same.
+    ranker: ListIndex,
+}
 
 impl ContinueFromDeviceProvider {
     fn row(
@@ -1526,12 +1574,15 @@ impl SearchProvider for ContinueFromDeviceProvider {
                 ),
             ),
         ];
-        rows.into_iter()
-            .filter_map(|(id, title, subtitle)| {
-                let score = matches(ctx.needle, &title, &subtitle, id)?;
-                Some(Self::row(id, title, subtitle, score, &offer))
-            })
-            .collect()
+        let fields: Vec<_> = rows
+            .iter()
+            .map(|(id, title, subtitle)| action_fields(title, subtitle, id))
+            .collect();
+        let rows = rows
+            .into_iter()
+            .map(|(id, title, subtitle)| Self::row(id, title, subtitle, 0, &offer))
+            .collect();
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &fields)
     }
 }
 
@@ -1964,7 +2015,7 @@ mod tests {
             devices: std::collections::BTreeMap::from([(laptop, "Laptop".to_string())]),
         });
         let mut registry = SearchRegistry::new();
-        registry.register(Rc::new(ContinueFromDeviceProvider));
+        registry.register(Rc::new(ContinueFromDeviceProvider::default()));
         let mut doc = AutoCommit::new();
         let catalog = {
             let state = chrome.borrow();
