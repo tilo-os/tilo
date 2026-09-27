@@ -379,6 +379,23 @@ impl ProjectionOverlay {
         Self::rect_for_host(host_rect).contains(point)
     }
 
+    /// Where the sheet shows the `AirPlay` PIN or password field, while it
+    /// does, covering every pose of the sheet's slide-in. A capture draws it
+    /// as the placeholder — see [`crate::shell::capture_protection`].
+    pub fn secret_prompt_rect(&self, now: Instant) -> Option<Rect> {
+        if !self.transition.is_visible(now)
+            || !self.airplay_selected()
+            || self.credential_rect.area() <= 0.0
+        {
+            return None;
+        }
+        // `draw_at_theme_scale` slides the sheet in from the right by up to
+        // this much.
+        let slide = self.sheet_rect().width() * 0.22;
+        let field = self.credential_rect.inflate(2.0, 2.0);
+        Some(Rect::new(field.x0, field.y0, field.x1 + slide, field.y1))
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
@@ -1852,6 +1869,28 @@ mod tests {
             assert!((overlay.device_rows_top() - expected).abs() < f64::EPSILON);
         }
 
+        fn the_airplay_credential_is_a_secret_prompt_only_while_it_is_shown() {
+            let mut overlay = overlay_with(Vec::new());
+            overlay.controller.devices = vec![airplay_device()];
+            overlay.controller.selected = 0;
+            overlay.credential_rect = Rect::new(900.0, 300.0, 1200.0, 342.0);
+            let now = Instant::now();
+            assert_eq!(overlay.secret_prompt_rect(now), None, "the sheet is closed");
+            overlay.transition = ui::Transition::open();
+            let rect = overlay
+                .secret_prompt_rect(now)
+                .expect("an open sheet asking for the AirPlay credential");
+            let slide = overlay.sheet_rect().width() * 0.22;
+            assert!(rect.contains(Point::new(901.0, 301.0)));
+            assert!(rect.contains(Point::new(1199.0 + slide, 341.0)));
+            overlay.controller.devices.clear();
+            assert_eq!(
+                overlay.secret_prompt_rect(now),
+                None,
+                "no AirPlay receiver selected, no credential field"
+            );
+        }
+
         fn keyboard_controls_update_owned_options_and_close_intent() {
             let mut overlay = overlay_with(Vec::new());
             let none = Modifiers::default();
@@ -1882,6 +1921,7 @@ mod tests {
 
         sheet_cells_keep_an_edge_on_every_palette();
         airplay_selection_owns_masked_pairing_geometry();
+        the_airplay_credential_is_a_secret_prompt_only_while_it_is_shown();
         keyboard_controls_update_owned_options_and_close_intent();
         outside_click_requests_host_owned_visibility_close();
     }
