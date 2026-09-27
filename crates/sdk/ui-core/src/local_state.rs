@@ -4,6 +4,7 @@
 //! handle is for presentation state that should survive between widget events
 //! without becoming part of persistence, collaboration, or undo history.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -364,6 +365,7 @@ impl<T: Send + 'static> LatestRequest<T> {
     ///
     /// Returns `false` without spawning when the owner is closed or the
     /// generation namespace is exhausted (see [`Self::try_begin`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = T> + Send + 'static,
@@ -464,6 +466,7 @@ impl<T> LatestTask<T> {
     /// discarded if it finishes anyway.
     ///
     /// Returns `false` without spawning when [`Self::try_begin`] refuses.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn<F>(&self, running: T, future: F) -> bool
     where
         T: Send + Sync + 'static,

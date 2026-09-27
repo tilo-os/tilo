@@ -40,6 +40,12 @@ struct Door {
 
 impl Door {
     fn open(socket: &Path, dir: tempfile::TempDir) -> Self {
+        // The broker binds only inside an owner-only directory.
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .expect("owner-only socket directory");
         let mut workspace =
             shell::shell::state::Workspace::new(shell::shell::state::WorkspaceId(1), "Desk");
         workspace.room = shell::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
@@ -219,6 +225,10 @@ fn quick_settings_row(listed: &Value) -> Value {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door owns the broker and its socket directory for the whole test"
+)]
 fn rebinding_through_the_door_moves_what_the_chord_triggers() {
     use winit::keyboard::{Key, ModifiersState};
 
@@ -308,6 +318,10 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door owns the broker and its socket directory for the whole test"
+)]
 fn a_caller_without_the_settings_grant_cannot_rebind() {
     let config = tempfile::tempdir().expect("temporary config directory");
     let mut env = tilo_test_env::ScopedEnv::new();

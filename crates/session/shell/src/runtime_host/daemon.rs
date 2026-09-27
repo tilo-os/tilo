@@ -617,6 +617,10 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 /// before entering this function; reusable serving code never mutates it.
 /// # Errors
 /// Returns profile ownership, service startup, socket or worker-spawn errors.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
+)]
 pub fn serve(profile: &Path) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
@@ -756,15 +760,6 @@ pub fn run_app(
             == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
     command.args(args);
-    // This process is introducing the local runtime room. A launcher that
-    // already named a workspace keeps its participation, including fail-closed
-    // viewer. A personal attach has no room yet, and the person who owns this
-    // runtime may edit their own app.
-    if std::env::var_os("TILO_WORKSPACE_ID").is_none()
-        && std::env::var_os("TILO_PARTICIPATION").is_none()
-    {
-        command.env("TILO_PARTICIPATION", "author");
-    }
     let connections = unix::Connections::prepare(
         &mut command,
         app_id,

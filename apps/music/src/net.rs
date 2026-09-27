@@ -19,55 +19,13 @@ pub fn is_metered() -> bool {
     if let Ok(v) = std::env::var("TILO_MUSIC_METERED") {
         return v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
     }
-    *CACHED.get_or_init(|| nm_metered().unwrap_or(false))
+    *CACHED.get_or_init(|| host_info::network::connection_metered().unwrap_or(false))
 }
 
 /// Whether prefetch should run — the inverse of [`is_metered`], named for the
 /// call site.
 pub fn connection_is_stable() -> bool {
     !is_metered()
-}
-
-/// Best-effort `NetworkManager` metered probe via `nmcli`. Returns `None` when
-/// `nmcli` is missing / errors (so the caller falls back to the default).
-///
-/// NM's metered enum: `yes`/`yes (guessed)` ⇒ metered; `no`/`no (guessed)` ⇒
-/// not metered; `unknown` ⇒ we can't tell.
-#[cfg(target_os = "linux")]
-fn nm_metered() -> Option<bool> {
-    let out = bounded_command::run(
-        "nmcli",
-        &["-t", "-f", "GENERAL.METERED", "device", "show"],
-        None,
-        256 * 1024,
-        std::time::Duration::from_secs(3),
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut saw_known = false;
-    for line in text.lines() {
-        let val = line
-            .split_once(':')
-            .map_or("", |(_, v)| v)
-            .trim()
-            .to_ascii_lowercase();
-        if val.starts_with("yes") {
-            return Some(true);
-        }
-        if val.starts_with("no") {
-            saw_known = true;
-        }
-    }
-    // Only assert "not metered" if at least one device reported a known state.
-    saw_known.then_some(false)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn nm_metered() -> Option<bool> {
-    None
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ run 'Raw cryptography stays behind tilo-seal' \
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py
 run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
-run 'Desktop model dependency boundary' \
+run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 

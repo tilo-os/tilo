@@ -19,9 +19,11 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
+#[cfg(any(test, feature = "test-support"))]
+use std::cell::RefCell;
 use std::rc::Rc;
-use ui::PathSegment;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
+use ui::control_custody::RawControlSlot;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -62,6 +64,24 @@ pub(crate) const DETAIL_WIDTH: f64 = 420.0;
 const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
 const LARGE_TEXT_BASE_SIZE: f32 = 20.0;
 const TOAST_MS: u128 = 4000;
+
+#[derive(Clone)]
+struct ContinuationRuntimeIdentity {
+    runtime_epoch: u64,
+    target_epoch: u64,
+    target_id: String,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn next_continuation_epoch() -> Option<u64> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |value| value.checked_add(1),
+    )
+    .ok()
+}
 
 /// A clickable region recorded during draw and resolved in `handle_event`.
 #[derive(Clone)]
@@ -190,6 +210,128 @@ enum Bg {
     Pull(StreamMsg),
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub enum ControlledRuntimeRequest {
+    Refresh(ControlledRefreshRequest),
+    SelectedDetails {
+        target: String,
+    },
+    Immediate {
+        operation: String,
+        target: String,
+        arguments: Vec<String>,
+    },
+    Pull(ControlledPullRequest),
+    Create(ControlledCreateRequest),
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct ControlledRefreshRequest {
+    events: Sender<Bg>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ControlledRefreshRequest {
+    /// # Errors
+    ///
+    /// Returns an error when the retained application event receiver has closed.
+    pub fn snapshot(&self, engine: Engine) -> Result<(), String> {
+        self.events
+            .send(Bg::Snapshot(engine))
+            .map_err(|_| "controlled refresh receiver disconnected".into())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct ControlledPullRequest {
+    pub reference: String,
+    pub arguments: Vec<String>,
+    events: Sender<Bg>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ControlledPullRequest {
+    /// # Errors
+    ///
+    /// Returns an error when the retained application event receiver has closed.
+    pub fn line(&self, line: impl Into<String>) -> Result<(), String> {
+        self.events
+            .send(Bg::Pull(StreamMsg::Line(line.into())))
+            .map_err(|_| "controlled pull receiver disconnected".into())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the retained application event receiver has closed.
+    pub fn done(&self) -> Result<(), String> {
+        self.events
+            .send(Bg::Pull(StreamMsg::Done))
+            .map_err(|_| "controlled pull receiver disconnected".into())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the retained application event receiver has closed.
+    pub fn fail(&self, error: impl Into<String>) -> Result<(), String> {
+        self.events
+            .send(Bg::Pull(StreamMsg::Failed(error.into())))
+            .map_err(|_| "controlled pull receiver disconnected".into())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct ControlledCreateRequest {
+    pub arguments: Vec<String>,
+    events: Sender<Bg>,
+}
+
+/// The armed retention fixture: the app, its runtime request and result
+/// channels, the retention observer, the restart-arm flag, and the runtime
+/// replacement request channel and trigger.
+#[cfg(any(test, feature = "test-support"))]
+pub type ArmedRetentionRoot = (
+    ContainersApp,
+    Receiver<ControlledRuntimeRequest>,
+    Sender<Result<(), String>>,
+    Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
+    Rc<Cell<bool>>,
+    Receiver<ControlledRuntimeRequest>,
+    Rc<Cell<bool>>,
+);
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryRetentionSnapshot {
+    pub input_instances: [usize; CreateField::COUNT],
+    pub input_values: [String; CreateField::COUNT],
+    pub input_cursors: [usize; CreateField::COUNT],
+    pub input_selections: [Option<(usize, usize)>; CreateField::COUNT],
+    pub input_scroll: [(f64, f64); CreateField::COUNT],
+    pub list_scroll: f64,
+    pub detail_scroll: f64,
+    pub combo_open: bool,
+    pub engine_connection: String,
+    pub engine_counts: (usize, usize, usize, usize),
+    pub last_refresh: Instant,
+    pub pending_control: Option<(String, String)>,
+    pub background_channels: (bool, bool),
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ControlledCreateRequest {
+    /// Deliver the existing post-run refresh event. The current create worker
+    /// exposes no classified create success/failure result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained application event receiver has closed.
+    pub fn post_run_snapshot(&self, engine: Engine) -> Result<(), String> {
+        self.events
+            .send(Bg::Snapshot(engine))
+            .map_err(|_| "controlled create receiver disconnected".into())
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, orthogonal flag (live engine vs. \
@@ -253,7 +395,7 @@ pub struct ContainersApp {
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
     /// calls `invoke_resource_operation`.
-    pub(crate) pending_control_invocation: Option<ControlInvocation>,
+    pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
     /// Wall-clock anchor for advancing the sidebar slide from the draw path.
@@ -263,6 +405,21 @@ pub struct ContainersApp {
     /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
+    #[cfg(any(test, feature = "test-support"))]
+    controlled_runtime: Option<Sender<ControlledRuntimeRequest>>,
+    #[cfg(any(test, feature = "test-support"))]
+    controlled_immediate_results: Option<Receiver<Result<(), String>>>,
+    continuation_runtime_identity: Option<ContinuationRuntimeIdentity>,
+    #[cfg(any(test, feature = "test-support"))]
+    history_retention_observer: Option<Rc<RefCell<Option<HistoryRetentionSnapshot>>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    history_arm_restart: Option<Rc<Cell<bool>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    history_runtime_replacement: Option<(
+        Rc<Cell<bool>>,
+        Sender<ControlledRuntimeRequest>,
+        ContinuationRuntimeIdentity,
+    )>,
     last_refresh: Instant,
     pub(crate) live: bool,
     /// In offline/demo mode, seed an initial selection on the first sync so a
@@ -282,6 +439,37 @@ pub struct ContainersApp {
     /// Framework motion policy. Time-driven state still updates through idle
     /// sync, but decorative toast/progress repaint loops stop when reduced.
     motion_reduced: bool,
+    /// Keyboard focus for the immediate-mode root; its focused synthetic
+    /// create field becomes the exported accessibility active descendant.
+    has_focus: bool,
+}
+
+/// Input dependencies are independent of whether the runtime is live.
+#[derive(Clone, Copy)]
+struct InputFactories {
+    text: fn() -> TextInput,
+    search: fn() -> SearchField,
+}
+
+impl InputFactories {
+    fn production() -> Self {
+        Self {
+            text: TextInput::local,
+            search: SearchField::new,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled() -> Self {
+        Self {
+            text: || {
+                TextInput::local_with_language("en_US")
+                    .with_spellcheck(false)
+                    .with_autocorrect(false)
+            },
+            search: || SearchField::with_language("en_US"),
+        }
+    }
 }
 
 impl ContainersApp {
@@ -300,20 +488,37 @@ impl ContainersApp {
         } else {
             (None, None)
         };
+        Self::with_engine(
+            engine,
+            live,
+            !live,
+            bg_tx,
+            bg_rx,
+            InputFactories::production(),
+        )
+    }
+
+    fn with_engine(
+        engine: Engine,
+        live: bool,
+        seed_demo: bool,
+        bg_tx: Option<Sender<Bg>>,
+        bg_rx: Option<Receiver<Bg>>,
+        inputs: InputFactories,
+    ) -> Self {
         let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
         let create_inputs = std::array::from_fn(|index| {
             let field = CreateField::ALL
                 .get(index)
                 .copied()
                 .unwrap_or(CreateField::Name);
-            TextInput::new(vec![
-                PathSegment::Field("container_create".into()),
-                PathSegment::Field(field.key().into()),
-            ])
-            .with_id(&format!("container_create_{}", field.key()))
-            .with_placeholder(field.placeholder())
-            .with_font_size(13.0)
-            .with_plain_chrome()
+            let mut input = (inputs.text)()
+                .with_id(&format!("container_create_{}", field.key()))
+                .with_placeholder(field.placeholder())
+                .with_font_size(13.0)
+                .with_plain_chrome();
+            input.set_direct_crdt_writes(false);
+            input
         });
         Self {
             engine,
@@ -332,7 +537,7 @@ impl ContainersApp {
             create_inputs,
             combo: ComboState::default(),
             pull: None,
-            search_field: SearchField::new()
+            search_field: (inputs.search)()
                 .opens_palette()
                 .with_placeholder(crate::panels::LAUNCHER_PLACEHOLDER),
             palette: CommandPalette::commands(),
@@ -340,21 +545,286 @@ impl ContainersApp {
             pending_resource_selection: None,
             pending_resource_section: None,
             pending_resource_tab: None,
-            pending_control_invocation: None,
+            pending_control_invocation: RawControlSlot::replace_one(),
             sidebar_flap: FlapState::open_when_docked(),
             sidebar_tick: None,
             toast: None,
             bg_rx,
             bg_tx,
+            #[cfg(any(test, feature = "test-support"))]
+            controlled_runtime: None,
+            #[cfg(any(test, feature = "test-support"))]
+            controlled_immediate_results: None,
+            continuation_runtime_identity: None,
+            #[cfg(any(test, feature = "test-support"))]
+            history_retention_observer: None,
+            #[cfg(any(test, feature = "test-support"))]
+            history_arm_restart: None,
+            #[cfg(any(test, feature = "test-support"))]
+            history_runtime_replacement: None,
             last_refresh: Instant::now(),
             live,
-            seed_demo: !live,
+            seed_demo,
             seeded: false,
             structure_dirty: false,
             view: ViewState::default(),
             compact_layout_active: false,
             motion_reduced: false,
+            has_focus: false,
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_root() -> Self {
+        Self::with_engine(
+            Engine::default(),
+            false,
+            false,
+            None,
+            None,
+            InputFactories::controlled(),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_open_create_root() -> Self {
+        let mut app = Self::history_test_root();
+        app.create_open = true;
+        app.create_focus = CreateField::Image;
+        app.list_scroll = 41.0;
+        app.detail_scroll = 17.0;
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_palette_root() -> Self {
+        let mut app = Self::history_test_root();
+        app.open_container_palette();
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_prompt_root() -> Self {
+        let mut app = Self::history_test_root();
+        app.seed_shot("prompt");
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_confirm_root() -> Self {
+        let mut app = Self::history_test_root();
+        app.seed_shot("confirm");
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_pull_root() -> Self {
+        let mut app = Self::history_test_root();
+        app.pull = Some(PullProgress {
+            reference: "quay.io/example/pending:1".into(),
+            lines: vec!["Copying blob 1/2".into()],
+            done: false,
+            failed: None,
+        });
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_runtime_root() -> (
+        Self,
+        Receiver<ControlledRuntimeRequest>,
+        Sender<Result<(), String>>,
+    ) {
+        let engine = Engine {
+            live: true,
+            connection: "controlled Podman".into(),
+            ..Engine::default()
+        };
+        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        let mut app = Self::with_engine(
+            engine,
+            true,
+            false,
+            Some(bg_tx),
+            Some(bg_rx),
+            InputFactories::controlled(),
+        );
+        app.controlled_runtime = Some(requests_tx);
+        app.controlled_immediate_results = Some(results_rx);
+        app.continuation_runtime_identity = next_continuation_epoch()
+            .zip(next_continuation_epoch())
+            .map(
+                |(runtime_epoch, target_epoch)| ContinuationRuntimeIdentity {
+                    runtime_epoch,
+                    target_epoch,
+                    target_id: "armed-container".into(),
+                },
+            );
+        (app, requests_rx, results_tx)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_producer_order_root() -> Self {
+        let (mut app, _requests, _results) = Self::history_test_runtime_root();
+        app.engine = Self::history_test_runtime_engine("controlled Podman", true);
+        app.search_index.sync(&app.engine);
+        app.open_container_palette();
+        let mut doc = AutoCommit::new();
+        app.palette.activate_selected(&mut doc, &automerge::ROOT);
+        app.apply_action(Action::Restart, "armed-container");
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_retention_root() -> (
+        Self,
+        Receiver<ControlledRuntimeRequest>,
+        Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
+    ) {
+        let (mut app, requests, _results) = Self::history_test_runtime_root();
+        app.list_scroll = 41.0;
+        app.detail_scroll = 17.0;
+        app.combo.open = true;
+        let observer = Rc::new(RefCell::new(None));
+        app.history_retention_observer = Some(observer.clone());
+        (app, requests, observer)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_armed_retention_root() -> ArmedRetentionRoot {
+        let (mut app, requests, results) = Self::history_test_runtime_root();
+        app.list_scroll = 41.0;
+        app.detail_scroll = 17.0;
+        app.combo.open = true;
+
+        app.engine = Self::history_test_runtime_engine("controlled Podman", false);
+        app.search_index.sync(&app.engine);
+        app.spawn_refresh();
+        app.start_pull("quay.io/example/armed:1");
+
+        let mut create_doc = AutoCommit::new();
+        ViewDoc::set_create_field(&mut create_doc, CreateField::Name, "armed-name");
+        ViewDoc::set_create_field(
+            &mut create_doc,
+            CreateField::Image,
+            "quay.io/example/create:1",
+        );
+        ViewDoc::set_create_field(&mut create_doc, CreateField::Ports, "8081:81");
+        app.submit_create(&mut create_doc);
+
+        let mut selection_doc = AutoCommit::new();
+        ViewDoc::set_selected(&mut selection_doc, Some("armed-container"));
+        app.hydrate_selection(&selection_doc);
+        app.engine = Self::history_test_runtime_engine("controlled Podman", true);
+        app.search_index.sync(&app.engine);
+        let observer = Rc::new(RefCell::new(None));
+        app.history_retention_observer = Some(observer.clone());
+        let arm = Rc::new(Cell::new(false));
+        app.history_arm_restart = Some(arm.clone());
+        let (replacement_tx, replacement_rx) = std::sync::mpsc::channel();
+        let replace = Rc::new(Cell::new(false));
+        if let Some((runtime_epoch, target_epoch)) =
+            next_continuation_epoch().zip(next_continuation_epoch())
+        {
+            app.history_runtime_replacement = Some((
+                replace.clone(),
+                replacement_tx,
+                ContinuationRuntimeIdentity {
+                    runtime_epoch,
+                    target_epoch,
+                    target_id: "armed-container".into(),
+                },
+            ));
+        }
+        (
+            app,
+            requests,
+            results,
+            observer,
+            arm,
+            replacement_rx,
+            replace,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_runtime_engine(connection: &str, hydrated: bool) -> Engine {
+        Engine {
+            live: true,
+            connection: connection.into(),
+            containers: vec![Container {
+                id: "armed-container".into(),
+                name: "Armed container".into(),
+                image: "quay.io/example/armed:1".into(),
+                status: crate::model::ContainerStatus::Running,
+                status_detail: "Up under controlled runtime".into(),
+                command: "/usr/bin/example".into(),
+                created: "controlled".into(),
+                ports: Vec::new(),
+                mounts: Vec::new(),
+                env: if hydrated {
+                    vec![("MODE".into(), "controlled".into())]
+                } else {
+                    Vec::new()
+                },
+                labels: Vec::new(),
+                stats: crate::model::Stats::default(),
+                logs: if hydrated {
+                    vec!["controlled detail".into()]
+                } else {
+                    Vec::new()
+                },
+            }],
+            ..Engine::default()
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn publish_history_retention(&self) {
+        let Some(observer) = &self.history_retention_observer else {
+            return;
+        };
+        let input_instances =
+            CreateField::ALL.map(|field| std::ptr::from_ref(self.create_input(field)).addr());
+        let input_values = CreateField::ALL.map(|field| self.create_input(field).value().into());
+        let input_cursors = CreateField::ALL.map(|field| self.create_input(field).cursor_pos());
+        let input_selections =
+            CreateField::ALL.map(|field| self.create_input(field).selection_range_public());
+        let input_scroll = CreateField::ALL.map(|field| {
+            let input = self.create_input(field);
+            (input.scroll_x(), input.scroll_y())
+        });
+        let pending_control = self
+            .pending_control_invocation
+            .controlled_pending_for_test()
+            .map(|invocation| {
+                (
+                    invocation.address.resource.clone(),
+                    invocation.address.action,
+                )
+            });
+        observer.replace(Some(HistoryRetentionSnapshot {
+            input_instances,
+            input_values,
+            input_cursors,
+            input_selections,
+            input_scroll,
+            list_scroll: self.list_scroll,
+            detail_scroll: self.detail_scroll,
+            combo_open: self.combo.open,
+            engine_connection: self.engine.connection.clone(),
+            engine_counts: (
+                self.engine.containers.len(),
+                self.engine.images.len(),
+                self.engine.volumes.len(),
+                self.engine.distroboxes.len(),
+            ),
+            last_refresh: self.last_refresh,
+            pending_control,
+            background_channels: (self.bg_tx.is_some(), self.bg_rx.is_some()),
+        }));
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
@@ -373,15 +843,50 @@ impl ContainersApp {
         }
         let Some(tx) = self.bg_tx.clone() else { return };
         self.last_refresh = Instant::now();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controlled) = &self.controlled_runtime {
+            let _ = controlled.send(ControlledRuntimeRequest::Refresh(
+                ControlledRefreshRequest { events: tx },
+            ));
+            return;
+        }
         std::thread::spawn(move || {
             let engine = podman::probe().engine;
             let _ = tx.send(Bg::Snapshot(engine));
         });
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_immediate(
+        &self,
+        operation: impl Into<String>,
+        target: impl Into<String>,
+        arguments: Vec<String>,
+    ) -> Option<Result<(), String>> {
+        let controlled = self.controlled_runtime.as_ref()?;
+        if controlled
+            .send(ControlledRuntimeRequest::Immediate {
+                operation: operation.into(),
+                target: target.into(),
+                arguments,
+            })
+            .is_err()
+        {
+            return Some(Err(
+                "controlled runtime request receiver disconnected".into()
+            ));
+        }
+        Some(
+            self.controlled_immediate_results
+                .as_ref()
+                .and_then(|results| results.try_recv().ok())
+                .unwrap_or_else(|| Err("controlled runtime supplied no result".into())),
+        )
+    }
+
     /// Drain any background snapshot, preserving per-container detail
     /// (logs/env/mounts) for the selected container that `ps` doesn't carry.
-    fn drain_bg(&mut self, doc: &mut AutoCommit) {
+    fn drain_bg(&mut self, doc: &AutoCommit) {
         let Some(rx) = &self.bg_rx else { return };
         let mut latest = None;
         let mut pull_msgs = Vec::new();
@@ -417,7 +922,7 @@ impl ContainersApp {
     }
 
     /// Hydrate the selected container's detail (logs + inspect) on demand.
-    fn hydrate_selection(&mut self, doc: &mut AutoCommit) {
+    fn hydrate_selection(&mut self, doc: &AutoCommit) {
         let Some(sel) = ViewDoc::selected(doc) else {
             return;
         };
@@ -428,6 +933,11 @@ impl ContainersApp {
             .find(|c| c.id == sel)
             .is_some_and(|c| c.logs.is_empty() && c.env.is_empty());
         if !needs || !self.live {
+            return;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controlled) = &self.controlled_runtime {
+            let _ = controlled.send(ControlledRuntimeRequest::SelectedDetails { target: sel });
             return;
         }
         let logs = podman::fetch_logs(&sel, 200);
@@ -456,7 +966,7 @@ impl ContainersApp {
                 Action::Unpause => "unpause",
                 Action::Remove => "remove",
             };
-            self.pending_control_invocation = Some(ControlInvocation {
+            let _ = self.pending_control_invocation.emit(ControlInvocation {
                 address: ActionAddress::new(format!("container:{id}"), verb),
                 arguments: serde_json::Map::new(),
             });
@@ -521,6 +1031,16 @@ impl ContainersApp {
         if self.live {
             if let Some(tx) = self.bg_tx.clone() {
                 let args = podman::pull_args(&reference);
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(controlled) = &self.controlled_runtime {
+                    let _ =
+                        controlled.send(ControlledRuntimeRequest::Pull(ControlledPullRequest {
+                            reference,
+                            arguments: args,
+                            events: tx,
+                        }));
+                    return;
+                }
                 std::thread::spawn(move || {
                     let (ptx, prx) = std::sync::mpsc::channel();
                     let worker = std::thread::spawn(move || podman::stream_command(&args, &ptx));
@@ -575,7 +1095,7 @@ impl ContainersApp {
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
         if self.engine.live {
-            self.pending_control_invocation = Some(ControlInvocation {
+            let _ = self.pending_control_invocation.emit(ControlInvocation {
                 address: ActionAddress::new(format!("image:{reference}"), "remove"),
                 arguments: serde_json::Map::new(),
             });
@@ -598,6 +1118,19 @@ impl ContainersApp {
             return;
         }
         if self.live {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(result) = self.controlled_immediate(
+                "containers.image.tag",
+                source,
+                vec!["tag".into(), source.into(), new_tag.into()],
+            ) {
+                match result {
+                    Ok(()) => self.show_toast(format!("Tagged {source} as {new_tag}"), false),
+                    Err(error) => self.show_toast(format!("Tag failed: {error}"), true),
+                }
+                self.spawn_refresh();
+                return;
+            }
             match podman::tag_image(source, new_tag) {
                 Ok(()) => self.show_toast(format!("Tagged {source} as {new_tag}"), false),
                 Err(e) => self.show_toast(format!("Tag failed: {e}"), true),
@@ -616,6 +1149,19 @@ impl ContainersApp {
             return;
         }
         if self.live {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(result) = self.controlled_immediate(
+                "containers.volume.create",
+                name,
+                vec!["volume".into(), "create".into(), name.into()],
+            ) {
+                match result {
+                    Ok(()) => self.show_toast(format!("Created volume {name}"), false),
+                    Err(error) => self.show_toast(format!("Create failed: {error}"), true),
+                }
+                self.spawn_refresh();
+                return;
+            }
             match podman::create_volume(name) {
                 Ok(()) => self.show_toast(format!("Created volume {name}"), false),
                 Err(e) => self.show_toast(format!("Create failed: {e}"), true),
@@ -639,7 +1185,7 @@ impl ContainersApp {
     /// Remove a named volume (post-confirmation).
     pub(crate) fn remove_volume(&mut self, name: &str) {
         if self.engine.live {
-            self.pending_control_invocation = Some(ControlInvocation {
+            let _ = self.pending_control_invocation.emit(ControlInvocation {
                 address: ActionAddress::new(format!("volume:{name}"), "remove"),
                 arguments: serde_json::Map::new(),
             });
@@ -659,7 +1205,7 @@ impl ContainersApp {
     pub(crate) fn attach_shell(&mut self, id: &str) {
         let short = id.chars().take(12).collect::<String>();
         if self.engine.live {
-            self.pending_control_invocation = Some(ControlInvocation {
+            let _ = self.pending_control_invocation.emit(ControlInvocation {
                 address: ActionAddress::new(format!("container:{id}"), "shell"),
                 arguments: serde_json::Map::new(),
             });
@@ -686,6 +1232,16 @@ impl ContainersApp {
             self.create_open = false;
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(controlled) = &self.controlled_runtime {
+                    let _ = controlled.send(ControlledRuntimeRequest::Create(
+                        ControlledCreateRequest {
+                            arguments: args,
+                            events: tx,
+                        },
+                    ));
+                    return;
+                }
                 std::thread::spawn(move || {
                     let out = podman::run_once(&args);
                     // Whatever the result, push a fresh snapshot so the new
@@ -1298,7 +1854,11 @@ impl ContainersApp {
 /// materialises an omitted stable identity only when a result is activated.
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
-fn container_resource(container: &crate::model::Container, engine_live: bool) -> Resource {
+fn container_resource(
+    container: &crate::model::Container,
+    engine_live: bool,
+    continuation: Option<&ContinuationRuntimeIdentity>,
+) -> Resource {
     let mut resource = Resource::new(
         format!("container:{}", container.id),
         "containers.container",
@@ -1339,6 +1899,12 @@ fn container_resource(container: &crate::model::Container, engine_live: bool) ->
             &payload,
         ) {
             let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
+            if *verb == "restart"
+                && let Some(identity) = continuation
+                && identity.target_id == container.id
+            {
+                spec = with_restart_continuation(spec, identity.clone());
+            }
             if *verb == "remove" {
                 spec = spec.destructive();
             } else if *verb != "restart" && *verb != "shell" {
@@ -1369,6 +1935,38 @@ fn container_resource(container: &crate::model::Container, engine_live: bool) ->
     }
     resource.children.push(logs);
     resource
+}
+
+/// Declare the controlled-runtime continuation identity of a `restart` spec.
+fn with_restart_continuation(
+    spec: ActionSpec,
+    identity: ContinuationRuntimeIdentity,
+) -> ActionSpec {
+    spec.with_continuation_identity(move |query| {
+        let target = ui::tilo_actions::ContinuationKey::new(
+            "containers.controlled.target",
+            [
+                identity.runtime_epoch.to_be_bytes().to_vec(),
+                identity.target_epoch.to_be_bytes().to_vec(),
+                identity.target_id.as_bytes().to_vec(),
+            ],
+        );
+        let handler = ui::tilo_actions::ContinuationKey::new(
+            "containers.controlled.handler",
+            [b"restart-v1".to_vec()],
+        );
+        Some(match query {
+            ui::tilo_actions::ContinuationQuery::Exact(_) => {
+                ui::tilo_actions::ContinuationEvidence::Exact { target, handler }
+            }
+            ui::tilo_actions::ContinuationQuery::Draft => {
+                ui::tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: target,
+                    handler,
+                }
+            }
+        })
+    })
 }
 
 fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {
@@ -1481,6 +2079,10 @@ fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) ->
 }
 
 impl Widget for ContainersApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "containers.engine",
@@ -1515,8 +2117,11 @@ impl Widget for ContainersApp {
             if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
                 break;
             }
-            root.children
-                .push(container_resource(container, self.engine.live));
+            root.children.push(container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            ));
         }
         for image in &self.engine.images {
             if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
@@ -1551,10 +2156,14 @@ impl Widget for ContainersApp {
                 .containers
                 .iter()
                 .find(|item| item.id == container_id)?;
-            return container_resource(container, self.engine.live)
-                .children
-                .into_iter()
-                .find(|child| child.id.0 == id);
+            return container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            )
+            .children
+            .into_iter()
+            .find(|child| child.id.0 == id);
         }
         if let Some(container_id) = id.strip_prefix("container:") {
             return self
@@ -1562,7 +2171,13 @@ impl Widget for ContainersApp {
                 .containers
                 .iter()
                 .find(|item| item.id == container_id)
-                .map(|item| container_resource(item, self.engine.live));
+                .map(|item| {
+                    container_resource(
+                        item,
+                        self.engine.live,
+                        self.continuation_runtime_identity.as_ref(),
+                    )
+                });
         }
         if let Some(reference) = id.strip_prefix("image:") {
             return self
@@ -1638,6 +2253,17 @@ impl Widget for ContainersApp {
         if !self.engine.live {
             return Err("container engine actions are unavailable while Podman is offline".into());
         }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(result) = self.controlled_immediate(
+            format!("{type_id}.{verb}"),
+            target.to_string(),
+            args.clone(),
+        ) {
+            result?;
+            self.spawn_refresh();
+            self.show_toast(format!("{verb} accepted for {target}"), false);
+            return Ok(true);
+        }
         match type_id {
             "containers.container" => match verb {
                 "start" => {
@@ -1681,6 +2307,24 @@ impl Widget for ContainersApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self
+            .history_runtime_replacement
+            .as_ref()
+            .is_some_and(|(replace, _, _)| replace.replace(false))
+            && let Some((_, runtime, identity)) = self.history_runtime_replacement.take()
+        {
+            self.controlled_runtime = Some(runtime);
+            self.continuation_runtime_identity = Some(identity);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if self
+            .history_arm_restart
+            .as_ref()
+            .is_some_and(|arm| arm.replace(false))
+        {
+            self.apply_action(Action::Restart, "armed-container");
+        }
         if let Some(target) = self.pending_resource_selection.take() {
             ViewDoc::set_selected(doc, Some(&target));
         }
@@ -1694,82 +2338,7 @@ impl Widget for ContainersApp {
         // Seed a representative selection on the very first sync of a demo /
         // shots session so the detail view is populated out of the box.
         if self.seed_demo && !self.seeded {
-            self.seeded = true;
-            // An optional env hook selects a demo scene for screenshots
-            // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
-            // `inspect` / `create` / `combo` / `pull` / `collapsed`).
-            let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
-            match scene.as_str() {
-                "images" => ViewDoc::set_section(doc, Section::Images),
-                "volumes" => ViewDoc::set_section(doc, Section::Volumes),
-                "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
-                "create" | "combo" => {
-                    self.create_open = true;
-                    self.create_focus = CreateField::Image;
-                    ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
-                    ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
-                    ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
-                    ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
-                    ViewDoc::set_create_field(
-                        doc,
-                        CreateField::Volumes,
-                        "site:/usr/share/nginx/html",
-                    );
-                    if scene == "combo" {
-                        // Open the image suggestion dropdown for the shot.
-                        self.combo.open = true;
-                    }
-                }
-                "pull" => {
-                    ViewDoc::set_section(doc, Section::Images);
-                    self.pull = Some(PullProgress {
-                        reference: "docker.io/library/alpine:3.20".into(),
-                        lines: vec![
-                            "Trying to pull docker.io/library/alpine:3.20...".into(),
-                            "Getting image source signatures".into(),
-                            "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
-                                .into(),
-                            "Copying config sha256:1a2b3c4d5e6f done".into(),
-                        ],
-                        done: false,
-                        failed: None,
-                    });
-                }
-                "collapsed" => self.sidebar_flap.snap(false),
-                // Capture the honest "no engine" zero-state (what the live app
-                // shows when rootless podman is not reachable).
-                "empty" => {
-                    self.engine = Engine {
-                        connection: "No container engine — is podman installed?".into(),
-                        live: false,
-                        ..Engine::default()
-                    };
-                    self.search_index.sync(&self.engine);
-                }
-                // Open the shared Ctrl+K palette (seeded with the sample
-                // containers) so `--shots` can capture the search surface.
-                "palette" => self.open_container_palette(),
-                _ => {}
-            }
-            let tab = match scene.as_str() {
-                "stats" => DetailTab::Stats,
-                "inspect" => DetailTab::Inspect,
-                "terminal" => DetailTab::Terminal,
-                _ => DetailTab::Logs,
-            };
-            let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
-            if !list_scene
-                && ViewDoc::selected(doc).is_none()
-                && let Some(first) = self
-                    .engine
-                    .containers
-                    .iter()
-                    .find(|c| c.status.is_running())
-                    .or_else(|| self.engine.containers.first())
-            {
-                ViewDoc::set_selected(doc, Some(&first.id));
-                ViewDoc::set_tab(doc, tab);
-            }
+            self.seed_demo_scene(doc);
         }
         // Periodically re-probe the engine for fresh stats / state.
         if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
@@ -1777,6 +2346,8 @@ impl Widget for ContainersApp {
         }
         self.hydrate_selection(doc);
         self.refresh_view(doc);
+        #[cfg(any(test, feature = "test-support"))]
+        self.publish_history_retention();
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2132,6 +2703,10 @@ impl Widget for ContainersApp {
         "ContainersApp"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        Some("containers-root")
+    }
+
     fn tooltip(&self) -> Option<&str> {
         let hit = self
             .hits
@@ -2183,6 +2758,10 @@ impl Widget for ContainersApp {
         self.traps_focus().then_some(self.rect)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the immediate-mode accessibility mirror exports the complete visible surface"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
         if self.palette_open {
             return self.palette.accessibility();
@@ -2239,7 +2818,12 @@ impl Widget for ContainersApp {
                 node = node.with_description(description);
             }
             if let Hit::CreateField(field) = &region.hit {
-                node = node.with_value(self.create_input(*field).value());
+                let input = self.create_input(*field);
+                node = node.with_value(input.value());
+                let (anchor, focus) = input
+                    .selection_anchor_focus_public()
+                    .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
+                node = node.with_text_selection(anchor, focus);
             }
             controls.push(node);
         }
@@ -2253,6 +2837,11 @@ impl Widget for ContainersApp {
             vec![
                 AccessNode::new(Role::Dialog)
                     .with_name(name)
+                    .with_bounds(if prefix == "containers.create." {
+                        crate::presentation::create_form_geometry(self.rect).modal
+                    } else {
+                        self.rect
+                    })
                     .with_state(AccessState::new().modal(true))
                     .with_children(controls),
             ]
@@ -2395,10 +2984,34 @@ impl Widget for ContainersApp {
         }
     }
 
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.has_focus = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_focus
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.palette.install_control_custody(domain, attachment);
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+    }
+
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.palette
-            .take_control_invocation()
-            .or_else(|| self.pending_control_invocation.take())
+        if let Some(invocation) = self.palette.take_control_invocation() {
+            return Some(invocation);
+        }
+        self.pending_control_invocation.take_legacy_compatibility()
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
@@ -2536,6 +3149,83 @@ fn pull_progress_node(pull: &PullProgress) -> AccessNode {
 }
 
 impl ContainersApp {
+    /// Seeds a representative demo scene on the first sync of a demo or
+    /// screenshot session so the detail view is populated out of the box.
+    fn seed_demo_scene(&mut self, doc: &mut AutoCommit) {
+        self.seeded = true;
+        // An optional env hook selects a demo scene for screenshots
+        // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
+        // `inspect` / `create` / `combo` / `pull` / `collapsed`).
+        let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
+        match scene.as_str() {
+            "images" => ViewDoc::set_section(doc, Section::Images),
+            "volumes" => ViewDoc::set_section(doc, Section::Volumes),
+            "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
+            "create" | "combo" => {
+                self.create_open = true;
+                self.create_focus = CreateField::Image;
+                ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
+                ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
+                ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
+                ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
+                ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
+                if scene == "combo" {
+                    // Open the image suggestion dropdown for the shot.
+                    self.combo.open = true;
+                }
+            }
+            "pull" => {
+                ViewDoc::set_section(doc, Section::Images);
+                self.pull = Some(PullProgress {
+                    reference: "docker.io/library/alpine:3.20".into(),
+                    lines: vec![
+                        "Trying to pull docker.io/library/alpine:3.20...".into(),
+                        "Getting image source signatures".into(),
+                        "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
+                            .into(),
+                        "Copying config sha256:1a2b3c4d5e6f done".into(),
+                    ],
+                    done: false,
+                    failed: None,
+                });
+            }
+            "collapsed" => self.sidebar_flap.snap(false),
+            // Capture the honest "no engine" zero-state (what the live app
+            // shows when rootless podman is not reachable).
+            "empty" => {
+                self.engine = Engine {
+                    connection: "No container engine — is podman installed?".into(),
+                    live: false,
+                    ..Engine::default()
+                };
+                self.search_index.sync(&self.engine);
+            }
+            // Open the shared Ctrl+K palette (seeded with the sample
+            // containers) so `--shots` can capture the search surface.
+            "palette" => self.open_container_palette(),
+            _ => {}
+        }
+        let tab = match scene.as_str() {
+            "stats" => DetailTab::Stats,
+            "inspect" => DetailTab::Inspect,
+            "terminal" => DetailTab::Terminal,
+            _ => DetailTab::Logs,
+        };
+        let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
+        if !list_scene
+            && ViewDoc::selected(doc).is_none()
+            && let Some(first) = self
+                .engine
+                .containers
+                .iter()
+                .find(|c| c.status.is_running())
+                .or_else(|| self.engine.containers.first())
+        {
+            ViewDoc::set_selected(doc, Some(&first.id));
+            ViewDoc::set_tab(doc, tab);
+        }
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
@@ -2584,13 +3274,7 @@ impl ContainersApp {
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
-        // `sync` normally binds these once per frame. Bind defensively here as
-        // well so an event arriving immediately after the modal opens still
-        // edits the native collaborative Text object.
-        let obj = ViewDoc::create_field_obj(doc, field);
-        let input = self.create_input_mut(field);
-        input.bind_text(obj);
-        Widget::sync(input, doc, path);
+        let before = self.create_input(field).value().to_string();
         let mut taffy = TaffyTree::new();
         let Ok(node) = taffy.new_leaf(Style::default()) else {
             return;
@@ -2608,6 +3292,11 @@ impl ContainersApp {
             node,
             &taffy,
         );
+        let after = self.create_input(field).value().to_string();
+        if before != after {
+            ViewDoc::set_create_field(doc, field, &after);
+            self.sync_create_input(field, doc, path);
+        }
     }
 
     pub(crate) fn after_create_input(&mut self, field: CreateField) {
@@ -2617,12 +3306,29 @@ impl ContainersApp {
         }
     }
 
+    fn sync_create_input(&mut self, field: CreateField, doc: &mut AutoCommit, root: &ObjId) {
+        match ViewDoc::stored_create_field(doc, field) {
+            crate::doc::StoredCreateField::Text { value, object } => {
+                let input = self.create_input_mut(field);
+                if input.bound_obj() != Some(&object) {
+                    input.bind_text(object);
+                }
+                Widget::sync(input, doc, root);
+                debug_assert_eq!(input.value(), value);
+            }
+            crate::doc::StoredCreateField::Absent
+            | crate::doc::StoredCreateField::WrongType
+            | crate::doc::StoredCreateField::Conflict => {
+                let input = self.create_input_mut(field);
+                input.clear_text_binding();
+                input.set_text("");
+            }
+        }
+    }
+
     fn sync_create_inputs(&mut self, doc: &mut AutoCommit, root: &ObjId) {
         for field in CreateField::ALL {
-            let obj = ViewDoc::create_field_obj(doc, field);
-            let input = self.create_input_mut(field);
-            input.bind_text(obj);
-            Widget::sync(input, doc, root);
+            self.sync_create_input(field, doc, root);
         }
         if self.create_open {
             self.focus_create_field(self.create_focus);
@@ -2771,8 +3477,9 @@ impl ContainersApp {
 }
 
 #[cfg(test)]
-mod palette_launcher_tests {
+mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use winit::event::KeyEvent;
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -2797,6 +3504,24 @@ mod palette_launcher_tests {
         let mut t = TaffyTree::<()>::new();
         let n = t.new_leaf(Style::default()).unwrap();
         (t, n)
+    }
+
+    fn inert_root_for_history_red() -> ContainersApp {
+        ContainersApp::history_test_root()
+    }
+
+    #[test]
+    fn baseline_fresh_sync_must_not_author_create_draft() {
+        let mut app = inert_root_for_history_red();
+        let mut doc = AutoCommit::new();
+        let heads = doc.get_heads();
+        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "ordinary sync authored the document"
+        );
+        assert!(doc.get(&automerge::ROOT, "view").unwrap().is_none());
     }
 
     /// The compact breakpoint preserves tablet and desktop while protecting large text, and compact selection is a full-page drill-in.
@@ -2855,9 +3580,6 @@ mod palette_launcher_tests {
     #[test]
     fn palette_and_dialogs_drive_container_operations() {
         // --- phase: open_palette_seeds_one_row_per_container ---
-        // Opening the app-scoped palette seeds it from the app's *real*
-        // containers — the search rows are the app's resources, not a
-        // bespoke in-app search UI. Empty stays empty otherwise.
         {
             let mut app = ContainersApp::new(false);
             assert!(!app.palette_open);
@@ -2884,9 +3606,6 @@ mod palette_launcher_tests {
         }
 
         // --- phase: enter_on_a_palette_row_selects_that_container ---
-        // Enter on a palette row routes through the real `handle_event`
-        // path and selects that container — proving the palette (not the
-        // app's own search) drives selection.
         {
             let mut app = ContainersApp::new(false);
             let mut doc = AutoCommit::new();
@@ -2913,16 +3632,13 @@ mod palette_launcher_tests {
 
             assert!(!app.palette_open, "Enter closes the palette");
             assert_eq!(
-                ViewDoc::selected(&mut doc).as_deref(),
+                ViewDoc::selected(&doc).as_deref(),
                 Some(expected.as_str()),
                 "activating a palette row selects that container"
             );
         }
 
         // --- phase: confirm_dialog_primary_removes_image_and_escape_cancels ---
-        // The destructive confirm routes through the shared `ModalDialog`: a click
-        // on its danger primary performs the real removal and closes; Escape on a
-        // fresh one cancels without touching the engine.
         {
             let mut app = ContainersApp::new(false);
             app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
@@ -2976,9 +3692,6 @@ mod palette_launcher_tests {
         }
 
         // --- phase: prompt_dialog_creates_volume_from_typed_field ---
-        // The text prompt routes through the shared `ModalDialog` hosting a real
-        // `TextInput`: characters typed land in the field, and the primary button
-        // commits that value (creating a volume named from the typed text).
         {
             let mut app = ContainersApp::new(false);
             app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
@@ -3128,5 +3841,191 @@ mod palette_launcher_tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn history_controlled_pull_retains_channel_and_settles_once() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        app.start_pull(" quay.io/example/image:1 ");
+        let ControlledRuntimeRequest::Pull(request) = requests.recv().unwrap() else {
+            panic!("expected one controlled pull request");
+        };
+        assert_eq!(request.reference, "quay.io/example/image:1");
+        assert_eq!(
+            request.arguments,
+            crate::podman::pull_args("quay.io/example/image:1")
+        );
+        assert!(
+            requests.try_recv().is_err(),
+            "pull was dispatched only once"
+        );
+
+        request.line("Copying blob 1/1").unwrap();
+        request.done().unwrap();
+        let doc = AutoCommit::new();
+        app.drain_bg(&doc);
+        let pull = app.pull.as_ref().expect("retained pull overlay");
+        assert_eq!(
+            pull.lines.last().map(String::as_str),
+            Some("Copying blob 1/1")
+        );
+        assert!(pull.done);
+        assert!(pull.failed.is_none());
+        assert!(matches!(
+            requests.recv().unwrap(),
+            ControlledRuntimeRequest::Refresh(_)
+        ));
+        let terminal = app.toast.as_ref().map(|toast| toast.born);
+        app.drain_bg(&doc);
+        assert_eq!(app.toast.as_ref().map(|toast| toast.born), terminal);
+        assert!(
+            requests.try_recv().is_err(),
+            "terminal event was reduced once"
+        );
+    }
+
+    #[test]
+    fn history_controlled_create_keeps_copied_args_and_drains_one_snapshot() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        let mut doc = AutoCommit::new();
+        ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
+        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:1");
+        ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80");
+        let historical = doc.get_heads()[0];
+        app.create_open = true;
+        app.submit_create(&mut doc);
+        let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
+            panic!("expected one controlled create request");
+        };
+        assert_eq!(
+            request.arguments,
+            vec!["run", "-d", "--name", "web", "-p", "8080:80", "nginx:1"]
+        );
+        assert!(!app.create_open);
+        assert_eq!(
+            ViewDoc::stored_create_field(&doc, CreateField::Image),
+            crate::doc::StoredCreateField::Absent
+        );
+
+        let current = doc.get_heads();
+        let restore = ui::history_mode::restore::prepare_content_restore(
+            &doc,
+            &crate::framework_history::SCHEMA,
+            &current,
+            &[historical],
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(&mut doc, &restore).unwrap();
+        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "nginx:1");
+        assert_eq!(
+            request.arguments.last().map(String::as_str),
+            Some("nginx:1")
+        );
+
+        let refreshed = Engine {
+            live: true,
+            connection: "controlled post-run snapshot".into(),
+            ..Engine::default()
+        };
+        request.post_run_snapshot(refreshed).unwrap();
+        app.drain_bg(&doc);
+        assert_eq!(app.engine.connection, "controlled post-run snapshot");
+        app.drain_bg(&doc);
+        assert!(
+            requests.try_recv().is_err(),
+            "create was dispatched only once"
+        );
+    }
+
+    #[test]
+    fn history_controlled_immediate_edges_capture_exact_requests() {
+        let (mut app, requests, results) = ContainersApp::history_test_runtime_root();
+
+        results.send(Ok(())).unwrap();
+        app.tag_image("quay.io/example/source:1", " registry.local/copy:2 ");
+        match requests.recv().unwrap() {
+            ControlledRuntimeRequest::Immediate {
+                operation,
+                target,
+                arguments,
+            } => {
+                assert_eq!(operation, "containers.image.tag");
+                assert_eq!(target, "quay.io/example/source:1");
+                assert_eq!(
+                    arguments,
+                    ["tag", "quay.io/example/source:1", "registry.local/copy:2"]
+                );
+            }
+            _ => panic!("expected captured tag request"),
+        }
+        assert!(matches!(
+            requests.recv().unwrap(),
+            ControlledRuntimeRequest::Refresh(_)
+        ));
+
+        results.send(Ok(())).unwrap();
+        app.create_volume(" cache ");
+        match requests.recv().unwrap() {
+            ControlledRuntimeRequest::Immediate {
+                operation,
+                target,
+                arguments,
+            } => {
+                assert_eq!(operation, "containers.volume.create");
+                assert_eq!(target, "cache");
+                assert_eq!(arguments, ["volume", "create", "cache"]);
+            }
+            _ => panic!("expected captured volume request"),
+        }
+        assert!(matches!(
+            requests.recv().unwrap(),
+            ControlledRuntimeRequest::Refresh(_)
+        ));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn history_pending_control_intent_keeps_exact_target_until_host_take() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        app.apply_action(Action::Restart, "retained-target");
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&mut doc, &automerge::ROOT);
+        let intent = Widget::take_control_invocation(&mut app).expect("retained intent");
+        assert_eq!(intent.address.resource, "container:retained-target");
+        assert_eq!(intent.address.action, "restart");
+        assert!(intent.arguments.is_empty());
+        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn restored_binding_never_edits_stale_text_object() {
+        let mut app = ContainersApp::history_test_root();
+        let mut doc = AutoCommit::new();
+        ViewDoc::set_create_field(&mut doc, CreateField::Image, "old");
+        app.create_open = true;
+        app.focus_create_field(CreateField::Image);
+        app.refresh_view(&mut doc);
+        let stale = ViewDoc::create_field_obj(&doc, CreateField::Image).unwrap();
+        let instance = std::ptr::from_ref(app.create_input(CreateField::Image));
+
+        ViewDoc::clear_create(&mut doc);
+        ViewDoc::set_create_field(&mut doc, CreateField::Image, "new");
+        let current = ViewDoc::create_field_obj(&doc, CreateField::Image).unwrap();
+        assert_ne!(stale, current);
+        app.refresh_view(&mut doc);
+        assert_eq!(
+            std::ptr::from_ref(app.create_input(CreateField::Image)),
+            instance
+        );
+        assert!(Widget::is_focused(app.create_input(CreateField::Image)));
+        assert_eq!(app.create_input(CreateField::Image).value(), "new");
+
+        app.create_input_mut(CreateField::Image).set_cursor_pos(3);
+        dispatch(&mut app, &mut doc, &automerge::ROOT, &char_press("!"));
+        assert_eq!(doc.text(&stale).unwrap(), "old");
+        assert_eq!(doc.text(&current).unwrap(), "new!");
+        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "new!");
     }
 }

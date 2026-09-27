@@ -39,6 +39,10 @@ mod runtime_host_tests;
 pub mod security;
 pub mod session_runtime;
 pub mod shell;
+// Room and workspace admission decodes peer bytes in automerge worker
+// processes started from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 pub mod tray;
 pub mod wayland;
 pub mod workspace;

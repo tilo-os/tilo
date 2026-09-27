@@ -154,6 +154,7 @@ pub struct RichTextLine {
     transient_colors: Vec<TransientColorSpan>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
+    /// Cached theme colours used by unwrapped attributed single-line shaping.
     accent_rgb: Option<[u8; 3]>,
     /// The theme's syntax palette, captured when attributes are prepared.
     syntax: Option<crate::tokens::SyntaxPalette>,
@@ -849,6 +850,12 @@ impl Widget for RichTextLine {
         (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
     }
 
+    /// A line's height follows its text and its inline marks, both of which
+    /// `measure` re-applies; the childless default would dirty every line.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty.styled_layout || self.inner.is_layout_dirty()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
@@ -978,7 +985,8 @@ impl Widget for RichTextLine {
             };
         }
         if !self.wrap {
-            return Size::ZERO;
+            self.prepare_attributes(&self.measurement_theme.clone());
+            return self.inner.measure(known, available, text_renderer);
         }
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
@@ -1003,9 +1011,10 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.prepare_attributes(theme);
         self.sync_wrapped_spans(theme);
-        // The inner TextInput draws the plain text first; mark-styled
-        // segments are then overpainted on top only where styling differs.
+        // TextInput owns glyph shaping and painting. This wrapper supplies
+        // attributes and draws only mark decorations that are not glyphs.
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
 

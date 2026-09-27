@@ -57,19 +57,18 @@ fn profiling_collects_per_pass_stats_and_reports_them() {
             assert_eq!(st.count, count, "{name} has one measurement per frame");
         }
 
-        // Real, non-zero time: rebuilding layout for 150 rows and drawing them
-        // each frame on the production path costs something.
+        // Real, non-zero time: drawing 150 rows each frame on the production
+        // path costs something.
         assert!(report.total.max_us > 0, "total frame time was measured");
         assert!(
             report.draw.max_us > 0,
             "draw pass was measured: {:?}",
             report.draw
         );
-        assert!(
-            report.build_layout.max_us > 0,
-            "build_layout pass was measured: {:?}",
-            report.build_layout
-        );
+        // build_layout is deliberately not required to cost anything: a scroll
+        // keeps the retained layout tree and re-measures no widget, which can
+        // finish under the microsecond resolution. Its per-frame count is
+        // checked above.
 
         assert!(report.total.p50_us <= report.total.p95_us);
         assert!(report.total.p95_us <= report.total.max_us);

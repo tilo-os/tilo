@@ -20,9 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::actions;
 use crate::transfer::ImportLogin;
-use accounts::{
-    CredentialGrant, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem, SecretItemKind,
-};
+use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 
 enum TransferDialog {
     ImportPreview {
@@ -1305,13 +1303,7 @@ impl PasswordsSurface {
     }
 
     fn custody_notice(&self) -> Option<&'static str> {
-        match self.model.as_ref().map(crate::PasswordsModel::custody) {
-            Some(SecretCustody::SecretService) => Some("System keyring"),
-            Some(SecretCustody::LocalFile) => Some("Local encrypted storage"),
-            #[cfg(windows)]
-            Some(SecretCustody::WindowsDpapi) => Some("Windows user protection (DPAPI)"),
-            None => None,
-        }
+        self.model.as_ref().map(|model| model.custody().label())
     }
 
     fn copy_identity_selected(&mut self) {

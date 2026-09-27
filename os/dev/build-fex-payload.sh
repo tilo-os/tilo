@@ -83,6 +83,7 @@ cmake -S /source -B /build -G Ninja \
     -DClang_DIR=/usr/lib64/llvm21/lib64/cmake/clang \
     -DLLVM_DIR=/usr/lib64/llvm21/lib64/cmake/llvm \
     -DBUILD_THUNKS=ON -DBUILD_FEX_LINUX_TESTS=ON -DBUILD_TESTING=ON \
+    -DBUILD_FEXCONFIG=OFF \
     -DENABLE_CLANG_THUNKS=ON -DENABLE_CCACHE=OFF -DENABLE_LTO=ON \
     -DTUNE_CPU=none -DTUNE_ARCH=generic \
     -DX86_DEV_ROOTFS=/x86-sdk \

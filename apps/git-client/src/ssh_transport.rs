@@ -11,7 +11,6 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use git2::transport::{Service, SmartSubtransport, SmartSubtransportStream, Transport};
 use russh::keys::agent::AgentIdentity;
-use russh::keys::agent::client::AgentClient;
 use russh::{ChannelMsg, client};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -260,17 +259,9 @@ impl SshSession {
                     },
                 )
                 .await?;
-                #[cfg(unix)]
-                let mut agent = AgentClient::connect_env()
+                let mut agent = ssh_agent_client::connect()
                     .await
                     .context("cannot connect to SSH agent")?;
-                #[cfg(windows)]
-                let mut agent = AgentClient::connect_named_pipe(
-                    std::env::var_os("SSH_AUTH_SOCK")
-                        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".into()),
-                )
-                .await
-                .context("cannot connect to Windows SSH agent")?;
                 let hash = handle.best_supported_rsa_hash().await?.flatten();
                 let mut authenticated = false;
                 for identity in agent.request_identities().await? {

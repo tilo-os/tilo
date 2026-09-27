@@ -8,3 +8,8 @@
 "apps/notes/src/doc.rs" = 5
 
 [ratchets.document_schema]
+# Cloud stack sites that predate this ratchet: the semantic read walks the
+# document through a bounded source and participant presence reads a caret
+# block's text. Move them onto the qdoc document API and lower these to zero.
+"apps/word-processor/src/semantic_read.rs" = 7
+"apps/word-processor/src/widget/participants.rs" = 1

@@ -921,7 +921,7 @@ pub enum NoteOwner {
 )]
 pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     let mut context =
-        tilo_actions::ActionContext::for_action("org.tilo.Calendar", "Calendar", action);
+        tilo_actions::ActionContext::for_action("so.tilo.calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
@@ -3244,7 +3244,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -3585,8 +3587,14 @@ mod tests {
                     Widget::invoke_resource_operation(
                         &mut app,
                         operation.kind,
-                        &operation.encoded.type_id,
-                        &operation.encoded.payload,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .type_id,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .payload,
                         &doc,
                         &ROOT,
                     )

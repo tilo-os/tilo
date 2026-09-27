@@ -31,6 +31,11 @@ pub enum ManifestError {
     BadRuntimeForm(String),
     #[error("package.runtime version {0:?} is not valid semver: {1}")]
     BadRuntimeVersion(String, String),
+    #[error(
+        "platform.native must be a one-line reason the app is platform-specific, \
+         for example \"Writes OS images to block devices.\""
+    )]
+    BadPlatformNative,
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
     #[error("kind=app requires `[entrypoint]` with `bin` set")]
@@ -129,6 +134,8 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             entry: entry.clone(),
         });
     }
+
+    validate_platform(m)?;
 
     let mut facets = std::collections::BTreeSet::new();
     for facet in &m.continuity.required {
@@ -291,6 +298,15 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
         }
     }
     Ok(())
+}
+
+fn validate_platform(m: &Manifest) -> Result<(), ManifestError> {
+    match &m.platform.native {
+        Some(reason) if reason.trim().is_empty() || reason.contains('\n') => {
+            Err(ManifestError::BadPlatformNative)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_atspi_acceptance(m: &Manifest) -> Result<(), ManifestError> {

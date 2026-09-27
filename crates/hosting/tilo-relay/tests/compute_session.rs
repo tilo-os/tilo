@@ -1,5 +1,9 @@
 //! Dedicated personal-compute ALPN integration coverage.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -25,7 +29,13 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
     let requester_key = requester.device_pubkey();
     let worker = user.enrol("worker", DeviceCapabilities::host());
     let worker_key = worker.device_pubkey();
-    let relay = spawn_relay(&user, relay_device, &[77], &[requester_key, worker_key]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[77],
+        &[requester_key, worker_key],
+    ))
+    .await;
     let relay_address = relay.relay.node_addr();
 
     let mut worker_client = ComputeClient::connect(
@@ -192,7 +202,13 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     let worker_key = worker.device_pubkey();
     let worker_cert = worker.cert.clone();
     let worker_keypair = worker.sk.clone();
-    let relay = spawn_relay(&user, relay_device, &[88], &[requester_key, worker_key]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[88],
+        &[requester_key, worker_key],
+    ))
+    .await;
     let relay_address = relay.relay.node_addr();
 
     let mut worker_client = ComputeClient::connect(

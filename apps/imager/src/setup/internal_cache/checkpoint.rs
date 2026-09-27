@@ -662,8 +662,11 @@ impl Hashes {
         }
         read_range(file, 0, length, cancel, phase, |mut bytes| {
             while !bytes.is_empty() {
+                // A boundary already behind the cursor can never match; read on
+                // and let the final "no unconsumed checkpoint" check refuse it.
                 let take = checkpoints.peek().map_or(bytes.len(), |p| {
-                    (p.0 - offset).min(bytes.len() as u64) as usize
+                    p.0.checked_sub(offset)
+                        .map_or(bytes.len(), |gap| gap.min(bytes.len() as u64) as usize)
                 });
                 stream.update(&bytes[..take]);
                 readback.update(&bytes[..take]);

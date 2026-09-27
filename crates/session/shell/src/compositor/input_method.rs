@@ -3,7 +3,7 @@
 //! `input-method-v2` admits one input method per seat: the first instance
 //! bound receives text-input focus and every later one is told it is
 //! unavailable. Two trusted programs want that slot — the on-screen keyboard
-//! and the composing input method (Fcitx5, which provides Pinyin, Mozc and
+//! and the composing input method (Fcitx5, which provides Rime, Anthy and
 //! Hangul). Neither is reachable from the public app socket; each is started
 //! by the compositor on a private display whose connections carry an
 //! immutable [`TrustedInputMethod`] credential.
@@ -150,12 +150,12 @@ impl SeatInputMethod {
 /// only a process running exactly this executable.
 pub const COMPOSER_EXECUTABLE: &str = "/usr/bin/fcitx5";
 
-/// Addons of the composer that Tilo does not use. Cloud Pinyin sends typed
-/// text to a remote server, the tray and panel addons need services the
-/// session does not run, the clipboard addon claims a global chord, and the
-/// IBus/Fcitx4 frontends would claim bus names nobody asked for. XIM stays:
+/// Addons of the composer that Tilo does not use. The tray and panel addons
+/// need services the session does not run, the clipboard addon claims a
+/// global chord, and the IBus/Fcitx4 frontends would claim bus names nobody
+/// asked for. XIM stays:
 /// it serves X11 apps on the workspace displays the session connects it to.
-const DISABLED_COMPOSER_ADDONS: &str = "cloudpinyin,clipboard,kimpanel,notificationitem,\
+const DISABLED_COMPOSER_ADDONS: &str = "clipboard,kimpanel,notificationitem,\
 ibusfrontend,fcitx4frontend,virtualkeyboard";
 
 /// What the composer needs from the session: its user, locale, session bus,
@@ -259,17 +259,17 @@ mod tests {
 
     #[test]
     fn exactly_one_input_method_owns_the_seat() {
-        use InputMethodEngine::{Hangul, Pinyin};
+        use InputMethodEngine::{Hangul, Rime};
         use InputMethodOwner::{Composer, Nobody, OnScreenKeyboard};
         // (active engine, composer installed, OSK preference) → owner
         let table = [
             (None, true, false, Nobody),
             (None, true, true, OnScreenKeyboard),
             (None, false, true, OnScreenKeyboard),
-            (Some(Pinyin), true, false, Composer(Pinyin)),
+            (Some(Rime), true, false, Composer(Rime)),
             (Some(Hangul), true, true, Composer(Hangul)),
-            (Some(Pinyin), false, true, OnScreenKeyboard),
-            (Some(Pinyin), false, false, Nobody),
+            (Some(Rime), false, true, OnScreenKeyboard),
+            (Some(Rime), false, false, Nobody),
         ];
         for (engine, available, osk, expected) in table {
             assert_eq!(
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn composer_runs_the_engine_on_the_private_display_without_cloud_or_chords() {
         let launch = composer_launch(
-            InputMethodEngine::Mozc,
+            InputMethodEngine::Anthy,
             "jp:kana",
             Path::new("/run/user/1000/tilo-im-1"),
             Path::new("/run/user/1000/tilo-session/input-method"),
@@ -336,7 +336,7 @@ mod tests {
             .skip_while(|arg| *arg != "--disable")
             .nth(1)
             .expect("disabled addons");
-        assert!(disabled.split(',').any(|addon| addon == "cloudpinyin"));
+        assert!(disabled.split(',').any(|addon| addon == "clipboard"));
         assert!(
             !disabled.split(',').any(|addon| addon == "xim"),
             "X11 apps compose through XIM"
@@ -371,7 +371,7 @@ mod tests {
                 .expect(name)
         };
         let profile = file("fcitx5/profile");
-        assert!(profile.contains("DefaultIM=mozc"));
+        assert!(profile.contains("DefaultIM=anthy"));
         assert!(profile.contains("Name=keyboard-jp-kana"));
         let config = file("fcitx5/config");
         assert!(config.contains("ActiveByDefault=True"));

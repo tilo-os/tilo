@@ -322,11 +322,7 @@ impl AuthenticatorApp {
             doc,
             crate::actions::TOTP_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action(
-                "org.tilo.Authenticator",
-                "Authenticator",
-                action,
-            ),
+            tilo_actions::ActionContext::for_action("so.tilo.totp", "Authenticator", action),
         );
     }
 
@@ -2385,6 +2381,7 @@ mod tests {
     }
 
     /// Failed loads/saves keep the vault dirty and expose only bounded, user-triggered retries.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn persistence_failures_keep_the_vault_dirty_with_bounded_retry() {
         // Case `failed_initial_load_cannot_be_cleared_by_saving_the_empty_view`.
@@ -2412,7 +2409,10 @@ mod tests {
             assert_eq!(retry.kind, OperationKind::Effect);
             let encoded = match &retry.input {
                 tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("retry is immediate")
+                }
             };
             assert!(
                 app.invoke_resource_operation(

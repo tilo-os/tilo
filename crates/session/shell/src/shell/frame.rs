@@ -2088,7 +2088,8 @@ impl FrameBuilder {
 
     /// Where protected client surfaces are drawn on screen, in logical
     /// desktop coordinates: visible tiles, app-owned floating and fullscreen
-    /// surfaces, and popups the compositor marked protected.
+    /// surfaces, and the popups and on-screen keyboard the compositor marked
+    /// protected.
     fn capture_protected_window_rects(&mut self) -> Vec<Rect> {
         let protected_tabs: Vec<u64> = {
             let chrome = self.chrome.borrow();
@@ -2110,6 +2111,12 @@ impl FrameBuilder {
                 .chain(self.fullscreen_overlay.iter())
                 .chain(self.transient_overlays.iter())
                 .filter_map(|(_, widget)| widget.capture_protected_rect()),
+        );
+        rects.extend(
+            self.osk_overlay
+                .as_ref()
+                .filter(|keyboard| self.osk_active && keyboard.is_mapped())
+                .and_then(ForeignSurfaceWidget::capture_protected_rect),
         );
         rects
     }
@@ -2913,6 +2920,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 #[allow(
     clippy::float_cmp,
     reason = "exact frame geometry is the behavior under test"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
     use super::*;

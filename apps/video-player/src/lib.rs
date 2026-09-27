@@ -36,6 +36,9 @@
 pub mod actions;
 pub mod app;
 pub mod collab;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 mod preferences;
 pub mod search;
 pub mod shared;

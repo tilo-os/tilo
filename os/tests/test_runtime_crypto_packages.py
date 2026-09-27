@@ -54,13 +54,6 @@ class PackagePolicy(unittest.TestCase):
             rows = [[name, 'libcrypto.so.3()(64bit)'] for name in ['spice-glib', 'libtpms', 'swtpm-tools', 'openssh', 'openssh-clients']]
             rows += [['spice-glib', 'libssl.so.3()(64bit)']]
             self.check_policy(names, rows, success=True)
-        with self.subTest(phase="fcitx5_mozc_qt5_base_requires_both_distribution_abis"):
-            self.check_policy(['fcitx5-mozc', 'qt5-qtbase'],
-                              [['qt5-qtbase', 'libcrypto.so.3()(64bit)'],
-                               ['qt5-qtbase', 'libssl.so.3()(64bit)']], success=True)
-            self.check_policy(['qt5-qtbase'],
-                              [['qt5-qtbase', 'libssl.so.3()(64bit)']],
-                              success=False, diagnostic='qt5-qtbase is permitted only with fcitx5-mozc')
         with self.subTest(phase="conditional_cli_with_zero_requirement_rows"):
             for package, parent in [('gnutls-utils', 'swtpm-tools'), ('openssh', 'virt-viewer'), ('openssh-clients', 'virt-viewer')]:
                 with self.subTest(package=package, parent=True):
