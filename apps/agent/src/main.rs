@@ -91,10 +91,69 @@ struct Cli {
     /// for a page seeded before the agent joins.
     #[arg(long, default_value_t = 0)]
     settle_ms: u64,
+    /// Triage feedback in this room as an agent member instead of editing a
+    /// document: group duplicate reports, draft forge issues, and file the
+    /// ones an Editor approves. Runs until the room removes the agent.
+    /// `community` triages the community room's `#feedback`; `direct` a
+    /// direct room with a reporter, whose reports are sensitive, so a model
+    /// reads them on this device unless the person allowed otherwise.
+    #[arg(long, value_enum)]
+    triage: Option<TriageIn>,
+    /// With `--triage`: the forge account (Settings → Accounts) approved
+    /// issues are filed with. Without one, drafts can still be approved and
+    /// filing waits until an account is connected.
+    #[arg(long, requires = "triage")]
+    forge_account: Option<String>,
 }
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+
+/// Where `--triage` triages.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum TriageIn {
+    Community,
+    Direct,
+}
+
+/// Run as the feedback triage agent (see `tilo_agent::triage`).
+fn triage(cli: &Cli, place: TriageIn) -> anyhow::Result<()> {
+    use tilo_agent::triage::{self, participant};
+    let records = ui::record::RecordOwners::native()
+        .open(participant::CHAT_APP, &cli.workspace.to_string())
+        .map_err(|error| anyhow::anyhow!("open the agent's records: {error}"))?;
+    let think: Box<dyn triage::think::Think> = if cli.no_model {
+        Box::new(triage::think::NoModel)
+    } else {
+        Box::new(triage::think::Hub {
+            agent: cli.name.clone(),
+        })
+    };
+    let forge: Box<dyn triage::forge::Forge> = match &cli.forge_account {
+        Some(account) => Box::new(triage::forge::Custody::new(
+            account_custody::Custodian::live(),
+            accounts::AccountId::new(account.clone()),
+        )),
+        None => Box::new(triage::forge::Unconnected),
+    };
+    let mut agent = participant::Participant::connect(
+        participant::Config {
+            room: cli.workspace,
+            name: cli.name.clone(),
+            scope: match place {
+                TriageIn::Community => triage::Scope::community(),
+                TriageIn::Direct => triage::Scope::direct(),
+            },
+            endpoint: cli.endpoint.clone(),
+            identity: None,
+            records,
+        },
+        think,
+        forge,
+    )?;
+    agent.run();
+    Ok(())
+}
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -105,6 +164,9 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(place) = cli.triage {
+        return triage(&cli, place);
+    }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.

@@ -312,6 +312,8 @@ dependencies = [
 name = "agent"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
+ "accounts",
  "agent-provider-config",
  "anyhow",
  "automerge",
@@ -325,6 +327,7 @@ dependencies = [
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
+ "serde",
  "serde_json",
  "shell",
  "tempfile",
@@ -333,6 +336,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge",
  "tilo-content",
+ "tilo-feedback-review",
  "tilo-model-gateway",
  "tilo-reference",
  "tilo-resource",

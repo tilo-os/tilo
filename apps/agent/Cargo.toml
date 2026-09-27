@@ -44,11 +44,18 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
+# Triage files an approved issue with the team's forge account, whose token
+# stays in account custody.
+account-custody = { path = "../../crates/system/account-custody" }
+accounts = { path = "../../crates/system/accounts" }
+# The review floor: what a drafted issue must never carry.
+tilo-feedback-review = { path = "../../crates/collab/feedback-review" }
 qdoc = { path = "../../crates/doc/qdoc" }
 tilo-content = { path = "../../crates/system/content" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true

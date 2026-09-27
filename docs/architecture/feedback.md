@@ -312,11 +312,50 @@ image generation, so the reporter is told when their build contains the fix.
 
 ## Triage
 
-The triage agent is an ordinary agent member of the community room and of each
-private direct room. It has the Contributor capability bundle, scoped to the
-feedback channel. It reads remarks the way `apps/agent` already does, with the
-reference as an address rather than prose. It groups duplicates, replies with
-links to earlier reports, and drafts forge issues that a person approves.
+The triage agent (`tilo-agent --triage`, `apps/agent/src/triage`) is an
+ordinary agent member of the community room and of each private direct room.
+It is not a backend:
+
+- **Membership.** A room admits it with the Contributor bundle: a membership
+  that lets it comment and `Comment` on Chat. It runs from a team device (only
+  an administrator may launch a delegated agent session) and shows with the
+  `AGENT` label. Removing it revokes those grants; the broker tells its Chat
+  at once, and the agent stops.
+- **How it acts.** It runs Chat headless as its own participant. It reads
+  what that Chat holds (`chat::hand`): each report's address (`reference`),
+  its recording's summary and its thread, never its prose as an instruction.
+  It acts only by asking that Chat for its own published actions. Its replies
+  are therefore its own comment records, which the broker checks like any
+  member's, and it can never write the conversation: no status, no approval.
+
+What it does, one report at a time, oldest first:
+
+- **Duplicates.** A report that matches an earlier one gets a reply in its
+  thread that links the earlier report and suggests "duplicate of". The match
+  weighs the reference target, the app, the recording's apps and layer, and
+  word overlap. A model, when there is one, decides among the candidates the
+  structure found; it can name no other. The status stays an Editor's.
+- **Drafts.** Any other report gets a reply that carries a drafted forge
+  issue (`Attachment::Issue`). The draft holds a title, the report's words,
+  its address, and the recording's facts: apps, steps, layer and generation.
+  Everything in it passes the review floor again, the people the report
+  mentions are declared personal, and who reported it is left out.
+- **Filing.** An Editor approves a draft with Chat's `approve-issue`. That
+  action writes the conversation document, which only an Editor may write.
+  The agent then files exactly that draft with the team's `forgejo` account
+  through account custody (`Custodian::file_forge_issue`), where the token
+  stays, and replies with the issue's address.
+
+Each reply carries an address: another report for a suggestion, a draft for
+a draft, a `forge.issue` for a filing. These addresses are how the agent
+knows what it already did, after a restart or next to another copy of
+itself.
+
+The model is reached through the AI hub under the `feedback.triage` task.
+Public `#feedback` content is open. A direct room's content is asked for as
+sensitive (`assign::resolve_for`), so it runs on this device unless the
+person allowed otherwise. Without a model, triage keeps working: the
+deterministic match decides, and the draft comes from a template.
 
 ## Verification
 
