@@ -108,7 +108,7 @@ fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
 
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
 /// agent under `cfg` against that peer — driving `poll` on every incremental
-/// change until it says the run is over or `within` runs out.
+/// change until it says the run is over or the hang bound runs out.
 ///
 /// Returns the peer's final replica and whether the agent reports having
 /// acted.
@@ -121,7 +121,6 @@ fn run(
     cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
-    within: Duration,
 ) -> (
     AutoCommit,
     bool,
@@ -131,14 +130,7 @@ fn run(
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, agent_actions);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();
     let content = ContentStore::memory();
@@ -160,10 +152,8 @@ fn run(
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
         let _ = ready_tx.send(());
-        let until = Instant::now()
-            .checked_add(within)
-            .expect("test duration does not overflow Instant");
-        s.run_until(until).expect("agent session")
+        s.run_until(tilo_test_env::hang_deadline())
+            .expect("agent session")
     });
     ready_rx
         .recv_timeout(tilo_test_env::hang_bound())
@@ -177,9 +167,7 @@ fn run(
     send(&mut peer, &CollabRequest::document_snapshot(replica.save())).unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now()
-        .checked_add(within)
-        .expect("test duration does not overflow Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     let mut invocation_actor = None;
     let mut invocation_context = None;
@@ -285,7 +273,6 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                     .iter()
                     .any(|block| block.text.starts_with("Scribe: I can't"))
             },
-            Duration::from_secs(15),
         );
         let shown: Vec<(String, String)> = blocks(&replica)
             .iter()
@@ -365,7 +352,6 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                     .iter()
                     .any(|x| x.text.starts_with("Scribe: I can't"))
             },
-            Duration::from_secs(15),
         );
         assert!(acted, "the agent reports having acted");
         assert!(
@@ -440,7 +426,6 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
                 title_done && one_table && answered
             },
-            Duration::from_secs(15),
         );
         let shown: Vec<(String, String)> = blocks(&replica)
             .iter()
@@ -503,14 +488,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
         let _broker = typed_peer::spawn(&sock);
-        let started = Instant::now();
-        while !sock.exists() {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay never bound"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
         let room = typed_peer::room();
 
         // The word processor: the page the agent was invited to, carrying the
@@ -548,7 +526,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let agent = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).expect("agent connects");
             let _ = agent_ready_tx.send(());
-            s.run_until(Instant::now() + Duration::from_secs(15))
+            s.run_until(tilo_test_env::hang_deadline())
                 .expect("agent session")
         });
         agent_ready_rx
@@ -717,7 +695,7 @@ fn drive_photo_peer(
     photo_ready_tx: &std::sync::mpsc::SyncSender<()>,
 ) -> AutoCommit {
     photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     typed_peer::publish_actions(
         &mut photo_peer,
         "so.tilo.photos",
@@ -847,7 +825,7 @@ fn drive_word_processor_peer(
     photo_ready_rx: &std::sync::mpsc::Receiver<()>,
 ) -> (AutoCommit, bool) {
     wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     photo_ready_rx
         .recv_timeout(tilo_test_env::hang_bound())
