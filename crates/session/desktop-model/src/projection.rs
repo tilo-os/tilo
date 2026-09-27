@@ -58,6 +58,36 @@ pub fn channel_class_of(doc: &AutoCommit) -> Option<collab_types::ChannelClass> 
     }
 }
 
+/// Key a room document stores whether it allows recording delegates under.
+/// Governance: only the room's authority writes it.
+pub const ROOM_RECORDING_DELEGATES_KEY: &str = "recording_delegates";
+
+/// Record whether the room allows its members' recorders to act for them
+/// (see [`crate::Workspace::recording_delegates_forbidden`]). Written by the
+/// governing machine on every projection.
+pub fn project_recording_delegates(doc: &mut AutoCommit, forbidden: bool) {
+    put_str_if_changed(
+        doc,
+        &automerge::ROOT,
+        ROOM_RECORDING_DELEGATES_KEY,
+        if forbidden { "forbid" } else { "allow" },
+    );
+}
+
+/// Whether a room document forbids recording delegates. `None` when it
+/// states nothing this build knows, which a reader leaves as it was.
+pub fn recording_delegates_forbidden_of(doc: &AutoCommit) -> Option<bool> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_RECORDING_DELEGATES_KEY).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) if name.as_str() == "forbid" => Some(true),
+            ScalarValue::Str(name) if name.as_str() == "allow" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
 #[derive(Clone, Debug)]

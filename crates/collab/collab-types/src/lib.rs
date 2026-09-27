@@ -24,6 +24,8 @@
 //! - [`host_admission`] — a host's delegated, Commenter-capped admission of
 //!   one device into a public room, verified against the room owner's
 //!   invite-token delegation.
+//! - [`recording_delegation`] — a person's device-signed statement that an
+//!   agent on their device (the session recorder) acts for them in a room.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
@@ -81,6 +83,7 @@ pub mod ownership_transfer;
 pub mod peer;
 pub mod permission_profile;
 pub mod recipient_control;
+pub mod recording_delegation;
 pub mod redaction;
 pub mod role;
 pub mod share_control;
@@ -173,6 +176,10 @@ pub use recipient_control::{
     RecipientControlOperationV1, RecipientControlRequestV1, RecipientControlResponseV1,
     RecipientControlResultV1, RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1,
     RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
+};
+pub use recording_delegation::{
+    RECORDING_DELEGATION_DOMAIN_TAG, RecordingDelegationError, RecordingDelegationSpec,
+    RecordingDelegationV1,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

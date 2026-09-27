@@ -435,7 +435,7 @@ impl PeerPresence {
             let mut rows = room_roster(ws, &labels, &arrived, local);
             rows.extend(local_participant_rows(
                 ws,
-                &self.fanout.local_participants_in(&ws.room.to_string()),
+                &room_participants(&self.fanout, ws),
                 &rows,
             ));
             for row in &mut rows {
@@ -483,6 +483,42 @@ impl PeerPresence {
         tree.desktop.collaborators = rows;
         true
     }
+}
+
+/// The agents taking part in `ws`'s room that a roster lists: this
+/// machine's live participants, and the recorders other members' devices
+/// announced (see [`crate::shell::state::DEVICE_DELEGATE_CAP_PREFIX`]), for
+/// as long as their delegation stands. Being recorded is something everyone
+/// in the room sees.
+pub fn room_participants(
+    fanout: &crate::shell::collab_broker::FanoutState,
+    ws: &crate::shell::state::Workspace,
+) -> Vec<crate::shell::collab_broker::LocalParticipant> {
+    let mut participants = fanout.local_participants_in(&ws.room.to_string());
+    let now = Some(tilo_clock::unix_now());
+    for cap in &ws.capabilities {
+        let crate::shell::state::Subject::Principal(collab_types::caps::Principal::Agent(agent)) =
+            &cap.subject
+        else {
+            continue;
+        };
+        if !crate::shell::state::is_remote_device_delegate(cap)
+            || !cap.is_live_at(now)
+            || participants.iter().any(|known| &known.agent == agent)
+        {
+            continue;
+        }
+        let label = if agent == crate::shell::recorder::RECORDER_AGENT {
+            crate::shell::recorder::RECORDER_LABEL.to_string()
+        } else {
+            agent.clone()
+        };
+        participants.push(crate::shell::collab_broker::LocalParticipant {
+            agent: agent.clone(),
+            label,
+        });
+    }
+    participants
 }
 
 /// Roster rows for in-process agent participants `ws`'s room holds, skipping
@@ -542,7 +578,7 @@ impl LocalParticipantRoster {
                 if ws.room.is_nil() || !ws.is_shown() {
                     continue;
                 }
-                let participants = self.fanout.local_participants_in(&ws.room.to_string());
+                let participants = room_participants(&self.fanout, ws);
                 for row in local_participant_rows(ws, &participants, &[]) {
                     live.insert((ws.room, row.id.clone()), row);
                 }

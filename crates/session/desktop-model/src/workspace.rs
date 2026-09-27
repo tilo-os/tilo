@@ -87,6 +87,13 @@ pub struct Workspace {
     /// it to tell a person plainly that what they post here is public.
     #[serde(default)]
     pub channel_class: collab_types::ChannelClass,
+    /// Whether the room's administrators turned off recording delegates:
+    /// a member's session recorder acting for them here. Room governance,
+    /// written only by the room's authority. Off by default, so a room
+    /// allows its members to record what they see until told otherwise;
+    /// every member lists a recorder while it records either way.
+    #[serde(default)]
+    pub recording_delegates_forbidden: bool,
     /// Shortcuts saved in this workspace: a person's own in their personal
     /// workspace, shared ones in a collaborative one. Projected as a CRDT
     /// map keyed by shortcut id, so they reach every desktop the workspace
@@ -820,6 +827,7 @@ impl Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
@@ -893,6 +901,7 @@ impl Default for Workspace {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),

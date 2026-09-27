@@ -112,6 +112,19 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(admission.member_user.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // Who is being recorded is something a member who was offline must
+        // still learn when they come back. The latest record per device,
+        // agent and room is the whole of it: a stop replaces the start.
+        NeighbourMsg::RecordingDelegation {
+            room, delegation, ..
+        } => {
+            let mut route = b"recording-delegation\0".to_vec();
+            route.extend_from_slice(room.as_bytes());
+            route.push(0);
+            route.extend_from_slice(delegation.device.as_bytes());
+            route.extend_from_slice(delegation.agent.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         // A device's certificate is what lets a member attribute that
         // device's retained messages at all; without it replayed on
         // subscribe, a room's governance published while its author is now

@@ -2416,6 +2416,23 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     )
 }
 
+/// Geometry for the room's switch that allows or forbids members' recorders,
+/// beside the setup entry point.
+pub fn recording_delegates_rect(pane_rect: Rect) -> Rect {
+    let add = agents_add_rect(pane_rect);
+    Rect::new(add.x1 + 12.0, add.y0, add.x1 + 12.0 + 236.0, add.y1)
+}
+
+/// What the recording switch says: whether this room lets its members'
+/// session recorders act for them.
+pub fn recording_delegates_label(ws: &Workspace) -> String {
+    t(if ws.recording_delegates_forbidden {
+        "workspace-settings-recording-forbidden"
+    } else {
+        "workspace-settings-recording-allowed"
+    })
+}
+
 /// Stable, policy-backed rows for the Agents pane.
 pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
     let mut agents = ws.agent_members();
@@ -2973,6 +2990,18 @@ pub fn draw_agents_pane(
         }),
         text_renderer,
         theme,
+    );
+    Button::paint(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(
+            recording_delegates_rect(pane_rect),
+            &recording_delegates_label(ws),
+        )
+        .disabled(!is_owner)
+        .text_size(theme.tokens.typography.scale.sm),
     );
     if rows.is_empty() {
         draw_primary_button(

@@ -84,12 +84,32 @@ shared room the user only views, it is the user's **device delegate**
 user's own device and never written into governance, like a host-delegated
 admission. It asks no more than the user's own role allows. It stands only
 while the user keeps that role, so a person who is removed takes the
-recorder with them. Stopping revokes it, and on the user's device it lists
-as an agent like any other. One gap remains: other members' devices do not
-list a device delegate, because no governance record of it reaches them. The
-role model also has no restriction a room administrator could set to forbid
-delegates. A restriction below Read is what would mark an agent as blocked,
-but every verb implies Read.
+recorder with them.
+
+Everyone in the room still sees it. The device announces the delegate as a
+`RecordingDelegationV1` (`collab_types::recording_delegation`). The record
+is signed with the device key and carries the person's certificate for that
+device. It travels like a host admission: on the room's topic, retained by
+its hosts, and told again to a peer that joins. Every member checks the
+following before listing the recorder as an agent in its roster and
+collaborator popover:
+
+- the signature;
+- that the certificate is the person's, unexpired and unrevoked;
+- that the person still holds a role in the room;
+- that the room allows recording delegates.
+
+Stopping publishes a signed stop, which takes the recorder off every list.
+An older start replayed later cannot revive it, because the latest record
+per device, agent and room is the one that holds. Members re-check the
+records whenever governance changes, so a person who loses their role drops
+off.
+
+Whether a room allows recording delegates is room governance: Workspace
+Settings › Agents › **Members may record**, on by default. It is projected
+and replicated like the rest of governance. While it is off, members'
+devices refuse the delegation, and the recording device refuses to start
+and says why. A recording that is running when it is turned off ends.
 
 A room's app routes are encrypted channels, so what the recorder sees is
 ciphertext until it is opened. The shell's participants (the recorder, a

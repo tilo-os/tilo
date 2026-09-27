@@ -16082,6 +16082,13 @@ impl ShellOverlayHost {
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
             }
+            WorkspaceSettingsOutcome::ToggleRecordingDelegates => {
+                if is_owner && let Some(chrome) = self.chrome.as_ref() {
+                    let mut st = chrome.borrow_mut();
+                    st.toggle_recording_delegates();
+                    st.bump();
+                }
+            }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();

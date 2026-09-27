@@ -874,3 +874,48 @@ fn a_delegate_stands_only_on_its_persons_membership() {
     assert!(recorder.rooms().is_empty());
     drop(broker);
 }
+
+/// A room whose administrators turned off members' recording: the
+/// recorder refuses to start and says why, and a recording running when
+/// it is turned off ends.
+#[test]
+fn a_room_that_forbids_recording_delegates_refuses_the_recorder_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("collab.sock");
+    let tree = viewer_room_tree();
+    let broker =
+        shell::shell::collab_broker::spawn_native_harness(socket, Arc::clone(&tree), Vec::new())
+            .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+
+    recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .unwrap();
+    tree.write().desktop.workspaces[0].recording_delegates_forbidden = true;
+    assert!(recorder.pump(Instant::now(), &owner()));
+    assert!(
+        !recorder.is_recording(),
+        "turning recording off ends the recording"
+    );
+
+    let refused = recorder
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
+        .expect_err("the room forbids it");
+    assert_eq!(
+        refused,
+        shell::shell::recorder::RecorderError::RecordingNotAllowed("Shared room".into())
+    );
+    assert!(
+        refused.to_string().contains("Members may record"),
+        "the reason names the setting that allows it: {refused}"
+    );
+    assert!(
+        tree.read().desktop.workspaces[0]
+            .capabilities
+            .iter()
+            .all(|cap| shell::shell::state::device_delegate_person(cap).is_none()),
+        "nothing is admitted"
+    );
+    drop(broker);
+}

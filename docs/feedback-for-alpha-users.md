@@ -47,8 +47,11 @@ two ways to make one:
 
 - **Record from now.** The **Recorder** joins the workspace and records until
   you choose **Stop**. While it records, it is listed among the workspace's
-  collaborators as an agent, and a **Recording** pill stays on screen.
-  Removing it from the list also stops it.
+  collaborators as an agent, on everyone's screen, and a **Recording** pill
+  stays on screen. Removing it from the list also stops it. You can record
+  any workspace you can see, including one you don't manage, unless its
+  administrator turned off **Members may record** in Workspace Settings ›
+  Agents. Tilo then tells you so.
 - **Use the last 2 minutes.** This only works if you turned on **Keep the last
   2 minutes from now on** beforehand. That setting is off until you turn it
   on. The last two minutes are kept in memory on this device only and are

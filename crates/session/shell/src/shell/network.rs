@@ -979,6 +979,12 @@ impl UnidentifiedHostMessages {
     }
 }
 
+/// Verified recording delegations of one room, by signing device and agent.
+type RecordingDelegations = std::collections::HashMap<
+    crate::shell::state::RoomId,
+    std::collections::BTreeMap<([u8; 32], String), collab_types::RecordingDelegationV1>,
+>;
+
 /// Capability id of the membership a delegated host admission grants one
 /// person. One per person per room, so re-admission is idempotent.
 fn admission_capability_id(member_user: &collab_types::Ed25519PublicKey) -> String {
@@ -1340,6 +1346,20 @@ pub struct ShellNetwork {
         std::collections::HashMap<
             crate::shell::state::RoomId,
             std::collections::BTreeMap<[u8; 32], collab_types::HostAdmissionV1>,
+        >,
+    >,
+    /// Verified recording delegations per room, the latest per device and
+    /// agent, stopped ones included so an older start replayed later cannot
+    /// revive one. Re-applied whenever governance lands: the person's role and
+    /// the room's policy decide whether an active one is listed.
+    recording_delegations: Mutex<RecordingDelegations>,
+    /// The latest delegation this device signed per room and agent, so a
+    /// delegate it holds is announced once, its stop once, and a peer that
+    /// joins later is told again.
+    published_recording_delegations: Mutex<
+        std::collections::BTreeMap<
+            (crate::shell::state::RoomId, String),
+            collab_types::RecordingDelegationV1,
         >,
     >,
     /// Host-delivered messages from devices whose certificate has not
@@ -1789,6 +1809,8 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             room_admissions: Mutex::new(std::collections::HashMap::new()),
+            recording_delegations: Mutex::new(std::collections::HashMap::new()),
+            published_recording_delegations: Mutex::new(std::collections::BTreeMap::new()),
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
             retained_coverage: Mutex::new(std::collections::HashMap::new()),
             community: Mutex::new(CommunityRuntime::default()),
@@ -2052,7 +2074,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. }
-            | NeighbourMsg::RoomAdmission { room, .. } => Some(room.as_str()),
+            | NeighbourMsg::RoomAdmission { room, .. }
+            | NeighbourMsg::RecordingDelegation { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
@@ -3200,6 +3223,9 @@ impl ShellNetwork {
         }
         if let Ok(mut admissions) = self.room_admissions.lock() {
             admissions.remove(&room);
+        }
+        if let Ok(mut delegations) = self.recording_delegations.lock() {
+            delegations.remove(&room);
         }
         if let Ok(mut coverage) = self.retained_coverage.lock() {
             coverage.remove(&ws);
@@ -5423,6 +5449,8 @@ impl ShellNetwork {
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
         self.keep_community(std::time::Instant::now());
+        self.publish_recording_delegations();
+        self.reapply_recording_delegations();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -5465,6 +5493,7 @@ impl ShellNetwork {
             }
             NetEvent::PeerJoined { ws, .. } => {
                 self.publish_sync_requests();
+                self.republish_recording_delegations(ws);
                 if self
                     .personal_continuity_user
                     .is_some_and(|user| ws == personal_continuity_topic_id(&user))
@@ -6148,6 +6177,15 @@ impl ShellNetwork {
             self.receive_room_admission(ws, &room, *admission);
             return;
         }
+        if let NeighbourMsg::RecordingDelegation {
+            room,
+            delegation,
+            cert,
+        } = msg
+        {
+            self.receive_recording_delegation(ws, &room, *delegation, &cert);
+            return;
+        }
         if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
             // A new hello is a full replacement attempt for this exact route.
             // Purge first so a wrong-user/revoked replacement can never leave
@@ -6267,6 +6305,7 @@ impl ShellNetwork {
         self.dispatch_authorized_neighbour_msg(ws, peer, msg, membership_epoch.is_none());
         if let Some(room) = governance_room {
             self.apply_room_admissions(room);
+            self.apply_recording_delegations(room);
         }
     }
 
@@ -6383,6 +6422,324 @@ impl ShellNetwork {
             // each verifies the same records rather than trusting another's
             // projection of them.
             tree.flush_to_disk();
+        }
+    }
+
+    /// Record a recording delegation for `room` once it verifies: signed by
+    /// the device it names, which `cert` certifies for the person it names,
+    /// unexpired and unrevoked. The latest per device and agent is kept;
+    /// whether it is listed is [`Self::apply_recording_delegations`]'s call.
+    fn receive_recording_delegation(
+        &self,
+        ws: u64,
+        room: &str,
+        delegation: collab_types::RecordingDelegationV1,
+        cert: &tilo_user_identity::DeviceCert,
+    ) {
+        let Some(room) = RoomId::parse(room).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        if room_topic_id(room) != ws
+            || delegation.workspace != ws
+            || delegation.room != room.to_string()
+        {
+            tracing::warn!(room = %room, ws, "dropping a recording delegation that names another room");
+            return;
+        }
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        let refusal = if let Err(error) = delegation.verify() {
+            Some(error.to_string())
+        } else if cert.device_public_key != *delegation.device.as_bytes()
+            || cert.user_public_key != *delegation.person.as_bytes()
+        {
+            Some("the certificate is for another device or person".into())
+        } else if let Err(error) = tilo_user_identity::verify_device_cert_at(cert, now_ns) {
+            Some(error.to_string())
+        } else if self.peer_identities.is_revoked(
+            &cert.user_public_key,
+            &cert.device_public_key,
+            now_ns,
+        ) {
+            Some("the device is revoked".into())
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            tracing::warn!(room = %room, %reason, "refusing a recording delegation");
+            return;
+        }
+        if let Ok(mut delegations) = self.recording_delegations.lock() {
+            let per_room = delegations.entry(room).or_default();
+            let key = (*delegation.device.as_bytes(), delegation.agent.clone());
+            if per_room.get(&key).is_some_and(|held| {
+                held.issued_at_unix_seconds >= delegation.issued_at_unix_seconds
+            }) {
+                return;
+            }
+            per_room.insert(key, delegation);
+        }
+        self.apply_recording_delegations(room);
+    }
+
+    /// The memberships `workspace` should list for other members' recording
+    /// delegates: each active delegation whose person still holds a role
+    /// there, while the room allows recording delegates. This device's own
+    /// delegates are its local admissions, not listed twice.
+    fn wanted_recording_delegates(
+        &self,
+        workspace: &crate::shell::state::Workspace,
+        delegations: &[collab_types::RecordingDelegationV1],
+    ) -> std::collections::BTreeMap<String, crate::shell::state::CapOverride> {
+        use crate::shell::state::{CapOverride, Subject, Verb, delegate_person_stands};
+        if workspace.recording_delegates_forbidden {
+            return std::collections::BTreeMap::new();
+        }
+        let own = self
+            .host_identity
+            .as_ref()
+            .map(|identity| identity.device_signing_key.verifying_key().to_bytes());
+        delegations
+            .iter()
+            .filter(|delegation| delegation.active && Some(*delegation.device.as_bytes()) != own)
+            .filter_map(|delegation| {
+                let person = collab_types::caps::Principal::person_from_key(delegation.person)
+                    .id()
+                    .to_string();
+                if !delegate_person_stands(workspace, &person, Verb::Read) {
+                    return None;
+                }
+                let id = crate::shell::state::remote_device_delegate_id(
+                    &person,
+                    delegation.device.as_bytes(),
+                    &delegation.agent,
+                );
+                let cap = CapOverride::membership(
+                    Subject::agent(delegation.agent.clone()),
+                    workspace.room.to_string(),
+                    Verb::Read,
+                )
+                .with_id(id.clone());
+                Some((id, cap))
+            })
+            .collect()
+    }
+
+    /// Bring `room`'s listed recording delegates in line with the verified
+    /// delegations: list the ones that stand, drop the rest — stopped, a
+    /// person who no longer holds a role, a room that turned delegates off.
+    fn apply_recording_delegations(&self, room: RoomId) {
+        let delegations: Vec<collab_types::RecordingDelegationV1> = self
+            .recording_delegations
+            .lock()
+            .ok()
+            .and_then(|delegations| {
+                delegations
+                    .get(&room)
+                    .map(|per| per.values().cloned().collect())
+            })
+            .unwrap_or_default();
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let unchanged = {
+            let tree = tree_handle.read();
+            let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+            else {
+                return;
+            };
+            let wanted = self.wanted_recording_delegates(workspace, &delegations);
+            let listed: std::collections::BTreeSet<String> = workspace
+                .capabilities
+                .iter()
+                .filter(|cap| crate::shell::state::is_remote_device_delegate(cap))
+                .map(|cap| cap.id.clone())
+                .collect();
+            drop(tree);
+            listed.len() == wanted.len() && wanted.keys().all(|id| listed.contains(id))
+        };
+        if unchanged {
+            return;
+        }
+        let mut tree = tree_handle.write();
+        let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+        else {
+            return;
+        };
+        let wanted = self.wanted_recording_delegates(workspace, &delegations);
+        workspace
+            .capabilities
+            .retain(|cap| !crate::shell::state::is_remote_device_delegate(cap));
+        workspace.capabilities.extend(wanted.into_values());
+        tree.flush_to_disk();
+    }
+
+    /// Re-check every room holding delegations: a person removed, or the
+    /// policy turned off, on this machine changes no governance a peer sends.
+    fn reapply_recording_delegations(&self) {
+        let rooms: Vec<RoomId> = self
+            .recording_delegations
+            .lock()
+            .map(|delegations| delegations.keys().copied().collect())
+            .unwrap_or_default();
+        for room in rooms {
+            self.apply_recording_delegations(room);
+        }
+    }
+
+    /// Announce every change to the delegates this device holds for its
+    /// person: a new one as an active delegation, one no longer held as a
+    /// stop. Each is signed with this device's key and carries its person's
+    /// certificate for the room.
+    fn publish_recording_delegations(&self) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let held: Vec<(RoomId, String, String)> = {
+            let tree = self.tree.read();
+            tree.desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| {
+                    !workspace.room.is_nil()
+                        && !workspace.ephemeral
+                        && !workspace.recording_delegates_forbidden
+                })
+                .flat_map(|workspace| {
+                    workspace
+                        .capabilities
+                        .iter()
+                        .filter(|cap| crate::shell::state::is_local_device_delegate(cap))
+                        .filter_map(|cap| {
+                            let person = crate::shell::state::device_delegate_person(cap)?;
+                            if !crate::shell::state::delegate_person_stands(
+                                workspace, person, cap.verb,
+                            ) {
+                                return None;
+                            }
+                            let crate::shell::state::Subject::Principal(
+                                collab_types::caps::Principal::Agent(agent),
+                            ) = &cap.subject
+                            else {
+                                return None;
+                            };
+                            Some((workspace.room, agent.clone(), person.to_string()))
+                        })
+                })
+                .collect()
+        };
+        let Ok(mut published) = self.published_recording_delegations.lock() else {
+            return;
+        };
+        let mut announce: Vec<(RoomId, String, bool)> = Vec::new();
+        for (room, agent, person) in &held {
+            let cert = identity.material_for(room_topic_id(*room)).0;
+            let certified = collab_types::caps::Principal::person_from_key(
+                collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            );
+            if certified.id() != person.as_str() {
+                continue;
+            }
+            if !published
+                .get(&(*room, agent.clone()))
+                .is_some_and(|last| last.active)
+            {
+                announce.push((*room, agent.clone(), true));
+            }
+        }
+        for ((room, agent), last) in published.iter() {
+            if last.active && !held.iter().any(|(r, a, _)| r == room && a == agent) {
+                announce.push((*room, agent.clone(), false));
+            }
+        }
+        for (room, agent, active) in announce {
+            let key = (room, agent.clone());
+            let not_before = published
+                .get(&key)
+                .map_or(0, |last| last.issued_at_unix_seconds.saturating_add(1));
+            let Some(message) =
+                Self::recording_delegation_message(identity, room, agent, active, not_before)
+            else {
+                continue;
+            };
+            let NeighbourMsg::RecordingDelegation { delegation, .. } = &message else {
+                continue;
+            };
+            let signed = (**delegation).clone();
+            if self.publish_message(message) {
+                published.insert(key, signed);
+            }
+        }
+    }
+
+    /// A signed delegation of `agent` in `room` from this device, issued no
+    /// earlier than `not_before`.
+    fn recording_delegation_message(
+        identity: &HostIdentity,
+        room: RoomId,
+        agent: String,
+        active: bool,
+        not_before: u64,
+    ) -> Option<NeighbourMsg> {
+        let ws = room_topic_id(room);
+        let cert = identity.material_for(ws).0;
+        let delegation = collab_types::RecordingDelegationV1::sign(
+            collab_types::RecordingDelegationSpec {
+                room: room.to_string(),
+                workspace: ws,
+                person: collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
+                agent,
+                active,
+                issued_at_unix_seconds: tilo_clock::unix_now().max(not_before),
+            },
+            &identity.device_signing_key,
+        )
+        .inspect_err(|error| tracing::warn!(%error, "recording delegation could not be signed"))
+        .ok()?;
+        Some(NeighbourMsg::RecordingDelegation {
+            room: room.to_string(),
+            delegation: Box::new(delegation),
+            cert: Box::new(cert),
+        })
+    }
+
+    /// Tell a peer that joined room topic `ws` about the delegates this
+    /// device holds there, which it would otherwise learn only from a host.
+    fn republish_recording_delegations(&self, ws: u64) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let active: Vec<collab_types::RecordingDelegationV1> = self
+            .published_recording_delegations
+            .lock()
+            .map(|published| {
+                published
+                    .iter()
+                    .filter(|((room, _), last)| room_topic_id(*room) == ws && last.active)
+                    .map(|(_, last)| last.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for delegation in active {
+            let cert = identity.material_for(ws).0;
+            let _ = self.publish_message(NeighbourMsg::RecordingDelegation {
+                room: delegation.room.clone(),
+                delegation: Box::new(delegation),
+                cert: Box::new(cert),
+            });
         }
     }
 
@@ -6831,7 +7188,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
-            | NeighbourMsg::RoomAdmission { .. } => None,
+            | NeighbourMsg::RoomAdmission { .. }
+            | NeighbourMsg::RecordingDelegation { .. } => None,
         }
     }
 
@@ -7521,6 +7879,8 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         room_admissions: Mutex::new(std::collections::HashMap::new()),
+        recording_delegations: Mutex::new(std::collections::HashMap::new()),
+        published_recording_delegations: Mutex::new(std::collections::BTreeMap::new()),
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
         retained_coverage: Mutex::new(std::collections::HashMap::new()),
         community: Mutex::new(CommunityRuntime::default()),
@@ -14079,5 +14439,241 @@ mod tests {
         assert!(ada_custody.served_in(&reviewed).is_empty());
         assert!(replay.close());
         drop((ada_broker, bea_broker));
+    }
+
+    /// A room owned by `owner_root` where `viewer_root` is a Viewer.
+    fn recorded_room_tree(
+        room: RoomId,
+        owner_root: &ed25519_dalek::SigningKey,
+        viewer_root: &ed25519_dalek::SigningKey,
+        forbidden: bool,
+    ) -> WorkspaceTreeHandle {
+        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+        let mut workspace = Workspace::new(WorkspaceId(1), "Shared");
+        workspace.room = room;
+        workspace.set_owner(person_of(owner_root));
+        workspace.grant_capability(
+            CapOverride::membership(
+                Subject::person(person_of(viewer_root)),
+                room.to_string(),
+                Verb::Read,
+            )
+            .with_id("viewer-membership"),
+        );
+        workspace.recording_delegates_forbidden = forbidden;
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        tree.shared()
+    }
+
+    fn identity_of(device: &CertifiedDevice) -> HostIdentity {
+        HostIdentity {
+            device_cert: device.cert.clone(),
+            device_signing_key: device.key.clone(),
+            workspace_device_certs: std::collections::HashMap::new(),
+            workspace_revocations: std::collections::HashMap::new(),
+            identity_paths: None,
+        }
+    }
+
+    /// The recording delegations `sent` carries, in order.
+    fn sent_delegations(sent: &mut mpsc::Receiver<NetCmd>) -> Vec<NeighbourMsg> {
+        let mut out = Vec::new();
+        while let Ok(command) = sent.try_recv() {
+            if let NetCmd::Publish {
+                msg: msg @ NeighbourMsg::RecordingDelegation { .. },
+                ..
+            } = command
+            {
+                out.push(msg);
+            }
+        }
+        out
+    }
+
+    fn lists_recorder(tree: &WorkspaceTreeHandle) -> bool {
+        tree.read().desktop.workspaces[0]
+            .agent_members()
+            .iter()
+            .any(|(agent, role)| {
+                agent == crate::shell::recorder::RECORDER_AGENT
+                    && *role == crate::shell::state::CapRole::Viewer
+            })
+    }
+
+    /// A Viewer records a shared room: their device announces its recorder,
+    /// and another member's device lists it as an agent until the Viewer
+    /// stops, the room turns delegates off, or the Viewer loses their role.
+    #[test]
+    fn a_viewers_recorder_is_listed_on_another_members_tree_until_it_stops() {
+        use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT};
+        use crate::shell::state::{CapOverride, Subject, Verb, WorkspaceId};
+        let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let viewer_root = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let viewer_device = certified_device(
+            &viewer_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "laptop",
+        );
+        let viewer_peer = iroh::SecretKey::from_bytes(&viewer_device.key.to_bytes()).public();
+        let room = RoomId::new();
+        let topic = room_topic_id(room);
+
+        let viewer_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (mut viewer_net, mut sent) = shell_network_for_test(viewer_tree.clone(), 1);
+        viewer_net.host_identity = Some(identity_of(&viewer_device));
+        let delegate = viewer_tree
+            .write()
+            .admit_device_delegate(
+                WorkspaceId(1),
+                &person_of(&viewer_root),
+                CapOverride::membership(
+                    Subject::agent(RECORDER_AGENT),
+                    room.to_string(),
+                    Verb::Read,
+                )
+                .with_id(RECORDER_ADMISSION),
+            )
+            .expect("a Viewer may delegate what they can read");
+        viewer_net.publish_recording_delegations();
+        let start = sent_delegations(&mut sent);
+        assert_eq!(start.len(), 1, "the recorder is announced");
+        viewer_net.publish_recording_delegations();
+        assert!(sent_delegations(&mut sent).is_empty(), "announced once");
+        viewer_net.republish_recording_delegations(topic);
+        assert_eq!(
+            sent_delegations(&mut sent),
+            start,
+            "a peer that joins is told again"
+        );
+
+        let member_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (member_net, _) = shell_network_for_test(member_tree.clone(), 2);
+        assert!(!lists_recorder(&member_tree));
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(
+            lists_recorder(&member_tree),
+            "another member lists the Viewer's recorder as an agent"
+        );
+        let listed = crate::shell::peer_presence::room_participants(
+            &crate::shell::collab_broker::FanoutState::new(),
+            &member_tree.read().desktop.workspaces[0],
+        );
+        assert!(
+            listed.iter().any(|row| row.agent == RECORDER_AGENT),
+            "and its roster shows it while it records"
+        );
+
+        assert!(
+            viewer_tree
+                .write()
+                .revoke_device_delegate(WorkspaceId(1), &delegate)
+        );
+        viewer_net.publish_recording_delegations();
+        let stop = sent_delegations(&mut sent);
+        assert_eq!(stop.len(), 1, "stopping is announced");
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, stop[0].clone());
+        assert!(!lists_recorder(&member_tree), "a stop takes it off");
+        member_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(
+            !lists_recorder(&member_tree),
+            "an older start replayed later does not revive it"
+        );
+
+        // The room turned delegates off: refused.
+        let forbidding_tree = recorded_room_tree(room, &owner_root, &viewer_root, true);
+        let (forbidding_net, _) = shell_network_for_test(forbidding_tree.clone(), 3);
+        forbidding_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(!lists_recorder(&forbidding_tree));
+
+        // Listed while the Viewer holds their role, dropped once they don't.
+        let removing_tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (removing_net, _) = shell_network_for_test(removing_tree.clone(), 4);
+        removing_net.dispatch_neighbour_msg(topic, viewer_peer, None, start[0].clone());
+        assert!(lists_recorder(&removing_tree));
+        assert!(removing_tree.write().desktop.workspaces[0].revoke_capability("viewer-membership"));
+        removing_net.reapply_recording_delegations();
+        assert!(
+            !lists_recorder(&removing_tree),
+            "a delegation from someone who no longer holds a role is dropped"
+        );
+    }
+
+    /// A delegation lists nothing unless its device signed it and its
+    /// person certified that device.
+    #[test]
+    fn a_forged_or_unsigned_recording_delegation_is_refused() {
+        let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let viewer_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let impostor_root = ed25519_dalek::SigningKey::from_bytes(&[0x63; 32]);
+        let viewer_device = certified_device(
+            &viewer_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "laptop",
+        );
+        let impostor_device = certified_device(
+            &impostor_root,
+            tilo_user_identity::DeviceCapabilities::member(),
+            "other",
+        );
+        let room = RoomId::new();
+        let topic = room_topic_id(room);
+        let signed = |identity: &HostIdentity| {
+            ShellNetwork::recording_delegation_message(
+                identity,
+                room,
+                crate::shell::recorder::RECORDER_AGENT.into(),
+                true,
+                0,
+            )
+            .expect("signed")
+        };
+        let genuine = signed(&identity_of(&viewer_device));
+        let with = |edit: &dyn Fn(
+            &mut collab_types::RecordingDelegationV1,
+            &mut tilo_user_identity::DeviceCert,
+        )| {
+            let mut message = genuine.clone();
+            if let NeighbourMsg::RecordingDelegation {
+                delegation, cert, ..
+            } = &mut message
+            {
+                edit(delegation, cert);
+            }
+            message
+        };
+        // Signed by a device the impostor's root certifies, naming the
+        // Viewer as the person it acts for.
+        let mut claimed = identity_of(&impostor_device);
+        claimed.device_cert.user_public_key = viewer_root.verifying_key().to_bytes();
+        let cases = [
+            (
+                "unsigned",
+                with(&|delegation, _| {
+                    delegation.signature = collab_types::Signature::from_bytes([0; 64]);
+                }),
+            ),
+            (
+                "altered after signing",
+                with(&|delegation, _| delegation.issued_at_unix_seconds += 1),
+            ),
+            (
+                "another person's device",
+                with(&|_, cert| *cert = impostor_device.cert.clone()),
+            ),
+            ("a certificate the person never signed", signed(&claimed)),
+        ];
+        let peer = iroh::SecretKey::from_bytes(&viewer_device.key.to_bytes()).public();
+        for (case, message) in cases {
+            let tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+            let (net, _) = shell_network_for_test(tree.clone(), 5);
+            net.dispatch_neighbour_msg(topic, peer, None, message);
+            assert!(!lists_recorder(&tree), "{case} is refused");
+        }
+        let tree = recorded_room_tree(room, &owner_root, &viewer_root, false);
+        let (net, _) = shell_network_for_test(tree.clone(), 6);
+        net.dispatch_neighbour_msg(topic, peer, None, genuine);
+        assert!(lists_recorder(&tree), "the genuine one is listed");
     }
 }

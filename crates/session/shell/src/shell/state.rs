@@ -456,15 +456,23 @@ impl std::fmt::Display for PeerOrigin {
 pub const DELEGATED_ADMISSION_CAP_PREFIX: &str = "host-admission-";
 
 /// Id prefix of the membership a person gives an agent acting for them on
-/// their own device, such as the session recorder: `delegate-<person>:<id>`.
-/// It needs no room administrator, because it grants nothing the person
-/// cannot already do: its verb is bounded by the person's own role, and it
-/// stands only while that person still holds the role
-/// ([`WorkspaceTree::device_delegate_stands`]). Like a delegated admission
-/// it is held outside governance, on the device it acts from, and a
-/// governance sync never removes it; a room administrator still forbids it
-/// with a restriction on the agent, which governance does carry.
+/// their own device, such as the session recorder. It needs no room
+/// administrator, because it grants nothing the person cannot already do:
+/// its verb is bounded by the person's own role, and it stands only while
+/// that person still holds the role. Like a delegated admission it is held
+/// outside governance, and a governance sync never removes it.
+///
+/// The device the agent runs on holds `delegate-<person>:<admission id>`
+/// ([`WorkspaceTree::admit_device_delegate`]) and announces it to the room
+/// as a signed delegation; every other member lists it, once verified, as
+/// `delegate-<person>:device-<device>:<agent>`
+/// ([`remote_device_delegate_id`]). A room whose administrators turned off
+/// recording delegates ([`Workspace::recording_delegates_forbidden`]) holds
+/// neither.
 pub const DEVICE_DELEGATE_CAP_PREFIX: &str = "delegate-";
+
+/// Marks the device-delegate memberships another member's device announced.
+const REMOTE_DELEGATE_MARK: &str = "device-";
 
 /// Whether `cap` is an admission governance never carries: a host-delegated
 /// admission or a person's device delegate.
@@ -484,13 +492,43 @@ fn role_verb(role: CapRole) -> Option<Verb> {
     }
 }
 
-/// The person a device-delegate capability acts for, if `cap` is one.
-pub fn device_delegate_person(cap: &CapOverride) -> Option<&str> {
+fn device_delegate_parts(cap: &CapOverride) -> Option<(&str, &str)> {
     cap.id
         .strip_prefix(DEVICE_DELEGATE_CAP_PREFIX)?
         .split_once(':')
-        .map(|(person, _)| person)
-        .filter(|person| !person.is_empty())
+        .filter(|(person, _)| !person.is_empty())
+}
+
+/// The person a device-delegate capability acts for, if `cap` is one.
+pub fn device_delegate_person(cap: &CapOverride) -> Option<&str> {
+    device_delegate_parts(cap).map(|(person, _)| person)
+}
+
+/// Whether `cap` is a device delegate for an agent running on this device.
+pub fn is_local_device_delegate(cap: &CapOverride) -> bool {
+    device_delegate_parts(cap).is_some_and(|(_, rest)| !rest.starts_with(REMOTE_DELEGATE_MARK))
+}
+
+/// Whether `cap` lists another member's device delegate.
+pub fn is_remote_device_delegate(cap: &CapOverride) -> bool {
+    device_delegate_parts(cap).is_some_and(|(_, rest)| rest.starts_with(REMOTE_DELEGATE_MARK))
+}
+
+/// Id under which a member lists `person`'s `agent` on `device`.
+pub fn remote_device_delegate_id(person: &str, device: &[u8; 32], agent: &str) -> String {
+    format!(
+        "{DEVICE_DELEGATE_CAP_PREFIX}{person}:{REMOTE_DELEGATE_MARK}{}:{agent}",
+        hex::encode(device)
+    )
+}
+
+/// Whether `person` still holds a role in `workspace` that allows `verb`, so
+/// a delegate acting for them with `verb` may stand.
+pub fn delegate_person_stands(workspace: &Workspace, person: &str, verb: Verb) -> bool {
+    workspace
+        .role_of(&person.to_string())
+        .and_then(role_verb)
+        .is_some_and(|held| held.implies(verb))
 }
 
 /// Who may write a room's governance — its owner and capability list —
@@ -1102,15 +1140,16 @@ impl WorkspaceTree {
     }
 }
 
-/// Owner, capability blobs, peer-name claims, identities and channel class
-/// read from a room document's governance keys. See
-/// [`WorkspaceTree::governance_of`].
+/// Owner, capability blobs, peer-name claims, identities, channel class and
+/// recording-delegate policy read from a room document's governance keys.
+/// See [`WorkspaceTree::governance_of`].
 type RoomGovernance = (
     Option<String>,
     std::collections::BTreeMap<String, Vec<u8>>,
     std::collections::BTreeMap<String, String>,
     std::collections::BTreeMap<String, Vec<u8>>,
     Option<collab_types::ChannelClass>,
+    Option<bool>,
 );
 
 impl WorkspaceTree {
@@ -1715,6 +1754,7 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let channel_class = ws.channel_class;
+        let recording_delegates_forbidden = ws.recording_delegates_forbidden;
         // Admissions held outside governance are not the room's to carry:
         // a delegated admission is a record of its own, and projecting them
         // would republish every member of a public room with each change;
@@ -1878,6 +1918,7 @@ impl WorkspaceTree {
             }
         }
         projection::project_channel_class(doc, channel_class);
+        projection::project_recording_delegates(doc, recording_delegates_forbidden);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
         self.confirm_room_records(room, &held);
@@ -2201,6 +2242,7 @@ impl WorkspaceTree {
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
                 None,
+                None,
             );
         };
         let owner = match doc.get(&ROOT, "owner").ok().flatten() {
@@ -2255,6 +2297,7 @@ impl WorkspaceTree {
             peers,
             identities,
             projection::channel_class_of(doc),
+            projection::recording_delegates_forbidden_of(doc),
         )
     }
 
@@ -2832,6 +2875,8 @@ impl WorkspaceTree {
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let channel_class = projection::channel_class_of(&candidate);
+        let recording_delegates_forbidden =
+            projection::recording_delegates_forbidden_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut schedule_claims = projection::schedule_claims_of(&candidate);
@@ -2883,6 +2928,12 @@ impl WorkspaceTree {
             && ws.channel_class != class
         {
             ws.channel_class = class;
+            fields_changed = true;
+        }
+        if let Some(forbidden) = recording_delegates_forbidden
+            && ws.recording_delegates_forbidden != forbidden
+        {
+            ws.recording_delegates_forbidden = forbidden;
             fields_changed = true;
         }
         // Replaced rather than merged: a revoked capability is simply
@@ -3302,20 +3353,22 @@ impl WorkspaceTree {
 
     /// Admit an agent to `workspace_id` as `person`'s delegate on this device,
     /// with no administrator's grant: `cap` must name an agent, cover the
-    /// room, and ask no more than `person`'s own role allows, and no
-    /// restriction the room holds may forbid that agent. Kept on this device
-    /// and on disk, never in governance (see [`DEVICE_DELEGATE_CAP_PREFIX`]).
-    /// Returns the capability id, or `None` when refused.
+    /// room, and ask no more than `person`'s own role allows, and the room
+    /// must allow recording delegates. Kept on this device and on disk,
+    /// never in governance; the network announces it to the room (see
+    /// [`DEVICE_DELEGATE_CAP_PREFIX`]). Returns the capability id, or `None`
+    /// when refused.
     pub fn admit_device_delegate(
         &mut self,
         workspace_id: WorkspaceId,
         person: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
-        let Subject::Principal(Principal::Agent(agent)) = &cap.subject else {
-            return None;
-        };
-        if cap.effect != Effect::Grant || person.contains(':') {
+        if !matches!(&cap.subject, Subject::Principal(Principal::Agent(_)))
+            || cap.effect != Effect::Grant
+            || person.contains(':')
+            || cap.id.starts_with(REMOTE_DELEGATE_MARK)
+        {
             return None;
         }
         let ws = self
@@ -3327,10 +3380,9 @@ impl WorkspaceTree {
             Scope::Room(room) => *room == ws.room.to_string(),
             _ => false,
         };
-        let role_verb = role_verb(ws.role_of(person)?)?;
         if !covers_this_room
-            || !role_verb.implies(cap.verb)
-            || ws.role_of_agent(agent) == Some(CapRole::Denied)
+            || ws.recording_delegates_forbidden
+            || !delegate_person_stands(ws, person, cap.verb)
         {
             return None;
         }
@@ -3342,7 +3394,7 @@ impl WorkspaceTree {
 
     /// Take back a device delegate's admission; see
     /// [`Self::admit_device_delegate`]. Only this device holds it, so only
-    /// this device removes it.
+    /// this device removes it; the network announces that it stopped.
     pub fn revoke_device_delegate(&mut self, workspace_id: WorkspaceId, cap_id: &str) -> bool {
         if !cap_id.starts_with(DEVICE_DELEGATE_CAP_PREFIX) {
             return false;
@@ -3362,24 +3414,62 @@ impl WorkspaceTree {
         true
     }
 
-    /// Whether every device-delegate admission `agent` holds in `workspace`
-    /// still stands on its person's role: they still hold one that allows
-    /// what they delegated. A person removed or blocked takes their
-    /// delegate with them.
-    pub fn device_delegate_stands(workspace: &Workspace, agent: &str) -> bool {
-        workspace
-            .capabilities
-            .iter()
-            .filter(
-                |cap| matches!(&cap.subject, Subject::Principal(Principal::Agent(a)) if a == agent),
-            )
-            .filter_map(|cap| Some((device_delegate_person(cap)?, cap.verb)))
-            .all(|(person, verb)| {
-                workspace
-                    .role_of(&person.to_string())
-                    .and_then(role_verb)
-                    .is_some_and(|held| held.implies(verb))
-            })
+    /// Allow or forbid recording delegates in `workspace_id` as `actor`, one of
+    /// its administrators, on the machine that governs the room. Room
+    /// governance: projected into the room document, so every member's
+    /// device refuses a delegation while it is off, and this device drops its
+    /// own delegates at once. `false` when `actor` may not, or nothing
+    /// changed.
+    pub fn set_recording_delegates_allowed(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        allowed: bool,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.may_administer(actor) || ws.recording_delegates_forbidden != allowed {
+            return false;
+        }
+        ws.recording_delegates_forbidden = !allowed;
+        if !allowed {
+            ws.revoke_matching(is_local_device_delegate);
+        }
+        self.sync_room_doc(room);
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Whether `agent` acts in `workspace` as a delegate on this device that
+    /// still stands: the room allows recording delegates, and the person it
+    /// acts for still holds a role that allows what they delegated. A person
+    /// removed or blocked takes their delegate with them.
+    pub fn local_delegate_stands(workspace: &Workspace, agent: &str) -> bool {
+        !workspace.recording_delegates_forbidden
+            && workspace
+                .capabilities
+                .iter()
+                .filter(|cap| {
+                    matches!(&cap.subject, Subject::Principal(Principal::Agent(a)) if a == agent)
+                        && is_local_device_delegate(cap)
+                })
+                .any(|cap| {
+                    device_delegate_person(cap)
+                        .is_some_and(|person| delegate_person_stands(workspace, person, cap.verb))
+                })
     }
 
     /// Revoke a capability in `workspace_id`, mirroring the removal to
@@ -4145,6 +4235,7 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
@@ -4325,6 +4416,7 @@ impl WorkspaceTree {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class,
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
@@ -6539,6 +6631,69 @@ mod automerge_foundation_tests {
         }
     }
 
+    /// Whether a room allows recording delegates is its governance: its
+    /// administrator sets it on the machine that governs it, it reaches
+    /// every member, and while it is off no member's device admits one.
+    #[test]
+    fn the_recording_delegates_policy_is_governance_that_reaches_members() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let host_ws = host.desktop.workspaces[0].id;
+        let guest_ws = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("the guest's workspace")
+            .id;
+        let collab_types::Principal::Person(member) =
+            collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[91; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            ))
+        else {
+            unreachable!("a person key names a person")
+        };
+        let recorder = || {
+            CapOverride::membership(Subject::agent("recorder"), room.to_string(), Verb::Read)
+                .with_id("agent-member:recorder:observer")
+        };
+        assert!(
+            !host.set_recording_delegates_allowed(host_ws, &member, false),
+            "a member who does not administer the room cannot turn it off"
+        );
+        assert!(host.set_recording_delegates_allowed(host_ws, &"quinten".to_string(), false));
+        ship(&mut host, &mut guest, room, 1);
+        let held = |tree: &WorkspaceTree| {
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .expect("in the room")
+                .recording_delegates_forbidden
+        };
+        assert!(held(&guest), "the policy reaches the member");
+        assert!(
+            guest
+                .admit_device_delegate(guest_ws, &member, recorder())
+                .is_none(),
+            "no delegate while the room forbids them"
+        );
+        assert!(
+            !guest.set_recording_delegates_allowed(guest_ws, &"quinten".to_string(), true),
+            "a member's machine does not govern the room"
+        );
+
+        assert!(host.set_recording_delegates_allowed(host_ws, &"quinten".to_string(), true));
+        ship(&mut host, &mut guest, room, 1);
+        assert!(!held(&guest));
+        assert!(
+            guest
+                .admit_device_delegate(guest_ws, &member, recorder())
+                .is_some()
+        );
+    }
+
     /// Taking a record back reaches a member who already holds its
     /// reference, and that member's copy follows: removing the reference
     /// removes access, as rooms.md says. The bytes they synced stay theirs.
@@ -8205,6 +8360,7 @@ mod active_group_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
@@ -8696,6 +8852,7 @@ mod active_workspace_peer_count_tests {
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
+            recording_delegates_forbidden: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),

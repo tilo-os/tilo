@@ -66,6 +66,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
         tasks: Vec::new(),
         effect_receipts: Vec::new(),
         channel_class: collab_types::ChannelClass::default(),
+        recording_delegates_forbidden: false,
         shortcuts: Vec::new(),
         schedule_claims: Vec::new(),
         id: ws_id,

@@ -38,6 +38,7 @@ const CAPABILITIES_KEY: &str = "capabilities";
 const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const CHANNEL_CLASS_KEY: &str = "channel_class";
+const RECORDING_DELEGATES_FORBIDDEN_KEY: &str = "recording_delegates_forbidden";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
@@ -229,6 +230,11 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
             let _ = doc.put(&entry, "owner", owner.clone());
         }
         let _ = doc.put(&entry, CHANNEL_CLASS_KEY, ws.channel_class.as_str());
+        let _ = doc.put(
+            &entry,
+            RECORDING_DELEGATES_FORBIDDEN_KEY,
+            ws.recording_delegates_forbidden,
+        );
         put_blob_map(
             doc,
             &entry,
@@ -402,6 +408,14 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             .and_then(|name| collab_types::ChannelClass::parse(name.as_str()))
         {
             ws.channel_class = class;
+        }
+        if let Some((Value::Scalar(value), _)) = doc
+            .get(entry, RECORDING_DELEGATES_FORBIDDEN_KEY)
+            .ok()
+            .flatten()
+            && let ScalarValue::Boolean(forbidden) = value.as_ref()
+        {
+            ws.recording_delegates_forbidden = *forbidden;
         }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);

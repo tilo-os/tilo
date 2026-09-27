@@ -365,6 +365,17 @@ pub enum NeighbourMsg {
         room: String,
         admission: Box<collab_types::HostAdmissionV1>,
     },
+    /// A person's agent on one of their devices acting for them in `room`,
+    /// or no longer: the session recorder, which every member lists while
+    /// it records. Self-authenticating: signed by the device
+    /// ([`collab_types::RecordingDelegationV1::verify`]) and carrying the
+    /// person's certificate for it, whichever transport delivered it.
+    /// Appended to preserve every existing Postcard discriminant.
+    RecordingDelegation {
+        room: String,
+        delegation: Box<collab_types::RecordingDelegationV1>,
+        cert: Box<tilo_user_identity::DeviceCert>,
+    },
 }
 
 #[cfg(test)]
@@ -431,6 +442,23 @@ mod tests {
                     delegation: Vec::new(),
                     signature: collab_types::Signature::from_bytes([0x5A; 64]),
                 }),
+            },
+        ));
+        all.push((
+            "recording delegation",
+            NeighbourMsg::RecordingDelegation {
+                room: ROOM.into(),
+                delegation: Box::new(collab_types::RecordingDelegationV1 {
+                    room: ROOM.into(),
+                    workspace: 12,
+                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                    agent: "recorder".into(),
+                    active: true,
+                    issued_at_unix_seconds: 1_700_000_000,
+                    signature: collab_types::Signature::from_bytes([0x5B; 64]),
+                }),
+                cert: device_cert(),
             },
         ));
         all
@@ -769,10 +797,11 @@ mod tests {
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
             NeighbourMsg::RoomAdmission { .. } => "RoomAdmission",
+            NeighbourMsg::RecordingDelegation { .. } => "RecordingDelegation",
         }
     }
 
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 27;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -968,6 +997,23 @@ mod tests {
                 "06060606060606060606060606060606060600405a5a5a5a5a5a5a5a5a5a5a5a",
                 "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
                 "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+            ),
+        ),
+        (
+            "recording delegation",
+            concat!(
+                "1a2436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030632436623366396131302d303030302d343030302d383030302d30",
+                "30303030303030303030630c0101010101010101010101010101010101010101",
+                "0101010101010101010101010202020202020202020202020202020202020202",
+                "020202020202020202020202087265636f726465720180e2cfaa06405b5b5b5b",
+                "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+                "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b01010101",
+                "0101010101010101010101010101010101010101010101010101010102020202",
+                "02020202020202020202020202020202020202020202020202020202064c6170",
+                "746f70010000000a004003030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303030303",
             ),
         ),
     ];
