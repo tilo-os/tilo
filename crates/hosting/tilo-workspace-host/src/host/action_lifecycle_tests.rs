@@ -21,11 +21,10 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let mut runtime = ActionRuntime::new(committed.clone());
     let host = LocalHost::start(&owner).await.unwrap();
     let mut connected = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tilo_test_env::within("the host session to become ready", async {
         while !matches!(connected.recv().await.unwrap(), Inbound::Ready { .. }) {}
     })
-    .await
-    .unwrap();
+    .await;
     let mut session = Some(connected);
     let mut action_error = None;
     let mut cadence = CheckpointCadence::new();
@@ -47,10 +46,10 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     let old_signer = old_signing.bind(route.clone(), owner.identity.native_cert.clone());
     let old_mutation = mutation(&owner, "must-not-commit-retired-runtime");
     let old_waiting = tokio::spawn(old_signer.commit(&route, old_mutation));
-    let queued_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let queued_deadline = tilo_test_env::hang_deadline();
     while old_signing.retirement_ready().unwrap() {
         assert!(
-            tokio::time::Instant::now() < queued_deadline,
+            std::time::Instant::now() < queued_deadline,
             "old request did not enter its bounded queue"
         );
         tokio::task::yield_now().await;
@@ -98,7 +97,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
         .bind(route.clone(), owner.identity.native_cert.clone());
     let fresh_mutation = mutation(&owner, "fresh-runtime-committed");
     let mut fresh_waiting = tokio::spawn(new_signer.commit(&route, fresh_mutation));
-    let fresh_result = tokio::time::timeout(Duration::from_secs(3), async {
+    let fresh_result = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             tokio::select! {
                 result = &mut fresh_waiting => break result.unwrap(),
@@ -112,7 +111,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
         }
     })
     .await;
-    let old_result = tokio::time::timeout(Duration::from_secs(1), old_waiting).await;
+    let old_result = tokio::time::timeout(tilo_test_env::hang_bound(), old_waiting).await;
     // Release real workers before reporting a failed expectation.
     if fresh_result.is_err() {
         fresh_waiting.abort();
@@ -243,7 +242,7 @@ async fn action_lifecycle_retirement_refuses_every_queue_despite_terminal_health
     runtime.signing.fail("original terminal signing failure");
     crate::committed_authority::enter_test_recovery(&committed);
     let refusal = runtime.retire();
-    let results = tokio::time::timeout(Duration::from_secs(1), async {
+    let results = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(first, second, ordinary)
     })
     .await;
