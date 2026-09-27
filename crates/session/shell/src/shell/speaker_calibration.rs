@@ -102,17 +102,17 @@ impl MeasurementSource for TimedMeasurement {
     fn begin(&mut self, request: &SweepRequest) -> Result<(), String> {
         use crate::shell::speaker_group_runtime::{resolve_local_microphone, resolve_local_output};
         if request.microphone_device != self.local {
-            return Err(
-                "calibrate with a microphone on the device that set up the speakers".into(),
-            );
+            return Err(crate::shell::i18n::t(
+                "speaker-calibration-reason-remote-microphone",
+            ));
         }
         let microphone = resolve_local_microphone(&self.local, request.microphone)
-            .ok_or_else(|| "that microphone is no longer connected".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-microphone-gone"))?;
         let sweep = sweep()?;
         let play_at = media::pw_stream::monotonic_now_ns().saturating_add(SWEEP_LEAD_NS);
         if request.member == self.local {
             let sink = resolve_local_output(&self.local, request.output)
-                .ok_or_else(|| "that speaker's output is no longer connected".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-output-gone"))?;
             let signal = sweep.signal().to_vec();
             std::thread::Builder::new()
                 .name("calibration-play".into())
@@ -125,7 +125,12 @@ impl MeasurementSource for TimedMeasurement {
                         play_at,
                     );
                 })
-                .map_err(|error| format!("could not play the sweep: {error}"))?;
+                .map_err(|error| {
+                    crate::shell::i18n::t_args(
+                        "speaker-calibration-reason-play-failed",
+                        &[("error", error.to_string().into())],
+                    )
+                })?;
         } else {
             self.clock_sync = Some(crate::shell::device_fabric_runtime::hold_fabric_clock_sync(
                 request.member.clone(),
@@ -169,7 +174,12 @@ impl MeasurementSource for TimedMeasurement {
                     });
                 let _ = sender.send(result);
             })
-            .map_err(|error| format!("could not start listening: {error}"))?;
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "speaker-calibration-reason-listen-failed",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
         Ok(())
     }
 
@@ -380,7 +390,10 @@ impl CalibrationRun {
             });
         if let Some((label, reason)) = failed {
             self.phase = CalibrationPhase::Failed;
-            self.message = Some(format!("Could not measure {label}: {reason}"));
+            self.message = Some(crate::shell::i18n::t_args(
+                "speaker-calibration-failed",
+                &[("speaker", label.into()), ("reason", reason.into())],
+            ));
             return;
         }
         let measurements = self
@@ -408,7 +421,7 @@ impl CalibrationRun {
         if self.phase == CalibrationPhase::Measuring {
             self.source.cancel();
             self.phase = CalibrationPhase::Failed;
-            self.message = Some("Calibration was cancelled".into());
+            self.message = Some(crate::shell::i18n::t("speaker-calibration-cancelled"));
         }
     }
 

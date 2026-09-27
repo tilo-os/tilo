@@ -4079,35 +4079,30 @@ impl ShellNetwork {
         if !self
             .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
         {
-            return Err("Wi-Fi Continuity is disabled on this device".to_string());
+            return Err(crate::shell::i18n::t("tethering-error-continuity-off"));
         }
         if !security.supports_portable_passphrase() {
-            return Err(match security {
-                os_actions::WifiSecurity::Enterprise => {
-                    "enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device"
-                }
+            return Err(crate::shell::i18n::t(match security {
+                os_actions::WifiSecurity::Enterprise => "wifi-share-error-enterprise",
                 os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe => {
-                    "this Wi-Fi security mode has no portable passphrase"
+                    "wifi-share-error-no-passphrase"
                 }
-                os_actions::WifiSecurity::Unknown => {
-                    "unrecognized Wi-Fi security cannot be shared safely"
-                }
+                os_actions::WifiSecurity::Unknown => "wifi-share-error-unknown-security",
                 os_actions::WifiSecurity::Wpa2 | os_actions::WifiSecurity::Wpa3 => {
-                    "Wi-Fi security could not be validated for sharing"
+                    "wifi-share-error-unvalidated"
                 }
-            }
-            .to_string());
+            }));
         }
         let local = self
             .personal_continuity_device
             .clone()
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let fabric = self.device_fabric();
         let mut snapshot = fabric
             .snapshots()
             .get(&local)
             .cloned()
-            .ok_or_else(|| "this device has not published fabric presence yet".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
         let recipients = self.certified_secret_recipients();
         let stamp = crate::shell::device_fabric::FabricStamp {
             counter: fabric.max_counter().saturating_add(1).max(1),

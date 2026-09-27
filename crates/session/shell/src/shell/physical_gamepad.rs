@@ -217,7 +217,7 @@ pub fn local_physical_gamepads() -> Result<Vec<LocalPhysicalGamepadView>, String
     let now = Instant::now();
     let mut manager = manager()
         .lock()
-        .map_err(|_| "physical gamepad manager is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("gamepad-error-unavailable"))?;
     manager.refresh(now, false)?;
     Ok(manager.views())
 }
@@ -254,51 +254,56 @@ pub fn start_physical_gamepad_forwarding(
     binding: PhysicalGamepadBinding,
 ) -> Result<u64, String> {
     if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad) {
-        return Err("typed-gamepad continuity is disabled on this device".into());
+        return Err(crate::shell::i18n::t("continuity-disabled-gamepad"));
     }
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| "local certified-device identity is unavailable".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("gamepad-error-no-identity"))?;
     let fabric = network.device_fabric();
     let target_snapshot = fabric
         .snapshots()
         .get(target)
-        .ok_or_else(|| "target is not in the certified device fabric".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("gamepad-error-target-unknown"))?;
     if target == &local || !target_snapshot.presence.online {
-        return Err("target device is not an online remote device".into());
+        return Err(crate::shell::i18n::t("gamepad-error-target-offline"));
     }
 
     let now = Instant::now();
     let mut manager = manager()
         .lock()
-        .map_err(|_| "physical gamepad manager is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("gamepad-error-unavailable"))?;
     manager.refresh(now, true)?;
     let entry = manager
         .catalog
         .values()
         .find(|entry| entry.token == source_token)
-        .ok_or_else(|| "that game controller is no longer connected".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("gamepad-error-disconnected"))?;
     if manager
         .active
         .values()
         .any(|active| active.source_id == entry.info.id)
     {
-        return Err("that game controller is already being forwarded".into());
+        return Err(crate::shell::i18n::t("gamepad-error-already-forwarded"));
     }
     let source_id = entry.info.id.clone();
     let label = entry.info.name.clone();
-    let mut source = manager
-        .catalog_provider
-        .open(&source_id)
-        .map_err(|error| format!("could not open game controller: {error}"))?;
+    let mut source = manager.catalog_provider.open(&source_id).map_err(|error| {
+        crate::shell::i18n::t_args(
+            "gamepad-error-open-failed",
+            &[("error", error.to_string().into())],
+        )
+    })?;
     // Never replay button presses accumulated before the person's explicit
     // start action.
-    let primed = source
-        .drain(READ_BUDGET_PER_PUMP * 4)
-        .map_err(|error| format!("could not prime game controller: {error}"))?;
+    let primed = source.drain(READ_BUDGET_PER_PUMP * 4).map_err(|error| {
+        crate::shell::i18n::t_args(
+            "gamepad-error-prime-failed",
+            &[("error", error.to_string().into())],
+        )
+    })?;
     if primed.saturated {
-        return Err("game controller input was busy while starting; try again".into());
+        return Err(crate::shell::i18n::t("gamepad-error-busy"));
     }
     let forwarding_id = crate::shell::device_fabric_runtime::request_typed_gamepad_forwarding(
         network,
@@ -342,10 +347,10 @@ pub fn stop_physical_gamepad_forwarding(
 ) -> Result<(), String> {
     let active = manager()
         .lock()
-        .map_err(|_| "physical gamepad manager is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("gamepad-error-unavailable"))?
         .active
         .remove(&session)
-        .ok_or_else(|| "physical gamepad forwarding is unknown".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("gamepad-error-unknown"))?;
     crate::shell::device_fabric_runtime::stop_typed_gamepad_forwarding(
         network,
         active.forwarding_id,
