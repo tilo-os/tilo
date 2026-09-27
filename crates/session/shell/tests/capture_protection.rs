@@ -133,9 +133,7 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 /// cross-fade is over, so samples measure the client and not the card.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     let mut published = false;
     while std::time::Instant::now() < deadline {
         if !published && let Some((bw, bh)) = store().viewport(surface_id) {

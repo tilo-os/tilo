@@ -223,9 +223,7 @@ mod tls_tests {
         let origin = format!("https://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let worker = thread::spawn(move || {
-            let end = Instant::now()
-                .checked_add(Duration::from_secs(2))
-                .expect("deadline within the monotonic clock range");
+            let end = tilo_test_env::hang_deadline();
             let stream = loop {
                 if let Ok((stream, _)) = listener.accept() {
                     break stream;
@@ -236,10 +234,10 @@ mod tls_tests {
                 thread::sleep(Duration::from_millis(2));
             };
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut tls = rustls::StreamOwned::new(
                 rustls::ServerConnection::new(Arc::new(config)).unwrap(),

@@ -101,7 +101,7 @@ fn terminal_tab_emits_a_prompt_within_10_seconds() {
         "the provided PTY must be mounted as a live tile"
     );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         shell.tick_for_test();
         if let Some(line0) = shell.first_terminal_line()
