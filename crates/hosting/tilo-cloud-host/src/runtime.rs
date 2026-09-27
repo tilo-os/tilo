@@ -584,15 +584,14 @@ mod publication_tests {
         .await
         .unwrap();
         let session = RelayCoeditSession::join(client, workspace, cert.device_public_key).unwrap();
-        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        tilo_test_env::within("the relay session's Ready", async {
             loop {
                 if matches!(session.recv().await, Some(Inbound::Ready { .. })) {
                     break;
                 }
             }
         })
-        .await
-        .unwrap();
+        .await;
         session
     }
 
@@ -669,7 +668,7 @@ mod publication_tests {
             result
         });
 
-        let address = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        let address = tilo_test_env::within("the daemon's authenticated relay-v2 broker registration", async {
             tokio::select! {
                 ready = ready_rx => ready.expect("daemon readiness channel closed"),
                 exited = &mut daemon => panic!(
@@ -677,8 +676,7 @@ mod publication_tests {
                 ),
             }
         })
-        .await
-        .expect("daemon must finish authenticated relay-v2 broker registration");
+        .await;
         assert!(
             dir.path().join("actions/journal").exists(),
             "real runtime worker broker must be installed before serving"
@@ -733,7 +731,7 @@ mod publication_tests {
                     message,
                 })
                 .unwrap();
-            tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            tilo_test_env::within("the host's certified reply", async {
                 match client.recv_action().await {
                     Some(
                         EnvelopeV2::Delivered { action, .. }
@@ -747,7 +745,6 @@ mod publication_tests {
                 }
             })
             .await
-            .unwrap()
         }
         use tilo_delivery_protocol::peer_actions::ActionMessage as A;
         let catalogue = query(
@@ -833,9 +830,8 @@ mod publication_tests {
         );
         drop(store);
         let _ = stop_tx.send(());
-        tokio::time::timeout(tilo_test_env::hang_bound(), daemon)
+        tilo_test_env::within("the daemon to shut down its real endpoints", daemon)
             .await
-            .expect("daemon must shut down its real endpoints")
             .expect("daemon task panicked")
             .expect("daemon startup or shutdown failed");
     }
@@ -905,7 +901,7 @@ mod publication_tests {
         for publication in &store.state.outbox {
             publish(&publisher, publication).unwrap();
         }
-        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        tilo_test_env::within("the retained snapshot rows to arrive durably", async {
             while receiver.rows().len() < 2
                 || receiver.rows().iter().any(|row| {
                     !receiver
@@ -925,8 +921,7 @@ mod publication_tests {
                     .unwrap();
             }
         })
-        .await
-        .unwrap();
+        .await;
 
         let tail_start = store.state.outbox.len();
         let room = store.state.room.clone();
@@ -960,7 +955,7 @@ mod publication_tests {
             publish(&publisher, publication).unwrap();
         }
         let expected = store.peer_at(13).unwrap();
-        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        tilo_test_env::within("the retained tail rows to arrive durably", async {
             while receiver.rows() != expected.rows()
                 || receiver.rows().iter().any(|row| {
                     !receiver
@@ -980,8 +975,7 @@ mod publication_tests {
                     .unwrap();
             }
         })
-        .await
-        .unwrap();
+        .await;
         assert_eq!(receiver.pending_count(), 0);
         assert_eq!(receiver.incomplete_reason(), None);
         publisher.close().await;
@@ -1381,9 +1375,8 @@ mod durability_runtime_tests {
                 )
                 .await
             });
-            let address = tokio::time::timeout(tilo_test_env::hang_bound(), ready_rx)
+            let address = tilo_test_env::within("the daemon's ready address", ready_rx)
                 .await
-                .unwrap()
                 .unwrap();
             let endpoint = Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -1404,7 +1397,7 @@ mod durability_runtime_tests {
             let browser =
                 RelayCoeditSession::join(client, workspace, device.verifying_key().to_bytes())
                     .unwrap();
-            tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            tilo_test_env::within("the browser session's Ready and an empty outbox", async {
                 while !matches!(browser.recv().await, Some(Inbound::Ready { .. })) {}
                 loop {
                     let store = Store::open(dir.path(), "durability-runtime").unwrap();
@@ -1416,8 +1409,7 @@ mod durability_runtime_tests {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             let message = crate::durability_tests::document_message(
                 &Store::open(dir.path(), "durability-runtime").unwrap(),
                 &device,
@@ -1442,7 +1434,7 @@ mod durability_runtime_tests {
             || {
                 runtime.block_on(async {
                     publish(&browser, &StoredPublication::mutation(message).unwrap()).unwrap();
-                    tokio::time::timeout(Duration::from_secs(2), &mut daemon).await
+                    tokio::time::timeout(tilo_test_env::hang_bound(), &mut daemon).await
                 })
             },
         );
