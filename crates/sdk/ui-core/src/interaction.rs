@@ -344,6 +344,26 @@ pub(crate) fn mouse_nav_direction(
     }
 }
 
+/// Android's Back key as the Escape the toolkit dismisses with; what Escape
+/// leaves unconsumed falls through to back navigation, then to closing.
+#[cfg(any(feature = "native", test))]
+pub(crate) fn back_key_as_escape(
+    event: &winit::event::WindowEvent,
+) -> Option<winit::event::WindowEvent> {
+    use winit::keyboard::{Key, NamedKey};
+    match event {
+        winit::event::WindowEvent::KeyboardInput { event: key, .. }
+            if key.logical_key == Key::Named(NamedKey::BrowserBack) =>
+        {
+            Some(crate::synthetic_input::key_event(
+                &Key::Named(NamedKey::Escape),
+                key.state,
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Pointer events synthesised from direct touch, so ordinary widgets work on a
 /// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1019,5 +1039,22 @@ mod tests {
             4,
             "move, press, release, leave"
         );
+    }
+
+    #[test]
+    fn android_back_key_dispatches_as_escape_in_both_phases() {
+        use winit::event::{ElementState, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        for state in [ElementState::Pressed, ElementState::Released] {
+            let back = crate::synthetic_input::key_event(&Key::Named(NamedKey::BrowserBack), state);
+            let Some(WindowEvent::KeyboardInput { event, .. }) = back_key_as_escape(&back) else {
+                panic!("Back must become a key event");
+            };
+            assert_eq!(event.logical_key, Key::Named(NamedKey::Escape));
+            assert_eq!(event.state, state);
+        }
+        let escape =
+            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+        assert!(back_key_as_escape(&escape).is_none());
     }
 }

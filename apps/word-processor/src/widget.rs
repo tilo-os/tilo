@@ -11200,6 +11200,12 @@ impl Widget for WordProcessorWidget {
         "WordProcessor"
     }
 
+    /// The version strip under the page is this document's History; the
+    /// shared standalone control would be a second, weaker copy of it.
+    fn provides_document_history(&self) -> bool {
+        true
+    }
+
     /// The word processor's local accessibility semantics: the editable
     /// `Role::Document` root. Blocks render directly, not as child widgets, so
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]

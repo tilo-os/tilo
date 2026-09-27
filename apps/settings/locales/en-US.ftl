@@ -16,6 +16,23 @@ display-tools-caption = These programs rearrange your displays without asking yo
 display-tools-forget = Ask again
 display-tools-forgotten = This tool's display changes will ask to be kept again.
 
+# Displays pane: HDR
+display-hdr = HDR
+display-hdr-description = Brighter highlights and richer colour for HDR games, video and photos
+display-hdr-sdr-brightness = SDR content brightness
+display-hdr-sdr-brightness-description = How bright everything that is not HDR looks while HDR is on
+display-hdr-unsupported = Not supported by this display
+display-hdr-driver-unsupported = The graphics driver cannot send an HDR signal to this display
+display-hdr-format-unsupported = The graphics card could not show a 10-bit picture on this display
+display-hdr-driver-rejected = The graphics driver refused to turn on HDR, so this display stays in SDR
+
+# Displays pane: variable refresh rate
+display-vrr = Variable refresh rate
+display-vrr-description = Turns on by itself for fullscreen games and video
+display-vrr-unsupported = Not supported by this display
+display-vrr-driver-unsupported = The graphics driver does not offer it for this display
+display-vrr-driver-rejected = The graphics driver refused to turn it on
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad

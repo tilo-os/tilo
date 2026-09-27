@@ -8,6 +8,9 @@ name: Snapshot / kernel
 # buildroot pinned in os/kernel-buildroot-snapshot.env
 # (snapshot-kernel-buildroot.yml). Kernel provenance binds that buildroot, not
 # the OS frozen RPM snapshot, so only kernel inputs trigger a rebuild here.
+# tilo-crypto is filtered to the signing sources the kernel Containerfile
+# copies; TLS fixture code stays behind the default tls-fixture feature and
+# is covered by check.yml / development-source.yml instead.
 
 on:
   push:
@@ -17,7 +20,9 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -33,7 +38,9 @@ on:
     paths:
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -606,7 +613,9 @@ jobs:
       KERNEL_SNAPSHOT_INPUTS: |
         os/kernel
         os/kernel-buildroot-snapshot.env
-        crates/system/tilo-crypto
+        crates/system/tilo-crypto/Cargo.toml
+        crates/system/tilo-crypto/src/lib.rs
+        crates/system/tilo-crypto/src/main.rs
         os/external-assets/github-assets.tsv
         os/dev/assert-native-arch.sh
         os/dev/open-snapshot-pr.py

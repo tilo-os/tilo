@@ -1845,7 +1845,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                         provider: workspace_provider(&ROOM.to_string()),
                         address: ActionAddress::new(
                             format!("workspace.permissions:{ROOM}"),
-                            shell::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
+                            tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
                         ),
                     },
                     argument: InvokeArgument::Json(

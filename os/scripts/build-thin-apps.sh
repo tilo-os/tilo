@@ -60,6 +60,15 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 # Keep every package and feature in resolution, but select only requested binary
 # targets. Cargo still builds their runtime dependency and gives it the same
 # unified dependency features as a full collection build.
+#
+# Release jobs raise CARGO_PROFILE_RELEASE_* for faster fat links. thin-app
+# inherits release, so those overrides would otherwise change every dependency
+# compiled into the thin graph (and the wrapper can only reset the final tapp
+# crate). Drop them for this invocation so image and CI thin apps share one
+# size-oriented profile.
+unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
+      CARGO_PROFILE_RELEASE_OPT_LEVEL CARGO_PROFILE_RELEASE_PANIC \
+      CARGO_PROFILE_RELEASE_STRIP CARGO_PROFILE_RELEASE_DEBUG
 cd "$REPO"
 TILO_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
@@ -77,6 +86,15 @@ rust_target_libdir=$(rustc --print target-libdir)
 for index in "${!binaries[@]}"; do
     binary=${binaries[$index]}
     crate=${selected_crates[$index]}
+    # An app whose `thin` feature was not applied still links and runs, but
+    # carries its own static copy of the runtime (tens of MiB). Cargo silently
+    # routes `<package>/thin` to a dependency when the package has one keyed by
+    # its own name, so name the cause here rather than at the tapp size limit.
+    readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '[libruntime_dylib.so]' || {
+        echo "thin app does not link libruntime_dylib.so: $binary" >&2
+        echo "its <package>/thin feature was not applied; a dependency keyed by the package's own name claims it" >&2
+        exit 1
+    }
     set +e
     LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
         "$TARGET_DIR/$PROFILE/$binary" --help \

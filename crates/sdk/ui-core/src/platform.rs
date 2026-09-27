@@ -9,6 +9,7 @@ pub enum Platform {
     MacOs,
     Windows,
     Linux,
+    Android,
     Other,
 }
 
@@ -18,6 +19,8 @@ impl Platform {
             Self::MacOs
         } else if cfg!(target_os = "windows") {
             Self::Windows
+        } else if cfg!(target_os = "android") {
+            Self::Android
         } else if cfg!(target_os = "linux") {
             Self::Linux
         } else {
@@ -29,7 +32,7 @@ impl Platform {
 /// Visual order of a primary confirmation and its secondary/cancel action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialogActionOrder {
-    /// Secondary/cancel first, primary at the trailing edge (macOS/GNOME).
+    /// Secondary/cancel first, primary at the trailing edge (macOS/GNOME/Material).
     PrimaryLast,
     /// Primary first, secondary/cancel at the trailing edge (Windows).
     PrimaryFirst,
@@ -60,7 +63,9 @@ impl PlatformConventions {
     pub const fn dialog_action_order(self) -> DialogActionOrder {
         match self.platform {
             Platform::Windows => DialogActionOrder::PrimaryFirst,
-            Platform::MacOs | Platform::Linux | Platform::Other => DialogActionOrder::PrimaryLast,
+            Platform::MacOs | Platform::Linux | Platform::Android | Platform::Other => {
+                DialogActionOrder::PrimaryLast
+            }
         }
     }
 
@@ -68,7 +73,9 @@ impl PlatformConventions {
     pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
         match self.platform {
             Platform::MacOs => modifiers.super_key(),
-            Platform::Windows | Platform::Linux | Platform::Other => modifiers.control_key(),
+            Platform::Windows | Platform::Linux | Platform::Android | Platform::Other => {
+                modifiers.control_key()
+            }
         }
     }
 }
@@ -113,29 +120,26 @@ impl Shortcut {
         }
     }
 
-    /// Labels to paint as individual physical-looking caps.
+    /// Labels to paint as individual physical-looking caps, in the legends
+    /// of the active keyboard layout ([`crate::keycaps::active`]).
     pub fn keycap_labels(&self, conventions: PlatformConventions) -> Vec<String> {
-        let mut parts = Vec::with_capacity(4);
-        if self.command {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⌘".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Ctrl".to_owned(),
-            });
-        }
-        if self.alt {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⌥".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Alt".to_owned(),
-            });
-        }
-        if self.shift {
-            parts.push(match conventions.platform() {
-                Platform::MacOs => "⇧".to_owned(),
-                Platform::Windows | Platform::Linux | Platform::Other => "Shift".to_owned(),
-            });
-        }
-        parts.push(self.key.clone());
-        parts
+        use crate::input::KeyboardModifier;
+        let keycaps = crate::keycaps::active();
+        let keycaps = if conventions.platform() == Platform::MacOs {
+            keycaps.on_family(crate::interaction::KeyboardFamily::Apple)
+        } else {
+            keycaps
+        };
+        [
+            (self.command, KeyboardModifier::Command),
+            (self.alt, KeyboardModifier::Alt),
+            (self.shift, KeyboardModifier::Shift),
+        ]
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .map(|(_, modifier)| keycaps.modifier(modifier).to_owned())
+        .chain(std::iter::once(self.key.clone()))
+        .collect()
     }
 }
 
@@ -160,6 +164,10 @@ mod tests {
                 shortcut.label(PlatformConventions::new(Platform::Linux)),
                 "Ctrl+Shift+K"
             );
+            assert_eq!(
+                shortcut.label(PlatformConventions::new(Platform::Android)),
+                "Ctrl+Shift+K"
+            );
         }
 
         // Case `command_modifier_and_dialog_order_follow_platform_hig`.
@@ -176,6 +184,13 @@ mod tests {
             assert_eq!(
                 windows.dialog_action_order(),
                 DialogActionOrder::PrimaryFirst
+            );
+            let android = PlatformConventions::new(Platform::Android);
+            assert!(android.command_modifier_down(control));
+            assert!(!android.command_modifier_down(command));
+            assert_eq!(
+                android.dialog_action_order(),
+                DialogActionOrder::PrimaryLast
             );
         }
     }

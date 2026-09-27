@@ -1549,22 +1549,24 @@ impl ControlState for FrameBuilderControlState<'_> {
         // A pointer is not a roster — different questions. Derived from
         // `collaborator_roster_rows` rather than re-walked, so reads can't drift from what a person sees.
         let chrome = self.fb.chrome();
-        let roster: Vec<serde_json::Value> =
-            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "label": row.label,
-                        "role": row.role,
-                        // Kept separate from the label, same as the panel: inferring which of
-                        // these is a person from the label alone is the one mistake to avoid.
-                        "is_agent": row.is_agent,
-                        // Named but not arrived — the one thing a harness watching a join needs,
-                        // and what a screenshot of a dimmed row can't be asserted on.
-                        "invited": row.invited,
-                    })
-                })
-                .collect();
+        let roster: Vec<serde_json::Value> = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.tree().desktop,
+            &crate::shell::state::local_user_id(),
+        )
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "label": row.label,
+                "role": row.role,
+                // Kept separate from the label, same as the panel: inferring which of
+                // these is a person from the label alone is the one mistake to avoid.
+                "is_agent": row.is_agent,
+                // Named but not arrived — the one thing a harness watching a join needs,
+                // and what a screenshot of a dimmed row can't be asserted on.
+                "invited": row.invited,
+            })
+        })
+        .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
@@ -1969,7 +1971,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "title": n.title,
                 "body": n.body,
                 "severity": format!("{:?}", n.severity),
-                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+                "persistent": n.dismiss_after >= tilo_desktop::notifications::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
@@ -2022,7 +2024,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     .tree()
                     .desktop.active_workspace()
                     .and_then(|ws| {
-                        crate::shell::workspace_settings::draft_subject(
+                        tilo_desktop::workspace_settings::draft_subject(
                             ws,
                             &chrome.ws_grant_draft,
                         )
@@ -2423,11 +2425,11 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             state.cancel_host_launch_activation(&token);
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
-                    crate::shell::notification::Notification::new(
+                    tilo_desktop::notifications::Notification::new(
                         crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
-                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                     .with_app_name(crate::shell::i18n::t("notification-app-host-apps"))
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                 );
@@ -5835,7 +5837,7 @@ pub fn run() {
             st.attach_notification_history_store(store);
         }
     });
-    if let Some(store) = crate::shell::emoji_picker::RecentsStore::for_user() {
+    if let Some(store) = crate::shell::emoji_recents::FileRecentsStore::for_user() {
         frame_builder.host_mut().attach_emoji_recents_store(store);
     }
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
@@ -8012,12 +8014,26 @@ pub fn run() {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-        reconcile_fullscreen_overlay(
+        let fullscreen_output = reconcile_fullscreen_overlay(
             &mut state,
             &mut frame_builder,
             &output_globals,
             backend.outputs(),
         );
+        // Adaptive sync engages where a fullscreen client is shown; while it
+        // is on, frames follow the content instead of the fixed refresh grid.
+        backend.set_fullscreen_output(fullscreen_output);
+        publish_output_colors(&state, backend.as_ref());
+        if frame_clock.set_adaptive(backend.adaptive_sync_active()) {
+            eprintln!(
+                "tilo compositor: pacing {}",
+                if frame_clock.is_adaptive() {
+                    "by content readiness (adaptive sync engaged)".to_owned()
+                } else {
+                    format!("to {:.3} Hz", 1.0 / frame_clock.interval().as_secs_f64())
+                }
+            );
+        }
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
@@ -12397,15 +12413,46 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
     }
 }
 
+/// Tell colour-managed clients what each output displays: the HDR signal of
+/// an output driven in HDR, SDR otherwise. Surfaces are asked to render in
+/// HDR only while every output is HDR, since an HDR surface on an SDR output
+/// would be shown with its PQ signal unconverted.
+fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend::Backend) {
+    use crate::wayland::color_management::OutputDescription;
+    let outputs = backend.outputs();
+    let described: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            let description = backend
+                .output_hdr(output.id)
+                .map(|hdr| OutputDescription::hdr_pq(&hdr.display, hdr.sdr_white_nits));
+            (output.id, description)
+        })
+        .collect();
+    state.color_manager.update_outputs(|resource| {
+        let id = output_globals::output_id_of(resource)?;
+        described
+            .iter()
+            .find_map(|(output, description)| (*output == id).then_some(*description))
+            .flatten()
+    });
+    let preferred = match described.as_slice() {
+        [(_, Some(first)), rest @ ..] if rest.iter().all(|(_, d)| d.is_some()) => *first,
+        _ => OutputDescription::sdr(),
+    };
+    state.color_manager.set_preferred(preferred);
+}
+
+/// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
     globals: &output_globals::OutputGlobals,
     outputs: &[crate::compositor::backend::Output],
-) {
+) -> Option<crate::compositor::backend::OutputId> {
     let Some(target) = state.fullscreen_target.as_mut() else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
     let requested_id = target.pinned_output.or_else(|| {
         target
@@ -12418,7 +12465,7 @@ fn reconcile_fullscreen_overlay(
     let output = select_fullscreen_output(requested_id, centre, outputs);
     let Some(output) = output else {
         frame.set_fullscreen_surface(None);
-        return;
+        return None;
     };
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
@@ -12437,6 +12484,7 @@ fn reconcile_fullscreen_overlay(
     }
     let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+    Some(output.id)
 }
 
 fn select_fullscreen_output(

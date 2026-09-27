@@ -14,12 +14,18 @@
 //! layout, rendering and the headless host — and whoever hosts it installs
 //! its own services with [`crate::host::install_default`].
 
+#[cfg(target_os = "android")]
+#[doc(inline)]
+pub use tilo_host::native::android;
 #[cfg(all(windows, feature = "notifications"))]
 #[doc(inline)]
 pub use tilo_host::native::host_notifications;
+#[cfg(not(target_os = "android"))]
+#[doc(inline)]
+pub use tilo_host::native::portal;
 #[cfg(target_os = "linux")]
 #[doc(inline)]
 pub use tilo_host::native::wayland_clipboard;
 #[doc(inline)]
-pub use tilo_host::native::{capture, location, mpris, portal, services};
+pub use tilo_host::native::{capture, location, mpris, services};
 pub mod warmup;

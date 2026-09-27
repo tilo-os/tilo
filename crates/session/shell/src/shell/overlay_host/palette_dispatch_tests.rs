@@ -892,7 +892,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             crate::compositor::tab_binding::Placement::NewGroup,
         );
         let notice = chrome.borrow_mut().push_notification_full(
-            crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
+            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
                 .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         crate::shell::catalogue::note_pending_notice(package_id, notice);
@@ -1221,6 +1221,47 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     compact_shortcut_recovery_actions_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
+}
+
+#[test]
+fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
+    use settings_store::hardware::{KeyChord, ShortcutAction};
+
+    let (mut host, chrome) = host_with_chrome();
+    host.shortcut_config
+        .set(
+            ShortcutAction::Search,
+            KeyChord::parse("Ctrl+Shift+G").expect("chord"),
+        )
+        .expect("free chord");
+    chrome.borrow_mut().overlays.shortcut_help = true;
+    let guide_description = |host: &ShellOverlayHost| {
+        host.accessibility()
+            .expect("shell semantics")
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .and_then(|guide| guide.description.clone())
+            .expect("guide description")
+    };
+
+    ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+    let german_rows = shortcut_reference_rows(&host.shortcut_config);
+    let german = guide_description(&host);
+    ui::keycaps::set_active(ui::Keycaps::US);
+    let english = guide_description(&host);
+
+    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
+    assert!(german.contains("Screenshot: Druck"), "{german}");
+    assert!(german.contains("Strg+Umschalt+G"), "{german}");
+    // The layout, not the stored chord, changed: switching back restores it.
+    assert!(english.contains("Ctrl+Shift+G"), "{english}");
+    assert!(english.contains("Screenshot: Print Screen"), "{english}");
+    assert_eq!(
+        host.shortcut_config.bindings[&ShortcutAction::Search].display(),
+        "Ctrl+Shift+g"
+    );
 }
 
 #[test]
@@ -1801,7 +1842,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))
@@ -1881,7 +1922,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))

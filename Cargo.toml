@@ -43,6 +43,7 @@ members = [
     "crates/hosting/tilo-workspace-host",
     "crates/hosting/tilo-moq",
     "crates/hosting/tilo-cloud-host",
+    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -182,6 +183,7 @@ members = [
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
+    "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
@@ -206,6 +208,8 @@ members = [
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
     "crates/runtime/runtime-portal-xdg",
+    "crates/runtime/tilo-identity-host",
+    "crates/runtime/tilo-runtime",
     "crates/runtime/ush",
 
     # Session
@@ -391,6 +395,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# Percent-encoding and form-urlencoding outside a whole `url::Url`.
+percent-encoding = "2"
+form_urlencoded = "1"
 # Media over QUIC networking (moq-lite); driven over web-transport-quinn.
 moq-net = "0.3.3"
 
@@ -681,6 +688,11 @@ incremental = false
 inherits = "release"
 panic = "unwind"
 lto = false
+# Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
+# release links in CI and the image) is inherited by thin-app unless the child
+# profile names its own value. The wrapper also forces one unit on each tapp
+# crate; this keeps their dependencies on the same size-oriented setting.
+codegen-units = 1
 
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
