@@ -54,22 +54,27 @@ fn splice(document: &mut ui::automerge::AutoCommit, text: &str) {
     document.commit();
 }
 
-/// Owner-turn budget of the harness's own document drains. Production keeps
-/// its fixed 5 s turn budget (a turn over it retires the signer, fail-closed,
-/// and has its own tests). These tests drive that turn themselves on a
-/// current-thread executor, often on a shared, fully loaded runner, where a
-/// full Store commit alone can exceed 5 s; they check behaviour, not latency.
-pub(crate) const HARNESS_TURN: std::time::Duration = std::time::Duration::from_secs(60);
-/// How long a harness loop waits for workers, steps or replies to settle
-/// before failing, sized for the same loaded runners.
-pub(crate) const HARNESS_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Owner-turn deadline of the harness's own document drains. Production
+/// keeps its fixed 5 s turn budget (a turn over it retires the signer,
+/// fail-closed, and has its own tests). These tests drive that turn
+/// themselves on a current-thread executor, often on a shared, fully loaded
+/// runner; they check behaviour, not latency, so the turn gets the shared
+/// hang bound.
+pub(crate) fn harness_turn() -> std::time::Instant {
+    tilo_test_env::hang_deadline()
+}
+/// When a harness loop gives up on workers, steps or replies settling and
+/// calls them hung.
+pub(crate) fn harness_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::from_std(tilo_test_env::hang_deadline())
+}
 
 fn apply_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = crate::agent_documents::apply_worker_document(
         &owner,
         pending,
-        std::time::Instant::now() + HARNESS_TURN,
+        crate::agent_workers::tests::harness_turn(),
     );
     outcome.unwrap();
     // Opening Store here and in committed()/health() proves that the callback
@@ -95,7 +100,7 @@ async fn live_workers() -> (
         "transport has not registered"
     );
     workers.set_transport_ready(true);
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -173,12 +178,12 @@ async fn certified_start(
     let mut pending = queue
         .submit_certified_with_policy_time(
             evidence,
-            tokio::time::Instant::from_std(tilo_test_env::hang_deadline()),
+            crate::agent_workers::tests::harness_deadline(),
             workers.owner.policy_time().unwrap(),
         )
         .unwrap();
     let broker = workers.app_broker().unwrap();
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     let mut replied = false;
     loop {
         // Admission is the broker thread's job. Leave worker pumping and any
@@ -270,7 +275,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
         .clone();
     let (broker, job) = start_table(&mut workers, &mut documents, &mut network).await;
     let invocation = broker.status(job.id).unwrap().invocation();
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     let mut commits = 0;
     loop {
         workers.pump().unwrap();
@@ -289,7 +294,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                crate::agent_workers::tests::harness_turn(),
             );
             outcome.unwrap();
             commits += 1;
@@ -531,7 +536,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
     let before = current_document(&workers.owner);
     let (broker, job) = start_table(&mut workers, &mut documents, &mut network).await;
     let invocation = broker.status(job.id).unwrap().invocation();
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     loop {
         workers.pump().unwrap();
         if let Ok(pending) = documents.try_recv() {
@@ -539,7 +544,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                crate::agent_workers::tests::harness_turn(),
             );
             outcome.unwrap();
             workers.committed().unwrap();
@@ -548,7 +553,10 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             break;
         }
         while network.try_recv().is_ok() {}
-        assert!(tokio::time::Instant::now() < deadline);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker's table mutation never reached the Store callback"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     let committed = current_document(&workers.owner);
@@ -578,7 +586,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
         while let Ok(pending) = documents.try_recv() {
             let owner = reopened.owner.clone();
             let (complete, outcome) = pending.apply_scoped_fenced(
-                tilo_test_env::hang_deadline(),
+                crate::agent_workers::tests::harness_turn(),
                 |route, certificate, mutation, authorization| {
                     let mut store = owner.store()?;
                     let bytes = store
@@ -814,7 +822,7 @@ async fn cloud_worker_publications_exclude_real_ordinary_surface_on_same_route()
             }],
         })
     );
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     let ordinary_peer = loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1045,7 +1053,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
         &chat_grant.action,
     )
     .await;
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1267,7 +1275,7 @@ fn registered_source_owner() -> (
 fn settle_startup_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = pending.apply_scoped_fenced(
-        tilo_test_env::hang_deadline(),
+        crate::agent_workers::tests::harness_turn(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("required worker custody");
             let record = route.record.as_deref().unwrap_or("");
@@ -1302,7 +1310,7 @@ async fn registered_nonmutating_pump(
     network: &mut mpsc::Receiver<NeighbourMsg>,
     documents: &mut mpsc::Receiver<PendingHostDocument>,
 ) {
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     loop {
         workers
             .pump()
@@ -1585,7 +1593,7 @@ async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete(
         assert_eq!(workers.workers.len(), pass);
     }
     assert!(!workers.mounting());
-    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
+    let deadline = crate::agent_workers::tests::harness_deadline();
     while !workers.publications().unwrap().ready {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1692,7 +1700,7 @@ async fn pump_until(
     what: &str,
     done: impl Fn(&AgentWorkers) -> bool,
 ) {
-    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    let deadline = crate::agent_workers::tests::harness_deadline();
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1701,7 +1709,10 @@ async fn pump_until(
         if done(workers) {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "gave up waiting for {what}; it looks hung"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 }
