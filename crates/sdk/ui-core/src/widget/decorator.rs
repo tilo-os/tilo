@@ -149,6 +149,10 @@ pub trait Decorator {
         self.inner().document_history_definition()
     }
 
+    fn provides_document_history(&self) -> bool {
+        self.inner().provides_document_history()
+    }
+
     #[doc(hidden)]
     fn visit_framework_history(
         &self,
@@ -1104,6 +1108,10 @@ impl<T: Decorator> Widget for T {
         &self,
     ) -> Option<&'static crate::history_mode::HistoryDefinition> {
         Decorator::document_history_definition(self)
+    }
+
+    fn provides_document_history(&self) -> bool {
+        Decorator::provides_document_history(self)
     }
 
     #[doc(hidden)]

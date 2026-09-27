@@ -4,6 +4,7 @@ set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 container="$repo/os/Containerfile"
+wpe_recipe="$repo/os/Containerfile.wpe"
 buildroot="$repo/os/Containerfile.wpe-buildroot"
 build_script="$repo/os/dev/build-wpe.sh"
 image_script="$repo/os/dev/build-image.sh"
@@ -56,16 +57,20 @@ rm -f "$budget_tmp/log"
 rmdir "$budget_tmp"
 has "$image_script" 'WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}' \
   'image builds forward the explicit browser job budget'
-has "$container" 'TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1' \
+has "$wpe_recipe" 'TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1' \
   'production WPE compilation uses only the verified external cache'
+has "$container" 'os/Containerfile.wpe' \
+  'OS recipe points at the isolated WPE compile recipe'
+if ! grep -Fq 'bash /build-wpe.sh build' "$container"; then ok 'OS Containerfile does not compile WPE'; else bad 'OS Containerfile still compiles WPE'; fi
+if grep -Fq 'bash /build-wpe.sh build' "$wpe_recipe"; then ok 'isolated WPE recipe compiles the engine'; else bad 'isolated WPE recipe missing compile'; fi
 
-wpe_stage="$(sed -n '/^FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1/,/^FROM ${BASE_REF} AS wpe-builder-0/p' "$container")"
+wpe_stage="$(cat "$wpe_recipe")"
 if [ -n "$wpe_stage" ] && ! grep -Eq '\bdnf\b|/etc/yum\.repos\.d' <<<"$wpe_stage"; then
   ok 'production WPE stage has no Fedora repository transaction'
 else
   bad 'production WPE stage can still access Fedora repositories'
 fi
-has "$container" 'FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1' \
+has "$wpe_recipe" 'FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1' \
   'production WPE stage starts from the promoted buildroot'
 has "$buildroot" 'dnf builddep -y webkitgtk6.0' \
   'dedicated snapshot resolves the Fedora WebKit BuildRequires'

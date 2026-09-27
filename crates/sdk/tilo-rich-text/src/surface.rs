@@ -96,6 +96,25 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self
     }
 
+    /// Show the document as `doc` holds it now, without writing to it: for a
+    /// view shown before its first sync (a page just opened, a past version).
+    /// `false` when the source cannot read without writing, or holds no
+    /// rich text there.
+    pub fn present_from(&mut self, doc: &Doc) -> bool {
+        if !self.source.read_from(doc) {
+            return false;
+        }
+        self.present_state();
+        true
+    }
+
+    /// Whether the editor's block `id` is a paragraph of the document, not
+    /// the empty line an empty document shows.
+    #[must_use]
+    pub fn shows_stored(&self, id: &str) -> bool {
+        self.presented.iter().any(|block| block.id == id)
+    }
+
     /// The editor, for what the surface does not configure itself.
     pub fn editor(&self) -> &BlockEditor {
         &self.editor

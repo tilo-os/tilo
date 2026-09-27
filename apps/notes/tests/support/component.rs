@@ -137,6 +137,63 @@ pub fn close_driver(driver: &mut ui::headless::Driver) {
         assert_closed(report);
     }
 }
+/// Apply one rich-text edit to `page`'s body, as a collaborator's edit
+/// arrives.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers build the edit in place"
+)]
+pub fn edit_body(
+    doc: &mut automerge::AutoCommit,
+    page: notes::PageId,
+    edit: qdoc_rich_text::RichTextAction,
+) {
+    notes::doc::NotesDoc::edit_page_body(doc, page, &edit).unwrap();
+}
+
+/// Replace the whole text of `block`.
+pub fn replace_block_text(
+    doc: &mut automerge::AutoCommit,
+    page: notes::PageId,
+    block: &str,
+    text: &str,
+) {
+    let old = notes::doc::NotesDoc::page_block_snapshots(doc, page)
+        .into_iter()
+        .find(|(id, _)| id == block)
+        .map(|(_, text)| text)
+        .unwrap();
+    edit_body(
+        doc,
+        page,
+        qdoc_rich_text::RichTextAction::SpliceText {
+            region: qdoc_rich_text::action::RegionKind::Body,
+            block: block.to_owned(),
+            at: 0,
+            del: old.chars().count(),
+            ins: text.to_owned(),
+        },
+    );
+}
+
+/// Remove `block` from `page`.
+pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block: &str) {
+    edit_body(
+        doc,
+        page,
+        qdoc_rich_text::RichTextAction::RemoveBlocks {
+            blocks: vec![block.to_owned()],
+        },
+    );
+}
+
+/// The stored spelling of the kind of `page`'s block at `index`.
+pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -> String {
+    notes::doc::NotesDoc::page_blocks(doc, page)[index]
+        .kind
+        .stored()
+}
+
 pub fn revision(f: &LegacyFixture, checkout: &RecordCheckout) -> u64 {
     f.records
         .read_history(&checkout.id, |_, history| history.revision())

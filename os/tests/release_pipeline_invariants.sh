@@ -21,7 +21,7 @@ apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
-if grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
+if grep -Fq 'resolve-rpm-snapshot.sh' "$os" \
    && grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
   ok 'CI and local OS builds accept the published digest-pinned RPM namespace'
 else
