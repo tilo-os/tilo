@@ -217,6 +217,7 @@ members = [
     # Session
     "crates/session/console-control",
     "crates/session/desktop-model",
+    "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",
