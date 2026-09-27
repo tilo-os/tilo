@@ -55,13 +55,14 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 wgpu.workspace = true
-workspace-hack = { version = "0.1" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The native fixture (`fixture_seed`, `fixture_writer_insert`) seeds Writer and
 # Chat documents for the relay's and device host's tests.
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # In the browser the toolkit is the portable build: the page is the host, so
 # neither the native desktop runner nor the collab broker transport is linked.

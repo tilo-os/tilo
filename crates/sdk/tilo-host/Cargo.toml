@@ -54,13 +54,14 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 # without the `portal` feature). Unix builds with `portal` hand URIs to the
 # OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
-workspace-hack = { version = "0.1" }
 
 # The app runtime and full tokio the native backends run on. The browser
 # (wasm32) build has neither; it installs its own host services.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tilo-rt.workspace = true
 tokio = { workspace = true, features = ["full"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # The browser has no sockets, processes or signals: tokio's `net` pulls mio,
 # which refuses to build for wasm32-unknown-unknown.
