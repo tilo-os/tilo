@@ -1111,6 +1111,15 @@ mod component_adapter {
                 root.follow_open_resource(resource);
             }
         }
+        fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+            let binding = self.component.callback_binding();
+            binding.records.save_status(&binding.checkout.id).ok()
+        }
+        fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+            let binding = self.component.callback_binding();
+            binding.records.show_status(status);
+            self.component.project_record_save_status();
+        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

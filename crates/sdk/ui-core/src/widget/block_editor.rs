@@ -7416,6 +7416,32 @@ impl Widget for BlockEditor {
         Some("block_editor")
     }
 
+    fn follow_presence(
+        &mut self,
+        key: &PresenceKey,
+        payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        use crate::collaboration::PresencePayload;
+        let Some(index) = (0..self.blocks.len()).find(|index| block_presence_key(*index) == *key)
+        else {
+            return false;
+        };
+        match payload {
+            PresencePayload::Caret { pos } => {
+                self.focus_block(index, CursorPlacement::Byte(*pos));
+                true
+            }
+            PresencePayload::Selection { start, end } => {
+                self.focus_block(index, CursorPlacement::Byte(*end));
+                if let Some(block) = self.blocks.get_mut(index) {
+                    block.line.set_selection(*start, *end);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         use crate::collaboration::PresencePayload;
         let idx = self.focused?;
@@ -10740,6 +10766,35 @@ mod tests {
         let t1 = doc_text_obj(&doc, &list, 1).unwrap();
         assert_eq!(doc.text(&t0).unwrap(), "abc");
         assert_eq!(doc.text(&t1).unwrap(), "def");
+    }
+
+    /// A replay's viewer takes the recorded caret and selection as the
+    /// editor's own: what the editor then reports is what was recorded.
+    #[test]
+    fn a_followed_caret_and_selection_become_the_editors_own() {
+        use crate::collaboration::PresencePayload;
+        let mut ed = BlockEditor::new();
+        ed.set_blocks(vec![
+            Block::paragraph("first"),
+            Block::paragraph("hello world"),
+        ]);
+        assert!(!ed.follow_presence(&block_presence_key(7), &PresencePayload::Caret { pos: 1 }));
+        assert!(ed.follow_presence(&block_presence_key(1), &PresencePayload::Caret { pos: 5 }));
+        assert_eq!(
+            ed.presence_payload(),
+            Some((block_presence_key(1), PresencePayload::Caret { pos: 5 }))
+        );
+        assert!(ed.follow_presence(
+            &block_presence_key(1),
+            &PresencePayload::Selection { start: 0, end: 5 }
+        ));
+        assert_eq!(
+            ed.presence_payload(),
+            Some((
+                block_presence_key(1),
+                PresencePayload::Selection { start: 0, end: 5 }
+            ))
+        );
     }
 
     #[test]

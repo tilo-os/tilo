@@ -450,6 +450,19 @@ impl App {
             crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,
         };
+        // A replay's viewer stands where the recorded participant stood:
+        // their caret and selection are this view's own.
+        if self.presence.follow_mode == crate::view::FollowMode::Replay
+            && self.presence.followed_peer.as_deref() == Some(user_id.as_str())
+            && matches!(
+                payload,
+                crate::collaboration::PresencePayload::Caret { .. }
+                    | crate::collaboration::PresencePayload::Selection { .. }
+            )
+        {
+            self.presence.stood_at = Some((key.clone(), payload.clone()));
+            self.stand_where_followed();
+        }
         match self
             .presence_ctx
             .apply_remote_presence(user_id, key, payload)
@@ -474,6 +487,40 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Give the widget that reported the followed participant's caret or
+    /// selection ([`PresenceRuntime::stood_at`](super::runtime)) that caret
+    /// or selection, and the focus that shows it. When no widget here has it
+    /// yet (the page it is on is still opening), try again after the next
+    /// sync.
+    pub(super) fn stand_where_followed(&mut self) {
+        let Some((key, payload)) = self.presence.stood_at.clone() else {
+            return;
+        };
+        let nodes: Vec<NodeId> = self.layout.node_map.keys().copied().collect();
+        for node in nodes {
+            if self
+                .mutate_node(node, |widget| widget.follow_presence(&key, &payload))
+                .unwrap_or(false)
+            {
+                self.set_focused_node(Some(node));
+                self.layout.layout_dirty = true;
+                // The text the caret stands in may not have synced into the
+                // widget yet: stand again once it has.
+                let reported = self
+                    .inspect_node(node, |widget| widget.presence_payload())
+                    .ok()
+                    .flatten();
+                if reported.as_ref() != Some(&(key, payload)) {
+                    self.presence.follow_after_sync = true;
+                    self.needs_sync = true;
+                }
+                return;
+            }
+        }
+        self.presence.follow_after_sync = true;
+        self.needs_sync = true;
     }
 
     #[cfg(feature = "native")]

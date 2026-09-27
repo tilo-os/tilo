@@ -3589,6 +3589,7 @@ mod view_presence_tests {
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some(mode.into()),
                 overlays: Vec::new(),
+                save_status: None,
             };
             app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
                 user_id: peer.into(),

@@ -375,6 +375,13 @@ impl RichTextLine {
         self.prev_cursor = self.inner.cursor_pos();
     }
 
+    /// Select `start..end` with the cursor at `end`: the selection a
+    /// followed participant had.
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        self.inner.set_selection(start, end);
+        self.prev_cursor = self.inner.cursor_pos();
+    }
+
     pub fn take_signal(&mut self) -> Option<LineSignal> {
         self.signal.take()
     }

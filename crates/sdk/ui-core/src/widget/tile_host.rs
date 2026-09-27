@@ -1299,6 +1299,15 @@ impl Widget for TileHost {
             app.follow_open_resource(resource);
         }
     }
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        let binding = self.binding.as_ref()?;
+        binding.store.save_status(&binding.live).ok()
+    }
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        if let Some(binding) = &self.binding {
+            binding.store.show_status(status);
+        }
+    }
     fn needs_idle_sync(&self) -> bool {
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),

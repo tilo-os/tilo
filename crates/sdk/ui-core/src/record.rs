@@ -9,7 +9,12 @@
 //! A record id is scoped by the room that hydrates it. Rooms hold references
 //! ([`room::reference`]), but an identical id in another room gets a distinct
 //! local document and collaboration route; explicit export/import is required
-//! to move content across that authority boundary.
+//! to move content across that authority boundary. The one exception is a
+//! view, not a crossing: an app replayed in a replay room checks out the
+//! recorded room's records read-only and in memory, their routes travelling
+//! only in the replay room (`RecordStore::view_in`, and
+//! `docs/architecture/rooms.md`, "Replaying a room's records is a view, not a
+//! way in").
 //!
 //! One document per record is forced, not chosen: an Automerge change graph
 //! names its dependencies by hash, so a filtered stream leaves the receiver
@@ -1349,6 +1354,12 @@ pub struct RecordSet {
     /// The room these records are being opened in — the cluster/workspace id.
     /// Stamped as a record's home when it is first created here.
     home: String,
+    /// The room this set's records travel in when it is not their home: a
+    /// replay room showing a recorded room's records ([`RecordStore::view_in`]).
+    route_room: Option<String>,
+    /// What a record view shows as its durability: the status the followed
+    /// participant's app showed, not this view's own in-memory one.
+    shown_status: Option<RecordSaveStatus>,
     open: HashMap<RecordId, Parked>,
     /// Names currently granted by the room index.  Discovery is intentionally
     /// separate from `open`: a hostile or merely large index must not create
@@ -1408,6 +1419,8 @@ impl RecordSet {
         Self {
             package_id: package_id.into(),
             home: home.into(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -1432,6 +1445,8 @@ impl RecordSet {
         Self {
             package_id: String::new(),
             home: String::new(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -2167,6 +2182,8 @@ impl RecordOwners {
         let store = RecordStore::new(RecordSet {
             package_id: package_id.to_owned(),
             home: workspace_id.to_owned(),
+            route_room: None,
+            shown_status: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -2183,7 +2200,7 @@ impl RecordOwners {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecordSaveStatus {
     Saved,
     Saving,
@@ -2448,6 +2465,32 @@ impl RecordStore {
         ))
     }
 
+    /// Show these records, which belong to their home room, in `room`: the
+    /// replay room an app replayed from a recording runs in. Their routes
+    /// travel in `room`; their identity stays their home's. A record view
+    /// is read-only (see `ui::application::RECORD_SCOPE_ENV`).
+    pub(crate) fn view_in(&self, room: &str) {
+        self.0.borrow_mut().route_room = Some(room.to_owned());
+    }
+
+    /// Show `status` as a record view's durability: the status the app it
+    /// replays showed. Ignored by a store that is not a view.
+    pub(crate) fn show_status(&self, status: Option<RecordSaveStatus>) {
+        if let Ok(mut set) = self.0.try_borrow_mut()
+            && set.route_room.is_some()
+        {
+            set.shown_status = status;
+        }
+    }
+
+    /// [`Self::canonical_namespace`] with the room these records' routes
+    /// travel in: their home, or the room they are viewed in.
+    pub(crate) fn route_namespace(&self) -> Option<(String, String, String)> {
+        let (storage, package, home) = self.canonical_namespace()?;
+        let room = self.0.borrow().route_room.clone().unwrap_or(home);
+        Some((storage, package, room))
+    }
+
     /// Open Existing only; a missing document is never implicitly initialized.
     ///
     /// # Errors
@@ -2509,6 +2552,15 @@ impl RecordStore {
             return Err(RecordOpenError::Busy);
         }
         let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        // A view onto another room's records keeps nothing: it shows what
+        // the app it replays showed, and until it knows, that it keeps
+        // nothing.
+        if set.route_room.is_some() {
+            return Ok(set
+                .shown_status
+                .clone()
+                .unwrap_or(RecordSaveStatus::MemoryOnly));
+        }
         let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
         if let Some(saver) = &slot.autosave {
             let snapshot = saver.durability_snapshot();

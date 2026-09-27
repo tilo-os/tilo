@@ -23,6 +23,7 @@ pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
     workspace_scoped: bool,
+    record_view: bool,
 }
 
 impl NativeProcessHost {
@@ -50,18 +51,29 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let resolved = environment.resolve(definition.app_id, &author)?;
-        let host = ApplicationHost::with_store(
-            Rc::new(app_state::FsStore::new(resolved.profile_root)),
+        // A view onto another room's records keeps nothing: what it checks
+        // out lives in memory and goes with the process.
+        let store: Rc<dyn durable_store::DurableStore> = if resolved.record_view {
+            Rc::new(durable_store::MemoryStore::new())
+        } else {
+            Rc::new(app_state::FsStore::new(resolved.profile_root))
+        };
+        let mut host = ApplicationHost::with_store(
+            store,
             resolved.device_id,
             &resolved.workspace_id,
             author,
             Rc::new(RefCell::new(resolved.permissions)),
             tilo_actions::ActionContext::default(),
         )?;
+        if resolved.record_view {
+            host.view_in = resolved.room;
+        }
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
             workspace_scoped: resolved.workspace_scoped,
+            record_view: resolved.record_view,
         })
     }
 
@@ -76,7 +88,21 @@ impl NativeProcessHost {
     pub fn workspace_scoped(&self) -> bool {
         self.workspace_scoped
     }
+
+    /// Whether this process shows another room's records read-only
+    /// ([`RECORD_SCOPE_ENV`]).
+    pub fn record_view(&self) -> bool {
+        self.record_view
+    }
 }
+
+/// Names the room whose records a launch shows when that is not the room it
+/// runs in. The shell sets it only for an app replayed in a replay room,
+/// from the session the viewer was given, and the launcher passes it only
+/// with read-only participation: the app checks out the recorded room's
+/// records as they were, in memory, and can change, keep or publish none of
+/// them (`docs/architecture/rooms.md`, "Replaying a room's records").
+pub const RECORD_SCOPE_ENV: &str = "TILO_RECORD_SCOPE";
 
 #[derive(Default)]
 struct NativeProcessEnvironment {
@@ -85,6 +111,7 @@ struct NativeProcessEnvironment {
     workspace_id: Option<String>,
     quick_workspace_id: Option<String>,
     participation: Option<String>,
+    record_scope: Option<String>,
     continuity_instance: Option<String>,
     xdg_data_home: Option<PathBuf>,
     local_app_data: Option<PathBuf>,
@@ -99,6 +126,9 @@ struct ResolvedNativeProcessHost {
     workspace_scoped: bool,
     instance_id: InstanceId,
     permissions: PermissionContext,
+    record_view: bool,
+    /// The room the process runs in, when it views another's records.
+    room: Option<String>,
 }
 
 impl NativeProcessEnvironment {
@@ -120,6 +150,7 @@ impl NativeProcessEnvironment {
             workspace_id: string("TILO_WORKSPACE_ID"),
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
+            record_scope: string(RECORD_SCOPE_ENV),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             xdg_data_home: path("XDG_DATA_HOME"),
             local_app_data: path("LOCALAPPDATA"),
@@ -158,6 +189,22 @@ impl NativeProcessEnvironment {
         };
         let permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
+        // Another room's records are only ever a read-only view of a room this
+        // process runs in, never a way to write there.
+        let room = workspace_id.clone();
+        let (workspace_id, record_view) = match self.record_scope.as_deref() {
+            None => (workspace_id, false),
+            Some(scope) => {
+                if !workspace_scoped || self.participation.as_deref() != Some("read-only") {
+                    return Err(LaunchError::Operation(
+                        "another room's records are shown only to a read-only participant".into(),
+                    ));
+                }
+                let scope = uuid::Uuid::parse_str(scope)
+                    .map_err(|_| LaunchError::Operation("invalid launcher record scope".into()))?;
+                (scope.to_string(), true)
+            }
+        };
         let instance_id = self.continuity_instance.map_or_else(
             || Ok(stable_instance_id(app_id)),
             |value| {
@@ -173,6 +220,8 @@ impl NativeProcessEnvironment {
             workspace_scoped,
             instance_id,
             permissions,
+            record_view,
+            room: record_view.then_some(room),
         })
     }
 
@@ -305,6 +354,8 @@ pub struct ApplicationHost {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// The room the process runs in, when it shows another room's records.
+    view_in: Option<String>,
 }
 
 impl ApplicationHost {
@@ -385,6 +436,7 @@ impl ApplicationHost {
             permissions,
             author,
             action_context,
+            view_in: None,
         })
     }
 
@@ -401,9 +453,14 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
-        self.owners
+        let records = self
+            .owners
             .open(definition.app_id, self.views.workspace_id())
-            .map_err(LaunchError::Record)
+            .map_err(LaunchError::Record)?;
+        if let Some(room) = &self.view_in {
+            records.view_in(room);
+        }
+        Ok(records)
     }
 
     /// Validate the local binding before a migration adapter touches any source.
@@ -588,6 +645,115 @@ mod native_process_tests {
             assert_eq!(resolved.instance_id, 42);
             assert_eq!(resolved.permissions.role(), Some(role));
         }
+    }
+
+    /// A replayed app is shown the recorded room's records, read-only and
+    /// in memory: it runs in its replay room, checks out the recorded
+    /// room's records, and keeps nothing. Anything but a read-only
+    /// participant is refused a foreign scope.
+    #[test]
+    fn a_record_scope_is_a_read_only_view_that_keeps_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let author = UserId("person-a".into());
+        let replay_room = "3f2b1c00-0000-4000-8000-000000000001";
+        let recorded_room = "3f2b1c00-0000-4000-8000-00000000000a";
+        let make = |participation: Option<&str>| NativeProcessEnvironment {
+            workspace_id: Some(replay_room.into()),
+            participation: participation.map(str::to_owned),
+            record_scope: Some(recorded_room.into()),
+            xdg_data_home: Some(temp.path().to_owned()),
+            ..NativeProcessEnvironment::default()
+        };
+        for refused in [None, Some("author")] {
+            assert!(
+                make(refused).resolve("so.tilo.notes", &author).is_err(),
+                "{refused:?} may not take another room's records"
+            );
+        }
+        assert!(
+            NativeProcessEnvironment {
+                workspace_id: None,
+                ..make(Some("read-only"))
+            }
+            .resolve("so.tilo.notes", &author)
+            .is_err(),
+            "a personal launch has no room to show another's records in"
+        );
+        let mut native = NativeProcessHost::open_with(
+            &definition("so.tilo.notes"),
+            make(Some("read-only")),
+            author,
+        )
+        .unwrap();
+        assert!(native.record_view());
+        assert_eq!(native.host.views.workspace_id(), recorded_room);
+        assert_eq!(
+            native.host.permissions.borrow().role(),
+            Some(crate::permissions::Role::Viewer),
+            "nothing under the scope can be changed"
+        );
+        let definition = definition("so.tilo.notes");
+        let records = native.host_mut().records_for(&definition).unwrap();
+        assert_eq!(
+            records
+                .canonical_namespace()
+                .map(|(_, _, home)| home)
+                .as_deref(),
+            Some(recorded_room),
+            "the records are the recorded room's"
+        );
+        assert_eq!(
+            records
+                .route_namespace()
+                .map(|(_, _, room)| room)
+                .as_deref(),
+            Some(replay_room),
+            "and travel only in the room the app runs in"
+        );
+        let checkout = RecordCheckout::new(
+            RecordId::derived("default", &RecordId::for_tab(0)),
+            definition.record_kind.clone(),
+        );
+        records
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        records.try_flush().unwrap();
+        assert_eq!(
+            records.save_status(&checkout.id).unwrap(),
+            crate::record::RecordSaveStatus::MemoryOnly,
+            "a view says it keeps nothing"
+        );
+        records.show_status(Some(crate::record::RecordSaveStatus::Saving));
+        assert_eq!(
+            records.save_status(&checkout.id).unwrap(),
+            crate::record::RecordSaveStatus::Saving,
+            "and shows what the app it replays showed"
+        );
+        drop(records);
+        drop(native);
+        let kept: Vec<_> = walk(temp.path())
+            .into_iter()
+            .filter(|path| path.file_name().is_some_and(|name| name != DEVICE_ID_FILE))
+            .collect();
+        assert!(
+            kept.is_empty(),
+            "nothing of the recorded room is kept: {kept:?}"
+        );
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
     }
 
     #[test]

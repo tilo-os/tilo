@@ -683,6 +683,22 @@ pub trait Decorator {
         self.inner_mut().follow_open_resource(resource);
     }
 
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        self.inner().record_status()
+    }
+
+    fn follow_presence(
+        &mut self,
+        key: &PresenceKey,
+        payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        self.inner_mut().follow_presence(key, payload)
+    }
+
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        self.inner_mut().follow_record_status(status);
+    }
+
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
         self.inner().open_overlays()
     }
@@ -1483,6 +1499,22 @@ impl<T: Decorator> Widget for T {
 
     fn follow_open_resource(&mut self, resource: &str) {
         Decorator::follow_open_resource(self, resource);
+    }
+
+    fn record_status(&self) -> Option<crate::record::RecordSaveStatus> {
+        Decorator::record_status(self)
+    }
+
+    fn follow_presence(
+        &mut self,
+        key: &PresenceKey,
+        payload: &crate::collaboration::PresencePayload,
+    ) -> bool {
+        Decorator::follow_presence(self, key, payload)
+    }
+
+    fn follow_record_status(&mut self, status: Option<crate::record::RecordSaveStatus>) {
+        Decorator::follow_record_status(self, status);
     }
 
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {

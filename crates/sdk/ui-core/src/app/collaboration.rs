@@ -316,7 +316,8 @@ impl App {
         }
         self.refresh_overlay_identity();
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let subset = crate::view::ViewSubset::from_view(&view);
+        let mut subset = crate::view::ViewSubset::from_view(&view);
+        subset.save_status = self.root_widget.record_status();
         if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
@@ -343,7 +344,43 @@ impl App {
     /// participant with [`FollowMode::Replay`](crate::view::FollowMode::Replay).
     pub fn follow_with(&mut self, peer_id: impl Into<String>, mode: crate::view::FollowMode) {
         let _entry = self.enter_wake_scope();
-        self.presence.followed_peer = Some(peer_id.into());
+        let peer_id = peer_id.into();
+        // A replay's viewer stands where the recorded participant stood:
+        // their presence is this view, not another person in it. The caret
+        // or selection they already had here becomes this view's own.
+        self.presence.stood_at = None;
+        if mode == crate::view::FollowMode::Replay {
+            let participant = crate::permissions::UserId(peer_id.clone());
+            let caret = self.presence_ctx.carets.iter().find_map(|(key, held)| {
+                held.iter()
+                    .find(|(user, _)| *user == participant)
+                    .map(|(_, pos)| {
+                        (
+                            key.clone(),
+                            crate::collaboration::PresencePayload::Caret { pos: *pos },
+                        )
+                    })
+            });
+            let selection = self.presence_ctx.selections.iter().find_map(|(key, held)| {
+                held.iter()
+                    .find(|(user, _)| *user == participant)
+                    .map(|(_, range)| {
+                        (
+                            key.clone(),
+                            crate::collaboration::PresencePayload::Selection {
+                                start: range.start,
+                                end: range.end,
+                            },
+                        )
+                    })
+            });
+            self.presence.stood_at = selection.or(caret);
+        }
+        self.presence_ctx.set_stand_in(
+            (mode == crate::view::FollowMode::Replay)
+                .then(|| crate::permissions::UserId(peer_id.clone())),
+        );
+        self.presence.followed_peer = Some(peer_id);
         self.presence.follow_mode = mode;
         self.apply_follow();
         // What the View names may only exist once the widgets sync to the
@@ -358,6 +395,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.presence.followed_peer = None;
         self.presence.follow_mode = crate::view::FollowMode::Live;
+        self.presence_ctx.set_stand_in(None);
+        self.presence.stood_at = None;
         for owner in std::mem::take(&mut self.presence.mirrored_overlays) {
             self.restore_overlay_at(&owner, &[], crate::view::OverlayPresentation::Owned);
         }
@@ -409,6 +448,10 @@ impl App {
     pub(super) fn follow_after_sync(&mut self) {
         if std::mem::take(&mut self.presence.follow_after_sync) {
             self.apply_follow();
+            // A replay's caret stands in text that may only now have synced.
+            if self.presence.follow_mode == crate::view::FollowMode::Replay {
+                self.stand_where_followed();
+            }
         }
     }
 
@@ -431,6 +474,12 @@ impl App {
             });
         if let Some(resource) = view.open_resource.as_deref() {
             self.root_widget.follow_open_resource(resource);
+        }
+        // A replay shows the durability the recorded participant's app
+        // showed, as it shows their overlays.
+        if self.presence.follow_mode == crate::view::FollowMode::Replay {
+            self.root_widget
+                .follow_record_status(view.save_status.clone());
         }
         // A follower sees what the followed participant sees, including the
         // menu or dialog they have open; a replay is this same path. The mode

@@ -280,6 +280,10 @@ pub struct ViewSubset {
     /// mirrors and a recorder keeps. Toast text is not carried; see
     /// [`ToastView`].
     pub overlays: Vec<OpenOverlay>,
+    /// Whether the participant's document was saved, as their app showed
+    /// it: device-local presentation a replay shows as recorded, like the
+    /// overlays. `None` for an app with no record of its own.
+    pub save_status: Option<crate::record::RecordSaveStatus>,
 }
 
 impl ViewSubset {
@@ -297,6 +301,7 @@ impl ViewSubset {
                 .iter()
                 .map(OpenOverlay::for_broadcast)
                 .collect(),
+            save_status: None,
         }
     }
 
