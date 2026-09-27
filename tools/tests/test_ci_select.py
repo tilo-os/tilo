@@ -188,6 +188,43 @@ class SelectorTests(unittest.TestCase):
                     self.assertFalse(plan["rust_required"])
                     self.assertFalse(plan["security_required"])
 
+    def test_android_lane_follows_selected_apps_with_an_android_example(self):
+        self.setUp()
+        for package in self.metadata["packages"]:
+            if package["name"] == "leaf":
+                package["targets"] = [
+                    {"name": "leaf", "kind": ["bin"]},
+                    {"name": "leaf-android", "kind": ["example"]},
+                ]
+            if package["name"] == "middle":
+                # Only an example named for its own package opts an app in.
+                package["targets"] = [
+                    {"name": "middle", "kind": ["lib"]},
+                    {"name": "leaf-android", "kind": ["example"]},
+                    {"name": "middle-android", "kind": ["bin"]},
+                ]
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
+        for changes, options in ((["base/src/lib.rs"], {}), (["leaf/src/android.rs"], {}),
+                                 (["qdoc/src/lib.rs"], {"force_full": True})):
+            with self.subTest(changes=changes, options=options):
+                reached = plan(changes, **options)
+                self.assertTrue(reached["android_required"])
+                self.assertEqual(reached["android"], ["leaf"])
+        unrelated = plan(["qdoc/src/lib.rs"])
+        self.assertFalse(unrelated["android_required"])
+        self.assertEqual(unrelated["android"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(plan(["base/src/lib.rs"]), output)
+            ci_select.emit_github(unrelated, output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("android_")],
+            ["android_required=true", "android_packages=-p leaf",
+             "android_required=false", "android_packages="],
+        )
+
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()
