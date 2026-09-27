@@ -117,7 +117,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
 num-integer = { version = "0.1", features = ["i128"] }
@@ -326,7 +325,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
 num-integer = { version = "0.1", features = ["i128"] }
