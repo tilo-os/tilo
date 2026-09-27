@@ -8,6 +8,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::portability::{FindingKind, PortabilityReport};
+use crate::standalone::SdkSource;
 use crate::{
     AddOutcome, CreateOutcome, DoctorReport, DoctorStatus, LocaleSyncOutcome, PackageOutcome,
     ScenarioSuiteOutcome,
@@ -27,6 +28,13 @@ fn absolute(path: &Path) -> String {
         .into_owned()
 }
 
+fn sdk_json(source: &SdkSource) -> Value {
+    match source {
+        SdkSource::Checkout(root) => json!({"checkout": root}),
+        SdkSource::Git { url, rev } => json!({"git": url, "rev": rev}),
+    }
+}
+
 impl CreateOutcome {
     /// The created (or, for a dry run, planned) app and its files.
     #[must_use]
@@ -37,6 +45,7 @@ impl CreateOutcome {
             "app_id": self.app_id,
             "dry_run": self.dry_run,
             "workspace_member": self.workspace_member,
+            "sdk": self.sdk.as_ref().map(sdk_json),
             "files": self.files.iter().map(|path| shown(&self.destination, path)).collect::<Vec<_>>(),
             "next": {
                 "dev": format!("tilo-app dev {}", absolute(&self.destination)),

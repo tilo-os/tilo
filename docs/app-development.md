@@ -55,6 +55,41 @@ tilo-app new reading-list --dry-run --json | jq -r '.result.files[]'
 tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
 ```
 
+### Outside the Tilo repository
+
+An app does not have to live in this repository. Install the CLI from the
+repository and create the app anywhere:
+
+```bash
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+tilo-app new reading-list --id org.example.reading-list
+```
+
+Outside a checkout, the app depends on the SDK from
+`https://code.tilo.so/tilo/tilo.git`, pinned to the commit the CLI was built
+from. `--sdk-rev` selects another commit and `--sdk-git` another repository.
+If a checkout is nearby, such as the one the CLI was built in, `--ui-path`, or
+`TILO_UI_PATH`, the app builds against that checkout by relative path instead.
+
+A standalone app builds the code this repository tests:
+
+- `[patch.crates-io]` repeats each fork the SDK's dependency graph uses,
+  because Cargo does not apply the SDK workspace's patches to an app that
+  depends on it. The private git forks come from their copies in `vendor/git`.
+- `Cargo.lock` starts as this repository's lockfile, so the first build picks
+  the dependency versions CI tested rather than the newest ones. Cargo drops
+  the entries the app does not use.
+- `rust-toolchain.toml` pins Tilo's compiler. A thin app links the toolkit
+  library the OS ships, and Rust keeps that library's symbols stable only for
+  the compiler that built it.
+- `.cargo/config.toml` carries Tilo's target CPU floor and hardening flags,
+  and the profiles in `Cargo.toml` are Tilo's `dev`, `test`, `release` and
+  `thin-app` profiles.
+
+Without `--id`, an app outside this repository is named `local.dev.<name>`.
+That name cannot be published. Choose an id in a namespace you control before
+you package the app.
+
 ## The Tilo-native contract
 
 Generated applications depend on `tilo-app` (normally under the concise Rust
