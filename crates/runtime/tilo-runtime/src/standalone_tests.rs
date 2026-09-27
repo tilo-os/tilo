@@ -236,3 +236,123 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
         io::ErrorKind::InvalidData
     );
 }
+
+fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActionConsentRequest {
+    tilo_action_broker::app_actions::AppActionConsentRequest {
+        handle: "question-1".into(),
+        room: room.into(),
+        person: person.into(),
+        app_id: "so.tilo.caller".into(),
+        target_app: "so.tilo.target-app".into(),
+        action: "open".into(),
+        action_label: "Open".into(),
+        risk: tilo_actions::RiskLevel::default(),
+        needs_confirmation: false,
+    }
+}
+
+fn app_grant() -> collab_types::caps::CapOverride {
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    CapOverride::grant(
+        Subject::app("so.tilo.caller"),
+        Scope::Action {
+            app: "so.tilo.target-app".into(),
+            action: "open".into(),
+        },
+        Verb::Write,
+    )
+}
+
+fn grants(workspace: ProfileWorkspace, root: &Path) -> ProfileGrants {
+    ProfileGrants {
+        workspace: Arc::new(workspace),
+        apps: Arc::new(apps::Apps::new(None, root, "", PathBuf::new(), Vec::new())),
+    }
+}
+
+#[test]
+fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_saved() {
+    use tilo_action_broker::app_actions::AppActionConsent;
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+    workspace.adopt("owner").unwrap();
+    let room = workspace.room();
+    let grants = grants(workspace, temp.path());
+
+    assert!(grants.may_grant(&room, "owner"));
+    assert!(!grants.may_grant(&room, "stranger"));
+    assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
+    assert!(
+        grants
+            .record(
+                &consent(&room, "stranger"),
+                app_grant(),
+                AppActionConsent::Always
+            )
+            .is_none()
+    );
+
+    let id = grants
+        .record(
+            &consent(&room, "owner"),
+            app_grant(),
+            AppActionConsent::Always,
+        )
+        .unwrap();
+    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
+    let workspace = &saved.workspaces[0];
+    assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
+    let receipt = workspace.effect_receipts.last().unwrap();
+    assert_eq!(receipt.actor, "owner");
+    assert!(
+        receipt
+            .context
+            .action_label
+            .contains("Allowed Caller to use Target App: Open in this workspace"),
+        "{}",
+        receipt.context.action_label
+    );
+
+    grants.revoke(&room, &id);
+    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
+    assert!(
+        saved.workspaces[0]
+            .capabilities
+            .iter()
+            .all(|cap| cap.id != id)
+    );
+}
+
+#[test]
+fn the_desktop_sessions_workspace_takes_no_grants_here() {
+    use tilo_action_broker::app_actions::AppActionConsent;
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].set_owner("owner".to_owned());
+    let room = tree.workspaces[0].room.to_string();
+    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+    let desktop = temp.path().join(DESKTOP_WORKSPACE);
+    std::fs::write(&desktop, &bytes).unwrap();
+    let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
+
+    assert!(!grants.may_grant(&room, "owner"));
+    assert!(
+        grants
+            .record(
+                &consent(&room, "owner"),
+                app_grant(),
+                AppActionConsent::Always
+            )
+            .is_none()
+    );
+    grants.revoke(&room, "owner-1");
+    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+    assert_eq!(
+        grants.workspace.snapshot().unwrap().workspaces[0]
+            .capabilities
+            .len(),
+        1,
+        "only the owner's membership"
+    );
+}
