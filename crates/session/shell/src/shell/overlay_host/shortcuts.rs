@@ -199,6 +199,7 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> String {
         ShortcutAction::MagnifierZoomOut => "shortcut-action-magnifier-zoom-out",
         ShortcutAction::PowerMenu => "shortcut-action-power-menu",
         ShortcutAction::NextInputSource => "shortcut-action-next-input-source",
+        ShortcutAction::EmojiPicker => "shortcut-action-emoji-picker",
     };
     t(key)
 }
@@ -228,7 +229,9 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
         fixed(FixedChordAction::AddTab),
         fixed(FixedChordAction::DuplicateTab),
         editable("shortcut-global-search", ShortcutAction::Search),
-        fixed(FixedChordAction::GlobalSearch),
+        // Super+Space and a lone Super tap search too; the keyboard map
+        // lists every alias, the guide keeps one row per action.
+        editable("guide-emoji", ShortcutAction::EmojiPicker),
         editable("guide-overview", ShortcutAction::WorkspaceOverview),
         editable("guide-quick-settings", ShortcutAction::QuickSettings),
         fixed(FixedChordAction::WorkspaceWheel),

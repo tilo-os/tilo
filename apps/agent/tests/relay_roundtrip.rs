@@ -221,6 +221,10 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     typed_peer::publish_actions(peer, APP, &resources);
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the invocation envelope's fields stay explicit, as the toolkit host receives them"
+)]
 fn service_word_processor_invocation(
     peer: &mut UnixStream,
     replica: &mut AutoCommit,
@@ -229,6 +233,7 @@ fn service_word_processor_invocation(
     action: String,
     argument: Option<&str>,
     actor: &str,
+    context: Option<&tilo_actions::ActionContext>,
 ) {
     let resources = word_processor_resources(replica);
     let update = typed_peer::service_document_invocation(
@@ -241,6 +246,7 @@ fn service_word_processor_invocation(
         action,
         argument,
         actor,
+        context,
     );
     send(peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
 }
@@ -301,7 +307,7 @@ fn drive_peer_to_table(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 invocation_actor = Some(actor.clone());
                 service_word_processor_invocation(
@@ -312,6 +318,7 @@ fn drive_peer_to_table(
                     action,
                     argument.as_deref(),
                     &actor,
+                    context.as_deref(),
                 );
             }
             event @ CollabEvent::Document { .. } => {
@@ -719,7 +726,7 @@ fn drive_word_processor_to_table(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 service_word_processor_invocation(
                     &mut wp_peer,
@@ -729,6 +736,7 @@ fn drive_word_processor_to_table(
                     action,
                     argument.as_deref(),
                     &actor,
+                    context.as_deref(),
                 );
             }
             // The agent's edits. A delta from the file manager's document
@@ -905,7 +913,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     action,
                     argument,
                     actor,
-                    ..
+                    context,
                 } => {
                     service_word_processor_invocation(
                         &mut peer,
@@ -915,6 +923,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                         action,
                         argument.as_deref(),
                         &actor,
+                        context.as_deref(),
                     );
                 }
                 event @ CollabEvent::Document { .. } => {

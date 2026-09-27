@@ -389,10 +389,49 @@ fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
     }
 }
 
-/// Perform the operation `address` names, attributed to `actor`.
-/// Resolve, bind, decode through the app's own registry, then
-/// [`dispatch_by`](crate::executor::dispatch_by) honouring the action's locus. `actor` is the caller's
-/// Automerge actor bytes, so the room's history names who asked.
+/// Caller identity and optional semantic context for an invoked action.
+///
+/// Every door entry point takes one, so an invocation made inside a task or
+/// agent run — confirmed or not, text or typed arguments — is recorded with
+/// that run's context rather than only the resource's own.
+#[derive(Clone, Copy, Debug)]
+pub struct InvocationProvenance<'a> {
+    /// Automerge actor bytes attributed to the resulting change.
+    pub actor: &'a [u8],
+    /// Task or session context used to enrich the resource's own context.
+    pub ambient: Option<&'a ActionContext>,
+}
+
+impl<'a> InvocationProvenance<'a> {
+    /// Provenance naming only the caller, for an invocation made outside any
+    /// task or run.
+    #[must_use]
+    pub const fn caller(actor: &'a [u8]) -> Self {
+        Self {
+            actor,
+            ambient: None,
+        }
+    }
+
+    /// The same caller acting within `ambient`, e.g. an agent run's intent
+    /// group.
+    #[must_use]
+    pub const fn within(self, ambient: &'a ActionContext) -> Self {
+        Self {
+            actor: self.actor,
+            ambient: Some(ambient),
+        }
+    }
+}
+
+/// Perform the operation `address` names, attributed to
+/// `provenance.actor`. Resolve, bind, decode through the app's own registry,
+/// then [`dispatch_by`](crate::executor::dispatch_by) honouring the action's locus. The actor is the
+/// caller's Automerge actor bytes, so the room's history names who asked;
+/// `provenance.ambient` carries the task or run the call belongs to. The
+/// resource's concrete action label and address remain authoritative; app,
+/// purpose, group, and facets of the ambient context fill only fields the
+/// resource did not supply.
 ///
 /// `resources` must be a tree built *now*, not the one an earlier
 /// [`survey`] walked — re-resolving turns an address that has since
@@ -404,94 +443,13 @@ fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
 ///
 /// # Errors
 ///
-/// Returns any error [`encode`] documents; [`DoorError::UnregisteredType`]
-/// if `registry` has no decoder for the encoded action's type; or
-/// [`DoorError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails once decoded.
+/// Returns any error [`encode`] documents; [`DoorError::ConfirmationRequired`]
+/// when the action's effective confirmation for this argument is not
+/// [`None`](crate::ConfirmationPolicy::None) (see [`invoke_confirmed`]);
+/// [`DoorError::UnregisteredType`] if `registry` has no decoder for the
+/// encoded action's type; or [`DoorError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails
+/// once decoded.
 pub fn invoke(
-    doc: &mut crate::action::Doc,
-    resources: &[Resource],
-    address: &ActionAddress,
-    argument: Option<&str>,
-    actor: &[u8],
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
-    invoke_with_consent(
-        doc, resources, address, argument, actor, registry, transport, false,
-    )
-}
-
-/// Invoke after an outer policy boundary has completed the action contract's
-/// confirmation step. This is intentionally separate from [`invoke`], whose
-/// default is fail-closed for consequential actions.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
-)]
-pub fn invoke_confirmed(
-    doc: &mut crate::action::Doc,
-    resources: &[Resource],
-    address: &ActionAddress,
-    argument: Option<&str>,
-    actor: &[u8],
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
-    invoke_with_consent(
-        doc, resources, address, argument, actor, registry, transport, true,
-    )
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
-)]
-fn invoke_with_consent(
-    doc: &mut crate::action::Doc,
-    resources: &[Resource],
-    address: &ActionAddress,
-    argument: Option<&str>,
-    actor: &[u8],
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-    confirmed: bool,
-) -> Result<Dispatched, DoorError> {
-    invoke_with_context_consent(
-        doc,
-        resources,
-        address,
-        argument,
-        InvocationProvenance {
-            actor,
-            ambient: None,
-        },
-        registry,
-        transport,
-        confirmed,
-    )
-}
-
-/// Caller identity and optional semantic context for an invoked action.
-#[derive(Clone, Copy, Debug)]
-pub struct InvocationProvenance<'a> {
-    /// Automerge actor bytes attributed to the resulting change.
-    pub actor: &'a [u8],
-    /// Task or session context used to enrich the resource's own context.
-    pub ambient: Option<&'a ActionContext>,
-}
-
-/// [`invoke`] with ambient task/session provenance. The resource's concrete
-/// action label and address remain authoritative; app, purpose, group, and
-/// facets fill only fields the resource did not supply.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke`].
-pub fn invoke_with_context(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
     address: &ActionAddress,
@@ -500,16 +458,38 @@ pub fn invoke_with_context(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
-    invoke_with_context_consent(
+    invoke_with_consent(
         doc, resources, address, argument, provenance, registry, transport, false,
+    )
+}
+
+/// [`invoke`] after an outer policy boundary has completed the action
+/// contract's confirmation step. This is intentionally separate from
+/// [`invoke`], whose default is fail-closed for consequential actions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke`], except confirmation has already
+/// been granted by the caller.
+pub fn invoke_confirmed(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    provenance: InvocationProvenance<'_>,
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+) -> Result<Dispatched, DoorError> {
+    invoke_with_consent(
+        doc, resources, address, argument, provenance, registry, transport, true,
     )
 }
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+    reason = "one door invocation binds the document, published tree, address, argument, provenance, registry, transport and consent together"
 )]
-fn invoke_with_context_consent(
+fn invoke_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
     address: &ActionAddress,
@@ -540,25 +520,15 @@ pub fn invoke_json(
     resources: &[Resource],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-    actor: &[u8],
+    provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
     invoke_json_with_consent(
-        doc, resources, address, arguments, actor, registry, transport, false,
+        doc, resources, address, arguments, provenance, registry, transport, false,
     )
 }
 
-/// Invoke typed arguments after an outer policy boundary has completed the
-/// action contract's confirmation step.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke_json`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
-)]
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.
 ///
@@ -571,25 +541,25 @@ pub fn invoke_json_confirmed(
     resources: &[Resource],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-    actor: &[u8],
+    provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
     invoke_json_with_consent(
-        doc, resources, address, arguments, actor, registry, transport, true,
+        doc, resources, address, arguments, provenance, registry, transport, true,
     )
 }
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+    reason = "one door invocation binds the document, published tree, address, arguments, provenance, registry, transport and consent together"
 )]
 fn invoke_json_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-    actor: &[u8],
+    provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
     confirmed: bool,
@@ -600,16 +570,7 @@ fn invoke_json_with_consent(
     ensure_deferred_local_owner(resources, address, registry)?;
     let encoded = encode_json(resources, address, arguments)?;
     dispatch_encoded_with_context(
-        doc,
-        resources,
-        address,
-        encoded,
-        InvocationProvenance {
-            actor,
-            ambient: None,
-        },
-        registry,
-        transport,
+        doc, resources, address, encoded, provenance, registry, transport,
     )
 }
 
@@ -800,7 +761,7 @@ mod tests {
             tree,
             address,
             argument,
-            b"caller-key",
+            InvocationProvenance::caller(b"caller-key"),
             &registry(),
             &mut LocalTransport::new(),
         )
@@ -974,7 +935,7 @@ mod tests {
             &tree,
             &star(),
             None,
-            b"caller-key",
+            InvocationProvenance::caller(b"caller-key"),
             &ActionRegistry::new(),
             &mut LocalTransport::new(),
         )
@@ -1051,7 +1012,7 @@ mod tests {
             &open(),
             &star(),
             None,
-            caller,
+            InvocationProvenance::caller(caller),
             &registry(),
             &mut transport,
         )
@@ -1103,7 +1064,7 @@ mod tests {
             .with_app("org.tilo.Notes", "Notes")
             .with_purpose("Prepare launch")
             .with_group("issue:42", "Launch", "issue");
-        let dispatched = invoke_with_context(
+        let dispatched = invoke(
             &mut doc,
             &open(),
             &star(),
@@ -1162,7 +1123,7 @@ mod tests {
             &resources,
             &star(),
             None,
-            b"caller-key",
+            InvocationProvenance::caller(b"caller-key"),
             &registry(),
             &mut transport,
         )
@@ -1175,7 +1136,7 @@ mod tests {
             &resources,
             &star(),
             None,
-            b"caller-key",
+            InvocationProvenance::caller(b"caller-key"),
             &registry(),
             &mut transport,
         )
@@ -1245,7 +1206,7 @@ mod tests {
                 &resources,
                 &edit(),
                 &title(value),
-                b"caller-key",
+                InvocationProvenance::caller(b"caller-key"),
                 &registry,
                 &mut transport,
             )
@@ -1273,13 +1234,139 @@ mod tests {
                 &resources,
                 &edit(),
                 Some(""),
-                b"caller-key",
+                InvocationProvenance::caller(b"caller-key"),
                 &registry,
                 &mut transport,
             )
             .unwrap_err(),
             DoorError::ConfirmationRequired
         );
+    }
+
+    /// The context an agent run hands every invocation it makes.
+    fn agent_run() -> ActionContext {
+        ActionContext::default()
+            .with_app("org.tilo.Agent", "Agent")
+            .with_purpose("Remove the draft marks")
+            .with_group("agent-run:7", "Remove the draft marks", "agent-run")
+    }
+
+    /// Read the durable change the door just committed back from its message,
+    /// and require it to carry both the resource's own context and the run's.
+    fn assert_recorded_within_run(doc: &mut AutoCommit, label: &str) {
+        let heads = doc.get_heads();
+        let change = doc
+            .get_change_by_hash(&heads[0])
+            .expect("the door committed");
+        assert_eq!(change.actor_id().to_bytes(), b"agent:ada");
+        let context = change
+            .message()
+            .and_then(ActionContext::from_change_message)
+            .expect("the change carries its semantic provenance");
+        assert_eq!(context.action_label, label);
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("notes.note:1"),
+            "the resource stays authoritative"
+        );
+        let group = context.group.as_ref().expect("the run's group is recorded");
+        assert_eq!(group.id, "agent-run:7");
+        assert_eq!(group.kind, "agent-run");
+        assert_eq!(context.purpose.as_deref(), Some("Remove the draft marks"));
+    }
+
+    /// A destructive operation an agent run performs after its policy gate
+    /// confirmed it is recorded within the run, exactly like an unconfirmed
+    /// one — consent is not a reason to lose whose task the change belongs to.
+    #[test]
+    fn a_confirmed_invocation_inside_a_run_is_recorded_with_its_group() {
+        let resources = vec![
+            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+                ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
+                    .unwrap()
+                    .destructive(),
+            ),
+        ];
+        let run = agent_run();
+        let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+
+        assert_eq!(
+            invoke(
+                &mut doc,
+                &resources,
+                &star(),
+                None,
+                provenance,
+                &registry(),
+                &mut transport,
+            )
+            .unwrap_err(),
+            DoorError::ConfirmationRequired
+        );
+        let dispatched = invoke_confirmed(
+            &mut doc,
+            &resources,
+            &star(),
+            None,
+            provenance,
+            &registry(),
+            &mut transport,
+        )
+        .expect("a confirmed destructive action runs");
+
+        assert_eq!(
+            dispatched
+                .envelope()
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref())
+                .map(|group| group.id.as_str()),
+            Some("agent-run:7"),
+            "the replicated envelope carries the run too"
+        );
+        assert_recorded_within_run(&mut doc, "Star");
+    }
+
+    /// Both typed-argument entry points record the run's context: the
+    /// ordinary value through [`invoke_json`] and the destructive one through
+    /// [`invoke_json_confirmed`].
+    #[test]
+    fn typed_invocations_inside_a_run_are_recorded_with_its_group() {
+        let resources = edit_by_value();
+        let run = agent_run();
+        let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+
+        invoke_json(
+            &mut doc,
+            &resources,
+            &edit(),
+            &title("Harbour"),
+            provenance,
+            &registry(),
+            &mut transport,
+        )
+        .expect("an ordinary value runs");
+        assert_recorded_within_run(&mut doc, "Edit");
+
+        invoke_json_confirmed(
+            &mut doc,
+            &resources,
+            &edit(),
+            &title(""),
+            provenance,
+            &registry(),
+            &mut transport,
+        )
+        .expect("a confirmed destructive value runs");
+        assert_eq!(stored_title(&doc).as_deref(), Some(""));
+        assert_recorded_within_run(&mut doc, "Edit");
     }
 
     fn effective_confirmation_reads_every_argument_form() {
