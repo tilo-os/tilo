@@ -15,6 +15,7 @@ import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 import {SideModuleLinker} from './dylink.mjs';
 import {createAppInstaller,canonicalAppId} from './app-installer.mjs';
 import {importGlue,loadCore} from './core-loader.mjs';
+import {checkOpens,loadOpenBytes,openRequest} from './open-file.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -85,7 +86,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  let id,application,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
+  let id,application,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,opened,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
@@ -97,7 +98,7 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.resolveApp;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.resolveApp;delete config.open;
   let unsubscribeDesktopCommits;
   let liveOverlay;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
@@ -143,6 +144,7 @@ export async function mountDesktop(target,options={}) {
   function update(raw){
     if(closed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    if(state.opened)opened=state.opened;
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -178,19 +180,21 @@ export async function mountDesktop(target,options={}) {
     observeLocalActivation();
     if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();void prewarmFonts().then(()=>{if(fontMountValid())fontInstaller.start();});}
   }
+  // The one path bytes enter the page by: the page's own loader, an app's
+  // static asset where its resolver placed it, or a same-origin fetch.
+  async function admittedBytes(requested){
+    if(options.loadAsset)return options.loadAsset(requested,listeners.signal);
+    const appAsset=application&&apps.assets(application.id)?.get(requested);
+    const url=new URL(appAsset??requested,location.href);
+    if((!appAsset&&url.origin!==location.origin)||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+    const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
+    if(!response.ok)throw Error(`asset HTTP ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
   const assets=createAssetRecovery({active,report,
     retry:request=>runtime.retry_asset(id,request.loader,request.url),
     complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
-    load:async request=>{
-      if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
-      // An app's own static asset is fetched where its resolver placed it.
-      const appAsset=application&&apps.assets(application.id)?.get(request.url);
-      const url=new URL(appAsset??request.url,location.href);
-      if((!appAsset&&url.origin!==location.origin)||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
-      const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
-      if(!response.ok)throw Error(`asset HTTP ${response.status}`);
-      return new Uint8Array(await response.arrayBuffer());
-    }
+    load:request=>admittedBytes(request.url)
   });
   async function loadAssets(){
     if(!active())return;
@@ -269,18 +273,29 @@ export async function mountDesktop(target,options={}) {
     // An app the core lacks is resolved while the core itself loads.
     const installing=config.app==='desktop'?undefined:apps.ensure(config.app,{resolveApp:options.resolveApp,signal:options.signal,onStatus:report});
     void installing?.catch(()=>{});
+    const failed=error=>{report({phase:'failed',error:error instanceof Error?error.message:String(error)});return error instanceof Error?error:Error(String(error));};
     await ready();if(!registry.current(token))throw Error('mount disposed');
-    // An app that is neither in the core nor resolvable rejects here.
-    try{await installing;application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));}
-    catch(error){report({phase:'failed',error:error instanceof Error?error.message:String(error)});throw error instanceof Error?error:Error(String(error));}
+    // An app that is neither in the core nor resolvable rejects here, and so
+    // does a file it does not open, before its bytes are fetched.
+    let openBytes;
+    try{
+      await installing;application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));
+      if(options.open!==undefined){
+        const request=openRequest(options.open,location.href);
+        checkOpens(application,request.mediaType);
+        config.open={name:request.name,mediaType:request.mediaType};
+        openBytes=loadOpenBytes(request,admittedBytes);
+        void openBytes.catch(()=>{});
+      }
+    }catch(error){throw failed(error);}
     const acquired=await acquireStorage(config.profile,config.device);
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
     if(storage.fresh){runtime.refresh_storage_lease(config.profile,config.device);storage.fresh=false;}
-    const [assets,entries]=await Promise.all([fonts(),storage.hydrate()]);
+    const [assets,entries,openFile]=await Promise.all([fonts(),storage.hydrate(),openBytes?.catch(error=>{throw failed(error);})]);
     if(!registry.current(token))throw Error('mount disposed');
     if(!config.record&&!config.newDocument)config.record=reopenedRecord(entries,application,config.room);
-    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
+    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)),openFile);
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
     const clearModifiers=()=>{if(inputScope.capture())runtime.modifiers(id,false,false,false,false);};
@@ -397,6 +412,7 @@ export async function mountDesktop(target,options={}) {
     const actionSurface=()=>{if(!active())throw Error('mount disposed');return id;};
     return {navigation: navigation?.controller,application,retryAsset,
       get record(){return lastState?.record||undefined;},
+      get opened(){return opened;},
       actions:resource=>JSON.parse(runtime.component_actions(actionSurface(),resource)),
       invokeAction:(resource,action,args={},{confirm=false}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm)),cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,

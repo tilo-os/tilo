@@ -20,6 +20,30 @@ export interface ApplicationInfo {
    * mount opens the room's one document (Chat's workspace).
    */
   scope: 'ordinary' | 'package-primary';
+  /** Media types the app opens when a mount hands it a file (`MountOptions.open`). */
+  opens: string[];
+}
+/**
+ * A file to hand the mounted app. The bytes come from `bytes`, or from `url`
+ * through the same admitted path as the app's assets: `loadAsset` when the
+ * mount passes one, else a same-origin fetch. `name` defaults to the URL's
+ * last path segment, `mediaType` to what the name's extension implies
+ * (`.epub`: `application/epub+zip`). At most 128 MiB.
+ */
+export type OpenFile =
+  | {url: string | URL; name?: string; mediaType?: string; bytes?: never}
+  | {bytes: Uint8Array | ArrayBuffer; name: string; mediaType?: string; url?: never};
+/** What the app opened a handed file as (`DesktopMount.opened`, and a status). */
+export interface OpenedFile {
+  name: string;
+  mediaType: string;
+  /**
+   * The resource that holds the file in the app's action surface, for
+   * `actions(resource)` and `invokeAction(resource, …)`; for Books
+   * `ebook.book:book:<first 32 hex of the EPUB's BLAKE3>`. Null when the app
+   * reported none.
+   */
+  resource: string | null;
 }
 /**
  * An app the core does not contain, as a resolver supplies it (the registry
@@ -51,6 +75,8 @@ export interface RuntimeStatus {
   /** Native semantic command receipt lifecycle; signed room state owns rendering. */
   desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
   desktopErrors?: string[];
+  /** The app accepted the mount's `open` file; reported before `gpu-pending`. */
+  opened?: OpenedFile;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
@@ -70,6 +96,17 @@ export interface MountOptions {
   signal?: AbortSignal;
   onStatus?: (status: RuntimeStatus) => void;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
+  /**
+   * A file for the app to open, as it would open one the user chose. The
+   * mount rejects (and `onStatus` reports `failed`) with
+   * `code: 'TILO_OPEN_INVALID'` for a malformed option,
+   * `'TILO_OPEN_UNSUPPORTED'` when the app does not open its media type,
+   * `'TILO_OPEN_UNAVAILABLE'` when its bytes cannot be loaded, and with the
+   * app's own reason when it cannot read them. Books keeps an opened EPUB
+   * in its library (the record), so another mount passing this mount's
+   * `record` shows the same book and annotations without `open`.
+   */
+  open?: OpenFile;
   /**
    * Resolves `app` when the core does not contain it; defaults to the one
    * `setAppResolver` set. Resolution starts alongside the core's download.
@@ -106,6 +143,8 @@ export interface DesktopMount {
    * Absent for a package-primary app and for the canonical desktop.
    */
   readonly record?: string;
+  /** What the app opened `MountOptions.open` as; undefined without `open`. */
+  readonly opened?: OpenedFile;
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including

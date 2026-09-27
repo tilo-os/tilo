@@ -168,7 +168,34 @@ pub(crate) fn describe(definition: &ApplicationDefinition) -> serde_json::Value 
         Some(RecordScope::PackagePrimary) => "package-primary",
         _ => "ordinary",
     };
-    serde_json::json!({"id": definition.app_id, "title": definition.title, "scope": scope})
+    serde_json::json!({
+        "id": definition.app_id,
+        "title": definition.title,
+        "scope": scope,
+        "opens": definition.opens,
+    })
+}
+
+/// Refuse to hand `definition` a file it does not open.
+///
+/// # Errors
+/// Names the app and the refused media type.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn check_opens(
+    definition: &ApplicationDefinition,
+    media_type: &str,
+) -> Result<(), String> {
+    if definition.opens_media_type(media_type) {
+        Ok(())
+    } else if definition.opens.is_empty() {
+        Err(format!("{} does not open files", definition.title))
+    } else {
+        Err(format!(
+            "{} does not open {media_type} files (it opens {})",
+            definition.title,
+            definition.opens.join(", ")
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -277,10 +304,31 @@ mod tests {
         let chat = resolve_mount("chat").ok().unwrap();
         assert_eq!(
             describe(chat),
-            serde_json::json!({"id":"so.tilo.chat","title":"Chat","scope":"package-primary"})
+            serde_json::json!({"id":"so.tilo.chat","title":"Chat","scope":"package-primary","opens":[]})
         );
         let writer = resolve_mount("writer").ok().unwrap();
         assert_eq!(describe(writer)["id"], "so.tilo.word-processor");
         assert_eq!(describe(writer)["scope"], "ordinary");
+        let books = resolve_mount("so.tilo.ebook").ok().unwrap();
+        assert_eq!(
+            describe(books)["opens"],
+            serde_json::json!(["application/epub+zip"])
+        );
+    }
+
+    #[test]
+    fn a_file_reaches_only_an_app_that_opens_its_type() {
+        let books = resolve_mount("so.tilo.ebook").ok().unwrap();
+        assert!(check_opens(books, "application/epub+zip").is_ok());
+        assert!(check_opens(books, "Application/EPUB+Zip; charset=binary").is_ok());
+        assert_eq!(
+            check_opens(books, "application/pdf").unwrap_err(),
+            "Books does not open application/pdf files (it opens application/epub+zip)"
+        );
+        let chat = resolve_mount("chat").ok().unwrap();
+        assert_eq!(
+            check_opens(chat, "application/epub+zip").unwrap_err(),
+            "Chat does not open files"
+        );
     }
 }
