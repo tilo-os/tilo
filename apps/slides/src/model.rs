@@ -18,6 +18,8 @@
 
 use ui::ColorCompat;
 use ui::paint::with_alpha;
+use ui::widget::BlockContent;
+use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -129,7 +131,7 @@ impl TextAlign {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Element {
     pub id: Id,
     pub kind: ElementKind,
@@ -137,9 +139,13 @@ pub struct Element {
     pub y: f64,
     pub w: f64,
     pub h: f64,
-    /// Text body (text elements). May contain `\n` for explicit line
-    /// breaks; each line is aligned independently.
+    /// The text as plain text, a line per paragraph: what search, the
+    /// outline, speaker tools and export read.
     pub text: String,
+    /// The text as written: paragraphs with their marks (bold, italic,
+    /// links). Empty for an element built from plain `text` alone (a
+    /// template, an import), which [`Self::rich_blocks`] derives.
+    pub blocks: Vec<BlockContent>,
     /// Source path of an image element's picture on disk. Empty for every
     /// non-image element. Only the path travels in the CRDT; the decoded
     /// pixels are a per-peer runtime cache keyed by this path.
@@ -205,6 +211,7 @@ impl Element {
             w,
             h,
             text: String::new(),
+            blocks: Vec::new(),
             src: String::new(),
             fill: if kind == ElementKind::Line {
                 "none".into()
@@ -226,6 +233,29 @@ impl Element {
         }
     }
 
+    /// The text as written: its blocks, or for an element built from plain
+    /// text, a paragraph per line carrying the element's bold and italic
+    /// over all of it.
+    pub fn rich_blocks(&self) -> Vec<BlockContent> {
+        if !self.blocks.is_empty() {
+            return self.blocks.clone();
+        }
+        paragraphs_of(&self.text, self.bold, self.italic)
+    }
+
+    /// Replace the text with `blocks`, keeping the plain text in step. The
+    /// blocks' document ids are dropped: the model shows words, and the
+    /// document names its own paragraphs.
+    pub fn set_blocks(&mut self, mut blocks: Vec<BlockContent>) {
+        for block in &mut blocks {
+            block.id.clear();
+        }
+        self.text = plain_text_of(&blocks);
+        self.bold = !blocks.is_empty() && covered_by(&blocks, &Mark::Bold);
+        self.italic = !blocks.is_empty() && covered_by(&blocks, &Mark::Italic);
+        self.blocks = blocks;
+    }
+
     #[must_use]
     pub fn with(mut self, f: impl FnOnce(&mut Element)) -> Element {
         f(&mut self);
@@ -236,6 +266,139 @@ impl Element {
     pub fn center_x(mut self) -> Element {
         self.align = TextAlign::Center;
         self
+    }
+}
+
+/// Plain text as paragraphs, a paragraph per line, with `bold` and `italic`
+/// over every one: the first-format text box as written.
+pub fn paragraphs_of(text: &str, bold: bool, italic: bool) -> Vec<BlockContent> {
+    text.split('\n')
+        .map(|line| {
+            let mut block = BlockContent::paragraph("", line);
+            if !line.is_empty() {
+                for (on, mark) in [(bold, Mark::Bold), (italic, Mark::Italic)] {
+                    if on {
+                        block.marks.push(MarkSpan::new(0..line.len(), mark));
+                    }
+                }
+            }
+            block
+        })
+        .collect()
+}
+
+/// A paragraph's text as runs of one weight and slant: `(text, bold,
+/// italic)`, in order, the way presentation formats store text.
+pub fn runs_of(block: &BlockContent) -> Vec<(&str, bool, bool)> {
+    let styled = |mark: &Mark, at: usize| {
+        block
+            .marks
+            .iter()
+            .any(|span| &span.mark == mark && span.range.start <= at && at < span.range.end)
+    };
+    let mut cuts: Vec<usize> = vec![0, block.text.len()];
+    for span in &block.marks {
+        if matches!(span.mark, Mark::Bold | Mark::Italic) {
+            cuts.push(span.range.start.min(block.text.len()));
+            cuts.push(span.range.end.min(block.text.len()));
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .filter_map(|pair| {
+            let [start, end] = pair else { return None };
+            let text = block.text.get(*start..*end)?;
+            (!text.is_empty()).then(|| {
+                (
+                    text,
+                    styled(&Mark::Bold, *start),
+                    styled(&Mark::Italic, *start),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Append a run of `text` to `block`, bold and italic as given.
+pub fn push_run(block: &mut BlockContent, text: &str, bold: bool, italic: bool) {
+    let start = block.text.len();
+    block.text.push_str(text);
+    let end = block.text.len();
+    if start == end {
+        return;
+    }
+    for (on, mark) in [(bold, Mark::Bold), (italic, Mark::Italic)] {
+        if !on {
+            continue;
+        }
+        // A run continuing the one before extends its mark.
+        match block
+            .marks
+            .iter_mut()
+            .find(|span| span.mark == mark && span.range.end == start)
+        {
+            Some(span) => span.range.end = end,
+            None => block.marks.push(MarkSpan::new(start..end, mark)),
+        }
+    }
+}
+
+/// The plain text of `blocks`, a line per paragraph.
+pub fn plain_text_of(blocks: &[BlockContent]) -> String {
+    blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `mark` covers every character of `blocks`.
+pub fn covered_by(blocks: &[BlockContent], mark: &Mark) -> bool {
+    blocks.iter().all(|block| {
+        let mut covered = 0;
+        let mut spans: Vec<_> = block
+            .marks
+            .iter()
+            .filter(|span| &span.mark == mark)
+            .map(|span| span.range.clone())
+            .collect();
+        spans.sort_by_key(|range| range.start);
+        for range in spans {
+            if range.start > covered {
+                return false;
+            }
+            covered = covered.max(range.end);
+        }
+        covered >= block.text.len()
+    })
+}
+
+/// Two elements are equal when they show the same thing: the same words
+/// with the same marks, however those were written down (as blocks, or as
+/// plain text with the box's bold and italic).
+impl PartialEq for Element {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.kind == other.kind
+            && self.x == other.x
+            && self.y == other.y
+            && self.w == other.w
+            && self.h == other.h
+            && self.text == other.text
+            && self.src == other.src
+            && self.fill == other.fill
+            && self.stroke == other.stroke
+            && self.stroke_width == other.stroke_width
+            && self.font_size == other.font_size
+            && self.align == other.align
+            && self.radius == other.radius
+            && self.z == other.z
+            && if self.blocks.is_empty() && other.blocks.is_empty() {
+                self.bold == other.bold && self.italic == other.italic
+            } else {
+                self.rich_blocks() == other.rich_blocks()
+            }
     }
 }
 

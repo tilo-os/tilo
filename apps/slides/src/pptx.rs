@@ -347,7 +347,32 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     TextAlign::Justify => "just",
                     TextAlign::Left => "l",
                 };
-                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}">{}</a:rPr><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), drawing_color(&el.fill), quick_xml::escape::partial_escape(line))).collect::<String>();
+                let size = (el.font_size * 100.0).round() as i64;
+                let color = drawing_color(&el.fill);
+                let run = |text: &str, bold: bool, italic: bool| {
+                    format!(
+                        r#"<a:r><a:rPr lang="en-US" sz="{size}" b="{}" i="{}">{color}</a:rPr><a:t>{}</a:t></a:r>"#,
+                        u8::from(bold),
+                        u8::from(italic),
+                        quick_xml::escape::partial_escape(text)
+                    )
+                };
+                // A paragraph per block, a run per stretch of one weight and slant.
+                let runs = el
+                    .rich_blocks()
+                    .iter()
+                    .map(|block| {
+                        let runs = crate::model::runs_of(block);
+                        let body = if runs.is_empty() {
+                            run("", false, false)
+                        } else {
+                            runs.into_iter()
+                                .map(|(text, bold, italic)| run(text, bold, italic))
+                                .collect()
+                        };
+                        format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#)
+                    })
+                    .collect::<String>();
                 s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
@@ -380,6 +405,9 @@ struct Pending {
     fill: String,
     stroke: String,
     stroke_width: f64,
+    /// The text as written: a paragraph per `a:p`, a mark per bold or
+    /// italic run.
+    blocks: Vec<ui::widget::BlockContent>,
 }
 impl Default for Pending {
     fn default() -> Self {
@@ -399,6 +427,7 @@ impl Default for Pending {
             fill: "accent".into(),
             stroke: "none".into(),
             stroke_width: 0.0,
+            blocks: Vec::new(),
         }
     }
 }
@@ -502,10 +531,11 @@ fn parse_slide(
                         }
                     }
                     b"p" => {
-                        if paragraph {
-                            if let Some(c) = cur.as_mut() {
-                                c.text.push('\n')
+                        if let Some(c) = cur.as_mut() {
+                            if paragraph {
+                                c.text.push('\n');
                             }
+                            c.blocks.push(ui::widget::BlockContent::paragraph("", ""));
                         }
                         paragraph = true
                     }
@@ -553,15 +583,25 @@ fn parse_slide(
             Ok(Event::Text(t)) if in_text => {
                 if let Some(c) = cur.as_mut() {
                     if let Ok(v) = t.xml10_content() {
-                        c.text.push_str(&v)
+                        c.text.push_str(&v);
+                        let (bold, italic) = (c.bold, c.italic);
+                        if let Some(block) = c.blocks.last_mut() {
+                            crate::model::push_run(block, &v, bold, italic);
+                        }
                     }
                 }
             }
             // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
-                if let Some(c) = cur.as_mut() {
-                    c.text.extend(qdoc_codecs::resolve_general_ref(&r));
+                if let Some(c) = cur.as_mut()
+                    && let Some(ch) = qdoc_codecs::resolve_general_ref(&r)
+                {
+                    c.text.push(ch);
+                    let (bold, italic) = (c.bold, c.italic);
+                    if let Some(block) = c.blocks.last_mut() {
+                        crate::model::push_run(block, ch.encode_utf8(&mut [0; 4]), bold, italic);
+                    }
                 }
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
@@ -614,9 +654,13 @@ fn push_pending(
             h,
             if c.size > 0.0 { c.size } else { 24.0 },
         );
-        e.bold = c.bold;
-        e.italic = c.italic;
         e.align = c.align;
+        if crate::model::plain_text_of(&c.blocks) == c.text {
+            e.set_blocks(c.blocks);
+        } else {
+            e.bold = c.bold;
+            e.italic = c.italic;
+        }
         e
     } else {
         Element::shape(
@@ -881,6 +925,38 @@ const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="h
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_bold_word_in_a_text_box_survives_the_round_trip() {
+        use ui::widget::marks::{Mark, MarkSpan};
+        let content = ContentStore::memory();
+        let mut deck = crate::model::seed_deck();
+        let mut first = ui::widget::BlockContent::paragraph("", "plain bold");
+        first.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        let mut second = ui::widget::BlockContent::paragraph("", "slanted");
+        second.marks = vec![MarkSpan::new(0..7, Mark::Italic)];
+        let element = deck.slides[0]
+            .elements
+            .iter_mut()
+            .find(|element| element.kind == crate::model::ElementKind::Text)
+            .unwrap();
+        element.set_blocks(vec![first, second]);
+        let id = element.id.clone();
+        let written = element.clone();
+        let bytes = write_pptx(&deck, &content).expect("write");
+        let back = read_pptx(&bytes, &content).expect("read");
+        let read = back.slides[0]
+            .elements
+            .iter()
+            .find(|element| element.id == id || element.text == written.text)
+            .expect("the text box comes back");
+        assert_eq!(read.text, "plain bold\nslanted");
+        assert_eq!(
+            read.rich_blocks(),
+            written.rich_blocks(),
+            "runs keep their marks"
+        );
+    }
+
     /// PPTX round-trips core content, shape/text styling, theme backgrounds and pictures.
     #[test]
     #[expect(

@@ -38,6 +38,9 @@ pub struct Embedded<W: Widget> {
     transform: Affine,
     /// The text colour the child paints with, in place of the theme's.
     text_color: Option<Color>,
+    /// The rectangle last laid out and the height it came to, reused while
+    /// nothing about the child changed (a thumbnail redrawn every frame).
+    laid: Option<(Rect, f64)>,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -52,6 +55,7 @@ impl<W: Widget + 'static> Embedded<W> {
             rect: Rect::ZERO,
             transform: Affine::IDENTITY,
             text_color: None,
+            laid: None,
         }
     }
 
@@ -126,9 +130,17 @@ impl<W: Widget + 'static> Embedded<W> {
         reason = "logical pixel sizes narrow to Taffy's f32"
     )]
     pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let rebuilt = self.root.is_none() || self.widget.take_structure_dirty();
+        if !rebuilt
+            && let Some((laid, height)) = self.laid
+            && laid == rect
+            && !self.widget.layout_needs_measure()
+        {
+            return height;
+        }
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
-        if self.root.is_none() || self.widget.take_structure_dirty() {
+        if rebuilt {
             self.rebuild(theme);
         }
         let Some(root) = self.root else {
@@ -161,6 +173,7 @@ impl<W: Widget + 'static> Embedded<W> {
             .map_or(0.0, |layout| f64::from(layout.size.height))
             .max(rect.height());
         self.rect = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height);
+        self.laid = Some((rect, height));
         height
     }
 
