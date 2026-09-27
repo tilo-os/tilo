@@ -1,4 +1,4 @@
-name: Wine / traditional native RPMs
+name: Snapshot / Wine RPMs
 
 on:
   workflow_dispatch:

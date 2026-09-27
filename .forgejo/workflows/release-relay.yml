@@ -13,7 +13,7 @@ on:
       - ".cargo/**"
       - ".forgejo/actions/cache-github-assets/**"
       - ".forgejo/actions/install-cosign/**"
-      - ".forgejo/workflows/tilo-relay.yaml"
+      - ".forgejo/workflows/release-relay.yml"
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/agent/control-protocol/**"
@@ -94,7 +94,7 @@ on:
       - ".cargo/**"
       - ".forgejo/actions/cache-github-assets/**"
       - ".forgejo/actions/install-cosign/**"
-      - ".forgejo/workflows/tilo-relay.yaml"
+      - ".forgejo/workflows/release-relay.yml"
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/agent/control-protocol/**"
@@ -181,18 +181,6 @@ concurrency:
   group: tilo-relay-image-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -210,14 +198,14 @@ jobs:
           sparse-checkout: |
             tools/ci/prepare_pr_history.py
             tools/ci/workflow_applicability.py
-            .forgejo/workflows/tilo-relay.yaml
+            .forgejo/workflows/release-relay.yml
           sparse-checkout-cone-mode: false
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Prepare targeted PR history
         run: python3 -I tools/ci/prepare_pr_history.py
       - name: Require an exact relevant PR diff before native work
         id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/tilo-relay.yaml
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/release-relay.yml
 
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
@@ -331,7 +319,7 @@ jobs:
             require=1
           elif [ "${{ github.event_name }}" = pull_request ] &&
                git diff --name-only "$BASE_SHA...HEAD" -- \
-                 .forgejo/workflows/tilo-relay.yaml \
+                 .forgejo/workflows/release-relay.yml \
                  os/containers/tilo-relay/Containerfile \
                  os/containers/tilo-relay/probe-sccache.py | grep -q .; then
             require=1
@@ -350,10 +338,11 @@ jobs:
             test -n "$value" || available=0
             case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
           done
-          case "${SCCACHE_ENDPOINT:-}" in https://s3.*.amazonaws.com) ;; *) available=0 ;; esac
-          case "${SCCACHE_BUCKET:-}" in tilo-ci-sccache-*) ;; *) available=0 ;; esac
-          case "${SCCACHE_S3_KEY_PREFIX:-}" in forgejo-runners/v[0-9]*) ;; *) available=0 ;; esac
-          test "${SCCACHE_S3_USE_SSL:-}" = true || available=0
+          case "${SCCACHE_ENDPOINT:-}" in http://*|https://*) ;; *) available=0 ;; esac
+          case "${SCCACHE_ENDPOINT:-}" in *[@[:space:]]*) available=0 ;; esac
+          case "${SCCACHE_BUCKET:-}" in [a-z0-9][a-z0-9.-]*) ;; *) available=0 ;; esac
+          case "${SCCACHE_S3_KEY_PREFIX:-}" in *[!A-Za-z0-9_/-]*) available=0 ;; esac
+          case "${SCCACHE_S3_USE_SSL:-}" in true|false) ;; *) available=0 ;; esac
           printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
           if [ "$available" != 1 ]; then
             echo "::notice::runner compiler cache configuration is absent or unsupported; normal builds compile without it"

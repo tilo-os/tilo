@@ -13,7 +13,7 @@ CONSUMERS = {
     "snapshot-kernel-buildroot.yml": 3,
     "snapshot-rpms.yml": 1,
     "snapshot-wpe-buildroot.yml": 3,
-    "tilo-relay.yaml": 2,
+    "release-relay.yml": 2,
 }
 
 
@@ -48,7 +48,7 @@ class CosignInstallActionTests(unittest.TestCase):
                 "snapshot-kernel-buildroot.yml",
                 "snapshot-rpms.yml",
                 "snapshot-wpe-buildroot.yml",
-                "tilo-relay.yaml",
+                "release-relay.yml",
             ):
                 with self.subTest(workflow=name):
                     source = (workflows / name).read_text(encoding="utf-8")

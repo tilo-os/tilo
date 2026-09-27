@@ -103,18 +103,6 @@ concurrency:
   # older validation because it does not mutate a channel.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-
 jobs:
   tag-validation:
     if: startsWith(github.ref, 'refs/tags/')
@@ -489,7 +477,6 @@ jobs:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # v2 retires a malformed archive written by the original app namespace.
       TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -581,10 +568,6 @@ jobs:
             dist/app-release/verification-policy.json
             dist/app-release/tilo-app-package
           if-no-files-found: error
-      - name: Report compiler-cache effectiveness
-        if: always()
-        run: bash tools/ci/sccache.sh report || true
-
   qualify-collection:
     # Coordinator guard keeps this qualification disabled; no publisher OIDC.
     if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'

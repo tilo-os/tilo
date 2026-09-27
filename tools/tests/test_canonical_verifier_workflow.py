@@ -31,11 +31,9 @@ class VerifierWorkflowTests(unittest.TestCase):
             self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
             self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
             self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
-            # Only the compiler cache key, bound at workflow level like every
-            # cache user's (test_compiler_cache_credentials.py).
-            self.assertEqual({'SCCACHE_AWS_ACCESS_KEY_ID', 'SCCACHE_AWS_SECRET_ACCESS_KEY'},
-                             set(re.findall(r'secrets\.([A-Z_]+)', source)))
-            self.assertEqual(2, source.split('\njobs:\n', 1)[0].count('secrets.'))
+            # The compiler cache comes from the runner. This workflow binds no secret.
+            self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z0-9_]+)', source)))
+            self.assertNotIn('SCCACHE_', source)
             bundle_job = source.split('\n  bundle:\n', 1)[1]
             self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
             self.assertNotIn('CARGO_TARGET_DIR', source)
