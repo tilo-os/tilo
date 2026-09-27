@@ -226,26 +226,32 @@ fn no_whole_replies(store: &Store) {
     }
 }
 
+/// History budget of the growth test: the production budget shrunk so the
+/// first rotation comes within tens of agent steps instead of hundreds. The
+/// retention logic is the same; only the point where it is due moves.
+const TEST_HISTORY_BYTES: usize = 128 * 1024;
+const TEST_HISTORY_COMMITS: usize = 1024;
+
 #[test]
 fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
+    let _budget = TestHistoryBudget::set(TEST_HISTORY_BYTES, TEST_HISTORY_COMMITS);
     let (dir, mut store, owner) = crate::agent_owner_tests::enrolled();
     let now = tilo_delivery_protocol::clock::now_ns();
     let guest = join_guest(&mut store, owner, now);
     store.activate_delivery_storage(now).unwrap();
     let room = store.state.room.clone();
     // Agent-typed text per step. Every step republishes the whole Writer
-    // snapshot, which each replica admits under one checked 64 MiB automerge
-    // turn (the vendored crate's ceiling); 0.12's sound load bound funds about
-    // 100k typed characters there. 400 steps of 160 characters stay inside it,
-    // so this exercises retention rather than the document admission ceiling.
+    // snapshot, so retained history grows with every step until retention
+    // rotates it.
     let text = "streamed agent text ".repeat(8);
-    // At least 200 steps, then until the first rotation (at most 400).
+    // At least 40 steps (five member refreshes), then until the first
+    // rotation (at most 160).
     let mut steps = 0u32;
     let mut sizes = Vec::new();
     let mut drops = Vec::new();
     let mut largest = 0u64;
-    for step in 0..400u32 {
-        if step >= 200 && !drops.is_empty() {
+    for step in 0..160u32 {
+        if step >= 40 && !drops.is_empty() {
             break;
         }
         steps = step + 1;
@@ -278,7 +284,7 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
         }
         let bytes = saved_bytes(dir.path());
         largest = largest.max(bytes);
-        if step % 40 == 39 {
+        if step % 10 == 9 {
             sizes.push(bytes);
         }
     }
@@ -286,7 +292,7 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
         std::fs::copy(dir.path().join("state.json"), path).unwrap();
     }
     eprintln!(
-        "saved Store bytes every 40 steps: {sizes:?}; largest {largest}; rotations (before, after) {drops:?}"
+        "saved Store bytes every 10 steps: {sizes:?}; largest {largest}; rotations (before, after) {drops:?}"
     );
     let (changes, change_bytes, saved) = room_history(&store, now);
     eprintln!(
@@ -297,8 +303,8 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
     assert_eq!(store.state.join_responses.len(), 1);
     assert_eq!(store.state.membership_responses.len(), 1);
     let pressure = store.delivery_pressure(now).unwrap();
-    // Retention actually bounds history: a rotation happened within a few
-    // hundred commits (not at half of the 64 MiB pool) and freed most of it.
+    // Retention actually bounds history: a rotation happened once history
+    // reached its budget (not at half of the 64 MiB pool) and freed most of it.
     assert!(
         !drops.is_empty(),
         "history retention never rotated: {pressure:?}"
@@ -311,10 +317,10 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
     }
     assert!(
         pressure.pool_bytes.saturating_sub(pressure.baseline_bytes)
-            < 2 * HISTORY_BYTES.max(pressure.baseline_bytes),
+            < 2 * TEST_HISTORY_BYTES.max(pressure.baseline_bytes),
         "{pressure:?}"
     );
-    assert!(pressure.replay < (2 * HISTORY_COMMITS).min(MAX_REFERENCES));
+    assert!(pressure.replay < (2 * TEST_HISTORY_COMMITS).min(MAX_REFERENCES));
     assert!(largest < 6 * 1024 * 1024, "largest saved Store {largest}");
     // A full reopen validates the retained aggregate.
     drop(store);
