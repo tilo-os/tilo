@@ -6402,13 +6402,18 @@ pub fn run() {
         )
     });
 
+    // The machine's own agents and power service belong to the compositor
+    // that owns it. A nested or headless shell registering them would take
+    // over its host's password prompts, Wi-Fi secrets, lid and suspend.
+    let system_runtime = notif_runtime.filter(|_| os_actions::owner::current().is_owned());
+
     // polkit authentication agent: administrator prompts from pkexec,
     // GNOME Disks, virt-manager and system Flatpak installs become a sheet
     // only the compositor draws. Registered on the system bus for this login
     // session; without polkit or logind the requests fail as before.
     let polkit_agent: Option<
         crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
-    > = notif_runtime.map(|rt| {
+    > = system_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "polkit agent",
@@ -6424,7 +6429,7 @@ pub fn run() {
     // draws, instead of a connection that silently fails.
     let network_secret_agent: Option<
         crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
-    > = notif_runtime.map(|rt| {
+    > = system_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "network secret agent",
@@ -6440,7 +6445,7 @@ pub fn run() {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if let Some(rt) = system_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;

@@ -867,6 +867,10 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
         let request = directory.path().join("logout-request");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_SESSION_LOGOUT_REQUEST", &request);
+        // The executor here is a private request file in a temporary
+        // directory, so this test may act as the compositor that owns the
+        // machine.
+        os_actions::owner::establish(os_actions::SystemSurfaces::Owned);
 
         assert!(
             host.apply_power_menu_outcome(PowerMenuClick::Execute(
@@ -923,6 +927,40 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
         assert!(chrome.borrow().notifications().is_empty());
     }
 
+    fn a_shell_that_does_not_own_the_machine_refuses_every_session_action() {
+        let (mut host, chrome) = host_with_chrome();
+        let bridge = tilo_power_mgmt::PowerBridge::new();
+        host.set_power_bridge(bridge.clone());
+        host.set_system_surfaces(os_actions::SystemSurfaces::Hosted);
+        assert!(chrome.borrow().quick_settings.host_managed);
+        let actions = [
+            os_actions::SessionAction::Logout,
+            os_actions::SessionAction::SwitchUser,
+            os_actions::SessionAction::Suspend,
+            os_actions::SessionAction::Restart,
+            os_actions::SessionAction::ShutDown,
+        ];
+        for action in actions {
+            assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(action)));
+        }
+        assert!(
+            bridge.drain_commands().is_empty(),
+            "no suspend reached logind"
+        );
+        assert!(
+            host.session_action_channel.1.try_recv().is_err(),
+            "no worker ran"
+        );
+        assert!(!os_actions::take_logout_request());
+        let notifications = chrome.borrow().notifications().to_vec();
+        assert_eq!(notifications.len(), actions.len());
+        assert!(
+            notifications
+                .iter()
+                .all(|notice| notice.body == os_actions::HOST_MANAGED_REASON)
+        );
+    }
+
     fn failed_session_action_is_reported_in_chrome() {
         let (host, chrome) = host_with_chrome();
         host.session_action_channel
@@ -946,6 +984,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     suspend_power_action_uses_the_coordinated_power_service();
     suspend_without_the_power_service_reports_failure();
     logout_inhibitor_does_not_cross_block_switch_user();
+    a_shell_that_does_not_own_the_machine_refuses_every_session_action();
     failed_session_action_is_reported_in_chrome();
 }
 

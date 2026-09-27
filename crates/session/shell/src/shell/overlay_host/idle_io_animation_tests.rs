@@ -3,6 +3,9 @@ use super::*;
 #[test]
 fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()));
+    // A test process owns no machine, so the host reads nothing by itself;
+    // this read is the injected, blocked one.
+    host.qs_refresh = crate::shell::quick_settings::refresh::QsRefresh::new();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     host.qs_refresh.kick_fast_with(move || {
         let _ = release_rx.recv();

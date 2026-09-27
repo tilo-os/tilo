@@ -366,6 +366,30 @@ pub fn parse_backend(args: &[&str]) -> BackendKind {
     BackendKind::Winit
 }
 
+impl BackendKind {
+    /// Whether a compositor on this backend owns the machine's system
+    /// surfaces. Only DRM drives the machine's own display with its seat;
+    /// winit nests inside someone else's desktop and headless has no display,
+    /// so both run on a machine that something else owns.
+    #[must_use]
+    pub const fn system_surfaces(self) -> os_actions::SystemSurfaces {
+        match self {
+            Self::Drm => os_actions::SystemSurfaces::Owned,
+            Self::Winit | Self::Headless => os_actions::SystemSurfaces::Hosted,
+        }
+    }
+}
+
+/// Whether the compositor these arguments start owns the machine's system
+/// surfaces: the native compositor on the DRM backend does; the hosted
+/// client, winit and headless do not.
+pub fn parse_system_surfaces(args: &[&str]) -> os_actions::SystemSurfaces {
+    match parse_mode(args) {
+        Mode::Native => parse_backend(args).system_surfaces(),
+        Mode::Hosted => os_actions::SystemSurfaces::Hosted,
+    }
+}
+
 fn value_to_backend(value: &str) -> BackendKind {
     match value {
         "drm" => BackendKind::Drm,
@@ -446,6 +470,22 @@ mod tests {
         ];
         for (case, args, want) in cases {
             assert_eq!(parse_backend(args), *want, "case {case}");
+        }
+    }
+
+    #[test]
+    fn only_the_native_drm_compositor_owns_the_machine() {
+        use os_actions::SystemSurfaces::{Hosted, Owned};
+        let cases: &[(&[&str], os_actions::SystemSurfaces)] = &[
+            (&["--backend", "drm"], Owned),
+            (&["--mode", "native", "--backend=drm"], Owned),
+            (&[], Hosted),
+            (&["--backend", "winit"], Hosted),
+            (&["--backend", "headless"], Hosted),
+            (&["--mode", "hosted", "--backend", "drm"], Hosted),
+        ];
+        for (args, want) in cases {
+            assert_eq!(parse_system_surfaces(args), *want, "{args:?}");
         }
     }
 

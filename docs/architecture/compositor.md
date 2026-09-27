@@ -31,6 +31,71 @@ pub trait Backend {
 
 The DRM path currently renders via wgpu's GL fallback into a GBM buffer. Direct vello-to-DMA-BUF interop remains future work.
 
+### Who owns the machine's system surfaces
+
+Brightness (backlight and DDC/CI), audio, Wi-Fi, Bluetooth, VPN and the other
+network settings, power profiles, charge limits, time, accounts, printing,
+firmware, virtual input devices, and the session lifecycle (lock via logind,
+log out, switch user, suspend, restart, shut down) all belong to the machine,
+not to whichever shell is running. Exactly one compositor owns them: the
+native compositor on the DRM backend, holding the seat.
+
+The compositor settles this where it chooses its backend
+(`compositor::parse_system_surfaces`, `BackendKind::system_surfaces`), in
+single-threaded startup, and records it with `os_actions::owner::establish`.
+
+- `--backend drm` is `SystemSurfaces::Owned`.
+- `--backend winit` (nested in someone's desktop), `--backend headless` and
+  `--mode hosted` are `SystemSurfaces::Hosted`: something else owns the
+  machine they run on.
+
+Every host-touching executor in `os-actions` asks `owner::admit` first: each
+subprocess, D-Bus call, sysfs and i2c write, uinput device, and the logout
+request. On a hosted shell they refuse with the typed `HostManaged` ("Managed
+by the host system") and nothing reaches the machine. That covers every
+caller at once: brightness keys, Quick Settings, the power menu, agents and
+`tilo-control` through the action catalogue, idle dim and auto-brightness.
+The compositor also registers the machine's own agents and services only when
+it owns the machine: the polkit agent, the NetworkManager secret agent, and
+the power service (logind suspend, lid, critical battery).
+
+The shell shows the same answer instead of failing quietly.
+`SessionActionPolicy` carries it to the power menu, Quick Settings and the
+action catalogue:
+
+- the power menu keeps its rows, disabled, with the reason as their detail
+  line. Lock is the compositor's own lock scene and stays available.
+- Quick Settings disables its sliders and power row with the same reason,
+  and does not read host state.
+- in the catalogue, the Quick Settings effects and log out are
+  `Availability::Unavailable { code: "host_managed" }`. Invoking one returns
+  that refusal.
+
+The answer reaches child processes through `TILO_SYSTEM_SURFACES` (`owned` or
+`hosted`). A shell nested in an owning Tilo session overwrites the value it
+inherited, so its own apps are hosted too. A process that was never told is
+hosted, so a tool started by hand on a developer's desktop cannot reach that
+desktop either. Other launchers that own a seat say so explicitly: the live
+installer runs under `cage` with `TILO_SYSTEM_SURFACES=owned`.
+
+This is a guard against acting on the wrong machine by accident, **not a
+security boundary**: any process can set its own environment. Authority stays
+where it already lives (polkit, logind, file permissions and the sandbox).
+Sandboxed apps start from a cleared environment and never receive `owned`.
+The sandbox gives them no system bus either. When a system app such as
+Settings or VPN is granted real system access, the launcher sets `owned`
+beside that grant, as it does for every other capability it passes into a
+sandbox.
+
+**The hosted product.** The cloud product runs the shell on a non-owning
+backend, on a server that belongs to its operator. No system action there
+reaches the server: its session, power, network and hardware are the
+operator's, not the user's. The device a person views the cloud session from
+keeps its own system surfaces, driven by that device's own Tilo session or
+host desktop. Settings that follow the user (theme, Quick Settings layout,
+personal preferences) still sync as ordinary personal settings. Anything
+machine-shaped reads as "Managed by the host system".
+
 ## Presentation: cadence and threading
 
 Two modules own the presentation path's timing.

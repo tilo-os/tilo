@@ -434,6 +434,10 @@ pub struct QuickSettingsState {
     pub do_not_disturb: bool,
     /// Private clipboard history entries, read when the popover opens.
     pub clipboard_items: usize,
+    /// This shell does not own the machine (nested, headless or hosted):
+    /// its brightness, audio, network and power controls belong to the host
+    /// system, so the panel shows them as managed there rather than acting.
+    pub host_managed: bool,
 }
 
 /// One compositor-authoritative screen exposure projected into trusted
@@ -516,6 +520,7 @@ impl Default for QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            host_managed: false,
         }
     }
 }
@@ -563,6 +568,7 @@ impl QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            host_managed: false,
         }
     }
 

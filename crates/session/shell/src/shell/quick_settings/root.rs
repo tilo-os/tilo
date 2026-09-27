@@ -494,7 +494,9 @@ impl QuickSettingsRoot {
         }
     }
     fn slider_available(&self, state: &QuickSettingsState, i: usize) -> bool {
-        if i == self.volume_slider() {
+        if state.host_managed {
+            false
+        } else if i == self.volume_slider() {
             state.volume_available
         } else {
             !state.displays.is_empty() || state.brightness_available
@@ -1049,6 +1051,7 @@ impl QuickSettingsRoot {
             }
             RootStop::Devices => RootAction::Enter(QsLevel::Devices),
             RootStop::Clipboard => RootAction::Enter(QsLevel::Clipboard),
+            RootStop::PowerProfile if state.host_managed => RootAction::None,
             RootStop::PowerProfile => Self::cycle_power(state),
             RootStop::Edit => {
                 self.edit_mode = true;
@@ -2428,7 +2431,14 @@ impl QuickSettingsRoot {
                 AccessNode::new(Role::Slider)
                     .with_name(self.slider_name(index))
                     .with_value(format!("{:.0}%", value * 100.0))
-                    .with_description(t("qs-slider-a11y-description"))
+                    .with_description(if state.host_managed {
+                        os_actions::HOST_MANAGED_REASON.to_owned()
+                    } else {
+                        t("qs-slider-a11y-description")
+                    })
+                    .with_state(
+                        ui::a11y::AccessState::new().disabled(!self.slider_available(state, index)),
+                    )
             }
             RootStop::Control(_, control) => AccessNode::new(if Self::is_switch(control) {
                 Role::Switch
@@ -2479,6 +2489,9 @@ impl QuickSettingsRoot {
 /// The power row's second line: the battery, and whichever app is keeping
 /// the screen from sleeping.
 fn power_detail(state: &QuickSettingsState) -> String {
+    if state.host_managed {
+        return os_actions::HOST_MANAGED_REASON.to_owned();
+    }
     let power = if state.battery.present {
         t_args(
             "qs-power-battery",
@@ -2504,6 +2517,34 @@ fn power_detail(state: &QuickSettingsState) -> String {
 mod tests {
     use super::*;
     const PANEL: Rect = Rect::new(100., 48., 500., 560.);
+
+    #[test]
+    fn a_shell_that_does_not_own_the_machine_shows_its_controls_as_host_managed() {
+        let mut state = QuickSettingsState::fixture();
+        state.host_managed = true;
+        state.brightness_available = true;
+        state.volume_available = true;
+        let profile = state.power_profile;
+        let mut root = QuickSettingsRoot::default();
+        assert_eq!(power_detail(&state), os_actions::HOST_MANAGED_REASON);
+        for i in 0..root.slider_count() {
+            assert!(
+                !root.slider_available(&state, i),
+                "slider {i} must be disabled"
+            );
+            let node = root.stop_access_node(RootStop::Slider(i), &state);
+            assert!(node.state.disabled);
+            assert_eq!(
+                node.description.as_deref(),
+                Some(os_actions::HOST_MANAGED_REASON)
+            );
+        }
+        assert_eq!(
+            root.activate_stop(RootStop::PowerProfile, &mut state),
+            RootAction::None
+        );
+        assert_eq!(state.power_profile, profile, "the profile is not cycled");
+    }
 
     #[test]
     fn the_power_row_names_the_app_keeping_the_screen_awake() {

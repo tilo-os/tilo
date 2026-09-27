@@ -57,6 +57,7 @@ pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
 pub mod orientation;
+pub mod owner;
 pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
@@ -119,6 +120,7 @@ pub use network::{
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
 };
+pub use owner::{HOST_MANAGED_CODE, HOST_MANAGED_REASON, HostManaged, SystemSurfaces};
 pub use peripheral_forwarding::{
     AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
     ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
@@ -159,6 +161,7 @@ use tracing::warn;
 pub(crate) fn block_on<T>(
     call: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
+    owner::admit("system bus")?;
     tilo_rt::try_app()
         .and_then(|runtime| runtime.block_on(call))
         .map_err(|error| error.to_string())?
@@ -184,6 +187,7 @@ pub trait Dispatcher {
     ///
     /// Returns an error message if that monitor's brightness cannot be set.
     fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+        owner::current().require()?;
         if brightness::BrightnessService::global().set(connector, pct) {
             Ok(())
         } else {
@@ -399,6 +403,9 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
 /// that exceeds it is killed and reported as a timeout, so a wedged daemon degrades to a
 /// stale reading instead of blocking its caller indefinitely.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
+
+#[cfg(test)]
+mod owner_tests;
 
 #[cfg(test)]
 mod dispatcher_tests {

@@ -2125,7 +2125,9 @@ impl ShellOverlayHost {
         let qs_action_slot = std::rc::Rc::new(
             crate::shell::search::providers::actions::SharedQsDispatcher::new(
                 qs_actions,
-                crate::shell::quick_settings::actions::QsActionAvailability::detect(),
+                crate::shell::quick_settings::actions::QsActionAvailability::detect_for(
+                    session_action_policy.surfaces(),
+                ),
             ),
         );
         search_registry.register(std::rc::Rc::new(
@@ -2187,7 +2189,11 @@ impl ShellOverlayHost {
         crate::shell::test_support::ambient_start("overlay production inputs");
         let qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions> =
             std::rc::Rc::new(crate::shell::quick_settings::actions::RealQsActions);
+        // Whether this shell owns the machine, as the compositor established
+        // where it chose its backend. The session policy carries the answer
+        // to the power menu, Quick Settings and the action catalogue.
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
+        let owns_machine = session_action_policy.surfaces().is_owned();
         let (search_registry, room_records, qs_action_slot) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
         let mut host = Self::from_inputs(
@@ -2209,7 +2215,12 @@ impl ShellOverlayHost {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 ),
                 qs_root: QuickSettingsRoot::load_persisted(),
-                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+                // Nothing to read on a machine this shell does not own.
+                qs_refresh: if owns_machine {
+                    crate::shell::quick_settings::refresh::QsRefresh::new()
+                } else {
+                    crate::shell::quick_settings::refresh::QsRefresh::without_os_reads()
+                },
                 qs_actions,
                 qs_action_slot,
                 room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
@@ -2225,7 +2236,10 @@ impl ShellOverlayHost {
         );
         // Offer Switch user only where the display manager can open a greeter
         // beside this session; greetd cannot.
-        host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        host.power_menu = PowerMenu::for_session(
+            os_actions::user_switching_supported(),
+            host.session_action_policy.surfaces(),
+        );
         host
     }
 
@@ -2287,8 +2301,10 @@ impl ShellOverlayHost {
                 projection_overlay: ProjectionOverlay::from_controller(
                     crate::shell::projection::ProjectionController::unavailable(),
                 ),
+                // A fixture describes a full session on its own machine.
                 session_action_policy:
-                    crate::shell::search::providers::SessionActionPolicy::default(),
+                    crate::shell::search::providers::SessionActionPolicy::default()
+                        .with_surfaces(os_actions::SystemSurfaces::Owned),
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::NoPlayers),
             },
         )
@@ -2391,7 +2407,7 @@ impl ShellOverlayHost {
             qs_selected_remote_audio: None,
             qs_selected_remote_capture: None,
             qs_selected_display_mirror: false,
-            power_menu: PowerMenu::default(),
+            power_menu: PowerMenu::for_session(true, inputs.session_action_policy.surfaces()),
             tab_menu: TabContextMenu::default(),
             session_action_channel: std::sync::mpsc::channel(),
             power_bridge: None,
@@ -3149,6 +3165,10 @@ impl ShellOverlayHost {
         // Replacing where quick settings writes means this host is not
         // driving the host, so it must not read from it either.
         self.qs_refresh.disable_os_reads();
+        // The injected dispatcher is the machine this panel drives.
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().quick_settings.host_managed = false;
+        }
         self
     }
 
@@ -3417,6 +3437,9 @@ impl ShellOverlayHost {
         // in Taffy because its position is purely absolute.
         self.notification_stack = Some(NotificationStack::new(chrome.clone()));
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
+        // The panel shows what its dispatcher can reach: nothing, on a
+        // shell that does not own the machine.
+        chrome.borrow_mut().quick_settings.host_managed = self.qs_action_slot.host_managed();
         self.chrome = Some(chrome);
         self
     }
@@ -3443,6 +3466,17 @@ impl ShellOverlayHost {
     /// Headless and screenshot hosts keep an empty private registry.
     pub fn set_session_inhibitors(&mut self, registry: tilo_power_mgmt::InhibitRegistry) {
         self.session_action_policy.attach(registry);
+    }
+
+    /// Present this shell as owning the machine or not, everywhere the
+    /// answer shows: session policy, power menu and Quick Settings.
+    #[cfg(test)]
+    pub(crate) fn set_system_surfaces(&mut self, surfaces: os_actions::SystemSurfaces) {
+        let _ = self.session_action_policy.clone().with_surfaces(surfaces);
+        self.power_menu = PowerMenu::for_session(true, surfaces);
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().quick_settings.host_managed = !surfaces.is_owned();
+        }
     }
 
     pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
@@ -13476,6 +13510,14 @@ impl ShellOverlayHost {
                 true
             }
             PowerMenuClick::Execute(action) => {
+                if let Err(reason) = self.session_action_policy.admit(action) {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome
+                            .borrow_mut()
+                            .push_notification(t("host-session-action-blocked"), reason);
+                    }
+                    return true;
+                }
                 if action == os_actions::SessionAction::Suspend {
                     if let Some(bridge) = &self.power_bridge {
                         bridge.request_suspend();
@@ -13484,14 +13526,6 @@ impl ShellOverlayHost {
                             action,
                             result: Err("power service is unavailable".into()),
                         });
-                    }
-                    return true;
-                }
-                if let Err(reason) = self.session_action_policy.admit(action) {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome
-                            .borrow_mut()
-                            .push_notification(t("host-session-action-blocked"), reason);
                     }
                     return true;
                 }

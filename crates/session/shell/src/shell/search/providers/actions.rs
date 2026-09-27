@@ -2098,6 +2098,12 @@ impl SharedQsDispatcher {
         self.availability.set(availability);
     }
 
+    /// Why every Quick Settings action is unavailable here, when the host
+    /// system manages them.
+    pub(crate) fn host_managed(&self) -> bool {
+        self.availability.get().host_managed
+    }
+
     fn action_available(&self, id: &str) -> bool {
         let available = self.availability.get();
         match id {
@@ -2427,9 +2433,17 @@ fn quick_settings_contract() -> tilo_actions::ActionContract {
     }
 }
 
-fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract {
+fn quick_settings_contract_for(
+    available: bool,
+    host_managed: bool,
+) -> tilo_actions::ActionContract {
     let mut contract = quick_settings_contract();
-    if !available {
+    if host_managed {
+        contract.availability =
+            crate::shell::search::providers::session_actions::system_action_availability(
+                os_actions::SystemSurfaces::Hosted,
+            );
+    } else if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
             reason: "Quick Settings service is unavailable".into(),
@@ -2763,6 +2777,7 @@ impl SearchProvider for ActionsProvider {
             };
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
+            let host_managed = self.qs_actions.host_managed();
             out.push(SearchResult {
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -2773,8 +2788,15 @@ impl SearchProvider for ActionsProvider {
                 subtitle: Some(subtitle.to_string()),
                 score,
                 params: quick_settings_params(id),
-                contract: Some(quick_settings_contract_for(available)),
+                contract: Some(quick_settings_contract_for(available, host_managed)),
                 on_open: Rc::new(move |_doc, _root, chrome, args| {
+                    if host_managed {
+                        return Err(ActionError::Refused(format!(
+                            "action is unavailable ({}): {}",
+                            os_actions::HOST_MANAGED_CODE,
+                            os_actions::HOST_MANAGED_REASON
+                        )));
+                    }
                     if !current_shell_action_authorized(&chrome.borrow(), id) {
                         return Err(ActionError::Refused(format!(
                             "current workspace authority no longer permits {id}"
@@ -4254,6 +4276,7 @@ mod tests {
                 wifi: false,
                 power_profile: true,
                 vpn: false,
+                host_managed: false,
             };
             let provider = ActionsProvider::with_shared_qs_actions(Rc::new(
                 SharedQsDispatcher::new(dispatcher, availability),
@@ -4282,6 +4305,70 @@ mod tests {
                 assert_eq!(contract.availability.is_available(), available, "{id}");
             }
         }
+    }
+
+    #[test]
+    fn a_shell_that_does_not_own_the_machine_refuses_quick_settings_actions_as_host_managed() {
+        let recorder = Rc::new(RecordingQsActions::default());
+        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
+            dispatcher,
+            crate::shell::quick_settings::actions::QsActionAvailability::detect_for(
+                os_actions::SystemSurfaces::Hosted,
+            ),
+        )));
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let supplied = |id: &str| -> Vec<(String, crate::shell::search::action_api::ArgValue)> {
+            use crate::shell::search::action_api::ArgValue;
+            match id {
+                QS_BRIGHTNESS_ID | QS_VOLUME_ID => vec![("percent".into(), ArgValue::Integer(40))],
+                QS_WIFI_ID => vec![("enabled".into(), ArgValue::Boolean(false))],
+                QS_POWER_ID => vec![("profile".into(), ArgValue::Text("saver".into()))],
+                _ => vec![
+                    ("name".into(), ArgValue::Text("Work".into())),
+                    ("enabled".into(), ArgValue::Boolean(true)),
+                ],
+            }
+        };
+        for id in [
+            QS_BRIGHTNESS_ID,
+            QS_VOLUME_ID,
+            QS_WIFI_ID,
+            QS_POWER_ID,
+            QS_VPN_ID,
+        ] {
+            let result = results.iter().find(|result| result.id == id).expect(id);
+            assert_eq!(
+                result
+                    .contract
+                    .as_ref()
+                    .map(|contract| &contract.availability),
+                Some(&tilo_actions::Availability::Unavailable {
+                    code: os_actions::HOST_MANAGED_CODE.into(),
+                    reason: os_actions::HOST_MANAGED_REASON.into(),
+                }),
+                "{id}"
+            );
+            let args = ActionArgs::bind(&result.params, supplied(id)).expect("typed args bind");
+            let refused = (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &args)
+                .expect_err("a host-managed effect is refused");
+            assert!(
+                matches!(&refused, ActionError::Refused(reason) if reason.contains(os_actions::HOST_MANAGED_CODE)),
+                "{id}: {refused:?}"
+            );
+        }
+        assert!(
+            recorder.calls.borrow().is_empty(),
+            "no executor was reached"
+        );
     }
 
     #[derive(Default)]

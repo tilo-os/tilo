@@ -36,6 +36,7 @@ const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 /// Returns an error message if the sysfs write fails and the `brightnessctl` fallback is
 /// either not installed or also fails.
 pub fn set_brightness(pct: f32) -> Result<(), String> {
+    crate::owner::admit("backlight")?;
     let clamped = pct.clamp(0.0, 100.0);
     match set_brightness_in(Path::new(BACKLIGHT), clamped) {
         Ok(()) => Ok(()),

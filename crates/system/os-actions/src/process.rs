@@ -73,6 +73,7 @@ fn path_lookup(binary: &str) -> bool {
 /// writes into an unread pipe deadlocks once the child outfills the pipe buffer, which
 /// `nmcli device wifi list` on a busy band is comfortably large enough to do.
 pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String> {
+    crate::owner::admit(binary)?;
     if !which(binary) {
         return Err(format!("{binary} not installed"));
     }
@@ -103,6 +104,7 @@ pub(crate) fn run_with_input(
     input: &[u8],
     timeout: std::time::Duration,
 ) -> Result<String, String> {
+    crate::owner::admit(binary)?;
     if !which(binary) {
         return Err(format!("{binary} not installed"));
     }
@@ -150,95 +152,102 @@ mod tests {
 
     #[test]
     fn helper_commands_are_bounded_by_output_limits_and_deadlines() {
-        // Phase `helper_output_limits_fail_closed_on_real_subprocesses`.
-        {
-            assert!(which("head"), "head is required for the output-limit probe");
-            let bytes = (MAX_CAPTURE_BYTES + 4096).to_string();
-            let args = ["-c", bytes.as_str(), "/dev/zero"];
-            let capture =
-                run_capture("head", &args).expect_err("oversized stdout must be rejected");
-            assert!(capture.contains("output exceeded"), "{capture}");
+        // Harmless local tools; the owner gate is what is not under test.
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            // Phase `helper_output_limits_fail_closed_on_real_subprocesses`.
+            {
+                assert!(which("head"), "head is required for the output-limit probe");
+                let bytes = (MAX_CAPTURE_BYTES + 4096).to_string();
+                let args = ["-c", bytes.as_str(), "/dev/zero"];
+                let capture =
+                    run_capture("head", &args).expect_err("oversized stdout must be rejected");
+                assert!(capture.contains("output exceeded"), "{capture}");
 
-            let with_input = run_with_input("head", &args, b"", DEFAULT_TIMEOUT)
-                .expect_err("secret-input helper must share the same output ceiling");
-            assert!(with_input.contains("output exceeded"), "{with_input}");
-        }
-        // Phase `a_hanging_command_is_killed_at_the_deadline`.
-        // A command that never exits is killed at the deadline and reported as a timeout rather
-        // than blocking its caller forever — the property the compositor depends on, since the
-        // shell-out helpers run on a worker that would otherwise leak a thread per attempt.
-        // The test calls `run_capture`, so the same guarantee applies to every getter and setter
-        // that routes through it.
-        {
-            // No `sleep` binary means the deadline cannot be exercised. Fail rather than skip: a check
-            // that cannot look is not a check that passed.
-            assert!(
-                which("sleep"),
-                "`sleep` is required to exercise the run_capture deadline"
-            );
-            let over = DEFAULT_TIMEOUT.as_secs_f64() * 4.0;
-            let arg = format!("{over}");
-            let started = Instant::now();
-            let result = run_capture("sleep", &[arg.as_str()]);
-            let elapsed = started.elapsed();
+                let with_input = run_with_input("head", &args, b"", DEFAULT_TIMEOUT)
+                    .expect_err("secret-input helper must share the same output ceiling");
+                assert!(with_input.contains("output exceeded"), "{with_input}");
+            }
+            // Phase `a_hanging_command_is_killed_at_the_deadline`.
+            // A command that never exits is killed at the deadline and reported as a timeout rather
+            // than blocking its caller forever — the property the compositor depends on, since the
+            // shell-out helpers run on a worker that would otherwise leak a thread per attempt.
+            // The test calls `run_capture`, so the same guarantee applies to every getter and setter
+            // that routes through it.
+            {
+                // No `sleep` binary means the deadline cannot be exercised. Fail rather than skip: a check
+                // that cannot look is not a check that passed.
+                assert!(
+                    which("sleep"),
+                    "`sleep` is required to exercise the run_capture deadline"
+                );
+                let over = DEFAULT_TIMEOUT.as_secs_f64() * 4.0;
+                let arg = format!("{over}");
+                let started = Instant::now();
+                let result = run_capture("sleep", &[arg.as_str()]);
+                let elapsed = started.elapsed();
 
-            let err = result.expect_err("a command outliving the deadline must not report success");
-            assert!(
-                err.contains("timed out"),
-                "expected a timeout error, got: {err}"
-            );
-            assert!(
-                elapsed < DEFAULT_TIMEOUT * 2,
-                "run_capture returned after {elapsed:?}, past its own {DEFAULT_TIMEOUT:?} \
-                 deadline — the kill path did not fire"
-            );
-        }
+                let err =
+                    result.expect_err("a command outliving the deadline must not report success");
+                assert!(
+                    err.contains("timed out"),
+                    "expected a timeout error, got: {err}"
+                );
+                assert!(
+                    elapsed < DEFAULT_TIMEOUT * 2,
+                    "run_capture returned after {elapsed:?}, past its own {DEFAULT_TIMEOUT:?} \
+                     deadline — the kill path did not fire"
+                );
+            }
+        });
     }
 
     #[test]
     fn which_resolves_from_path_memoised_and_reports_missing_binaries() {
-        // Phase `which_answers_from_path_without_the_which_binary`.
-        // The probe answers from `$PATH` itself, with no third binary in the question — asserting
-        // on a binary guaranteed present (`sh`) is what makes "the answer is about the subject, not
-        // the prober" checkable, since Fedora's container image ships no `which(1)` to shell out to.
-        {
-            assert!(
-                which("sh"),
-                "`sh` is on $PATH in every environment this runs in; a probe \
-                 that cannot see it is answering about itself"
-            );
-            assert!(
-                !which("tilo-no-such-binary-should-ever-exist"),
-                "a name that is on no $PATH entry must not be reported as found"
-            );
-            // A name containing a separator is a path, not a $PATH lookup.
-            assert!(which("/bin/sh") || which("/usr/bin/sh"));
-            assert!(!which("/definitely/not/here/sh"));
-            assert!(!which(""), "the empty name is not a binary");
-        }
-        // Phase `which_is_memoised_across_calls`.
-        // `which` answers from its memo after the first probe, so repeated shell-outs stop paying a
-        // second process spawn to re-ask a question whose answer cannot change.
-        {
-            let first = which("sh");
-            let started = Instant::now();
-            for _ in 0..200 {
-                assert_eq!(which("sh"), first);
+        // Harmless local tools; the owner gate is what is not under test.
+        crate::owner::testing::with_surfaces(crate::owner::SystemSurfaces::Owned, || {
+            // Phase `which_answers_from_path_without_the_which_binary`.
+            // The probe answers from `$PATH` itself, with no third binary in the question — asserting
+            // on a binary guaranteed present (`sh`) is what makes "the answer is about the subject, not
+            // the prober" checkable, since Fedora's container image ships no `which(1)` to shell out to.
+            {
+                assert!(
+                    which("sh"),
+                    "`sh` is on $PATH in every environment this runs in; a probe \
+                     that cannot see it is answering about itself"
+                );
+                assert!(
+                    !which("tilo-no-such-binary-should-ever-exist"),
+                    "a name that is on no $PATH entry must not be reported as found"
+                );
+                // A name containing a separator is a path, not a $PATH lookup.
+                assert!(which("/bin/sh") || which("/usr/bin/sh"));
+                assert!(!which("/definitely/not/here/sh"));
+                assert!(!which(""), "the empty name is not a binary");
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(200),
-                "200 memoised probes took {:?} — they are still spawning",
-                started.elapsed()
-            );
-        }
-        // Phase `missing_binary_returns_not_installed_error`.
-        // Smoke test: setters that shell out should never panic when the underlying binary is
-        // missing — they must return a `"<binary> not installed"` error string.
-        {
-            let r = run("definitely-not-a-real-binary-tilo-test", &["--help"]);
-            assert!(r.is_err());
-            let msg = r.unwrap_err();
-            assert!(msg.contains("not installed"), "got: {msg}");
-        }
+            // Phase `which_is_memoised_across_calls`.
+            // `which` answers from its memo after the first probe, so repeated shell-outs stop paying a
+            // second process spawn to re-ask a question whose answer cannot change.
+            {
+                let first = which("sh");
+                let started = Instant::now();
+                for _ in 0..200 {
+                    assert_eq!(which("sh"), first);
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_millis(200),
+                    "200 memoised probes took {:?} — they are still spawning",
+                    started.elapsed()
+                );
+            }
+            // Phase `missing_binary_returns_not_installed_error`.
+            // Smoke test: setters that shell out should never panic when the underlying binary is
+            // missing — they must return a `"<binary> not installed"` error string.
+            {
+                let r = run("definitely-not-a-real-binary-tilo-test", &["--help"]);
+                assert!(r.is_err());
+                let msg = r.unwrap_err();
+                assert!(msg.contains("not installed"), "got: {msg}");
+            }
+        });
     }
 }

@@ -191,6 +191,7 @@ mod uinput {
         type Device = UinputGamepadDevice;
 
         fn open_fixed_gamepad(&self) -> io::Result<Self::Device> {
+            crate::owner::admit("uinput").map_err(io::Error::other)?;
             UinputGamepadDevice::open()
         }
     }

@@ -122,6 +122,7 @@ pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
 /// Returns an error message if `pw-dump` is not installed, the monitor process fails to start
 /// or exits, or the monitor's stdout cannot be read.
 pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Result<(), String> {
+    crate::owner::admit("pw-dump")?;
     on_change(active_media_uses().unwrap_or_default());
     if !crate::process::which("pw-dump") {
         return Err("pw-dump not installed".into());
