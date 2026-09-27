@@ -84,14 +84,8 @@ impl crate::host::FilePicker for DesktopFilePicker {
 fn deliver<T: Send + 'static>(
     request: impl std::future::Future<Output = T> + Send + 'static,
 ) -> std::sync::mpsc::Receiver<T> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let wake = crate::wake::WakeHandle::new();
-    drop(tilo_rt::app().spawn_then(request, move |outcome| {
-        // The UI may have moved on (window closed); ignore a dead channel.
-        if tx.send(outcome).is_ok() {
-            wake.wake();
-        }
-    }));
+    let (reply, rx) = crate::wake::reply();
+    drop(tilo_rt::app().spawn_then(request, move |outcome| reply.send(outcome)));
     rx
 }
 

@@ -27,7 +27,6 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::channel;
 
 use jni::JNIEnv;
 use jni::objects::{JObject, JValue};
@@ -39,6 +38,7 @@ use crate::portal::{
     OpenFileOutcome, OpenedFile, PickKind, PickRequest, PortalChannel, PortalOutcome,
 };
 use crate::saf::{self, DocumentResult};
+use crate::wake::reply;
 
 const SAVE_HAS_NO_PATH: &str =
     "android saves to a document, not a path; use `PickRequest::send_save_file`";
@@ -51,10 +51,10 @@ pub(super) struct DocumentPicker;
 
 impl FilePicker for DocumentPicker {
     fn pick(&self, request: PickRequest) -> PortalChannel {
-        let (tx, rx) = channel();
+        let (tx, rx) = reply();
         match request.kind {
             PickKind::Open { .. } => choose_documents(&request, false, move |result| {
-                let _ = tx.send(match result {
+                tx.send(match result {
                     DocumentResult::Picked(uris) => match uris.first().map(|uri| snapshot(uri)) {
                         Some(Ok(path)) => PortalOutcome::Opened(path),
                         Some(Err(error)) => PortalOutcome::Failed(error),
@@ -65,43 +65,43 @@ impl FilePicker for DocumentPicker {
                 });
             }),
             PickKind::Save { .. } => {
-                let _ = tx.send(PortalOutcome::Failed(SAVE_HAS_NO_PATH.to_string()));
+                tx.send(PortalOutcome::Failed(SAVE_HAS_NO_PATH.to_string()));
             }
             PickKind::Directory => {
-                let _ = tx.send(PortalOutcome::Failed(TREE_HAS_NO_PATH.to_string()));
+                tx.send(PortalOutcome::Failed(TREE_HAS_NO_PATH.to_string()));
             }
         }
         rx
     }
 
     fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
-        let (tx, rx) = channel();
+        let (tx, rx) = reply();
         match request.kind {
             PickKind::Open { .. } => choose_documents(&request, true, move |result| {
-                let _ = tx.send(match result {
+                tx.send(match result {
                     DocumentResult::Picked(uris) => snapshots(&uris),
                     DocumentResult::Cancelled => MultiOutcome::Cancelled,
                     DocumentResult::Failed(error) => MultiOutcome::Failed(error),
                 });
             }),
             PickKind::Save { .. } => {
-                let _ = tx.send(MultiOutcome::Failed(SAVE_HAS_NO_PATH.to_string()));
+                tx.send(MultiOutcome::Failed(SAVE_HAS_NO_PATH.to_string()));
             }
             PickKind::Directory => {
-                let _ = tx.send(MultiOutcome::Failed(TREE_HAS_NO_PATH.to_string()));
+                tx.send(MultiOutcome::Failed(TREE_HAS_NO_PATH.to_string()));
             }
         }
         rx
     }
 
     fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        let (tx, rx) = channel();
+        let (tx, rx) = reply();
         if !matches!(request.kind, PickKind::Open { multiple: false }) {
-            let _ = tx.send(OpenFileOutcome::Failed(OPEN_FILE_ONLY.to_string()));
+            tx.send(OpenFileOutcome::Failed(OPEN_FILE_ONLY.to_string()));
             return rx;
         }
         choose_documents(&request, false, move |result| {
-            let _ = tx.send(match result {
+            tx.send(match result {
                 DocumentResult::Picked(uris) => match uris.first() {
                     Some(uri) => open_document(uri, "r"),
                     None => OpenFileOutcome::Cancelled,
@@ -114,16 +114,16 @@ impl FilePicker for DocumentPicker {
     }
 
     fn save_file(&self, request: PickRequest) -> OpenFileChannel {
-        let (tx, rx) = channel();
+        let (tx, rx) = reply();
         let PickKind::Save { suggested_name } = &request.kind else {
-            let _ = tx.send(OpenFileOutcome::Failed(SAVE_FILE_ONLY.to_string()));
+            tx.send(OpenFileOutcome::Failed(SAVE_FILE_ONLY.to_string()));
             return rx;
         };
         let name = saf::document_file_name(Some(suggested_name));
         let filters = request.filters.clone();
         let thread_name = request.thread_name.clone();
         let finish = move |result| {
-            let _ = tx.send(match result {
+            tx.send(match result {
                 DocumentResult::Picked(uris) => match uris.first() {
                     Some(uri) => open_document(uri, "w"),
                     None => OpenFileOutcome::Cancelled,
@@ -155,14 +155,14 @@ impl FilePicker for DocumentPicker {
     }
 
     fn launch(&self, request: LaunchRequest) -> LaunchChannel {
-        let (tx, rx) = channel();
+        let (tx, rx) = reply();
         if request.is_reveal() {
-            let _ = tx.send(LaunchOutcome::Failed(REVEAL_UNSUPPORTED.to_string()));
+            tx.send(LaunchOutcome::Failed(REVEAL_UNSUPPORTED.to_string()));
             return rx;
         }
         let thread_name = request.thread_name.clone();
         crate::portal::spawn_worker(&thread_name, move || {
-            let _ = tx.send(view(&request));
+            tx.send(view(&request));
         });
         rx
     }
