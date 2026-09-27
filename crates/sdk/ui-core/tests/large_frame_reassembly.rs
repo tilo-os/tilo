@@ -34,18 +34,15 @@ fn large_frame_survives_split_reads() {
 
     // Poll B for up to ~2s, accumulating the frame across reads.
     let mut got: Option<Vec<u8>> = None;
-    for _ in 0..40 {
-        thread::sleep(Duration::from_millis(50));
+    tilo_test_env::wait_until("the large snapshot at B", || {
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
             {
                 got = Some(data);
             }
         }
-        if got.is_some() {
-            break;
-        }
-    }
+        got.is_some()
+    });
 
     let data = got.expect("B must receive the large document snapshot");
     assert_eq!(data.len(), big.len(), "payload length must match");

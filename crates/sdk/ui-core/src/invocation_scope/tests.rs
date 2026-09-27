@@ -467,7 +467,7 @@ fn scope_with_original_callback_gate(
                 released
                     .lock()
                     .unwrap()
-                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap();
                 // The original positive policy sample finishes after another
                 // owner/worker has retired this exact shared invocation.
@@ -511,9 +511,7 @@ fn causal_scope_cancel_during_original_callback_fences_worker_effect() {
                 Ok(())
             })
         });
-        gate.entered
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
+        tilo_test_env::recv("the gate to be entered", &gate.entered);
         if cancel {
             job.cancel();
         }
@@ -538,9 +536,7 @@ fn causal_scope_cancel_during_original_callback_fences_owner_check() {
     let deny = gate.deny_other_checks.clone();
     let restore = deny.clone();
     let worker = std::thread::spawn(move || {
-        gate.entered
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
+        tilo_test_env::recv("the gate to be entered", &gate.entered);
         deny.store(true, Ordering::Release);
         let result: Result<(), String> =
             concurrent.with_effect(|| panic!("denied worker effect started"));
