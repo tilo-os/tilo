@@ -17,8 +17,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc};
+use automerge::{AutoCommit, ROOT};
 use tilo_automerge::ApplyIncoming;
 
 use notes::NotesApp;
@@ -54,9 +53,10 @@ fn peers_seed_adopt_and_report_presence_without_duplicating_welcome() {
         let sel = app
             .selected_for_test()
             .expect("a page is selected after sync");
-        let list = NotesDoc::page_blocks_list(&doc, sel).unwrap();
         assert!(
-            doc.length(&list) > 0,
+            NotesDoc::page_block_snapshots(&doc, sel)
+                .iter()
+                .any(|(_, text)| !text.is_empty()),
             "the selected page is seeded with blocks"
         );
     }
@@ -122,9 +122,19 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
         // A "types": splice into the selected page's first block Text in A's
         // doc — exactly the CRDT op A's keystroke produces through the bound
         // editor.
-        let list = NotesDoc::page_blocks_list(&doc_a, sel).unwrap();
-        let t0 = NotesDoc::block_text_obj(&doc_a, &list, 0).expect("block 0 has text");
-        doc_a.splice_text(&t0, 0, 0, "ZZZ-").unwrap();
+        let first = NotesDoc::page_block_snapshots(&doc_a, sel)[0].0.clone();
+        NotesDoc::edit_page_body(
+            &mut doc_a,
+            sel,
+            &qdoc_rich_text::RichTextAction::SpliceText {
+                region: qdoc_rich_text::action::RegionKind::Body,
+                block: first,
+                at: 0,
+                del: 0,
+                ins: "ZZZ-".into(),
+            },
+        )
+        .unwrap();
 
         // The broker delivers A's update to B (a merge of A's full state).
         let mut a_loaded = AutoCommit::load(&doc_a.save()).unwrap();

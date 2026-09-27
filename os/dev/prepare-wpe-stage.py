@@ -27,28 +27,30 @@ def validate(args):
     if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.epoch)
             or int(args.epoch) > 253402300799):
         raise ValueError('WPE epoch must be canonical Unix seconds through year 9999')
-    if not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
-                        + re.escape(args.architecture), args.cache):
+    cache = getattr(args, 'cache', None)
+    if cache is not None and not re.fullmatch(
+            r'registry\.tilo\.so/tilo/tilo-development-wpe-cache-(?:[a-z0-9-]+)?'
+            + re.escape(args.architecture), cache):
         raise ValueError('WPE cache must be a dedicated development repository for this architecture')
-    for name in ('base', 'rpms', 'kernel', 'wpe'):
-        if not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
-            raise ValueError(f'{name} must be an immutable input')
-    if not args.wpe.startswith('registry.tilo.so/tilo/tilo-wpe-buildroot@'):
+    if not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', args.wpe):
         raise ValueError('WPE dependency input must be a pinned WPE buildroot')
 
 
 def build_command(args, iidfile):
     validate(args)
-    return ['podman', '--remote=false', 'build', '--layers', '--skip-unused-stages=true',
-            '--network=none', '--cache-from', args.cache, '--cache-to', args.cache,
-            '--target', 'wpe-builder-1', '--iidfile', str(iidfile),
-            '--source-date-epoch', args.epoch, '--rewrite-timestamp',
-            '--build-context', f'github-assets={args.assets}',
-            '--build-arg', f'BASE_REF={args.base}', '--build-arg', f'RPMS_REF={args.rpms}',
-            '--build-arg', f'KERNEL_RPMS_REF={args.kernel}', '--build-arg', f'WPE_BUILDROOT_REF={args.wpe}',
-            '--build-arg', f'TILO_WPE_SOURCE_DATE_EPOCH={args.epoch}',
-            '--build-arg', f'WPE_BUILD_JOBS={getattr(args, "jobs", 2)}', '--build-arg', 'TILO_WITH_BROWSER=1',
-            '-f', str(args.repo / 'os/Containerfile'), str(args.repo)]
+    command = ['podman', '--remote=false', 'build', '--layers', '--skip-unused-stages=true',
+               '--network=none', '--target', 'wpe-builder-1', '--iidfile', str(iidfile),
+               '--source-date-epoch', args.epoch, '--rewrite-timestamp',
+               '--build-context', f'github-assets={args.assets}',
+               '--build-arg', f'WPE_BUILDROOT_REF={args.wpe}',
+               '--build-arg', f'TILO_WPE_SOURCE_DATE_EPOCH={args.epoch}',
+               '--build-arg', f'WPE_BUILD_JOBS={getattr(args, "jobs", 2)}',
+               '-f', str(args.repo / 'os/Containerfile.wpe'), str(args.repo)]
+    cache = getattr(args, 'cache', None)
+    if cache is not None:
+        insert_at = command.index('--network=none') + 1
+        command[insert_at:insert_at] = ['--cache-from', cache, '--cache-to', cache]
+    return command
 
 
 def image_identity(raw, expected, architecture):
@@ -128,8 +130,9 @@ def prepare(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--jobs', type=int, default=2)
-    for name in ('architecture', 'epoch', 'cache', 'base', 'rpms', 'kernel', 'wpe'):
+    for name in ('architecture', 'epoch', 'wpe'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--cache')
     for name in ('repo', 'assets'):
         parser.add_argument('--' + name, required=True, type=Path)
     try:

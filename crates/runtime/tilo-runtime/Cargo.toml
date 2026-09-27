@@ -6,25 +6,39 @@ publish.workspace = true
 license.workspace = true
 description = "The per-user shared runtime daemon: private profile, native endpoint, app attachment and the MCP projection of the action host."
 
-# Deliberately free of the compositor: the services themselves are supplied
-# by a host through `RuntimeServices`, so this crate builds on stock macOS and
-# on Linux without a Wayland stack.
+# Deliberately free of the compositor: the desktop session supplies its
+# services through `RuntimeServices`, and `standalone` hosts the shared broker
+# and identity service itself, so this crate and its `tilo-runtime`
+# executable build on stock macOS and on Linux without a Wayland stack.
 
 [lib]
 name = "tilo_runtime"
 path = "src/lib.rs"
 
+[[bin]]
+name = "tilo-runtime"
+path = "src/bin/tilo-runtime.rs"
+
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+atomic-file = { path = "../../system/atomic-file" }
 libc.workspace = true
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true
 serde_json.workspace = true
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
+tilo-automerge-isolate.workspace = true
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The document-media capability over the content store, without the mount.
+tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+tilo-identity-host = { path = "../tilo-identity-host" }
 tilo-rt.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tracing.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
@@ -32,6 +46,8 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
+# An ordinary SDK app, to prove the standalone session admits and publishes it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true

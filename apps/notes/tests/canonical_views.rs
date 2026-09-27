@@ -216,32 +216,32 @@ fn stamp_current_runs(
     // synthesize authorship/formatting. Restoration must adopt these existing marks.
     f.records
         .with(&checkout.id, |doc| {
-            let list = NotesDoc::page_blocks_list(doc, page).unwrap();
-            let text = NotesDoc::block_text_obj(doc, &list, index).unwrap();
             let snapshots = NotesDoc::page_block_snapshots(doc, page);
             let body = &snapshots[index].1;
-            doc.mark(
-                &text,
-                automerge::marks::Mark::new(
-                    "author".into(),
-                    f.author.0.clone(),
-                    0,
-                    body.chars().count(),
-                ),
-                automerge::marks::ExpandMark::After,
-            )
-            .unwrap();
-            NotesDoc::set_block_marks(
-                doc,
+            let actions::NotesAction::EditBody { edit, .. } = actions::set_mark_action(
                 page,
                 &snapshots[index].0,
-                &[actions::InlineMarkSpan {
-                    start: 0,
-                    end: body.len(),
-                    mark: actions::InlineMark::Bold,
-                }],
-            )
-            .unwrap();
+                0..body.chars().count(),
+                &ui::widget::marks::Mark::Bold,
+            ) else {
+                unreachable!()
+            };
+            edit_body(doc, page, edit);
+            edit_body(
+                doc,
+                page,
+                qdoc_rich_text::RichTextAction::SetMark {
+                    region: qdoc_rich_text::action::RegionKind::Body,
+                    spans: vec![qdoc_rich_text::action::Span {
+                        block: snapshots[index].0.clone(),
+                        start: 0,
+                        end: body.chars().count(),
+                    }],
+                    name: qdoc::schema::MARK_AUTHOR.to_owned(),
+                    value: Some(qdoc_rich_text::action::MarkVal::Str(f.author.0.clone())),
+                    also_clear: Vec::new(),
+                },
+            );
             doc.commit();
         })
         .unwrap();
@@ -373,6 +373,8 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
         .unwrap();
     assert_eq!(fingerprint(&f, &checkout), before);
     a.type_text("Q");
+    // Closing ends the typed word's step.
+    close_driver(&mut a);
     assert_eq!(revision(&f, &checkout), before.3 + 1);
     f.records
         .read_history(&checkout.id, |doc, history| {
@@ -386,19 +388,24 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             notes::notebook::validate(doc).unwrap();
             let mut snapshot = doc.clone();
             let changes = snapshot.get_changes(&before.0);
-            assert_eq!(changes.len(), 1, "exactly one durable owned action");
-            let context =
-                tilo_actions::ActionContext::from_change_message(changes[0].message().unwrap())
-                    .unwrap();
-            assert_eq!(context.action_label, "Edit note");
             assert_eq!(
-                context.resource.unwrap().id,
-                actions::page_resource_id(f.child)
+                changes.len(),
+                2,
+                "the owned edit and who wrote it, one undo step"
             );
+            for change in &changes {
+                let context =
+                    tilo_actions::ActionContext::from_change_message(change.message().unwrap())
+                        .unwrap();
+                assert_eq!(context.action_label, "Edit note");
+                assert_eq!(
+                    context.resource.unwrap().id,
+                    actions::page_resource_id(f.child)
+                );
+            }
         })
         .unwrap();
     for _ in 0..3 {
-        a.relayout();
         b.relayout();
     }
     assert_eq!(revision(&f, &checkout), before.3 + 1);
@@ -427,7 +434,6 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             );
         })
         .unwrap();
-    close_driver(&mut a);
     close_driver(&mut b);
 }
 
@@ -556,14 +562,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             .unwrap();
         f.records
             .with(&checkout.id, |doc| {
-                NotesDoc::apply_block_ops(
-                    doc,
-                    f.empty,
-                    &[ui::widget::BlockEditOp::Delete {
-                        block_id: empty_block,
-                    }],
-                )
-                .unwrap();
+                remove_block(doc, f.empty, &empty_block);
                 doc.commit();
             })
             .unwrap();
@@ -593,6 +592,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         );
         let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.type_text("f");
+        // Closing ends the typed word's step.
+        close_driver(&mut a);
         assert_eq!(revision(&f, &checkout), before.3 + 1);
         f.records
             .read(&checkout.id, |doc| {
@@ -605,7 +606,6 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
                 );
             })
             .unwrap();
-        close_driver(&mut a);
         close_driver(&mut b);
     }
 
@@ -704,24 +704,24 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         }
     }
 
-    eprintln!("phase parseable_block_spelling_is_preserved_and_shape_errors_install_nothing");
+    eprintln!("phase block_identity_is_preserved_and_shape_errors_install_nothing");
     {
         use automerge::{ReadDoc, transaction::Transactable};
         use ui::widget::AppWidget;
         let f = LegacyFixture::rich();
         let checkout = imported(&f);
-        let spelling = "{AABBCCDD-0123-4567-890A-000000000001}";
-        let block_map = f
+        let (spelling, page_map) = f
             .records
             .with(&checkout.id, |doc| {
-                let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
-                let map = doc.get(&list, 0).unwrap().unwrap().1;
-                doc.put(&map, "id", spelling).unwrap();
-                doc.commit();
-                notes::notebook::validate(doc).unwrap();
-                map
+                let (_, pages) = doc.get(automerge::ROOT, "pages").unwrap().unwrap();
+                let (_, page) = doc.get(&pages, f.root.to_string()).unwrap().unwrap();
+                (
+                    NotesDoc::page_block_snapshots(doc, f.root)[0].0.clone(),
+                    page,
+                )
             })
             .unwrap();
+        let spelling = spelling.as_str();
         let local = payload(f.root, "Editor", Some(spelling), None, 1, 0.0);
         let mut app = app_from_payload(&f, &checkout, &local);
         assert_eq!(app.main_panel_mut().editor().blocks()[0].id, spelling);
@@ -749,7 +749,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         close_driver(&mut a);
         f.records
             .with(&checkout.id, |doc| {
-                doc.put(&block_map, "text", 42).unwrap();
+                doc.put(&page_map, "body", 42).unwrap();
                 doc.commit();
             })
             .unwrap();
