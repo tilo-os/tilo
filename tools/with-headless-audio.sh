@@ -15,11 +15,10 @@ command -v pulseaudio >/dev/null || {
 # small length limit. Use a short private runtime path even if TMPDIR contains
 # spaces or points at a deeply nested build directory.
 audio_dir=$(mktemp -d /tmp/tilo-audio.XXXXXXXX)
-audio_pid=
+audio_started=
 cleanup() {
-    if [ -n "$audio_pid" ]; then
-        kill "$audio_pid" 2>/dev/null || true
-        wait "$audio_pid" 2>/dev/null || true
+    if [ -n "$audio_started" ]; then
+        pulseaudio --kill 2>/dev/null || true
     fi
     rm -rf -- "$audio_dir"
 }
@@ -39,21 +38,18 @@ export TILO_REQUIRE_AUDIO=1
 # Pulse parses module arguments itself after shell quoting has been removed.
 socket_path=${audio_dir//\\/\\\\}/native
 socket_path=${socket_path//\"/\\\"}
-pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
-    --high-priority=no --realtime=no --disable-shm=yes --log-target=stderr -n \
+# With --daemonize=yes the parent returns only after the daemon has loaded
+# its modules and opened the socket, so no readiness polling is needed.
+if ! pulseaudio --daemonize=yes --exit-idle-time=-1 --use-pid-file=yes \
+    --high-priority=no --realtime=no --disable-shm=yes \
+    --log-target="file:$audio_dir/server.log" -n \
     --load="module-null-sink sink_name=tilo_test_output" \
-    --load="module-native-protocol-unix socket=\"$socket_path\" auth-anonymous=1" \
-    >"$audio_dir/server.log" 2>&1 &
-audio_pid=$!
-for ((attempt = 0; attempt < 100; attempt++)); do
-    if [ -S "$audio_dir/native" ]; then
-        if "$@"; then status=0; else status=$?; fi
-        if [ "$status" -ne 0 ]; then cat "$audio_dir/server.log" >&2; fi
-        exit "$status"
-    fi
-    if ! kill -0 "$audio_pid" 2>/dev/null; then break; fi
-    sleep 0.05
-done
-cat "$audio_dir/server.log" >&2
-echo "headless audio failed to expose its isolated endpoint" >&2
-exit 1
+    --load="module-native-protocol-unix socket=\"$socket_path\" auth-anonymous=1"; then
+    cat "$audio_dir/server.log" >&2 2>/dev/null || true
+    echo "headless audio failed to expose its isolated endpoint" >&2
+    exit 1
+fi
+audio_started=1
+if "$@"; then status=0; else status=$?; fi
+if [ "$status" -ne 0 ]; then cat "$audio_dir/server.log" >&2; fi
+exit "$status"
