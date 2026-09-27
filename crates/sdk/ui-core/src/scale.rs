@@ -56,6 +56,51 @@ pub fn physical_font_px(base_font: f32, ui_scale: f32, text_scale: f32, device_s
     base_font * ui_scale * text_scale * device_scale
 }
 
+/// The part of the window that system chrome drawn over it (status and
+/// navigation bars, a display cutout, a soft keyboard) leaves visible, as
+/// logical-pixel insets from each edge. Zero wherever the platform keeps its
+/// chrome outside the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SafeArea {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl SafeArea {
+    /// From `[left, top, right, bottom]` physical-pixel insets.
+    pub fn from_physical(insets: [i32; 4], device_scale: f64) -> Self {
+        let s = if device_scale > 0.0 {
+            device_scale
+        } else {
+            1.0
+        };
+        let [left, top, right, bottom] = insets.map(|inset| f64::from(inset.max(0)) / s);
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// Where content goes in a `viewport` of logical size: its origin and
+    /// size. Insets wider than the viewport leave an empty box, not a negative
+    /// one.
+    pub fn content(&self, viewport: (f64, f64)) -> (vello::kurbo::Point, (f64, f64)) {
+        let left = self.left.min(viewport.0);
+        let top = self.top.min(viewport.1);
+        (
+            vello::kurbo::Point::new(left, top),
+            (
+                (viewport.0 - left - self.right).max(0.0),
+                (viewport.1 - top - self.bottom).max(0.0),
+            ),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +166,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn safe_area_insets_the_content_box_in_logical_pixels() {
+        // A phone in portrait: status bar on top, gesture bar at the bottom.
+        let area = SafeArea::from_physical([0, 128, 0, 63], 2.625);
+        assert!((area.top - 128.0 / 2.625).abs() < 1e-9);
+        let (origin, size) = area.content((411.0, 914.0));
+        assert_eq!(origin.x, 0.0);
+        assert!((origin.y - area.top).abs() < 1e-9);
+        assert!((size.0 - 411.0).abs() < 1e-9);
+        assert!((size.1 - (914.0 - area.top - area.bottom)).abs() < 1e-9);
+
+        // Landscape moves the cutout to a side edge.
+        let (origin, size) = SafeArea::from_physical([128, 0, 0, 63], 2.0).content((1000.0, 400.0));
+        assert_eq!((origin.x, origin.y), (64.0, 0.0));
+        assert_eq!(size, (936.0, 368.5));
+
+        // No chrome over the window: content is the whole viewport.
+        assert_eq!(
+            SafeArea::default().content((800.0, 600.0)),
+            (vello::kurbo::Point::ORIGIN, (800.0, 600.0))
+        );
+        // Negative reports and a zero scale are clamped, and insets larger
+        // than the viewport never produce a negative box.
+        let odd = SafeArea::from_physical([-4, 900, 0, 900], 0.0);
+        assert_eq!(odd.left, 0.0);
+        let (origin, size) = odd.content((300.0, 500.0));
+        assert_eq!(origin.y, 500.0);
+        assert_eq!(size, (300.0, 0.0));
     }
 
     #[test]

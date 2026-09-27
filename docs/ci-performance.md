@@ -67,6 +67,17 @@ crates, which sccache does not store. The
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
 
+When the selection includes an app with an Android host example (an
+`<app>-android` example; today calculator and notes, so every change to the SDK
+crates beneath them), a separate `android` job lints those examples with
+`-D warnings` for `aarch64-linux-android` and `x86_64-linux-android` on an
+ordinary x86-64 runner. It is a type-check, not an APK build: packaging needs
+the Android SDK, and nothing here runs on a device. The builder image carries
+the pinned NDK (`tools/ci/install-android-ndk.sh`); the job runs the same script
+first so a builder published before that recipe change still works, at the cost
+of one ~700 MB download per job until the next builder is promoted. The
+aggregate requires the job exactly when the selector does.
+
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
 check shard counts does not invalidate apps. Graph changes still invalidate

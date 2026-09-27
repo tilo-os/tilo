@@ -426,39 +426,52 @@ fn dragging_a_preview_onto_another_workspace_moves_the_window_there() {
 }
 
 #[test]
-fn a_client_window_moves_as_a_fresh_instance_in_the_destination_sandbox() {
+fn dragging_a_client_window_asks_what_crosses_before_anything_moves() {
     let mut h = Harness::new();
     let elsewhere = h.elsewhere;
-    let _ = h.chrome.borrow_mut().take_surface_close_requests();
+    let queue = shell::shell::portal_dialog::PortalDialogQueue::default();
+    let profiles = tempfile::tempdir().unwrap();
+    {
+        let mut state = h.chrome.borrow_mut();
+        state.window_transfers.set_dialog_queue(queue.clone());
+        state.window_transfers.set_attended(|| true);
+        state
+            .window_transfers
+            .set_data_home(profiles.path().to_path_buf());
+        let _ = state.take_surface_close_requests();
+    }
     let from = h.preview_of("Notes");
     let to = h.room_row("Elsewhere");
     h.mouse_drag(from, to);
 
-    let moved = h.tabs_in(elsewhere);
-    assert_eq!(moved.len(), 1);
-    assert_eq!(moved[0].id, CLIENT_TAB);
-    match &moved[0].tile {
-        TileContent::LocalApp {
-            app_id,
-            label,
-            note,
-        } => {
-            assert_eq!(app_id, CLIENT_APP);
-            assert_eq!(label, "Notes");
-            assert!(
-                note.is_empty(),
-                "unanswered, so the launcher opens it in the destination"
-            );
-        }
-        other => panic!("the running process must not cross sandboxes, got {other:?}"),
-    }
-    let close_requests = h.chrome.borrow_mut().take_surface_close_requests();
-    drop(h);
-    assert_eq!(
-        close_requests,
-        [CLIENT_SURFACE],
-        "the instance in the old sandbox is asked to close"
+    assert!(
+        h.tabs_in(elsewhere).is_empty(),
+        "nothing moves before the answer"
     );
+    assert!(h.tabs_in(h.home()).iter().any(|tab| {
+        tab.id == CLIENT_TAB
+            && matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == CLIENT_SURFACE)
+    }));
+    let mut sheet = shell::shell::portal_dialog::PortalDialogController::new(queue);
+    assert!(sheet.pump(), "the drop puts up the transfer sheet");
+    let view = sheet.view().expect("the transfer sheet");
+    assert!(view.title().contains("Notes") && view.title().contains("Elsewhere"));
+    // This client saved no record that can travel, so the only offer is a
+    // new window there; its own window is never asked to close.
+    assert_eq!(view.choices().len(), 1);
+    assert!(sheet.confirm());
+    shell::shell::window_transfer::tick(&mut h.chrome.borrow_mut());
+    let opened = h.tabs_in(elsewhere);
+    let close_requests = h.chrome.borrow_mut().take_surface_close_requests();
+    let still_home = h.tabs_in(h.home()).iter().any(|tab| tab.id == CLIENT_TAB);
+    drop(h);
+    assert!(matches!(
+        opened.as_slice(),
+        [tab] if matches!(&tab.tile, TileContent::LocalApp { app_id, note, .. }
+            if app_id == CLIENT_APP && note.is_empty())
+    ));
+    assert!(still_home);
+    assert!(close_requests.is_empty());
 }
 
 #[test]

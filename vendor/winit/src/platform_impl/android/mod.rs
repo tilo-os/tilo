@@ -384,6 +384,13 @@ impl<T: 'static> EventLoop<T> {
                     MotionAction::Up | MotionAction::PointerUp => Some(event::TouchPhase::Ended),
                     MotionAction::Move => Some(event::TouchPhase::Moved),
                     MotionAction::Cancel => Some(event::TouchPhase::Cancelled),
+                    // Explore-by-touch arrives as hover. Left unhandled, it
+                    // continues into the activity's view hierarchy, where an
+                    // accessibility delegate can answer it.
+                    MotionAction::HoverEnter | MotionAction::HoverMove | MotionAction::HoverExit => {
+                        input_status = InputStatus::Unhandled;
+                        None
+                    },
                     _ => {
                         None // TODO mouse events
                     },

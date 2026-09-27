@@ -809,8 +809,9 @@ mod launch_tests {
                     .nodes
                     .into_iter()
                     .find(|(_, node)| {
-                        node.label()
-                            .is_some_and(|label| label.ends_with(": 1 field"))
+                        node.label().is_some_and(|label| {
+                            label.ends_with(": Edited osk.suggestions_enabled")
+                        })
                     })
                     .expect("exported recorded preference version")
                     .0;

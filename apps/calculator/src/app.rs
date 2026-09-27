@@ -827,6 +827,15 @@ impl CalculatorApp {
             )
     }
 
+    /// Escape with no drawer to dismiss and no expression to clear is left to
+    /// the host, whose Back then navigates out of the app.
+    fn escape_is_idle(&self, key: &WKey) -> bool {
+        matches!(key, WKey::Named(NamedKey::Escape))
+            && self.model.mode == Mode::Calc
+            && !self.calc.sidebar_open()
+            && self.model.expr.is_empty()
+    }
+
     fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
@@ -1488,8 +1497,8 @@ impl Widget for CalculatorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
+                *handled = !self.escape_is_idle(&key_event.logical_key);
                 self.on_key(&key_event.logical_key, *modifiers, state);
-                *handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
@@ -2864,6 +2873,23 @@ mod tests {
             let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
             app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
             assert_eq!(app.model.mode, Mode::Graph3d, "ctrl+3 switches to Graph 3D");
+        }
+
+        // phase escape_clears_then_leaves_an_empty_calculator_to_the_host
+        {
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            let escape = WKey::Named(NamedKey::Escape);
+            app.calc.snap_sidebar(true);
+            assert!(!app.escape_is_idle(&escape), "Escape dismisses the drawer");
+            app.on_key(&escape, none, &mut st.doc);
+            assert!(!app.calc.sidebar_open());
+            app.on_key(&WKey::Character("7".into()), none, &mut st.doc);
+            assert!(!app.escape_is_idle(&escape), "Escape clears the expression");
+            app.on_key(&escape, none, &mut st.doc);
+            assert!(app.model.expr.is_empty());
+            assert!(app.escape_is_idle(&escape), "nothing left for Escape to do");
+            assert!(!app.escape_is_idle(&WKey::Named(NamedKey::Backspace)));
         }
 
         // phase typing_into_graph2d_field_updates_active_func

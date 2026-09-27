@@ -72,14 +72,8 @@ fn destination_ids(encoded: &EncodedAction, source: Uuid, duplicate: bool) -> BT
         let mut ids = BTreeSet::new();
         for page in pages {
             assert!(ids.insert(page.destination.parse().unwrap()));
-            for (_, destination) in page.blocks {
-                assert!(ids.insert(destination.parse().unwrap()));
-            }
         }
-        assert!(
-            ids.len() > 2,
-            "actual rich blocks must receive independent IDs"
-        );
+        assert_eq!(ids.len(), 2, "every copied page receives an id of its own");
         ids
     } else {
         let NotesAction::UpsertPage(page) = action else {
