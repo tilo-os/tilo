@@ -11,6 +11,7 @@ use std::rc::Rc;
 use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::shell::state::{GroupId, TabId, TileContent, WorkspaceId};
@@ -172,16 +173,27 @@ fn move_rows(
             continue;
         };
         rows.push(SearchResult {
-            kind: ResourceKind::Custom("Tabs".into()),
+            kind: ResourceKind::Tab,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id,
-            title: format!("Move tab “{title}” to workspace “{}”", other.name),
-            subtitle: Some(format!(
-                "App {app} · from workspace “{}” · group {group_id} · tab {tab_id}",
-                workspace.name
+            title: t_args(
+                "search-window-move-tab",
+                &[
+                    ("tab", title.as_str().into()),
+                    ("workspace", other.name.as_str().into()),
+                ],
+            ),
+            subtitle: Some(t_args(
+                "search-window-move-tab-detail",
+                &[
+                    ("app", app.into()),
+                    ("workspace", workspace.name.as_str().into()),
+                    ("group", group_id.to_string().into()),
+                    ("tab", tab_id.to_string().into()),
+                ],
             )),
-            badge: Some("Tab".into()),
+            badge: Some(t("search-badge-tab")),
             score: row_score,
             params: Vec::new(),
             contract: Some(move_contract()),
@@ -197,12 +209,8 @@ fn move_rows(
 
 pub struct DesktopWindowsProvider;
 
-static KINDS: std::sync::LazyLock<Vec<ResourceKind>> = std::sync::LazyLock::new(|| {
-    vec![
-        ResourceKind::Custom("Tabs".into()),
-        ResourceKind::Custom("Window groups".into()),
-    ]
-});
+static KINDS: std::sync::LazyLock<Vec<ResourceKind>> =
+    std::sync::LazyLock::new(|| vec![ResourceKind::Tab, ResourceKind::WindowGroup]);
 
 impl DesktopWindowsProvider {
     pub fn new() -> Self {
@@ -237,6 +245,10 @@ impl SearchProvider for DesktopWindowsProvider {
         "Desktop Windows"
     }
 
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-desktop-windows")
+    }
+
     fn resource_kinds(&self) -> &[ResourceKind] {
         &KINDS
     }
@@ -245,6 +257,10 @@ impl SearchProvider for DesktopWindowsProvider {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass that emits every window, tab and group row with its localized copy"
+    )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
         let Some(workspace) = tree.desktop.active_workspace() else {
@@ -260,7 +276,12 @@ impl SearchProvider for DesktopWindowsProvider {
                     .find(|tab| tab.id == group.active_tab)
                     .or_else(|| group.tabs.first())
                     .map_or_else(
-                        || format!("Window group {group_id}"),
+                        || {
+                            t_args(
+                                "search-window-group-untitled",
+                                &[("group", group_id.to_string().into())],
+                            )
+                        },
                         |tab| tab.title.clone(),
                     );
                 let group_id_string = Self::group_close_id(group_id);
@@ -269,19 +290,24 @@ impl SearchProvider for DesktopWindowsProvider {
                     &[&group_title, &workspace.name, &strip.name, &group_id_string],
                 ) {
                     rows.push(SearchResult {
-                        kind: ResourceKind::Custom("Window groups".into()),
+                        kind: ResourceKind::WindowGroup,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
                         id: group_id_string,
-                        title: format!("Close window group “{group_title}”"),
-                        subtitle: Some(format!(
-                            "Workspace “{}” · strip “{}” · group {} · {} tabs",
-                            workspace.name,
-                            strip.name,
-                            group_id,
-                            group.tabs.len()
+                        title: t_args(
+                            "search-window-close-group",
+                            &[("group", group_title.as_str().into())],
+                        ),
+                        subtitle: Some(t_args(
+                            "search-window-close-group-detail",
+                            &[
+                                ("workspace", workspace.name.as_str().into()),
+                                ("strip", strip.name.as_str().into()),
+                                ("group", group_id.to_string().into()),
+                                ("count", group.tabs.len().into()),
+                            ],
                         )),
-                        badge: Some("Window group".into()),
+                        badge: Some(t("search-badge-window-group")),
                         score: row_score,
                         params: Vec::new(),
                         contract: Some(close_contract()),
@@ -304,25 +330,36 @@ impl SearchProvider for DesktopWindowsProvider {
                         &[&title, app, &workspace.name, &strip.name, &id],
                     ) {
                         rows.push(SearchResult {
-                        kind: ResourceKind::Custom("Tabs".into()),
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        provider_id: PROVIDER_ID.into(),
-                        id,
-                        title: format!("Close tab “{title}”"),
-                        subtitle: Some(format!(
-                            "App {app} · workspace “{}” · strip “{}” · group {group_id} · tab {tab_id}",
-                            workspace.name, strip.name
-                        )),
-                        badge: Some("Tab".into()),
-                        score: row_score,
-                        params: Vec::new(),
-                        contract: Some(close_contract()),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                            close_tab(chrome, group_id, tab_id)
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
+                            kind: ResourceKind::Tab,
+                            operation_kind: tilo_actions::OperationKind::Effect,
+                            provider_id: PROVIDER_ID.into(),
+                            id,
+                            title: t_args(
+                                "search-window-close-tab",
+                                &[("tab", title.as_str().into())],
+                            ),
+                            subtitle: Some(t_args(
+                                "search-window-close-tab-detail",
+                                &[
+                                    ("app", app.into()),
+                                    ("workspace", workspace.name.as_str().into()),
+                                    ("strip", strip.name.as_str().into()),
+                                    ("group", group_id.to_string().into()),
+                                    ("tab", tab_id.to_string().into()),
+                                ],
+                            )),
+                            badge: Some(t("search-badge-tab")),
+                            score: row_score,
+                            params: Vec::new(),
+                            contract: Some(close_contract()),
+                            on_open: Rc::new(
+                                move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
+                                    close_tab(chrome, group_id, tab_id)
+                                },
+                            ),
+                            on_invoke: None,
+                            on_begin_invoke: None,
+                        });
                     }
                     rows.extend(move_rows(
                         ctx.needle,

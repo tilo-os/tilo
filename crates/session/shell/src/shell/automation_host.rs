@@ -363,7 +363,17 @@ pub fn check_triggers(
         }
         keymap
             .check_action_chord(&chord, Some(&target))
-            .map_err(|error| format!("{} cannot run the shortcut: {error}", chord.display()))?;
+            .map_err(|error| match error {
+                settings_store::hardware::ShortcutConfigError::Fixed(id) => format!(
+                    "{} cannot run the shortcut: the desktop uses it for “{}”",
+                    chord.display(),
+                    settings_store::keyboard_shortcuts::fixed_shortcut(id).map_or_else(
+                        || id.to_string(),
+                        |fixed| crate::shell::i18n::t(fixed.label_key)
+                    )
+                ),
+                error => format!("{} cannot run the shortcut: {error}", chord.display()),
+            })?;
         if let Some(other) = others.iter().find(|other| {
             other.id != shortcut.id
                 && other.triggers.iter().any(|trigger| {

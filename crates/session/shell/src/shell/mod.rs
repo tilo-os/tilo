@@ -76,6 +76,7 @@ pub mod hosted_inputs;
 pub mod i18n;
 pub mod identity_provisioning;
 pub mod input_policy;
+pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub mod launcher;
 pub mod magnifier;

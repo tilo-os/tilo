@@ -626,4 +626,79 @@ mod tests {
             assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
         }
     }
+
+    /// Only a signed bearer invitation admits anyone. A token in an earlier
+    /// shape (one that predates room hosts, roles and recipient binding, or a
+    /// libp2p-era token naming a multiaddr) is refused even when the key that
+    /// signed it is genuine, so it can never admit someone at a default role
+    /// the inviter did not sign.
+    #[test]
+    fn tokens_in_an_earlier_shape_are_refused() {
+        let key = iroh::SecretKey::from_bytes(&[16; 32]);
+        let ws = workspace(7);
+        let current = make_invite_token(&key, &ws, &endpoint(&key, 2468), 3600).expect("invite");
+        assert!(validate_invite_token(&current).is_ok());
+        let mut fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&B64.decode(&current).unwrap()).unwrap();
+
+        // A token that predates hosts, pins, roles and recipient binding:
+        // the fields the signature now covers are simply absent.
+        let mut legacy = fields.clone();
+        for field in [
+            "host_addrs",
+            "home_host_pins",
+            "owner_device_cert",
+            "role",
+            "invite_nonce",
+            "recipient_user_public_key",
+            "invitee_name",
+        ] {
+            legacy.remove(field);
+        }
+        let legacy = B64.encode(serde_json::to_vec(&legacy).unwrap());
+        assert!(
+            validate_invite_token(&legacy).is_err(),
+            "a pre-bearer token must not validate"
+        );
+
+        // A libp2p-era token: a multiaddr and a protobuf public key in place
+        // of an endpoint address, signed by the same key.
+        let mut libp2p = serde_json::Map::new();
+        libp2p.insert("workspace_id".into(), fields["workspace_id"].clone());
+        libp2p.insert("room_id".into(), fields["room_id"].clone());
+        libp2p.insert("owner_peer_id".into(), key.public().to_string().into());
+        let mut public_protobuf = vec![0x08, 0x01, 0x12, 0x20];
+        public_protobuf.extend_from_slice(key.public().as_bytes());
+        libp2p.insert(
+            "owner_public_key".into(),
+            B64.encode(public_protobuf).into(),
+        );
+        libp2p.insert("owner_addr".into(), "/ip4/127.0.0.1/tcp/1234".into());
+        libp2p.insert(
+            "expiry_unix_seconds".into(),
+            fields["expiry_unix_seconds"].clone(),
+        );
+        let signature = key.sign(serde_json::to_vec(&libp2p).unwrap().as_slice());
+        libp2p.insert(
+            "signature".into(),
+            serde_json::to_value(signature.to_bytes().to_vec()).unwrap(),
+        );
+        let libp2p = B64.encode(serde_json::to_vec(&libp2p).unwrap());
+        assert!(
+            validate_invite_token(&libp2p).is_err(),
+            "a libp2p-era token must not validate"
+        );
+
+        // Neither shape is accepted into a workspace either.
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace(99));
+        assert!(accept_invite_into(&mut tree, WorkspaceId(99), &legacy).is_err());
+        assert!(accept_invite_into(&mut tree, WorkspaceId(99), &libp2p).is_err());
+
+        // And a current token stops validating the moment a signed field is
+        // dropped from it.
+        fields.remove("role");
+        let stripped = B64.encode(serde_json::to_vec(&fields).unwrap());
+        assert!(validate_invite_token(&stripped).is_err());
+    }
 }

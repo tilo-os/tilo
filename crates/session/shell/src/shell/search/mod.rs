@@ -22,6 +22,7 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
+use crate::shell::i18n::t;
 use action_api::{ActionArgs, ActionError, ActionParam};
 
 /// Keep shell-only providers (including network directories) behind the same
@@ -131,14 +132,19 @@ pub enum ResourceKind {
     Creator,
     Video,
     Playlist,
+    /// An open tab on the desktop, as a target for window actions.
+    Tab,
+    /// Tabs sharing one window frame.
+    WindowGroup,
     /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
     Custom(String),
 }
 
 impl ResourceKind {
-    /// Human-readable label used in the filter chip strip and group
-    /// headers. `Custom` variants surface their own string verbatim.
-    pub fn label(&self) -> &str {
+    /// Stable English name, independent of the desktop's language: the
+    /// source of the chip strip's scriptable `palette:filter:*` address and
+    /// the control socket's `kind` field. `Custom` variants carry their own.
+    pub fn id(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
             ResourceKind::Application => "Applications",
@@ -150,7 +156,30 @@ impl ResourceKind {
             ResourceKind::Creator => "Creators",
             ResourceKind::Video => "Videos",
             ResourceKind::Playlist => "Playlists",
+            ResourceKind::Tab => "Tabs",
+            ResourceKind::WindowGroup => "Window groups",
             ResourceKind::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Human-readable label used in the filter chip strip and group
+    /// headers, in the desktop's language. `Custom` variants surface their
+    /// own string verbatim.
+    pub fn label(&self) -> String {
+        match self {
+            ResourceKind::Action => t("search-kind-actions"),
+            ResourceKind::Application => t("search-kind-applications"),
+            ResourceKind::HostApplication => t("search-kind-host-apps"),
+            ResourceKind::Note => t("search-kind-notes"),
+            ResourceKind::Record => t("search-kind-records"),
+            ResourceKind::File => t("search-kind-files"),
+            ResourceKind::Folder => t("search-kind-folders"),
+            ResourceKind::Creator => t("search-kind-creators"),
+            ResourceKind::Video => t("search-kind-videos"),
+            ResourceKind::Playlist => t("search-kind-playlists"),
+            ResourceKind::Tab => t("search-kind-tabs"),
+            ResourceKind::WindowGroup => t("search-kind-window-groups"),
+            ResourceKind::Custom(s) => s.clone(),
         }
     }
 
@@ -170,7 +199,9 @@ impl ResourceKind {
             ResourceKind::Creator => (7, String::new()),
             ResourceKind::Video => (8, String::new()),
             ResourceKind::Playlist => (9, String::new()),
-            ResourceKind::Custom(s) => (10, s.clone()),
+            ResourceKind::Tab => (10, String::new()),
+            ResourceKind::WindowGroup => (11, String::new()),
+            ResourceKind::Custom(s) => (12, s.clone()),
         }
     }
 }
@@ -428,8 +459,13 @@ pub trait SearchProvider {
     /// Stable id, used to route results back for de-dup and to build the
     /// per-scope filter (`ActiveApp` looks up providers by this id).
     fn id(&self) -> &str;
-    /// Group header when results are grouped by provider rather than kind.
+    /// Stable English name, independent of the desktop's language.
     fn name(&self) -> &str;
+    /// The provider as people read it (e.g. in "Disable Notes search"), in
+    /// the desktop's language.
+    fn display_name(&self) -> String {
+        self.name().to_string()
+    }
     /// The set of kinds this provider CAN return; contributes chips to
     /// the palette's filter strip.
     fn resource_kinds(&self) -> &[ResourceKind];
@@ -730,7 +766,7 @@ impl SearchRegistry {
     /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
         let provider_id = provider.id().to_string();
-        let descriptor = (provider_id.clone(), provider.name().to_string());
+        let descriptor = (provider_id.clone(), provider.display_name());
         let mut catalog = self.provider_catalog.borrow_mut();
         if let Some(existing) = catalog.iter_mut().find(|(id, _)| id == &descriptor.0) {
             *existing = descriptor;

@@ -53,6 +53,7 @@ suites = [
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
   "os/tests/boot_order_enlist_test.py",
+  "os/tests/bootc_transient_state.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
@@ -511,7 +512,11 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "docs/shell-navigation-keyboard-map.md"]
+inputs = [
+  "apps/notes/tilo-app.toml",
+  "crates/sdk/ui-core/assets/fonts/",
+  "docs/shell-navigation-keyboard-map.md",
+]
 readers = [
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
@@ -519,7 +524,13 @@ readers = [
   "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
   "crates/session/shell/src/shell/topbar_chrome.rs",
+  "crates/session/shell/tests/replay_headless_e2e.rs",
 ]
+
+[[cargo]]
+package = "settings"
+inputs = ["crates/agent/provider-config/src/"]
+readers = ["apps/settings/src/i18n.rs"]
 
 [[cargo]]
 package = "calculator"

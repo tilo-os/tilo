@@ -306,11 +306,21 @@ impl SearchScope {
     /// `ActiveApp` renders the tab's title instead of this static
     /// string. Must not share a word with the kind-filter chips —
     /// those name result sorts, this names places.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            SearchScope::ActiveApp => "This app",
-            SearchScope::Workspace => "Workspace",
-            SearchScope::All => "Everywhere",
+            SearchScope::ActiveApp => crate::shell::i18n::t("search-scope-this-app"),
+            SearchScope::Workspace => crate::shell::i18n::t("search-scope-workspace"),
+            SearchScope::All => crate::shell::i18n::t("search-scope-everywhere"),
+        }
+    }
+
+    /// Stable, language-independent address of the scope segment
+    /// (`palette:scope:<slug>`).
+    pub const fn slug(self) -> &'static str {
+        match self {
+            SearchScope::ActiveApp => "this-app",
+            SearchScope::Workspace => "workspace",
+            SearchScope::All => "everywhere",
         }
     }
 
@@ -338,10 +348,10 @@ pub enum OpenTarget {
 impl OpenTarget {
     /// Appended to launchable palette rows so a result says where it
     /// will land before the user commits.
-    pub fn result_hint(self) -> &'static str {
+    pub fn result_hint(self) -> String {
         match self {
-            OpenTarget::Beside => "Opens in rightmost space",
-            OpenTarget::Here(_) => "Opens here, as a tab",
+            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
+            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
         }
     }
 }

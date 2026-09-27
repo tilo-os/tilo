@@ -35,7 +35,7 @@ pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3
 
 /// One block of a copied rich fragment — text plus its formatting (marks and
 /// paragraph attributes), with mark offsets relative to the block's own text.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct ClipBlock {
     pub kind: String,
     pub text: String,
@@ -600,6 +600,12 @@ impl Resource for RichText {
         registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
     }
 
+    /// Every edit, derived from [`RichTextAction`] itself, so agents read the
+    /// vocabulary from the `apply` descriptor.
+    fn action_schema() -> Option<serde_json::Value> {
+        Some(<RichTextAction as tilo_resource::JsonSchema>::json_schema())
+    }
+
     /// The outline and what is on screen. A search over every paragraph of a
     /// long document reads the document; the editor offers that as its own
     /// Find.
@@ -628,3 +634,6 @@ impl Resource for RichText {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod schema_tests;

@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    "vendor/automerge",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -171,6 +172,8 @@ members = [
     "crates/packaging/tilo-app-package-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
+    "crates/packaging/registry-web",
+    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
 
     # Examples
@@ -693,6 +696,11 @@ winit = { path = "vendor/winit" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# Automerge 0.12.0 folded the formatting changes of several text objects in
+# one diff into a single patch on the first of them, so undoing a mark set
+# across several paragraphs cleared it from the first alone. Keep a mark
+# change on its own object. See vendor/automerge/TILO-PATCH.md.
+automerge = { path = "vendor/automerge" }
 # Vendored vello variants size scratch buffers from the current scene and
 # include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }

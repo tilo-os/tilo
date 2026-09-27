@@ -271,7 +271,7 @@ fn shortcut_for_id(id: &str) -> Option<ShortcutAction> {
 fn shortcut_choices() -> impl Iterator<Item = (String, String)> {
     crate::panes::keyboard_shortcuts::shortcut_actions()
         .into_iter()
-        .map(|(action, label)| (shortcut_id(action), label.to_string()))
+        .map(|(action, label)| (shortcut_id(action), label))
 }
 
 /// Stylus button choices as `(id, label key, action)`, before the shortcuts.
@@ -1087,7 +1087,7 @@ impl MouseKeyboardPane {
             ));
         }
         source_rows.push(caption(
-            "Input methods (Pinyin, Mozc, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
+            "Input methods (Pinyin, Anthy, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
         ));
         card("Input sources", rows(source_rows))
     }

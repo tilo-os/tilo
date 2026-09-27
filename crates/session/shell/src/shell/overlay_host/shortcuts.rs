@@ -7,8 +7,9 @@ use std::collections::BTreeSet;
 
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 
-use crate::shell::fixed_chords::FixedChordAction;
 use crate::shell::i18n::{t, t_args};
+use crate::shell::keyboard_shortcuts;
+use settings_store::keyboard_shortcuts::catalogue;
 use winit::event::Modifiers;
 use winit::keyboard::{Key, NamedKey};
 
@@ -152,100 +153,56 @@ pub(super) fn shortcut_chord_from_event(
     })
 }
 
+/// What `action` is called, as the keyboard-shortcuts catalogue names it.
 pub(super) fn shortcut_action_label(action: ShortcutAction) -> String {
-    let key = match action {
-        ShortcutAction::Search => "shortcut-action-search",
-        ShortcutAction::WorkspaceOverview => "shortcut-action-workspace-overview",
-        ShortcutAction::Lock => "shortcut-action-lock",
-        ShortcutAction::QuickSettings => "shortcut-action-quick-settings",
-        ShortcutAction::ShortcutHelp => "shortcut-action-shortcut-help",
-        ShortcutAction::Remark => "shortcut-action-remark",
-        ShortcutAction::FocusPreviousWindow => "shortcut-action-focus-previous-window",
-        ShortcutAction::FocusNextWindow => "shortcut-action-focus-next-window",
-        ShortcutAction::PreviousTab => "shortcut-action-previous-tab",
-        ShortcutAction::NextTab => "shortcut-action-next-tab",
-        ShortcutAction::PreviousStrip => "shortcut-action-previous-strip",
-        ShortcutAction::NextStrip => "shortcut-action-next-strip",
-        ShortcutAction::PreviousWorkspace => "shortcut-action-previous-workspace",
-        ShortcutAction::NextWorkspace => "shortcut-action-next-workspace",
-        ShortcutAction::ToggleMaximize => "shortcut-action-toggle-maximize",
-        ShortcutAction::DetachTab => "shortcut-action-detach-tab",
-        ShortcutAction::AttachTabLeft => "shortcut-action-attach-tab-left",
-        ShortcutAction::AttachTabRight => "shortcut-action-attach-tab-right",
-        ShortcutAction::MoveGroupLeft => "shortcut-action-move-group-left",
-        ShortcutAction::MoveGroupRight => "shortcut-action-move-group-right",
-        ShortcutAction::MoveGroupToPreviousDisplay => {
-            "shortcut-action-move-group-to-previous-display"
-        }
-        ShortcutAction::MoveGroupToNextDisplay => "shortcut-action-move-group-to-next-display",
-        ShortcutAction::ResizeNarrower => "shortcut-action-resize-narrower",
-        ShortcutAction::ResizeWider => "shortcut-action-resize-wider",
-        ShortcutAction::ReopenClosedTab => "shortcut-action-reopen-closed-tab",
-        ShortcutAction::FocusGroup1 => "shortcut-action-focus-group-1",
-        ShortcutAction::FocusGroup2 => "shortcut-action-focus-group-2",
-        ShortcutAction::FocusGroup3 => "shortcut-action-focus-group-3",
-        ShortcutAction::FocusGroup4 => "shortcut-action-focus-group-4",
-        ShortcutAction::FocusGroup5 => "shortcut-action-focus-group-5",
-        ShortcutAction::FocusGroup6 => "shortcut-action-focus-group-6",
-        ShortcutAction::FocusGroup7 => "shortcut-action-focus-group-7",
-        ShortcutAction::FocusGroup8 => "shortcut-action-focus-group-8",
-        ShortcutAction::FocusGroup9 => "shortcut-action-focus-group-9",
-        ShortcutAction::OpenFiles => "shortcut-action-open-files",
-        ShortcutAction::OpenTerminal => "shortcut-action-open-terminal",
-        ShortcutAction::ClipboardHistory => "shortcut-action-clipboard-history",
-        ShortcutAction::Notifications => "shortcut-action-notifications",
-        ShortcutAction::ToggleFullscreen => "shortcut-action-toggle-fullscreen",
-        ShortcutAction::ToggleMagnifier => "shortcut-action-toggle-magnifier",
-        ShortcutAction::MagnifierZoomIn => "shortcut-action-magnifier-zoom-in",
-        ShortcutAction::MagnifierZoomOut => "shortcut-action-magnifier-zoom-out",
-        ShortcutAction::PowerMenu => "shortcut-action-power-menu",
-        ShortcutAction::NextInputSource => "shortcut-action-next-input-source",
-        ShortcutAction::EmojiPicker => "shortcut-action-emoji-picker",
-    };
-    t(key)
+    t(&action.label_key())
 }
 
 /// Compact, non-editable reference shown below the configurable navigation
-/// pairs. Configurable actions use their live chord so the guide never
-/// promises a default the user has rebound; fixed chords come from the
-/// shell's one fixed-chord table.
+/// pairs. Every row is a keyboard-shortcuts catalogue entry, so the guide
+/// lists the same names and live chords as the action door and Settings,
+/// and never promises a default the user has rebound.
 pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
-    let chord = |action| {
-        shortcuts
-            .bindings
-            .get(&action)
-            .map_or_else(|| t("guide-unassigned"), shortcut_guide_chord)
-    };
-    let fixed = |action| {
-        crate::shell::fixed_chords::entry_for(action).map(|entry| (entry.label(), entry.display()))
-    };
-    let editable = |key: &str, action| Some((t(key), chord(action)));
+    let entries = catalogue(shortcuts);
     [
-        fixed(FixedChordAction::SwitchWindows),
-        fixed(FixedChordAction::CloseTab),
+        "fixed-switch-windows",
+        "fixed-close-tab",
         // Changing workspace is already an editable navigation pair above;
         // its essentials slot names how to undo a close instead.
-        editable("guide-reopen-closed-tab", ShortcutAction::ReopenClosedTab),
-        fixed(FixedChordAction::NewWindow),
-        fixed(FixedChordAction::AddTab),
-        fixed(FixedChordAction::DuplicateTab),
-        editable("shortcut-global-search", ShortcutAction::Search),
+        ShortcutAction::ReopenClosedTab.id(),
+        "fixed-new-window",
+        "fixed-add-tab",
+        "fixed-duplicate-tab",
+        ShortcutAction::Search.id(),
         // Super+Space and a lone Super tap search too; the keyboard map
         // lists every alias, the guide keeps one row per action.
-        editable("guide-emoji", ShortcutAction::EmojiPicker),
-        editable("guide-overview", ShortcutAction::WorkspaceOverview),
-        editable("guide-quick-settings", ShortcutAction::QuickSettings),
-        fixed(FixedChordAction::WorkspaceWheel),
-        editable("shortcut-lock", ShortcutAction::Lock),
-        fixed(FixedChordAction::Screenshot),
-        fixed(FixedChordAction::DisplayLayout),
-        fixed(FixedChordAction::CaptureScreenshot),
-        fixed(FixedChordAction::OpenTerminal),
-        fixed(FixedChordAction::PictureInPicture),
-        fixed(FixedChordAction::SaveRecentReplay),
+        ShortcutAction::EmojiPicker.id(),
+        ShortcutAction::WorkspaceOverview.id(),
+        ShortcutAction::QuickSettings.id(),
+        "fixed-workspace-wheel",
+        ShortcutAction::Lock.id(),
+        "fixed-screenshot",
+        "fixed-display-layout",
+        "fixed-capture-screenshot",
+        "fixed-open-terminal",
+        "fixed-picture-in-picture",
+        "fixed-save-recent-replay",
     ]
     .into_iter()
-    .flatten()
+    .filter_map(|id| entries.iter().find(|entry| entry.id == id))
+    .map(|entry| {
+        let chords = if entry.chords.is_empty() {
+            t("guide-unassigned")
+        } else {
+            entry
+                .chords
+                .iter()
+                .map(shortcut_guide_chord)
+                .collect::<Vec<_>>()
+                .join("  /  ")
+        };
+        (keyboard_shortcuts::label(entry), chords)
+    })
     .collect()
 }
 
@@ -309,13 +266,5 @@ pub(super) fn shortcut_reference_group_height(compact: bool) -> f64 {
 }
 
 pub(super) fn shortcut_guide_chord(chord: &KeyChord) -> String {
-    let display = chord.display();
-    let Some((modifiers, key)) = display.rsplit_once('+') else {
-        return display;
-    };
-    if key.chars().count() == 1 {
-        format!("{modifiers}+{}", key.to_uppercase())
-    } else {
-        display
-    }
+    keyboard_shortcuts::chord_text(chord)
 }

@@ -26,7 +26,7 @@ pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
     entries
 }
 
-/// Input-method engines (Pinyin, Mozc, Hangul) the image ships, listed with
+/// Input-method engines (Pinyin, Anthy, Hangul) the image ships, listed with
 /// the layouts: they are chosen, ordered and switched exactly like them.
 fn input_method_entries(installed: impl Fn(InputMethodEngine) -> bool) -> Vec<CatalogEntry> {
     InputMethodEngine::ALL
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn installed_input_method_engines_are_offered_as_sources() {
         let entries = input_method_entries(|engine| {
-            engine != settings_store::hardware::InputMethodEngine::Mozc
+            engine != settings_store::hardware::InputMethodEngine::Anthy
         });
         assert_eq!(
             entries,

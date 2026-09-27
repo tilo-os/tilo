@@ -3226,7 +3226,7 @@ impl CalendarApp {
     /// independent axes:
     ///
     /// * **sidebar** — responsive inline panel / overlay drawer, delegated to
-    ///   [`Sidebar`] so its state and geometry stay together.
+    ///   [`Sidebar`] (backed by the shared [`ui::widget::SidebarDrawer`]).
     /// * **editor** — a centered modal card floating over the still-visible
     ///   calendar at/above [`EDITOR_OVERLAY_MIN`]; a full-screen page that
     ///   replaces the calendar below it (only one of {calendar, detail} is laid

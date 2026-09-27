@@ -29,6 +29,8 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 # Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
 # signed-bytes shape matches the rest of Tilo's signed wire types.
 collab-types           = { path = "../../collab/collab-types" }
+# Canonical registry target spellings, shared with the manifest's `[target]`.
+registry-types = { path = "../registry-types" }
 
 blake3.workspace = true
 getrandom.workspace = true

@@ -26,7 +26,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "crates/sdk/ui-core/src/accesskit_bridge.rs": "\n".join([
                     "ak.set_live(match politeness",
                     "ak.set_live_atomic()",
-                    "if !access.state.protected",
+                    "if !secret && let Some(value) = value",
                 ]),
                 "crates/session/shell/src/compositor/accessibility.rs": "\n".join([
                     "accesskit_unix::Adapter",

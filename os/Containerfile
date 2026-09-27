@@ -1272,7 +1272,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Documents/Downloads/… folders host apps expect. `geoclue2` is the service
 # xdg-desktop-portal's Location portal asks; without it every request fails.
 # Fcitx5 is the composing input method the compositor starts when a Pinyin,
-# Mozc or Hangul input source is active; it reaches apps through
+# Anthy or Hangul input source is active; it reaches apps through
 # input-method-v2 on a private display, so neither its toolkit IM modules nor
 # its Qt configuration tool (the session writes its configuration) are wanted.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -1288,7 +1288,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     geoclue2 \
     fcitx5 \
     fcitx5-chinese-addons \
-    fcitx5-mozc \
+    fcitx5-anthy \
     fcitx5-hangul \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -2713,7 +2713,12 @@ RUN case "${TILO_GENERATION}" in \
 # Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
 # that backend the same way; the forbidden-package gate below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
-RUN find /usr/lib /usr/lib64 \
+# Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
+# does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
+# warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
+# recreated on first boot rather than baked into the image.
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+    find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
          -o -name 'libevent_openssl.so*' \
@@ -2742,6 +2747,7 @@ RUN find /usr/lib /usr/lib64 \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && python3 /run/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 
 # ---------------------------------------------------------------------------

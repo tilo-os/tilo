@@ -1,11 +1,16 @@
-//! Editable compositor shortcuts. The Settings CRDT is only the form model;
+//! Editable compositor shortcuts. The rows are the desktop's keyboard
+//! shortcut catalogue ([`settings_store::keyboard_shortcuts`]), the same one
+//! the shell publishes on the action door and the shortcut guide shows. The
+//! Settings CRDT is only the form model and never a replayable setting;
 //! accepted bindings are validated and atomically persisted through the
 //! shared typed contract the compositor consumes.
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
+use crate::i18n::t;
 use crate::widgets::{card, rows, setting_row};
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
@@ -15,343 +20,68 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-const SEARCH: &str = "shortcuts.search";
-const OVERVIEW: &str = "shortcuts.overview";
-const LOCK: &str = "shortcuts.lock";
-const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
-const REMARK: &str = "shortcuts.remark";
 const VIM_MODE: &str = "shortcuts.vim_mode";
 
 fn draft_key(key: &str) -> String {
     format!("{key}.edit")
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete shortcut catalog stays contiguous so its action/key/label mapping is auditable"
-)]
-fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> {
-    [
-        (
-            ShortcutAction::Search,
-            SEARCH,
-            "Open search",
-            "Search apps, documents, settings and actions",
-        ),
-        (
-            ShortcutAction::WorkspaceOverview,
-            OVERVIEW,
-            "Workspace overview",
-            "Show the infinite workspace map",
-        ),
-        (
-            ShortcutAction::Lock,
-            LOCK,
-            "Lock the screen",
-            "Always handled before applications",
-        ),
-        (
-            ShortcutAction::QuickSettings,
-            QUICK_SETTINGS,
-            "Quick Settings",
-            "Open the shell control surface",
-        ),
-        (
-            ShortcutAction::Remark,
-            REMARK,
-            "Say something about this",
-            "Pick any part of any app and send a remark to a colleague or feedback to Tilo",
-        ),
-        (
-            ShortcutAction::ShortcutHelp,
-            "shortcuts.help",
-            "Desktop help",
-            "F1 opens the desktop guide anywhere; Super+Shift+/ (Super+?) is the configurable shortcut for the same guide",
-        ),
-        (
-            ShortcutAction::FocusPreviousWindow,
-            "shortcuts.focus_previous_window",
-            "Focus previous window",
-            "Move the viewport left along the current strip",
-        ),
-        (
-            ShortcutAction::FocusNextWindow,
-            "shortcuts.focus_next_window",
-            "Focus next window",
-            "Move the viewport right along the current strip",
-        ),
-        (
-            ShortcutAction::PreviousTab,
-            "shortcuts.previous_tab",
-            "Previous tab",
-            "Cycle tabs in the focused window group",
-        ),
-        (
-            ShortcutAction::NextTab,
-            "shortcuts.next_tab",
-            "Next tab",
-            "Cycle tabs in the focused window group",
-        ),
-        (
-            ShortcutAction::PreviousStrip,
-            "shortcuts.previous_strip",
-            "Previous strip",
-            "Move the view to the strip above",
-        ),
-        (
-            ShortcutAction::NextStrip,
-            "shortcuts.next_strip",
-            "Next strip",
-            "Move the view to the strip below",
-        ),
-        (
-            ShortcutAction::PreviousWorkspace,
-            "shortcuts.previous_workspace",
-            "Previous workspace",
-            "Move the view to the workspace above",
-        ),
-        (
-            ShortcutAction::NextWorkspace,
-            "shortcuts.next_workspace",
-            "Next workspace",
-            "Move the view to the workspace below",
-        ),
-        (
-            ShortcutAction::ToggleMaximize,
-            "shortcuts.toggle_maximize",
-            "Maximize or restore window",
-            "Super+Up toggles the focused window group",
-        ),
-        (
-            ShortcutAction::DetachTab,
-            "shortcuts.detach_tab",
-            "Move tab to new group",
-            "Pull the active tab out into its own adjacent window group",
-        ),
-        (
-            ShortcutAction::AttachTabLeft,
-            "shortcuts.attach_tab_left",
-            "Move tab into group on left",
-            "Join the active tab to the adjacent window group",
-        ),
-        (
-            ShortcutAction::AttachTabRight,
-            "shortcuts.attach_tab_right",
-            "Move tab into group on right",
-            "Join the active tab to the adjacent window group",
-        ),
-        (
-            ShortcutAction::MoveGroupLeft,
-            "shortcuts.move_group_left",
-            "Move group left",
-            "Reorder the focused window group",
-        ),
-        (
-            ShortcutAction::MoveGroupRight,
-            "shortcuts.move_group_right",
-            "Move group right",
-            "Reorder the focused window group",
-        ),
-        (
-            ShortcutAction::MoveGroupToPreviousDisplay,
-            "shortcuts.move_group_to_previous_display",
-            "Move group to display on left",
-            "Show the focused window group on the neighbouring display",
-        ),
-        (
-            ShortcutAction::MoveGroupToNextDisplay,
-            "shortcuts.move_group_to_next_display",
-            "Move group to display on right",
-            "Show the focused window group on the neighbouring display",
-        ),
-        (
-            ShortcutAction::ResizeNarrower,
-            "shortcuts.resize_narrower",
-            "Make window narrower",
-            "Reduce the focused group's width",
-        ),
-        (
-            ShortcutAction::ResizeWider,
-            "shortcuts.resize_wider",
-            "Make window wider",
-            "Increase the focused group's width",
-        ),
-        (
-            ShortcutAction::ReopenClosedTab,
-            "shortcuts.reopen_closed_tab",
-            "Reopen closed tab",
-            "Bring back the tab closed most recently in this workspace",
-        ),
-        (
-            ShortcutAction::FocusGroup1,
-            "shortcuts.focus_group_1",
-            "Window 1",
-            "Focus the first window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup2,
-            "shortcuts.focus_group_2",
-            "Window 2",
-            "Focus the second window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup3,
-            "shortcuts.focus_group_3",
-            "Window 3",
-            "Focus the third window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup4,
-            "shortcuts.focus_group_4",
-            "Window 4",
-            "Focus the fourth window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup5,
-            "shortcuts.focus_group_5",
-            "Window 5",
-            "Focus the fifth window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup6,
-            "shortcuts.focus_group_6",
-            "Window 6",
-            "Focus the sixth window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup7,
-            "shortcuts.focus_group_7",
-            "Window 7",
-            "Focus the seventh window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup8,
-            "shortcuts.focus_group_8",
-            "Window 8",
-            "Focus the eighth window in the current strip",
-        ),
-        (
-            ShortcutAction::FocusGroup9,
-            "shortcuts.focus_group_9",
-            "Window 9",
-            "Focus the ninth window in the current strip",
-        ),
-        (
-            ShortcutAction::OpenFiles,
-            "shortcuts.open_files",
-            "Open Files",
-            "Browse this workspace's files",
-        ),
-        (
-            ShortcutAction::OpenTerminal,
-            "shortcuts.open_terminal",
-            "Open a terminal",
-            "Beside the focused window",
-        ),
-        (
-            ShortcutAction::ClipboardHistory,
-            "shortcuts.clipboard_history",
-            "Clipboard history",
-            "Paste something copied earlier",
-        ),
-        (
-            ShortcutAction::Notifications,
-            "shortcuts.notifications",
-            "Notifications",
-            "Show recent notifications",
-        ),
-        (
-            ShortcutAction::ToggleFullscreen,
-            "shortcuts.toggle_fullscreen",
-            "Full screen",
-            "Make the focused window full screen, or restore it",
-        ),
-        (
-            ShortcutAction::ToggleMagnifier,
-            "shortcuts.toggle_magnifier",
-            "Magnifier",
-            "Turn screen magnification on or off",
-        ),
-        (
-            ShortcutAction::MagnifierZoomIn,
-            "shortcuts.magnifier_zoom_in",
-            "Magnifier zoom in",
-            "Magnify more, turning the magnifier on if it is off",
-        ),
-        (
-            ShortcutAction::MagnifierZoomOut,
-            "shortcuts.magnifier_zoom_out",
-            "Magnifier zoom out",
-            "Magnify less, down to off",
-        ),
-        (
-            ShortcutAction::PowerMenu,
-            "shortcuts.power_menu",
-            "Power menu",
-            "Lock, log out, restart or shut down",
-        ),
-        (
-            ShortcutAction::NextInputSource,
-            "shortcuts.next_input_source",
-            "Next keyboard layout",
-            "Switch input source and remember the choice",
-        ),
-        (
-            ShortcutAction::EmojiPicker,
-            "shortcuts.emoji_picker",
-            "Emoji",
-            "Search for an emoji and insert it where you are typing",
-        ),
-    ]
-    .to_vec()
+/// The form-model key of a rebindable action (`shortcuts.quick_settings`).
+fn durable_key(action: ShortcutAction) -> String {
+    format!("shortcuts.{}", action.id().replace('-', "_"))
 }
 
-/// The stable durable-key catalogue shared by the visible recorder rows and
-/// the Settings resource tree.  Keeping this next to [`entries`] makes it
-/// impossible for Ctrl+K (or an agent) to expose only a partial shortcut
-/// surface when a new compositor shortcut is added to the page.
-pub(crate) fn resource_entries() -> Vec<(&'static str, &'static str)> {
-    entries()
+/// Every rebindable action, in catalogue order.
+fn rebindable() -> impl Iterator<Item = ShortcutAction> {
+    ShortcutAction::ALL
         .into_iter()
-        .map(|(_, key, label, _)| (key, label))
-        .collect()
+        .filter(|action| action.rebindable())
 }
 
 /// Every shortcut the page lists, with its name, in page order — what a pen
 /// or pad button can be set to run.
-pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, &'static str)> {
-    entries()
-        .into_iter()
-        .map(|(action, _, label, _)| (action, label))
+pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
+    rebindable()
+        .map(|action| (action, t(&action.label_key())))
         .collect()
 }
 
-/// Whether `key` names one of this pane's durable shortcut preferences.
-/// Presentation drafts/errors intentionally do not pass this boundary.
-pub(crate) fn is_durable_key(key: &str) -> bool {
-    key == VIM_MODE || resource_entries().iter().any(|(known, _)| *known == key)
+fn chords_text(chords: &[KeyChord]) -> String {
+    if chords.is_empty() {
+        return t("settings-shortcut-unassigned");
+    }
+    chords
+        .iter()
+        .map(KeyChord::display)
+        .collect::<Vec<_>>()
+        .join("  /  ")
 }
 
-fn is_desktop_navigation(action: ShortcutAction) -> bool {
-    !matches!(
-        action,
-        ShortcutAction::Search
-            | ShortcutAction::WorkspaceOverview
-            | ShortcutAction::Lock
-            | ShortcutAction::QuickSettings
-            | ShortcutAction::Remark
-            | ShortcutAction::ShortcutHelp
-            | ShortcutAction::OpenFiles
-            | ShortcutAction::OpenTerminal
-            | ShortcutAction::ClipboardHistory
-            | ShortcutAction::Notifications
-            | ShortcutAction::ToggleMagnifier
-            | ShortcutAction::MagnifierZoomIn
-            | ShortcutAction::MagnifierZoomOut
-            | ShortcutAction::PowerMenu
-            | ShortcutAction::NextInputSource
-            | ShortcutAction::EmojiPicker
-    )
+fn entry_row(entry: &ShortcutEntry) -> Box<dyn Widget> {
+    let label = t(&entry.label_key);
+    match entry.action.filter(|_| entry.rebindable) {
+        Some(action) => {
+            let key = durable_key(action);
+            setting_row(
+                &label,
+                Box::new(ShortcutRecorder::new(
+                    &key,
+                    &draft_key(&key),
+                    &entry
+                        .chords
+                        .first()
+                        .map(KeyChord::display)
+                        .unwrap_or_default(),
+                    &entry
+                        .defaults
+                        .first()
+                        .map(KeyChord::display)
+                        .unwrap_or_default(),
+                )),
+            )
+        }
+        None => crate::widgets::value_row(&label, &chords_text(&entry.chords)),
+    }
 }
 
 pub struct ShortcutPane {
@@ -391,46 +121,29 @@ impl Default for ShortcutPane {
 
 impl ShortcutPane {
     fn composition(&self) -> Box<dyn Widget> {
-        let mut system: Vec<Box<dyn Widget>> = Vec::new();
-        let mut desktop: Vec<Box<dyn Widget>> = vec![setting_row(
-            "Vim navigation (H J K L)",
-            Box::new(
-                Toggle::new("settings.shortcuts.vim_mode", &draft_key(VIM_MODE))
-                    .with_id("shortcuts.vim_mode"),
-            ),
-        )];
-        let defaults = ShortcutConfig::default();
-        for (action, key, label, _) in entries() {
-            let value = self
-                .config
-                .bindings
-                .get(&action)
-                .map(KeyChord::display)
-                .unwrap_or_default();
-            let default = defaults
-                .bindings
-                .get(&action)
-                .map(KeyChord::display)
-                .unwrap_or_default();
-            let row = setting_row(
-                label,
-                Box::new(ShortcutRecorder::new(
-                    key,
-                    &draft_key(key),
-                    &value,
-                    &default,
-                )),
-            );
-            if is_desktop_navigation(action) {
-                desktop.push(row);
-            } else {
-                system.push(row);
-            }
-        }
-        let mut cards = vec![
-            card("System", rows(system)),
-            card("Desktop navigation", rows(desktop)),
-        ];
+        let entries = catalogue(&self.config);
+        let mut cards: Vec<Box<dyn Widget>> = ShortcutCategory::ALL
+            .into_iter()
+            .map(|category| {
+                let mut body: Vec<Box<dyn Widget>> = Vec::new();
+                if category == ShortcutCategory::Navigation {
+                    body.push(setting_row(
+                        &t("settings-shortcuts-vim"),
+                        Box::new(
+                            Toggle::new("settings.shortcuts.vim_mode", &draft_key(VIM_MODE))
+                                .with_id("shortcuts.vim_mode"),
+                        ),
+                    ));
+                }
+                body.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| entry.category == category)
+                        .map(entry_row),
+                );
+                card(&t(&category.label_key()), rows(body))
+            })
+            .collect();
         if !self.config.actions.is_empty() {
             let mut actions: Vec<Box<dyn Widget>> = self
                 .config
@@ -438,10 +151,10 @@ impl ShortcutPane {
                 .iter()
                 .map(|bound| crate::widgets::value_row(&bound.label, &bound.chord.display()))
                 .collect();
-            actions.push(crate::widgets::caption(
-                "A saved shortcut's keyboard trigger binds its chord here; change or remove it in the shortcut.",
-            ));
-            cards.push(card("Actions", rows(actions)));
+            actions.push(crate::widgets::caption(&t(
+                "settings-shortcuts-actions-caption",
+            )));
+            cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
         }
         crate::widgets::cards(cards)
     }
@@ -463,15 +176,16 @@ pub fn build() -> Box<dyn Widget> {
 impl Widget for ShortcutPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
-            for (action, key, _, _) in entries() {
+            for action in rebindable() {
+                let key = durable_key(action);
                 let value = self
                     .config
                     .bindings
                     .get(&action)
                     .map(KeyChord::display)
                     .unwrap_or_default();
-                let _ = state.put(root, key, value.clone());
-                let _ = state.put(root, draft_key(key), value.clone());
+                let _ = state.put(root, &key, value.clone());
+                let _ = state.put(root, draft_key(&key), value.clone());
                 self.last_text.insert(action, value);
             }
             let _ = state.put(root, VIM_MODE, self.desktop_controls.vim_mode);
@@ -500,7 +214,9 @@ impl Widget for ShortcutPane {
                 let _ = state.put(root, draft_key(VIM_MODE), vim);
             }
         }
-        for (action, key, _, _) in entries() {
+        for action in rebindable() {
+            let key = durable_key(action);
+            let key = key.as_str();
             let Some(value) = read_str_or_text(state, root, key) else {
                 continue;
             };
@@ -517,7 +233,7 @@ impl Widget for ShortcutPane {
                 });
                 if valid.is_ok() && self.config.save().is_ok() {
                     self.last_text.insert(action, draft.clone());
-                    self.dispatch(state, &set_text_action(key, draft));
+                    let _ = state.put(root, key, draft);
                     let _ = state.put(root, format!("{key}.error"), false);
                 } else {
                     let _ = state.put(root, draft_key(key), value);
@@ -534,7 +250,7 @@ impl Widget for ShortcutPane {
                 self.last_text.insert(action, value);
                 let _ = state.put(root, format!("{key}.error"), false);
             } else if let Some(previous) = self.last_text.get(&action).cloned() {
-                self.dispatch(state, &set_text_action(key, previous.clone()));
+                let _ = state.put(root, key, previous.clone());
                 let _ = state.put(root, draft_key(key), previous.clone());
                 let _ = state.put(root, format!("{key}.error"), true);
             }
@@ -661,7 +377,11 @@ impl Widget for ShortcutPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Default bindings, help text, conflict rollback and the vim-mode shell contract.
+
+    const SEARCH: &str = "shortcuts.search";
+    const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
+
+    /// Default bindings, catalogue rows, conflict rollback and the vim-mode shell contract.
     #[test]
     fn shortcut_bindings_seed_explain_and_persist_safely() {
         // Case `seeds_real_default_bindings`.
@@ -675,17 +395,25 @@ mod tests {
             );
         }
 
-        // Case `help_setting_explains_fixed_and_configurable_routes`.
+        // Case `rows_are_the_shortcut_catalogue`.
         {
-            let (_, _, label, description) = entries()
-                .into_iter()
-                .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
-                .expect("help shortcut entry");
-            assert_eq!(label, "Desktop help");
-            assert!(description.contains("Super+Shift+/"));
-            assert!(description.contains("Super+?"));
-            assert!(description.contains("F1"));
-            assert!(description.contains("same guide"));
+            let listed: Vec<String> = rebindable().map(durable_key).collect();
+            assert!(listed.contains(&QUICK_SETTINGS.to_string()));
+            assert!(
+                !listed.contains(&"shortcuts.lock".to_string()),
+                "the lock chord is shown, not offered for editing"
+            );
+            for entry in catalogue(&ShortcutConfig::default()) {
+                assert_ne!(
+                    t(&entry.label_key),
+                    entry.label_key,
+                    "{} has no name in the Settings catalogue",
+                    entry.id
+                );
+            }
+            for category in ShortcutCategory::ALL {
+                assert_ne!(t(&category.label_key()), category.label_key());
+            }
         }
 
         // Case `conflicting_edit_is_rolled_back`.
@@ -694,11 +422,11 @@ mod tests {
             let mut pane = ShortcutPane::default();
             let mut doc = AutoCommit::new();
             pane.sync(&mut doc, &automerge::ROOT);
-            let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
+            let _ = doc.put(&automerge::ROOT, QUICK_SETTINGS, "Super+k");
             pane.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
-                read_str_or_text(&doc, &automerge::ROOT, LOCK).as_deref(),
-                Some("Super+l")
+                read_str_or_text(&doc, &automerge::ROOT, QUICK_SETTINGS).as_deref(),
+                Some("Super+q")
             );
         }
 

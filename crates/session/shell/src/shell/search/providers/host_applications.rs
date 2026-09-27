@@ -11,6 +11,7 @@
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
+use crate::shell::i18n::{t, t_args};
 use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -258,12 +259,15 @@ impl HostApplicationsProvider {
                 ResourceKind::HostApplication,
                 self.id(),
                 app.desktop_id.clone(),
-                format!("Open {}", app.name),
+                t_args("search-host-app-open", &[("app", app.name.as_str().into())]),
                 // "Unconfined" is not decoration: this app is about to get
                 // the user's real home directory.
-                Some(format!(
-                    "{} · unconfined host app · {}",
-                    app.source_label, app.desktop_id
+                Some(t_args(
+                    "search-host-app-subtitle",
+                    &[
+                        ("source", app.source_label.into()),
+                        ("id", app.desktop_id.as_str().into()),
+                    ],
                 )),
                 score,
                 move |_doc, _root, chrome: &Chrome| {
@@ -377,6 +381,9 @@ impl SearchProvider for HostApplicationsProvider {
     }
     fn name(&self) -> &str {
         HOST_APPLICATIONS_KIND
+    }
+    fn display_name(&self) -> String {
+        t("search-provider-host-apps")
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds

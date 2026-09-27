@@ -104,67 +104,90 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard guide
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-vim-navigation = Vim navigation
+shortcut-dismiss = Dismiss
 
-# What an editable shortcut does, completing “Press a new shortcut to …”
-shortcut-action-search = open search
-shortcut-action-remark = say something about what you picked
-shortcut-action-workspace-overview = open the workspace overview
-shortcut-action-lock = lock the screen
-shortcut-action-quick-settings = open Quick Settings
-shortcut-action-shortcut-help = open this guide
-shortcut-action-focus-previous-window = focus the previous window
-shortcut-action-focus-next-window = focus the next window
-shortcut-action-previous-tab = select the previous tab
-shortcut-action-next-tab = select the next tab
-shortcut-action-previous-strip = select the previous strip
-shortcut-action-next-strip = select the next strip
-shortcut-action-previous-workspace = select the previous workspace
-shortcut-action-next-workspace = select the next workspace
-shortcut-action-toggle-maximize = maximize or restore the window
-shortcut-action-detach-tab = move the tab into a new group
-shortcut-action-attach-tab-left = move the tab into the group on the left
-shortcut-action-attach-tab-right = move the tab into the group on the right
-shortcut-action-move-group-left = move the group left
-shortcut-action-move-group-right = move the group right
-shortcut-action-move-group-to-previous-display = move the group to the display on the left
-shortcut-action-move-group-to-next-display = move the group to the display on the right
-shortcut-action-resize-narrower = make the window narrower
-shortcut-action-resize-wider = make the window wider
-shortcut-action-reopen-closed-tab = reopen the tab you closed last
-shortcut-action-focus-group-1 = focus the first window in the strip
-shortcut-action-focus-group-2 = focus the second window in the strip
-shortcut-action-focus-group-3 = focus the third window in the strip
-shortcut-action-focus-group-4 = focus the fourth window in the strip
-shortcut-action-focus-group-5 = focus the fifth window in the strip
-shortcut-action-focus-group-6 = focus the sixth window in the strip
-shortcut-action-focus-group-7 = focus the seventh window in the strip
-shortcut-action-focus-group-8 = focus the eighth window in the strip
-shortcut-action-focus-group-9 = focus the ninth window in the strip
-shortcut-action-open-files = open Files
-shortcut-action-open-terminal = open a terminal
-shortcut-action-clipboard-history = open clipboard history
-shortcut-action-notifications = open notifications
-shortcut-action-toggle-fullscreen = make the window full screen or restore it
-shortcut-action-toggle-magnifier = turn the magnifier on or off
-shortcut-action-magnifier-zoom-in = magnify more
-shortcut-action-magnifier-zoom-out = magnify less
-shortcut-action-power-menu = open the power menu
-shortcut-action-next-input-source = switch to the next keyboard layout
-shortcut-action-emoji-picker = insert an emoji
+# What each changeable desktop shortcut is called
+shortcut-name-search = Global search
+shortcut-name-workspace-overview = Overview
+shortcut-name-lock = Lock
+shortcut-name-quick-settings = Quick Settings
+shortcut-name-shortcut-help = Desktop help
+shortcut-name-remark = Say something about this
+shortcut-name-focus-previous-window = Focus previous window
+shortcut-name-focus-next-window = Focus next window
+shortcut-name-previous-tab = Previous tab
+shortcut-name-next-tab = Next tab
+shortcut-name-previous-strip = Previous strip
+shortcut-name-next-strip = Next strip
+shortcut-name-previous-workspace = Previous workspace
+shortcut-name-next-workspace = Next workspace
+shortcut-name-toggle-maximize = Maximize or restore window
+shortcut-name-detach-tab = Move tab to new group
+shortcut-name-attach-tab-left = Move tab into group on left
+shortcut-name-attach-tab-right = Move tab into group on right
+shortcut-name-move-group-left = Move group left
+shortcut-name-move-group-right = Move group right
+shortcut-name-move-group-to-previous-display = Move group to display on left
+shortcut-name-move-group-to-next-display = Move group to display on right
+shortcut-name-resize-narrower = Make window narrower
+shortcut-name-resize-wider = Make window wider
+shortcut-name-reopen-closed-tab = Reopen closed tab
+shortcut-name-focus-group-1 = Window 1
+shortcut-name-focus-group-2 = Window 2
+shortcut-name-focus-group-3 = Window 3
+shortcut-name-focus-group-4 = Window 4
+shortcut-name-focus-group-5 = Window 5
+shortcut-name-focus-group-6 = Window 6
+shortcut-name-focus-group-7 = Window 7
+shortcut-name-focus-group-8 = Window 8
+shortcut-name-focus-group-9 = Window 9
+shortcut-name-open-files = Open Files
+shortcut-name-open-terminal = Open a terminal
+shortcut-name-clipboard-history = Clipboard history
+shortcut-name-notifications = Notifications
+shortcut-name-toggle-fullscreen = Full screen
+shortcut-name-toggle-magnifier = Magnifier
+shortcut-name-magnifier-zoom-in = Magnifier zoom in
+shortcut-name-magnifier-zoom-out = Magnifier zoom out
+shortcut-name-power-menu = Power menu
+shortcut-name-next-input-source = Next keyboard layout
+shortcut-name-emoji-picker = Emoji
+
+# The groups desktop shortcuts are listed in
+shortcut-category-system = System
+shortcut-category-navigation = Navigation
+shortcut-category-windows = Windows
+shortcut-category-apps = Apps
+shortcut-category-capture = Capture
+shortcut-category-accessibility = Accessibility
+
+# The keyboard shortcuts resource on the action door
+keyboard-shortcuts-resource = Keyboard shortcuts
+keyboard-shortcuts-list = List keyboard shortcuts
+keyboard-shortcuts-list-description = Every desktop shortcut with its label, current and default chords, whether it can be changed, and its category
+keyboard-shortcuts-reset-all = Restore all default shortcuts
+keyboard-shortcuts-reset-all-description = Put every changeable desktop shortcut back on its default chord
+keyboard-shortcut-rebind = Change the shortcut for { $shortcut }
+keyboard-shortcut-rebind-description = { $shortcut } is on { $chords } (default { $defaults }). Give it another chord; a chord something else uses is refused, naming what uses it.
+keyboard-shortcut-reset = Restore the default shortcut for { $shortcut }
+keyboard-shortcut-reset-description = Put { $shortcut } back on { $defaults }
+keyboard-shortcut-conflict = { $chord } is already used for “{ $shortcut }”.
+keyboard-shortcut-invalid = That shortcut is not supported.
 
 # Shortcut guide (F1)
 guide-title = Desktop help
 guide-reopen-hint = Press F1 anywhere to reopen this guide · Select a navigation keycap to change it
 guide-done = Done
-guide-press-new-shortcut = Press a new shortcut to { $action } · Esc cancels
+guide-press-new-shortcut = Press a new shortcut for “{ $action }” · Esc cancels
 guide-message-esc-cancels = { $message } · Esc cancels
 guide-rebind-needs-modifier = Add Super, Ctrl, Alt or Shift to printable keys.
-guide-rebind-in-use = Already used to { $action }. Press another shortcut.
+guide-rebind-in-use = Already used for “{ $action }”. Press another shortcut.
 guide-rebind-reserved = F1 and Print Screen are reserved by the desktop.
 guide-rebind-unsupported = That shortcut is not supported. Press another shortcut.
 guide-rebind-taken-by-action = Already used to run an action. Press another shortcut.
 guide-rebind-save-failed = Could not save that shortcut. Press another shortcut.
-guide-reset-in-use = A default is already used to { $action }. Change that shortcut first.
+guide-reset-in-use = A default is already used for “{ $action }”. Change that shortcut first.
 guide-reset-taken-by-action = A default now runs an action. Change that shortcut first.
 guide-reset-invalid = Could not restore the default shortcuts.
 guide-reset-save-failed = Could not restore the defaults.
@@ -196,10 +219,7 @@ guide-essentials-heading = DESKTOP ESSENTIALS
 guide-group-windows = WINDOWS & WORKSPACES
 guide-group-search = SEARCH & SYSTEM
 guide-group-capture = CAPTURE & DISPLAY
-guide-reopen-closed-tab = Reopen closed tab
-guide-emoji = Emoji
 guide-overview = Overview
-guide-quick-settings = Quick Settings
 guide-unassigned = Unassigned
 guide-unassigned-inline = unassigned
 guide-pointer = Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize
@@ -1562,3 +1582,1075 @@ remark-pill-stop = Stop recording
 ## Quick Settings
 
 remark-qs = Feedback
+
+# A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
+speaker-role-left = left speaker
+speaker-role-right = right speaker
+speaker-role-centre = centre speaker
+speaker-role-subwoofer = subwoofer
+speaker-role-surround-left = left surround speaker
+speaker-role-surround-right = right surround speaker
+speaker-role-room = room speaker
+speaker-group-summary = { $total ->
+    [one] { $ready } of 1 speaker ready
+   *[other] { $ready } of { $total } speakers ready
+}
+speaker-group-summary-waiting = { $total ->
+    [one] { $ready } of 1 speaker ready · { $waiting } waiting for approval
+   *[other] { $ready } of { $total } speakers ready · { $waiting } waiting for approval
+}
+
+# A remote input, as the $input of a sentence
+remote-input-camera = camera
+remote-input-microphone = microphone
+remote-input-scanner = scanner
+
+# Why display mirroring ended, as the $reason of a sentence
+mirror-failure-denied = declined on the target
+mirror-failure-peer-offline = certified peer went offline
+mirror-failure-timed-out = session timed out
+mirror-failure-transport = private video route failed
+mirror-failure-policy = display continuity was disabled
+
+# Why moving media to another device failed, as the $reason of a sentence
+media-handoff-failure-destination-unavailable = destination unavailable
+media-handoff-failure-unsupported-output = destination cannot play this media
+media-handoff-failure-invalid-workspace = workspace is unavailable there
+media-handoff-failure-open-failed = destination could not open it
+media-handoff-failure-timed-out = destination did not respond
+media-handoff-failure-cancelled = cancelled
+
+# Why moving a Bluetooth accessory failed, as the $reason of a sentence
+bluetooth-handoff-failure-inspect-target = target inspection failed
+bluetooth-handoff-failure-target-unavailable = target unavailable or declined
+bluetooth-handoff-failure-disconnect-source = source could not release accessory
+bluetooth-handoff-failure-pair-target = target pairing failed
+bluetooth-handoff-failure-connect-target = target connection failed
+bluetooth-handoff-failure-send = certified route was interrupted
+bluetooth-handoff-failure-timed-out = transaction timed out
+bluetooth-handoff-failure-rollback = source rollback failed
+
+# Search result kinds, as the filter chips and group headers name them
+search-kind-actions = Actions
+search-kind-applications = Applications
+search-kind-host-apps = Host Apps
+search-kind-notes = Notes
+search-kind-records = Records
+search-kind-files = Files
+search-kind-folders = Folders
+search-kind-creators = Creators
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Window groups
+
+# Search scopes
+search-scope-this-app = This app
+search-scope-workspace = Workspace
+search-scope-everywhere = Everywhere
+
+# Where a launched app will open
+search-opens-beside = Opens in rightmost space
+search-opens-here = Opens here, as a tab
+
+# Search providers, as the search settings actions name them
+search-provider-now-playing = Now playing
+search-provider-records = Records
+search-provider-notes = Notes
+search-provider-editor = Editor
+search-provider-session = Session
+search-provider-shortcuts = Shortcuts
+search-provider-tray = Tray
+search-provider-desktop-windows = Desktop windows
+search-provider-files = Files
+search-provider-host-apps = Host apps
+search-provider-app-actions = Application resources and actions
+
+# Search result badges
+search-badge-media = Media
+search-badge-session = Session
+search-badge-quick-action = Quick action
+search-badge-shortcut = Shortcut
+search-badge-tray = Tray
+search-badge-tab = Tab
+search-badge-window-group = Window group
+
+# Search: media transport for a running player
+search-media-pause = Pause { $player }
+search-media-play = Play { $player }
+search-media-next = Next track in { $player }
+search-media-previous = Previous track in { $player }
+search-media-seek = Seek in { $player }
+
+# Search: records
+search-record-file-missing = The file this record names is no longer there.
+search-record-in-this-workspace = In this workspace
+search-record-in-workspace = In { $workspace }
+search-record-in-another-workspace = In another workspace
+
+# Search: files
+search-files-no-app = No app on this desktop opens .{ $ext } documents.
+
+# Search: host apps
+search-host-app-open = Open { $app }
+search-host-app-subtitle = { $source } · unconfined host app · { $id }
+
+# Search: app action jobs and resources
+search-app-job = Action job { $id }
+search-app-job-cancel = Cancel action job { $id }
+search-app-job-cancel-detail = Requests cooperative cancellation
+search-app-job-accepted = accepted
+search-app-job-running = running
+search-app-job-streaming = streaming
+search-app-job-succeeded = succeeded
+search-app-job-failed = failed
+search-app-job-cancelled = cancelled
+search-app-resource-contains = { $app } · contains resources
+search-app-action-launches = { $resource } · { $app } · launches application
+
+# Search: session actions
+search-session-logout = Log out of Tilo
+search-session-logout-detail = End this desktop session cleanly and return to the display manager
+search-session-unsaved-work = An app has unsaved work
+search-session-inhibited = { $reason } — close the app or finish its work first.
+
+# Search: shortcuts
+search-shortcut-run-on = Run on { $resource }
+
+# Search: tray items
+search-tray-open = Open { $item }
+search-tray-in-top-bar = { $item } in the top bar
+search-tray-entry = { $item }: { $entry }
+search-tray-entry-on = { $item }: { $entry } (on)
+search-tray-entry-off = { $item }: { $entry } (off)
+
+# Search: desktop windows
+search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
+search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
+search-window-group-untitled = Window group { $group }
+search-window-close-group = Close window group “{ $group }”
+search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
+    [one] 1 tab
+   *[other] { $count } tabs
+}
+search-window-close-tab = Close tab “{ $tab }”
+search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
+
+# Search: shell actions, as palette rows
+search-action-shortcut-help-toggle = Show desktop help
+search-action-shortcut-help-toggle-subtitle = F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide
+search-action-desktop-tour-open = Take the desktop tour
+search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction to navigation, organisation and collaboration
+search-action-overview-toggle = Toggle workspace overview
+search-action-overview-toggle-subtitle = Show all workspaces in the wheel view
+search-action-settings-open = Open workspace settings
+search-action-settings-open-subtitle = Identity, people, privacy, apps and files for this workspace
+search-action-settings-members-open = Open workspace people
+search-action-settings-members-open-subtitle = People, roles and invitations in this workspace
+search-action-settings-privacy-open = Open workspace privacy & security
+search-action-settings-privacy-open-subtitle = App grants and enforced access for this workspace
+search-action-settings-apps-open = Open workspace apps & files
+search-action-settings-apps-open-subtitle = Shared app defaults and your workspace overrides
+search-action-identity-devices-copy = Copy connected device list
+search-action-identity-devices-copy-subtitle = Copy device names, fingerprints, capabilities, and revocation state
+search-action-identity-device-enroll = Enroll another device
+search-action-identity-device-enroll-subtitle = Copy a device setup code that is valid for five minutes
+search-action-identity-home-peer-enroll = Pair a home server
+search-action-identity-home-peer-enroll-subtitle = Copy a five-minute setup code with always-on full-sync access
+search-action-quick-settings-open = Open quick settings
+search-action-quick-settings-open-subtitle = Brightness, volume, Wi-Fi, Bluetooth, power profile
+search-action-quick-settings-clipboard = Open clipboard history
+search-action-quick-settings-clipboard-subtitle = Search, pin, remove, or reuse private clipboard items
+search-action-quick-settings-devices = Open devices and media
+search-action-quick-settings-devices-subtitle = Certified devices, media routes, remote input, and handoffs
+search-action-projection-open = Choose where the desktop appears
+search-action-projection-open-subtitle = Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver
+search-action-display-layout-extend = Extend displays
+search-action-display-layout-extend-subtitle = Use every connected display as one larger desktop
+search-action-display-layout-mirror = Mirror displays
+search-action-display-layout-mirror-subtitle = Show the same picture on every connected display
+search-action-display-layout-builtin-only = Show only on this screen
+search-action-display-layout-builtin-only-subtitle = Turn external displays off and keep the built-in screen
+search-action-display-layout-external-only = Show only on external displays
+search-action-display-layout-external-only-subtitle = Turn the built-in screen off and use the external displays
+search-action-display-change-keep = Keep display settings
+search-action-display-change-keep-subtitle = Confirm the display layout that was just applied
+search-action-display-change-revert = Revert display settings
+search-action-display-change-revert-subtitle = Restore the display layout from before the last change
+search-action-capture-open = Capture or float part of the screen
+search-action-capture-open-subtitle = Screenshot, record, or make PiP from one or more regions
+search-action-collaborators-open = Show collaborators
+search-action-collaborators-open-subtitle = Collaborators currently in this workspace
+search-action-presence-follow-stop = Stop following
+search-action-presence-follow-stop-subtitle = Return this view to local navigation
+search-action-room-activity-open = Show workspace activity
+search-action-room-activity-open-subtitle = History of this workspace: changes, permissions, who did what and when
+search-action-peer-invite = Invite a collaborator…
+search-action-peer-invite-subtitle = Review an invite before creating it
+search-action-peer-connect = Open join-workspace prompt
+search-action-peer-connect-subtitle = Enter and review an invite from a collaborator
+search-action-tab-new-terminal-here = New terminal tab here
+search-action-tab-new-terminal-here-subtitle = Open a terminal as a tab in the focused window group
+search-action-window-new-terminal = New terminal window
+search-action-window-new-terminal-subtitle = Open a terminal beside the focused window
+search-action-tab-duplicate = Duplicate this tab
+search-action-tab-duplicate-subtitle = Open a second instance of the focused app beside it
+search-action-tab-close = Close this tab
+search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
+search-action-tab-reopen = Reopen closed tab
+search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
+search-action-tab-split-right = Split this tab to the right
+search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
+search-action-tab-move-to-new-group = Move this tab to a new group
+search-action-tab-move-to-new-group-subtitle = Move the focused tab into a new window group at the end of its strip
+search-action-notifications-dnd-toggle = Toggle Do Not Disturb
+search-action-notifications-dnd-toggle-subtitle = Silence notification banners; held notifications go to history
+search-action-identity-connect = Add an existing identity
+search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
+search-action-identity-select = Use identity in this workspace
+search-action-identity-select-subtitle = Select one of the identities already connected to this device
+search-action-identity-device-revoke = Revoke an identity device
+search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
+search-action-capture-screenshot-send = Send the last screenshot
+search-action-capture-screenshot-send-subtitle = To one of your devices, or into this workspace's files
+search-action-presence-follow = Follow a collaborator
+search-action-presence-follow-subtitle = Keep this view attached to a connected person or visible agent
+search-action-presence-status-set = Set workspace status
+search-action-presence-status-set-subtitle = Publish an explicit status, or clear it with an empty value
+search-action-presence-status-sharing-set = Set status privacy
+search-action-presence-status-sharing-set-subtitle = Choose whether status is off, explicit-only, or automatically inferred
+search-action-peer-invite-named = Name collaborator and open invite
+search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
+search-action-agent-invite = Invite agent to workspace
+search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
+search-action-feedback-record-start = Start recording for feedback
+search-action-feedback-record-start-subtitle = Admit the Recorder agent to watch this workspace; it stays listed while it records
+search-action-feedback-record-stop = Stop recording
+search-action-feedback-record-stop-subtitle = Remove the Recorder agent and keep the session for review; nothing is sent
+search-action-feedback-record-capture-recent = Record what just happened
+search-action-feedback-record-capture-recent-subtitle = Build a session from the last two minutes the recent buffer kept; nothing is sent
+search-action-feedback-recent-buffer-set = Keep recent activity for feedback
+search-action-feedback-recent-buffer-set-subtitle = Hold the last two minutes in memory so they can be recorded afterwards
+search-action-remark-open = Say something about this…
+search-action-remark-open-subtitle = Pick any part of any app and send a remark to a colleague, or feedback to Tilo
+search-action-remark-crash = Tell us what happened
+search-action-remark-crash-subtitle = Report an app that quit unexpectedly, with the last two minutes when kept
+search-action-remark-discard = Discard the remark
+search-action-remark-discard-subtitle = Close without sending; a recording made for it is forgotten
+search-action-remark-pick-start = Pick more
+search-action-remark-pick-start-subtitle = Point at, or walk to, more things the remark is about
+search-action-remark-pick-at = Pick at a point
+search-action-remark-pick-at-subtitle = Pick the node an app describes at a screen point, as a click does
+search-action-remark-pick-node = Pick a node
+search-action-remark-pick-node-subtitle = Pick a node by its surface and stable semantic id
+search-action-remark-pick-region = Pick an area
+search-action-remark-pick-region-subtitle = Pick every node a screen rectangle sweeps, as a drag does
+search-action-remark-pick-walk = Walk the pick focus
+search-action-remark-pick-walk-subtitle = Move to the enclosing node, a child or a sibling, as the arrow keys do
+search-action-remark-pick-take = Pick the focused node
+search-action-remark-pick-take-subtitle = Add the node the walk stands on, as Space does
+search-action-remark-pick-done = Done picking
+search-action-remark-pick-done-subtitle = Make what is picked the remark's subject
+search-action-remark-pick-cancel = Stop picking
+search-action-remark-pick-cancel-subtitle = Leave pick mode without adding anything
+search-action-remark-pick-remove = Remove a pick
+search-action-remark-pick-remove-subtitle = Take one thing back out of what the remark is about
+search-action-remark-text-set = Write the remark
+search-action-remark-text-set-subtitle = Set what the remark says
+search-action-remark-destination-set = Choose where the remark goes
+search-action-remark-destination-set-subtitle = The Tilo team privately, the community publicly, or a person or room you share
+search-action-remark-frames-set = Include screen frames
+search-action-remark-frames-set-subtitle = Keep pictures of the recorded windows, personal fields masked
+search-action-remark-record-start = Record from now
+search-action-remark-record-start-subtitle = The Recorder agent joins what you picked and records until you stop
+search-action-remark-record-stop = Stop recording
+search-action-remark-record-stop-subtitle = Attach what was recorded to the remark; nothing is sent yet
+search-action-remark-record-recent = Use the last 2 minutes
+search-action-remark-record-recent-subtitle = Attach what the recent buffer kept on this device
+search-action-remark-record-remove = Remove the recording
+search-action-remark-record-remove-subtitle = Take the recording off the remark and forget it
+search-action-remark-review-open = Review before sending
+search-action-remark-review-open-subtitle = Walk through the recording step by step, hide text and cut steps
+search-action-remark-review-close = Back to the remark
+search-action-remark-review-close-subtitle = Leave the walk-through, keeping every decision
+search-action-remark-review-select = Show a step
+search-action-remark-review-select-subtitle = Show one step of the walk-through
+search-action-remark-review-redact = Hide text
+search-action-remark-review-redact-subtitle = Hide a run of a step's text from what is sent
+search-action-remark-review-redact-word = Hide a word
+search-action-remark-review-redact-word-subtitle = Hide the word at a position, as a click on it does
+search-action-remark-review-hide = Hide a text
+search-action-remark-review-hide-subtitle = Hide one of a step's texts whole, as pressing it in the preview does
+search-action-remark-review-unredact = Show text again
+search-action-remark-review-unredact-subtitle = Show a run you hid; what review hid on its own stays hidden
+search-action-remark-review-cut = Cut or keep a step
+search-action-remark-review-cut-subtitle = Leave a step out of what is sent, or keep it again
+search-action-remark-review-model-set-up = Set up the review model
+search-action-remark-review-model-set-up-subtitle = Download the recommended on-device model for review, after its license
+search-action-remark-conversation-open = Open the conversation
+search-action-remark-conversation-open-subtitle = Go to the workspace a remark was sent to, where its replies arrive
+search-action-remark-send = Send the remark
+search-action-remark-send-subtitle = Deliver it; replies arrive in Chat
+search-action-replay-open = Replay a recorded session
+search-action-replay-open-subtitle = Open the recording in a room of its own and follow what happened
+search-action-replay-close = Close the replay
+search-action-replay-close-subtitle = Leave the replay; its room and everything in it are removed
+search-action-replay-play = Play the replay
+search-action-replay-play-subtitle = Continue at the recorded pace
+search-action-replay-pause = Pause the replay
+search-action-replay-pause-subtitle = Stop where the replay is
+search-action-replay-step-next = Next step
+search-action-replay-step-next-subtitle = Replay up to the end of the next attempt or view change
+search-action-replay-step-previous = Previous step
+search-action-replay-step-previous-subtitle = Go back to the end of the step before this one
+search-action-replay-seek = Go to a replay step
+search-action-replay-seek-subtitle = Reload the recording and fast-forward to the end of that step
+search-action-replay-speed = Replay speed
+search-action-replay-speed-subtitle = Play faster or slower than it was recorded
+search-action-text-insert = Insert text into the focused note
+search-action-text-insert-subtitle = Write into the focused Notes or Editor tab at a character offset
+search-action-record-bring = Add an item to this workspace
+search-action-record-bring-subtitle = Make it available here without moving the original
+search-action-quick-settings-brightness-set = Set display brightness
+search-action-quick-settings-brightness-set-subtitle = Set a monitor's brightness percentage: the panel backlight or an external monitor over DDC/CI
+search-action-quick-settings-volume-set = Set output volume
+search-action-quick-settings-volume-set-subtitle = Set this device's default audio output percentage
+search-action-quick-settings-wifi-set-enabled = Set Wi-Fi enabled state
+search-action-quick-settings-wifi-set-enabled-subtitle = Enable or disable this device's Wi-Fi radio
+search-action-quick-settings-power-profile-set = Set power profile
+search-action-quick-settings-power-profile-set-subtitle = Choose saver, balanced, or performance for this device
+search-action-quick-settings-vpn-set-enabled = Set VPN enabled state
+search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one named VPN connection on this device
+
+# Search: search sources and workspace governance rows
+search-action-search-provider-set = Enable or disable a search source
+search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
+search-action-provider-enable = Enable { $source } search
+search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
+search-action-provider-disable = Disable { $source } search
+search-action-provider-disable-subtitle = Hide the `{ $id }` source in search and agent discovery
+search-action-provider-badge-on = ON
+search-action-provider-badge-off = OFF
+search-action-governance-subtitle = Signed workspace governance action for the active workspace
+search-action-permission-roles-subtitle = Manage reusable least-privilege workspace roles
+
+# Search: what a shell action did
+search-action-tab-close-failed = Can't close this tab
+search-action-tab-split-failed = Can't split this tab
+search-action-device-list-copied = Device list copied
+search-action-device-list-copied-body = { $count ->
+    [one] 1 device
+   *[other] { $count } devices
+}
+search-action-enrollment-copied = Enrollment token copied
+search-action-enrollment-copied-body = It expires in five minutes and cannot admit further devices.
+search-action-home-server-copied = Home-server setup code copied
+search-action-home-server-copied-body = It expires in five minutes and grants full workspace replication.
+search-action-device-revoked = Device revoked
+search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
+
+# Search: applications
+search-apps-group-start-here = Start here
+search-apps-group-everyday = Everyday
+search-apps-group-work = Work
+search-apps-group-media = Media
+search-apps-group-system-tools = System tools
+search-apps-group-more-apps = More apps
+search-apps-detail-grouped = { $group } · { $detail }
+search-apps-open = Open { $app }
+search-apps-open-subtitle = { $target } · { $detail }
+search-apps-shortcut-subtitle = { $target } · Shortcut
+search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
+search-apps-verification-pending = Registry verification pending
+search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-view-in-store = View { $app } in App Store
+search-apps-store-failed = Couldn't open App Store for { $app }
+search-apps-opening = Opening { $app }
+search-apps-opening-body = Loading…
+
+# Search: continuity actions across your certified devices
+search-continuity-certified-device = certified device
+search-continuity-play-on = Play { $source } on { $target }
+search-continuity-media-handoff-subtitle = Move this live media session to an exact certified device
+search-continuity-media-cancel = Cancel moving { $media }
+search-continuity-media-retry = Retry moving { $media }
+search-continuity-media-status-subtitle = Media handoff to { $device }
+search-continuity-bluetooth-allow = Allow handoff of { $accessory } from { $device }
+search-continuity-bluetooth-decline = Decline handoff of { $accessory } from { $device }
+search-continuity-bluetooth-consent-subtitle = Resolve this exact Bluetooth pairing handoff request
+search-continuity-bluetooth-retry = Retry handoff of { $accessory }
+search-continuity-bluetooth-cancel = Cancel handoff of { $accessory }
+search-continuity-bluetooth-status-subtitle = Bluetooth continuity with { $device }
+search-continuity-route-audio = Route audio to { $output }
+search-continuity-route-audio-subtitle = Choose an exact currently enumerated local audio output
+search-continuity-input-raise = Raise the input level of { $input }
+search-continuity-input-lower = Lower the input level of { $input }
+search-continuity-input-level-subtitle = Change the current microphone's level by one step
+search-continuity-input-select = Use { $input } as the microphone
+search-continuity-input-select-subtitle = Record from this local input from now on
+search-continuity-audio-forward-subtitle = Request a consented live-audio route to this certified device
+search-continuity-audio-allow = Allow live audio from { $device }
+search-continuity-audio-decline = Decline live audio from { $device }
+search-continuity-audio-consent-subtitle = Resolve this exact remote-audio consent request
+search-continuity-audio-stop = Stop routing { $source }
+search-continuity-audio-stop-subtitle = Close and neutralize this exact live-audio route
+search-continuity-speaker-join = Join { $group } as the { $role }
+search-continuity-speaker-decline = Decline to join { $group } as the { $role }
+search-continuity-speaker-consent-subtitle = { $device } asked this device to play in a speaker group
+search-continuity-speaker-leave = Leave { $group }
+search-continuity-speaker-leave-subtitle = Stop playing as the { $role } in this speaker group
+search-continuity-speaker-play-subtitle = Play through every ready speaker of this group
+search-continuity-speaker-media-subtitle = Keep playing here and send the sound to this speaker group
+search-continuity-speaker-stop = Stop playing on { $group }
+search-continuity-speaker-stop-subtitle = End this speaker group playback on every speaker
+search-continuity-place-left = Place { $device } left
+search-continuity-place-right = Place { $device } right
+search-continuity-place-above = Place { $device } above
+search-continuity-place-below = Place { $device } below
+search-continuity-place-subtitle = Arrange an exact certified display around this device
+search-continuity-control-revoke = Revoke control from { $device }
+search-continuity-control-grant = Grant control to { $device }
+search-continuity-control-subtitle = Change the short-lived cross-device input lease
+search-continuity-calibration-apply = Apply placement suggestion for { $device }
+search-continuity-calibration-dismiss = Dismiss placement suggestion for { $device }
+search-continuity-calibration-subtitle = Act on the current proximity-derived placement proposal
+search-continuity-calibration-revert = Revert placement for { $device }
+search-continuity-calibration-revert-subtitle = Restore the previous certified-display placement
+search-continuity-mirror-allow = Allow display mirroring from { $device }
+search-continuity-mirror-decline = Decline display mirroring from { $device }
+search-continuity-mirror-consent-subtitle = Resolve this exact view-only display request
+search-continuity-mirror-stop = Stop display mirroring with { $device }
+search-continuity-mirror-stop-subtitle = Close this exact view-only display session
+search-continuity-mirror-request = Mirror this display to { $device }
+search-continuity-mirror-request-subtitle = Request a consented view-only stream to this certified display
+search-continuity-tether-request = Ask { $device } for tethering
+search-continuity-tether-request-subtitle = Request a short-lived, phone-approved connection
+search-continuity-tether-allow = Allow tethering for { $device }
+search-continuity-tether-decline = Decline tethering for { $device }
+search-continuity-tether-consent-subtitle = Resolve this exact phone-side consent request
+search-continuity-tether-disconnect = Disconnect tethering from { $device }
+search-continuity-tether-disconnect-subtitle = Revoke this exact tethering request and its network route
+search-continuity-capture-camera = Use camera from { $device }
+search-continuity-capture-microphone = Use microphone from { $device }
+search-continuity-capture-scanner = Use scanner from { $device }
+search-continuity-capture-request-subtitle = Request a one-session remote input for the focused app
+search-continuity-capture-allow = Allow remote input for { $app }
+search-continuity-capture-decline = Decline remote input for { $app }
+search-continuity-capture-consent-subtitle = Resolve this exact source-side capture request
+search-continuity-capture-approve-app = Allow focused app from { $device }
+search-continuity-capture-stop = Stop remote input from { $device }
+search-continuity-capture-session-subtitle = Act on this exact remote capture session
+search-continuity-controller-stop = Stop forwarding { $controller }
+search-continuity-controller-stop-subtitle = Neutralize and close this controller session
+search-continuity-controller-start = Use { $controller } on { $device }
+search-continuity-controller-start-subtitle = Forward normalized controls to the currently focused app
+search-continuity-controller-allow = Allow { $controller } from { $device }
+search-continuity-controller-decline = Decline { $controller } from { $device }
+search-continuity-controller-consent-subtitle = Controller access for the locally verified focused app
+search-continuity-call-move = Move { $room } call to { $device }
+search-continuity-call-move-subtitle = Propose handoff to an exact certified device
+search-continuity-call-allow = Allow handoff for { $room }
+search-continuity-call-decline = Decline handoff for { $room }
+search-continuity-call-consent-subtitle = Resolve this exact call handoff consent
+
+# First-login identity setup: what the identity is
+onboarding-intro-title = Create your local Tilo identity
+onboarding-intro-body = Tilo will create a cryptographic identity that belongs to you, then certify a separate key for this device. Tilo uses that chain for collaboration and peer invitations. Individual app edits are not all cryptographically signed yet.
+onboarding-intro-point-collaboration = It gives collaboration a stable identity for you and certifies this device to peers.
+onboarding-intro-point-local = It is created here, on this machine. Nothing is uploaded and no server holds a copy.
+onboarding-intro-point-not-account = It is not an account and has no password — there is nothing to log in to.
+onboarding-intro-card-title = What it is for
+onboarding-host-intro-title = Set up your Tilo identity
+onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
+
+# First-login identity setup: no recovery service
+onboarding-no-recovery-title = If you lose this device without a backup, this identity is gone
+onboarding-no-recovery-point-no-service = There is no recovery service. No backup code and no recovery phrase can recreate this identity.
+onboarding-no-recovery-point-backup = The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.
+onboarding-acknowledgement = I understand that losing this device without a backup means losing this identity.
+onboarding-protect-title = Protect your Tilo identity
+onboarding-protect-message = There is no reset button. Create an encrypted portable backup after this step.
+onboarding-create-failed = Your identity was not created
+onboarding-create-failed-title = Your identity could not be created
+onboarding-create-failed-message = Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.
+
+# First-login identity setup: progress header
+onboarding-progress-eyebrow = Tilo identity setup
+onboarding-progress-stage = Step { $step } of { $total }  ·  { $stage }
+onboarding-progress-a11y = Identity setup, step { $step } of { $total }: { $stage }
+onboarding-stage-choose = Choose
+onboarding-stage-restore = Restore
+onboarding-stage-protect = Protect
+onboarding-stage-media = Media
+onboarding-stage-ready = Ready
+onboarding-stage-backup = Backup
+
+# First-login identity setup: resuming after a restart
+onboarding-progress-attention = Setup progress needs attention
+onboarding-progress-unreadable = The saved setup position could not be read ({ $error }). Your identity is safe; setup resumed at the completion step.
+onboarding-progress-invalid-identity = Setup found unfinished progress but could not validate the existing identity: { $error }
+onboarding-progress-save-failed = Setup could not save its restart position: { $error }. No identity action was repeated.
+onboarding-progress-clear-failed = Setup finished, but its restart marker could not be removed: { $error }. Try Finish again so this screen does not return next login.
+
+# First-login identity setup: shared buttons
+onboarding-back = Back
+onboarding-cancel = Cancel
+onboarding-continue = Continue
+onboarding-done = Done
+onboarding-use-existing = Use existing
+onboarding-create-identity = Create identity
+onboarding-create-local-identity = Create local identity
+onboarding-restore-backup = Restore selected backup
+
+# First-login identity setup: connecting an existing identity
+onboarding-connect-title = Connect an existing identity
+onboarding-connect-recovery-title = Your existing identity needs recovery
+onboarding-connect-recovery-message = Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.
+onboarding-connect-failed = That identity could not be connected
+onboarding-connect-nearby = Connect a nearby device
+onboarding-connect-nearby-instructions = On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.
+onboarding-connect-retry-keyring = Retry keyring
+onboarding-connect-browse = Browse…
+onboarding-connect-file = Identity backup file
+onboarding-connect-file-placeholder = Choose an encrypted backup or legacy identity JSON
+onboarding-connect-passphrase = Backup passphrase
+onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
+onboarding-connect-nearby-card = Nearby trusted device
+onboarding-connect-backup-card = Encrypted backup
+onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
+onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
+onboarding-picker-import-title = Choose a Tilo identity
+onboarding-picker-import-filter = Tilo identity
+
+# First-login identity setup: pairing with a nearby device
+onboarding-nearby-searching = Looking for a trusted device nearby…
+onboarding-nearby-start-failed = Could not start nearby setup: { $error }
+onboarding-nearby-unavailable = Nearby setup is unavailable in this session
+onboarding-nearby-cancelled = Nearby setup cancelled. Choose Connect nearby to try again.
+onboarding-nearby-code = Code { $code } · waiting for approval on your trusted device
+onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
+onboarding-nearby-invalid-identity = The trusted device returned an invalid identity. Choose Connect nearby to retry.
+onboarding-nearby-failed = Nearby setup did not finish: the pairing window closed or approval was cancelled. Choose Connect nearby to retry.
+onboarding-nearby-failed-detail = Nearby setup did not finish: { $detail }. Choose Connect nearby to retry.
+
+# First-login identity setup: encrypted backup
+onboarding-backup-title = Back up your Tilo identity
+onboarding-backup-identity-created = Your local identity was created
+onboarding-backup-explanation = Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
+onboarding-backup-passphrase = New backup passphrase
+onboarding-backup-passphrase-placeholder = Long, unique passphrase — 12+ characters
+onboarding-backup-confirmation = Confirm new backup passphrase
+onboarding-backup-confirmation-placeholder = Confirm passphrase
+onboarding-backup-save = Choose location and save backup…
+onboarding-backup-save-another = Save another copy
+onboarding-backup-skip-acknowledgement = I understand that without an encrypted backup, losing this device means losing this identity.
+onboarding-backup-continue-without = Continue without backup
+onboarding-backup-failed = The backup was not saved
+onboarding-backup-verified = Encrypted backup verified
+onboarding-backup-verified-earlier = The verified backup was saved before setup restarted.
+onboarding-passphrase-too-short = Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe.
+onboarding-passphrase-mismatch = The two passphrases do not match.
+onboarding-passphrase-unavailable = The passphrase fields are temporarily unavailable.
+onboarding-picker-backup-title = Save encrypted identity backup
+onboarding-picker-backup-filter = Encrypted Tilo identity
+
+# First-login identity setup: review renderer fixtures
+onboarding-snapshot-restore-error = That backup could not be opened. Check the file and passphrase, then try again.
+onboarding-snapshot-create-error = The identity could not be saved. Nothing was created; check available storage and try again.
+
+# First-login identity setup: identity ready
+onboarding-done-title = Your identity is ready
+onboarding-done-body = This fingerprint identifies your local cryptographic root. Tilo can present it in collaboration flows that support verification; you do not need to type it.
+onboarding-done-ready = Identity stored on this device
+onboarding-host-done-title = Your Tilo identity is ready
+onboarding-host-done-body = Tilo will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.
+onboarding-host-done-ready = Ready for Tilo collaboration
+onboarding-done-next-title = What happens next
+onboarding-done-next-body = The desktop is ready. Sharing remains off until you deliberately enable it in Settings.
+onboarding-done-backup-verified = Backup verified
+onboarding-done-backup-verified-body = Keep the encrypted backup file and its passphrase in separate places.
+onboarding-done-backup-recommended = Backup still recommended
+onboarding-done-backup-recommended-body = Create an encrypted portable backup from Settings before relying on this identity.
+onboarding-done-system-care-title = System care
+onboarding-done-system-care-body = Tilo checks signed system updates automatically after setup when the machine is online. You can check, stage, and roll back releases in Settings.
+onboarding-tour-take = Take a quick tour
+onboarding-finish = Continue to desktop
+
+# First-login setup: media codecs
+onboarding-codecs-title = Install media codecs?
+onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
+onboarding-codecs-enables-title = What it enables
+onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
+onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
+onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
+onboarding-codecs-source-title = Where it comes from
+onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+onboarding-codecs-progress = Progress: { $percent }%
+onboarding-codecs-starting = Starting…
+onboarding-codecs-installing-title = Installing media codecs
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
+onboarding-codecs-offline-title = Media codecs will install once you are online
+onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
+onboarding-codecs-installed-title = Media codecs installed
+onboarding-codecs-failed-title = Media codecs could not be installed
+onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
+onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-skip = Skip
+onboarding-codecs-not-now = Not now
+onboarding-codecs-retry = Try again
+onboarding-codecs-install = Install media codecs
+
+# Desktop tour
+onboarding-tour-eyebrow = Tilo  •  DESKTOP TOUR
+onboarding-tour-stage = { $stage }  ·  { $step } of 4
+onboarding-tour-progress-a11y = Desktop tour, step { $step } of 4: { $stage }
+onboarding-tour-stage-move = Move
+onboarding-tour-stage-arrange = Arrange
+onboarding-tour-stage-share = Share
+onboarding-tour-stage-begin = Begin
+onboarding-tour-skip = Skip tour
+onboarding-tour-enter = Enter Tilo
+onboarding-tour-navigate-title = Everything is close at hand
+onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
+onboarding-tour-search-title = Search  ·  Super+K or Super+Space
+onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
+onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
+onboarding-tour-overview-title = Overview  ·  Super+Tab or four-finger swipe
+onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
+onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
+onboarding-tour-move-body = Up and down switch workspaces. Left and right step between tiled windows along the current strip.
+onboarding-tour-organise-title = A place for each kind of work
+onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
+onboarding-tour-workspace-title = Workspace
+onboarding-tour-workspace-body = A durable place for a project, its people, permissions, apps, and history.
+onboarding-tour-strip-title = Strip
+onboarding-tour-strip-body = A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.
+onboarding-tour-window-group-title = Window group
+onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.
+onboarding-tour-tab-title = Tab
+onboarding-tour-tab-body = An app or document inside a window group. Drag tabs to arrange them without overlapping windows.
+onboarding-tour-collaborate-title = Sharing stays deliberate
+onboarding-tour-collaborate-intro = Collaboration is built into the workspace, not bolted onto individual apps. Nothing becomes shared merely because it is open.
+onboarding-tour-invite-settings-title = Invite from Workspace Settings
+onboarding-tour-invite-settings-body = Choose a role and review exactly which workspace the invitation opens.
+onboarding-tour-follow-title = Follow only when you choose
+onboarding-tour-follow-body = People keep their own focus and view. Follow is an explicit, reversible action.
+onboarding-tour-system-features-title = Undo and permissions are system features
+onboarding-tour-system-features-body = History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.
+onboarding-tour-start-title = Your first five minutes
+onboarding-tour-start-intro = Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.
+onboarding-tour-name-title = 1  Name the workspace
+onboarding-tour-name-body = Open Workspace Settings from the title and choose a recognisable project name.
+onboarding-tour-open-title = 2  Open a shared starting point
+onboarding-tour-open-body = Choose Notes, Calendar, or Chat, then add other apps beside it.
+onboarding-tour-invite-title = 3  Invite the right people
+onboarding-tour-invite-body = Choose Invite people in Workspace Settings and review each role before sharing.
+onboarding-tour-check-title = 4  Check work and recover mistakes
+onboarding-tour-check-body = Open Activity to catch up, compare versions, or undo only the change that went wrong.
+
+# Workspace invite card: inviting someone, joining with an invite, pending invites
+peer-sync-title-review = Review invitation
+peer-sync-title-invite = Invite someone
+peer-sync-title-join = Join a workspace
+peer-sync-title-workspace-invite = Workspace invite
+peer-sync-paste-token = Paste or type the invite token
+peer-sync-identity-copied = Identity copied — send it to the inviter
+peer-sync-invite-failed = Invite failed: { $error }
+peer-sync-identity-unavailable = Identity unavailable: { $error }
+peer-sync-joined-room = Joined room { $room }
+peer-sync-join-refused = Refused: { $error }
+peer-sync-pending-unavailable = Pending invites unavailable: { $error }
+peer-sync-resend-failed = Could not resend: { $error }
+peer-sync-invite-canceled = Invite canceled
+peer-sync-cancel-failed = Could not cancel: { $error }
+peer-sync-unexpected-response = Unexpected collaboration response
+peer-sync-using-verified-identity = Using verified identity · { $verification }
+peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
+peer-sync-name-required = Say who this invite is for
+peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
+peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
+peer-sync-copied = Copied
+peer-sync-pasted = Pasted — press Enter to join
+peer-sync-clipboard-empty = Nothing on the clipboard to paste
+peer-sync-identity-bound = Identity bound · { $fingerprint }
+peer-sync-identity-invalid = That is not a Tilo identity key (expected 64 hexadecimal characters)
+peer-sync-pending-heading = PENDING INVITES
+peer-sync-pending-heading-paged = PENDING INVITES · { $first }–{ $last } of { $total } · scroll
+peer-sync-role-expires = { $role } · { $unit ->
+    [now] expires in moments
+    [seconds] expires in { $count ->
+        [one] 1 second
+       *[other] { $count } seconds
+    }
+    [minutes] expires in { $count ->
+        [one] 1 minute
+       *[other] { $count } minutes
+    }
+    [hours] expires in { $count ->
+        [one] 1 hour
+       *[other] { $count } hours
+    }
+   *[days] expires in { $count ->
+        [one] 1 day
+       *[other] { $count } days
+    }
+}
+peer-sync-received-role-expires = { $role } access · { $unit ->
+    [now] expires in moments
+    [seconds] expires in { $count ->
+        [one] 1 second
+       *[other] { $count } seconds
+    }
+    [minutes] expires in { $count ->
+        [one] 1 minute
+       *[other] { $count } minutes
+    }
+    [hours] expires in { $count ->
+        [one] 1 hour
+       *[other] { $count } hours
+    }
+   *[days] expires in { $count ->
+        [one] 1 day
+       *[other] { $count } days
+    }
+}
+peer-sync-role-viewer = Viewer
+peer-sync-role-commenter = Commenter
+peer-sync-role-editor = Editor
+peer-sync-copy = Copy
+peer-sync-cancel = Cancel
+peer-sync-back = Back
+peer-sync-join = Join
+peer-sync-paste = Paste
+peer-sync-create-invite = Create invite
+peer-sync-review-invite = Review invite
+peer-sync-paste-identity = Paste new identity
+peer-sync-copy-identity = Copy my identity
+peer-sync-recipient-heading = WHO ARE YOU INVITING?
+peer-sync-recipient-new = Someone new · exchange their Tilo identity
+peer-sync-role-heading = ACCESS THEY WILL RECEIVE
+peer-sync-review-workspace = Workspace · { $workspace }
+peer-sync-review-workspace-this = Workspace · this workspace
+peer-sync-review-inviter = Invited by · { $inviter }
+peer-sync-review-inviter-you = Invited by · You
+peer-sync-review-recipient = Recipient · { $name }
+peer-sync-review-recipient-unnamed = Recipient · Someone
+peer-sync-review-role = Access · { $role }
+peer-sync-review-identity = Bound identity · { $fingerprint }
+peer-sync-review-identity-missing = Bound identity · missing
+peer-sync-review-note = Only this identity can redeem the signed one-hour invite.
+peer-sync-selected-person = Selected person
+peer-sync-name-new-person = Name the new person
+peer-sync-name-placeholder = Their name
+peer-sync-recipient-hint = Choose a verified person or paste their Tilo identity.
+peer-sync-identity-remembered = Verified remembered identity · { $fingerprint }
+peer-sync-identity-new = New identity bound · { $fingerprint }
+peer-sync-invite-anyone = Anyone with this invite
+peer-sync-invite-received = Invite received
+peer-sync-paste-invite-hint = Paste the invite they sent you.
+peer-sync-token-characters = { $token } · { $count ->
+    [one] 1 character
+   *[other] { $count } characters
+}
+peer-sync-token-incomplete = Not a whole invite yet
+
+# Workspace settings: permission roles and ownership on the action door
+workspace-settings-roles-resource = { $workspace } permission roles
+workspace-settings-role-save = Create or update permission role
+workspace-settings-role-save-placeholder = Role name
+workspace-settings-role-save-description = Save a reusable least-privilege role made from app, action, file, resource, or workspace capability rules.
+workspace-settings-role-assign = Assign permission role
+workspace-settings-role-assign-placeholder = Role and collaborator
+workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
+workspace-settings-role-assign-named = Assign { $role }
+workspace-settings-role-assign-named-placeholder = Collaborator identity
+workspace-settings-app-action-placeholder = App and action
+workspace-settings-app-action-grant = Let an app use another app's action
+workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
+workspace-settings-app-action-revoke = Stop an app using another app's action
+workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
+workspace-settings-ownership-resource = { $workspace } ownership
+workspace-settings-ownership-propose = Propose ownership transfer
+workspace-settings-ownership-propose-placeholder = Recipient identity
+workspace-settings-ownership-propose-description = Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.
+workspace-settings-ownership-accept = Accept workspace ownership
+workspace-settings-ownership-accept-description = Acceptance immediately transfers ownership; generic role controls cannot perform this action.
+workspace-settings-ownership-accept-phrase = Accept ownership
+workspace-settings-ownership-cancel = Cancel ownership transfer
+workspace-settings-ownership-cancel-description = Cancel the pending offer before the recipient accepts it.
+
+# Workspace settings: tabs and frame
+workspace-settings-title = Workspace Settings
+workspace-settings-close = Close Settings
+workspace-settings-tab-general = General
+workspace-settings-tab-people = People
+workspace-settings-tab-agents = Agents
+workspace-settings-tab-privacy-security = Privacy & Security
+workspace-settings-tab-privacy = Privacy
+workspace-settings-tab-apps-files = Apps & Files
+workspace-settings-tab-apps = Apps
+workspace-settings-close-hint = Press Esc to close
+workspace-settings-edit-hint = Enter to save · Esc to cancel
+
+# Workspace settings: roles
+workspace-settings-role-owner = Owner
+workspace-settings-role-editor = Editor
+workspace-settings-role-commenter = Commenter
+workspace-settings-role-viewer = Viewer
+workspace-settings-role-blocked = Blocked
+workspace-settings-role-admin = Admin
+workspace-settings-role-guest = Guest
+workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
+workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
+workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
+workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
+workspace-settings-role-blocked-preview = Cannot access this workspace.
+
+# Workspace settings: what a capability covers, on its own
+workspace-settings-scope-workspace = this workspace
+workspace-settings-scope-app = the { $app } app
+workspace-settings-scope-workspace-files = workspace files
+workspace-settings-scope-workspace-folder = “{ $folder }” in this workspace
+workspace-settings-scope-path = files under { $path }
+workspace-settings-scope-record = one shared file ({ $id })
+workspace-settings-scope-camera = the camera
+workspace-settings-scope-microphone = the microphone
+workspace-settings-scope-screencast = screen capture
+workspace-settings-scope-remote-desktop = remote pointer + keyboard
+workspace-settings-scope-any-host = any network host
+workspace-settings-scope-host = network host { $host }
+workspace-settings-scope-action = “{ $action }” in { $app }
+workspace-settings-scope-resource-type = { $kind ->
+    [note] every note
+    [file] every file
+    [cluster] every saved cluster
+    [kanban] every board
+   *[chat-log] every chat log
+}
+workspace-settings-scope-resource-instance = one document ({ $id })
+
+# Workspace settings: what a capability covers, as the object of what it allows
+workspace-settings-scope-workspace-object = this workspace
+workspace-settings-scope-app-object = the { $app } app
+workspace-settings-scope-workspace-files-object = workspace files
+workspace-settings-scope-workspace-folder-object = “{ $folder }” in this workspace
+workspace-settings-scope-path-object = files under { $path }
+workspace-settings-scope-record-object = one shared file ({ $id })
+workspace-settings-scope-camera-object = the camera
+workspace-settings-scope-microphone-object = the microphone
+workspace-settings-scope-screencast-object = screen capture
+workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
+workspace-settings-scope-any-host-object = any network host
+workspace-settings-scope-host-object = network host { $host }
+workspace-settings-scope-action-object = “{ $action }” in { $app }
+workspace-settings-scope-resource-type-object = { $kind ->
+    [note] every note
+    [file] every file
+    [cluster] every saved cluster
+    [kanban] every board
+   *[chat-log] every chat log
+}
+workspace-settings-scope-resource-instance-object = one document ({ $id })
+
+# Workspace settings: what a capability allows
+workspace-settings-allows-control = Control { $what }
+workspace-settings-allows-use = Use { $what }
+workspace-settings-allows-reach = Reach { $what }
+workspace-settings-allows-run = Run { $what }
+workspace-settings-allows-administer = Administer { $what }
+workspace-settings-allows-edit = Edit { $what }
+workspace-settings-allows-comment = Comment on { $what }
+workspace-settings-allows-invite = Invite others to { $what }
+workspace-settings-allows-view = View { $what }
+
+# Workspace settings: how long a grant lasts and who made it
+workspace-settings-expiry-once = Once
+workspace-settings-expiry-session = Session
+workspace-settings-expiry-until = Until
+workspace-settings-expiry-always = Always
+workspace-settings-granted-by-person = granted by { $id }
+workspace-settings-granted-by-app = granted by the { $app } app
+workspace-settings-granted-by-agent = granted by agent { $id }
+workspace-settings-granted-by-token = granted by token { $id }
+workspace-settings-granted-by-workspace = granted by workspace { $id }
+workspace-settings-permission-detail = { $allows } · { $grantor }
+
+# Workspace settings: who a permission is for
+workspace-settings-section-apps = Apps
+workspace-settings-section-app-actions = App actions
+workspace-settings-section-people = People
+workspace-settings-section-agents = Agents
+workspace-settings-section-roles = Roles
+workspace-settings-section-other = Other
+workspace-settings-subject-role = everyone with { $role }
+workspace-settings-subject-token = token { $id }
+workspace-settings-subject-workspace = workspace { $id }
+
+# Workspace settings: what the grant composer can allow
+workspace-settings-grant-camera = Camera
+workspace-settings-grant-microphone = Microphone
+workspace-settings-grant-screencast = Screen capture
+workspace-settings-grant-remote-control = Remote control
+workspace-settings-grant-network = Network access
+workspace-settings-grant-read-files = Read workspace files
+workspace-settings-grant-edit-files = Edit workspace files
+workspace-settings-grant-create-roles = Create permission roles
+workspace-settings-grant-assign-roles = Assign permission roles
+
+# Workspace settings: agent profiles
+workspace-settings-preset-observer = Observer
+workspace-settings-preset-contributor = Contributor
+workspace-settings-preset-operator = Operator
+workspace-settings-preset-custom = Custom
+workspace-settings-preset-observer-hint = Read only on surfaces you select
+workspace-settings-preset-contributor-hint = Read/write only on surfaces you select
+workspace-settings-preset-operator-hint = Run only approved app actions
+workspace-settings-preset-custom-hint = Review every scoped permission
+
+# Workspace settings: People tab
+workspace-settings-members-count = { $count ->
+    [one] 1 person shares this workspace
+   *[other] { $count } people share this workspace
+}
+workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
+workspace-settings-ownership = Ownership
+workspace-settings-you-manage = You manage
+workspace-settings-view-only = View only
+workspace-settings-members-empty-title = No one else is in this workspace
+workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
+workspace-settings-people-header = PEOPLE
+workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
+workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
+workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
+workspace-settings-you = You
+workspace-settings-member-detail = { $count ->
+    [0] { $role } · no extra permissions
+    [one] { $role } · 1 extra permission
+   *[other] { $role } · { $count } extra permissions
+}
+workspace-settings-remove = Remove
+workspace-settings-owner-only = Only the workspace owner can change permissions.
+
+# Workspace settings: Agents tab
+workspace-settings-agents-count = { $count ->
+    [one] 1 agent collaborator
+   *[other] { $count } agent collaborators
+}
+workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
+workspace-settings-add-agent = Add agent
+workspace-settings-agents-empty-title = No agents have access
+workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
+workspace-settings-agents-header = AGENTS
+workspace-settings-service-member = Service member · { $access ->
+    [admin] administers
+    [write] reads and edits
+    [comment] reads and comments
+   *[read] reads
+} end-to-end encrypted content · { $until } · device { $device }
+workspace-settings-service-until-removed = until removed
+workspace-settings-service-ends-soon = access ends within a minute
+workspace-settings-service-ends-minutes = access ends in { $minutes } min
+workspace-settings-service-ends-hours = access ends in { $hours } h
+workspace-settings-badge-service = SERVICE
+workspace-settings-badge-agent = AGENT
+workspace-settings-agent-detail = { $count ->
+    [0] { $admission } · no scoped permissions — review required
+    [one] { $admission } · { $profile } profile · 1 scoped permission
+   *[other] { $admission } · { $profile } profile · { $count } scoped permissions
+}
+workspace-settings-admitted = Admitted
+workspace-settings-review-access = Review access
+workspace-settings-revoke = Revoke
+workspace-settings-admission-admin = Admin admission
+workspace-settings-admission-write = Write admission
+workspace-settings-admission-comment = Comment admission
+workspace-settings-admission-read = Read admission
+
+# Workspace settings: Apps & Files tab
+workspace-settings-unavailable-app = Unavailable app
+workspace-settings-apps-empty-title = No file handlers installed
+workspace-settings-apps-empty-detail = Apps appear here after they declare supported file types.
+workspace-settings-apps-intro-title = Defaults without lock-in
+workspace-settings-apps-intro-detail = The workspace supplies a baseline; each person can explicitly choose something else.
+workspace-settings-apps-header = DEFAULT APPLICATIONS
+workspace-settings-workspace-choice = Workspace choice
+workspace-settings-your-choice = Your choice
+workspace-settings-follow-personal = Follow personal defaults
+workspace-settings-use-workspace-choice = Use workspace choice
+workspace-settings-use-personal-default = Use my personal default
+workspace-settings-apps-file-types = { $count ->
+    [one] 1 file type
+   *[other] { $count } file types
+}
+workspace-settings-apps-custom-rules = { $count ->
+    [one] 1 custom rule
+   *[other] { $count } custom rules
+}
+
+# Workspace settings: Privacy & Security tab
+workspace-settings-permissions-intro-title = Access is explicit and revocable
+workspace-settings-permissions-intro-detail = Grants are enforced by the app sandbox and stay scoped to this workspace.
+workspace-settings-active-grants = { $count ->
+    [one] 1 active grant
+   *[other] { $count } active grants
+}
+workspace-settings-permissions-empty-title = No permissions granted
+workspace-settings-permissions-empty-detail = Apps get nothing until it is granted here or approved in a prompt.
+workspace-settings-more = +{ $count } more
+workspace-settings-who = Who
+workspace-settings-who-agent = Who · AGENT (only this surface; no ambient workspace access)
+workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
+workspace-settings-what-it-allows = What it allows
+workspace-settings-grant-header = GRANT A PERMISSION
+workspace-settings-saved-roles = { $count ->
+    [one] 1 SAVED ROLE · MANAGE
+   *[other] { $count } SAVED ROLES · MANAGE
+}
+workspace-settings-expiry-caption = Until
+workspace-settings-grant = Grant
+
+# Workspace settings: confirmation sheets
+workspace-settings-role-sheet-title = Choose workspace access
+workspace-settings-role-sheet-description = { $person } is currently { $role }. Choose exactly what they can do.
+workspace-settings-remove-sheet-title = Remove this person?
+workspace-settings-remove-sheet-description = They will stop receiving future sync and edits. Downloaded copies remain on their devices.
+workspace-settings-revoke-sheet-title = Revoke this permission?
+workspace-settings-revoke-sheet-description = The selected capability will stop applying immediately. Review its activity first if you are unsure.
+workspace-settings-keep-access = Keep access
+workspace-settings-review-activity = Review activity first
+workspace-settings-remove-person = Remove person
+workspace-settings-no-changes = No changes are made.
+workspace-settings-open-history = Open workspace history before deciding.
+workspace-settings-remove-person-detail = This removes their workspace capabilities.
+workspace-settings-keep-permission = Keep permission
+workspace-settings-revoke-permission = Revoke permission
+workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
+
+# Workspace settings: General tab
+workspace-settings-workspace-fallback = Workspace
+workspace-settings-identity-caption = Workspace · { $role }
+workspace-settings-current-workspace = CURRENT WORKSPACE
+workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
+workspace-settings-identity-title = Workspace identity
+workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
+workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
+workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
+workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
+workspace-settings-invite-create = Create
+workspace-settings-invite-title = Invite people
+workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
+workspace-settings-glance-title = At a glance
+workspace-settings-stat-members = { $count ->
+    [one] member
+   *[other] members
+}
+workspace-settings-stat-grants = { $count ->
+    [one] specific grant
+   *[other] specific grants
+}
+workspace-settings-stat-app-rules = { $count ->
+    [one] app rule
+   *[other] app rules
+}

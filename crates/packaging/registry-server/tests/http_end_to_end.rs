@@ -19,6 +19,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use registry_server::serve::ServeOptions;
 use registry_server::{
     AppState, ModerationService, PublisherAllowlist, PublisherRow, ServerIdentity, Storage,
     bind_and_run,
@@ -46,6 +47,10 @@ struct Harness {
 }
 
 async fn spawn_server(publisher_can_add_new: bool) -> Harness {
+    spawn_server_with(publisher_can_add_new, ServeOptions::default()).await
+}
+
+async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -> Harness {
     let _ = tracing_subscriber::fmt::try_init();
 
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -72,7 +77,7 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
 
     publish_snapshot(&storage, &allow, &owner_key);
 
-    let state = AppState::new(storage.clone(), identity);
+    let state = AppState::with_options(storage.clone(), identity, options);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let bound = bind_and_run(addr, state).await.expect("bind");
 
@@ -331,6 +336,10 @@ fn url(addr: SocketAddr, path: &str) -> String {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 async fn server_serves_identity_snapshot_and_staged_blobs() {
     // phase: health_endpoint_returns_ok
     {
@@ -391,6 +400,8 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
         let payload = h.tmp.path().join("payload");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin/editor"), b"reviewed binary").unwrap();
+        let side_module = b"\0asm\x01\0\0\0reviewed module";
+        std::fs::write(payload.join("editor.wasm"), side_module).unwrap();
         let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
             "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
          [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
@@ -405,10 +416,66 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
         let digest = blake3::hash(&full).to_hex().to_string();
         h.storage.save_staged_artifact(&digest, &full).unwrap();
 
+        let client = tilo_net::http::client().build().expect("http client");
+        let thin = client
+            .get(url(
+                h.addr,
+                &format!("/thin/{}.tapp", packed.meta.id.to_hex()),
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(thin.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            thin.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            thin.bytes().await.unwrap().as_ref(),
+            tilo_app_package::tapp::to_bytes(&packed.meta, None)
+                .unwrap()
+                .as_slice()
+        );
+        for missing in [
+            format!("/thin/{}.tapp", "0".repeat(64)),
+            format!("/thin/{}", packed.meta.id.to_hex()),
+            format!("/artifacts/{digest}.tapp"),
+        ] {
+            let response = client.get(url(h.addr, &missing)).send().await.unwrap();
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{missing}"
+            );
+        }
+        h.storage.import_artifact(&full).unwrap();
+        let artifact = client
+            .get(url(h.addr, &format!("/artifacts/{digest}.tapp")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(artifact.status(), reqwest::StatusCode::OK);
+        assert_eq!(artifact.bytes().await.unwrap().as_ref(), full.as_slice());
+
         let blobs = app_registry::HttpBlobs::new(format!("http://{}", h.addr));
         let binary = tilo_app_package::BlobHash::of(b"reviewed binary");
         let fetched = blobs.fetch_all(&[binary]).await.unwrap();
         assert_eq!(fetched[0].as_ref(), b"reviewed binary");
+        for (bytes, content_type) in [
+            (b"reviewed binary".as_slice(), "application/octet-stream"),
+            (side_module.as_slice(), "application/wasm"),
+        ] {
+            let blob = client
+                .get(url(
+                    h.addr,
+                    &format!("/blobs/{}", tilo_app_package::BlobHash::of(bytes).to_hex()),
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(blob.headers()["content-type"], content_type);
+            assert_eq!(blob.headers()["x-content-type-options"], "nosniff");
+        }
         assert!(
             blobs
                 .fetch_all(&[tilo_app_package::BlobHash::of(b"never reviewed")])
@@ -766,5 +833,128 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         // 403 — the change-level sig doesn't match the declared publisher
         // pubkey, so verify_change_request refuses before touching disk.
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+}
+
+/// A browser page on a configured origin may read the catalogue and blobs;
+/// any other origin, and every POST, gets no CORS grant. An unchanged
+/// catalogue revalidates to an empty 304.
+#[tokio::test]
+async fn cors_grants_exact_origins_get_only_and_snapshots_revalidate() {
+    let page = "http://localhost:4321";
+    let h = spawn_server_with(
+        true,
+        ServeOptions {
+            cors_origins: vec![page.into()],
+        },
+    )
+    .await;
+    let client = tilo_net::http::client().build().expect("http client");
+
+    let entries = client
+        .get(url(h.addr, "/entries"))
+        .header("origin", page)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(entries.status(), reqwest::StatusCode::OK);
+    assert_eq!(entries.headers()["access-control-allow-origin"], page);
+    assert_eq!(entries.headers()["vary"], "origin");
+    assert_eq!(entries.headers()["cache-control"], "no-cache");
+    assert!(
+        entries
+            .headers()
+            .get("access-control-allow-credentials")
+            .is_none()
+    );
+    let etag = entries.headers()["etag"].to_str().unwrap().to_string();
+    let snapshot: SignedRegistrySnapshot = entries.json().await.unwrap();
+    assert_eq!(
+        etag,
+        format!("\"{}\"", registry_types::snapshot_hash(&snapshot).unwrap())
+    );
+
+    let revalidated = client
+        .get(url(h.addr, "/entries"))
+        .header("origin", page)
+        .header("if-none-match", format!("W/\"x\", {etag}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revalidated.status(), reqwest::StatusCode::NOT_MODIFIED);
+    assert_eq!(revalidated.headers()["etag"], etag.as_str());
+    assert!(revalidated.bytes().await.unwrap().is_empty());
+
+    let foreign = client
+        .get(url(h.addr, "/entries"))
+        .header("origin", "http://localhost:4322")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        foreign
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+
+    let post = client
+        .post(url(h.addr, "/entries"))
+        .header("origin", page)
+        .json(&sign_change_request(
+            EntryAction::Add,
+            sample_entry(&h.publisher, 100),
+            &h.publisher,
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(post.headers().get("access-control-allow-origin").is_none());
+    let preflight = client
+        .request(reqwest::Method::OPTIONS, url(h.addr, "/entries"))
+        .header("origin", page)
+        .header("access-control-request-method", "POST")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        preflight
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    assert!(
+        preflight
+            .headers()
+            .get("access-control-allow-methods")
+            .is_none()
+    );
+}
+
+#[test]
+fn cors_origins_must_be_exact_serialized_origins() {
+    use registry_server::serve::valid_cors_origin;
+    for origin in [
+        "http://localhost:4321",
+        "https://tilo.so",
+        "https://app.tilo.so:8443",
+        "http://127.0.0.1:4321",
+    ] {
+        assert!(valid_cors_origin(origin), "{origin}");
+    }
+    for origin in [
+        "*",
+        "null",
+        "https://tilo.so/",
+        "https://tilo.so/app",
+        "https://Tilo.so",
+        "ftp://tilo.so",
+        "https://",
+        "https://tilo.so:",
+        "https://tilo.so:123456",
+        "https://user@tilo.so",
+        "https://tilo.so, https://evil.example",
+    ] {
+        assert!(!valid_cors_origin(origin), "{origin}");
     }
 }

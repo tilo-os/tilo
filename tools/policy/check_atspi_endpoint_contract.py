@@ -94,7 +94,7 @@ def audit(root: Path = ROOT) -> list[str]:
     for needle, purpose in (
         ("ak.set_live(match politeness", "live-region export"),
         ("ak.set_live_atomic()", "atomic live-region updates"),
-        ("if !access.state.protected", "protected-value boundary"),
+        ("if !secret && let Some(value) = value", "secret-value boundary"),
     ):
         if needle not in bridge:
             errors.append(f"crates/sdk/ui-core/src/accesskit_bridge.rs: missing AT-SPI {purpose}")

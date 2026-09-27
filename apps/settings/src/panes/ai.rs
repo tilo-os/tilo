@@ -2221,6 +2221,268 @@ mod tests {
         }
     }
 
+    /// A control that records each command the pane sends to the model
+    /// manager and accepts them all.
+    #[derive(Default)]
+    struct RecordingControl {
+        snapshot: Mutex<Option<LocalModelSnapshot>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl RecordingControl {
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl LocalModelControl for RecordingControl {
+        fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+            self.snapshot
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| "no snapshot".into())
+        }
+        fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
+            self.record(format!("install:{}", model.id));
+            Ok(())
+        }
+        fn start(&self, id: &str) -> Result<(), String> {
+            self.record(format!("start:{id}"));
+            Ok(())
+        }
+        fn stop(&self, id: &str) -> Result<(), String> {
+            self.record(format!("stop:{id}"));
+            Ok(())
+        }
+        fn remove(&self, id: &str) -> Result<(), String> {
+            self.record(format!("remove:{id}"));
+            Ok(())
+        }
+        fn stage_accelerator(&self) -> Result<(), String> {
+            self.record("stage-accelerator".into());
+            Ok(())
+        }
+    }
+
+    /// A demo state whose installed models stand in each lifecycle phase:
+    /// stopped, running, downloading and failed.
+    fn lifecycle_state() -> AiState {
+        let mut state = demo_state(false);
+        let snapshot = state.snapshot.as_mut().unwrap();
+        let package = snapshot.models[0].package.clone();
+        let with_id = |id: &str| LocalModelPackage {
+            id: id.into(),
+            ..package.clone()
+        };
+        snapshot.models = vec![
+            InstalledLocalModel {
+                package: with_id("m/stopped"),
+                phase: LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None,
+                },
+            },
+            InstalledLocalModel {
+                package: with_id("m/running"),
+                phase: LocalModelPhase::Ready {
+                    running: true,
+                    endpoint: None,
+                },
+            },
+            InstalledLocalModel {
+                package: with_id("m/downloading"),
+                phase: LocalModelPhase::Downloading {
+                    downloaded_bytes: 1,
+                    total_bytes: 2,
+                },
+            },
+            InstalledLocalModel {
+                package: with_id("m/failed"),
+                phase: LocalModelPhase::Error {
+                    message: "bad digest".into(),
+                },
+            },
+        ];
+        state
+    }
+
+    fn action_ids(hub: &Resource, resource: &str) -> Vec<String> {
+        crate::actions::ai_resource(hub, Some(resource))
+            .unwrap_or_else(|| panic!("{resource} is in the hub"))
+            .actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect()
+    }
+
+    /// Each installed model offers only the controls its phase allows, and
+    /// removing one is destructive, confirmed and never runs until the
+    /// confirmed command reaches the pane.
+    #[test]
+    fn local_models_offer_only_safe_controls_and_confirm_removal() {
+        let hub = crate::actions::ai_section_for(&lifecycle_state());
+        let installed = |id: &str| format!("{INSTALLED_RESOURCE_PREFIX}{id}");
+        assert_eq!(
+            action_ids(&hub, &installed("m/stopped")),
+            ["start", "remove"]
+        );
+        assert_eq!(
+            action_ids(&hub, &installed("m/running")),
+            ["stop", "remove"]
+        );
+        assert_eq!(
+            action_ids(&hub, &installed("m/failed")),
+            ["retry", "remove"]
+        );
+        assert!(
+            action_ids(&hub, &installed("m/downloading")).is_empty(),
+            "a model still downloading can be neither started nor removed"
+        );
+        for id in ["m/stopped", "m/running", "m/failed"] {
+            let resource = crate::actions::ai_resource(&hub, Some(&installed(id))).unwrap();
+            let remove = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .unwrap();
+            assert_eq!(
+                remove.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm,
+                "{id}"
+            );
+            assert_eq!(
+                remove.contract.risk,
+                tilo_actions::RiskLevel::Destructive,
+                "{id}"
+            );
+            let start_or_stop = resource
+                .actions
+                .iter()
+                .find(|action| action.id != "remove")
+                .unwrap();
+            assert_ne!(
+                start_or_stop.contract.risk,
+                tilo_actions::RiskLevel::Destructive,
+                "{id}: lifecycle controls never destroy anything"
+            );
+        }
+
+        // Nothing reaches the manager until the confirmed command arrives,
+        // and then exactly that one removal does.
+        let control = Arc::new(RecordingControl::default());
+        let mut pane = AiPane::from_parts(control.clone(), lifecycle_state(), true);
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(control.calls().is_empty());
+        let commands = ui::LocalState::new(None);
+        let mut pane = pane.with_command_state(&commands);
+        commands.set(Some(crate::actions::LocalPaneCommand::AgentModel(
+            crate::actions::AgentModelOperation::Remove {
+                id: "m/stopped".into(),
+            },
+        )));
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(control.calls(), ["remove:m/stopped"]);
+    }
+
+    /// A finished command reports a terminal receipt only to the operation
+    /// that is running; another command's completion never closes it.
+    #[test]
+    fn a_model_command_reports_a_receipt_only_for_its_own_operation() {
+        let token = |operation: &crate::actions::AgentModelOperation| {
+            crate::actions::local_operation_token_for(
+                crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                operation,
+            )
+        };
+        let start = crate::actions::AgentModelOperation::Start {
+            id: "m/stopped".into(),
+        };
+        let stop_other = crate::actions::AgentModelOperation::Stop {
+            id: "m/running".into(),
+        };
+        let control = Arc::new(RecordingControl::default());
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let commands = ui::LocalState::new(None);
+        let mut pane = AiPane::from_parts(control.clone(), lifecycle_state(), true)
+            .with_operation_status(&status)
+            .with_command_state(&commands);
+        let mut doc = AutoCommit::new();
+
+        status.set(crate::actions::LocalOperationStatus::Running {
+            token: token(&start),
+        });
+        commands.set(Some(crate::actions::LocalPaneCommand::AgentModel(
+            start.clone(),
+        )));
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(control.calls(), ["start:m/stopped"]);
+        assert!(matches!(
+            status.get(),
+            crate::actions::LocalOperationStatus::Succeeded { token: done, .. } if done == token(&start)
+        ));
+
+        // A different operation is running: this command's completion leaves
+        // its receipt alone.
+        status.set(crate::actions::LocalOperationStatus::Running {
+            token: token(&stop_other),
+        });
+        commands.set(Some(crate::actions::LocalPaneCommand::AgentModel(start)));
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(
+            status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token(&stop_other)
+        ));
+    }
+
+    /// Setting up the graphics driver is its own confirmed, privileged action
+    /// on the pane, never a control on a model, and it touches nothing else.
+    #[test]
+    fn accelerator_setup_is_separate_from_the_model_lifecycle() {
+        let mut state = lifecycle_state();
+        state.snapshot.as_mut().unwrap().accelerator_setup =
+            Some(agent_provider_config::manager::AcceleratorSetup {
+                boot_pack_id: "gpu-stack".into(),
+                status: AcceleratorSetupState::Available,
+            });
+        let hub = crate::actions::ai_section_for(&state);
+        let driver_setup = hub
+            .actions
+            .iter()
+            .find(|action| action.id == "stage-accelerator")
+            .expect("the pane offers the driver setup");
+        assert_eq!(
+            driver_setup.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            driver_setup.contract.risk,
+            tilo_actions::RiskLevel::Privileged
+        );
+        for id in ["m/stopped", "m/running", "m/failed", "m/downloading"] {
+            assert!(
+                !action_ids(&hub, &format!("{INSTALLED_RESOURCE_PREFIX}{id}"))
+                    .iter()
+                    .any(|action| action == "stage-accelerator"),
+                "{id}"
+            );
+        }
+
+        let control = Arc::new(RecordingControl::default());
+        let commands = ui::LocalState::new(None);
+        let mut pane =
+            AiPane::from_parts(control.clone(), state, true).with_command_state(&commands);
+        commands.set(Some(crate::actions::LocalPaneCommand::AgentModel(
+            crate::actions::AgentModelOperation::StageAccelerator,
+        )));
+        pane.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(control.calls(), ["stage-accelerator"]);
+    }
+
     /// Download terms name size, license and speed, and progress is bounded and machine readable.
     #[test]
     fn downloads_state_their_terms_and_report_bounded_progress() {

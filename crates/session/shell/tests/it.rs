@@ -119,6 +119,8 @@ mod inspect_through_broker;
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
+#[path = "keyboard_shortcuts_door.rs"]
+mod keyboard_shortcuts_door;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "lock_screen_visual.rs"]

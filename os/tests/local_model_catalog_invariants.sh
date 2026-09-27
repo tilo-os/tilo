@@ -14,14 +14,19 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 jq -e '.schema == 1 and .production == false' "$source_json" >/dev/null \
     || bad 'checked-in example is not explicitly non-production schema 1'
-jq -e '
+# A model's bytes are one GGUF file or every file of a Hugging Face
+# snapshot, each fetched from the vendor at the pinned revision.
+model_files='def model_files: if .artifact.gguf then [.artifact.gguf]
+  else [.artifact.hf_snapshot.files[] | (.artifact // .)] end;'
+jq -e "$model_files"'
   (.models | length > 0) and (.runtimes | length > 0) and
   (all(.models[]; . as $model |
     ($model.revision | test("^[0-9a-f]{40}$|^[0-9a-f]{64}$")) and
-    ($model.artifact.url | contains($model.revision)) and
+    ($model | model_files | length > 0) and
+    all($model | model_files[]; .url | contains($model.revision)) and
     ($model.license_id | length > 0) and
     ($model.license_url | startswith("https://")) and
-    ($model.installed_size_bytes >= $model.artifact.size_bytes))) and
+    ($model.installed_size_bytes >= ([$model | model_files[].size_bytes] | add)))) and
   (all(.runtimes[];
     (.oci_image | test("@sha256:[0-9a-f]{64}$")) and
     (.base_image_digest | test("^sha256:[0-9a-f]{64}$"))))
@@ -34,8 +39,9 @@ model_size="$(wc -c < "$model" | tr -d ' ')"
 jq -e --arg hash "$runtime_hash" --argjson size "$runtime_size" \
     '.runtimes[0].artifact.sha256 == $hash and .runtimes[0].artifact.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'runtime fixture receipt drifted'
-jq -e --arg hash "$model_hash" --argjson size "$model_size" \
-    '.models[0].artifact.sha256 == $hash and .models[0].artifact.size_bytes == $size' \
+jq -e --arg hash "$model_hash" --argjson size "$model_size" "$model_files"'
+    (.models[0] | model_files[0]) as $file
+    | $file.sha256 == $hash and $file.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'model fixture receipt drifted'
 
 grep -Fq 'tilo.local-model.catalog.v1' "$tool" \
