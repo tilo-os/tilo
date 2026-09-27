@@ -83,5 +83,3 @@ impl ResourceApp for Scratchpad {
         Box::new(native_probe::NativeProbe::new(content, scroll))
     }
 }
-
-ui::dev_reload_entry!(Scratchpad);
