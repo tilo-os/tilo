@@ -512,15 +512,29 @@ impl App {
                     .inspect_node(node, |widget| widget.presence_payload())
                     .ok()
                     .flatten();
-                if reported.as_ref() != Some(&(key, payload)) {
-                    self.presence.follow_after_sync = true;
-                    self.needs_sync = true;
+                if reported.as_ref() == Some(&(key, payload)) {
+                    self.presence.stood_missed_at = None;
+                    return;
                 }
-                return;
+                break;
             }
         }
-        self.presence.follow_after_sync = true;
-        self.needs_sync = true;
+        self.refresh_semantic_tree();
+        self.presence.stood_missed_at = Some(self.accessibility.semantic_tree.revision());
+    }
+
+    /// Stand where the followed participant stood again, if that last found
+    /// no widget to take it and the semantic tree has changed since: the
+    /// text it stands in has synced, or the page it is on has opened. The
+    /// tree is refreshed where it always is (reporting semantic changes,
+    /// following, inspection); an unchanged tree is not tried again.
+    pub(super) fn retry_standing_where_followed(&mut self) {
+        let Some(missed_at) = self.presence.stood_missed_at else {
+            return;
+        };
+        if self.accessibility.semantic_tree.revision() != missed_at {
+            self.stand_where_followed();
+        }
     }
 
     #[cfg(feature = "native")]

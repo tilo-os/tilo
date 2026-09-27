@@ -349,6 +349,7 @@ impl App {
         // their presence is this view, not another person in it. The caret
         // or selection they already had here becomes this view's own.
         self.presence.stood_at = None;
+        self.presence.stood_missed_at = None;
         if mode == crate::view::FollowMode::Replay {
             let participant = crate::permissions::UserId(peer_id.clone());
             let caret = self.presence_ctx.carets.iter().find_map(|(key, held)| {
@@ -397,6 +398,7 @@ impl App {
         self.presence.follow_mode = crate::view::FollowMode::Live;
         self.presence_ctx.set_stand_in(None);
         self.presence.stood_at = None;
+        self.presence.stood_missed_at = None;
         for owner in std::mem::take(&mut self.presence.mirrored_overlays) {
             self.restore_overlay_at(&owner, &[], crate::view::OverlayPresentation::Owned);
         }
@@ -448,10 +450,10 @@ impl App {
     pub(super) fn follow_after_sync(&mut self) {
         if std::mem::take(&mut self.presence.follow_after_sync) {
             self.apply_follow();
-            // A replay's caret stands in text that may only now have synced.
-            if self.presence.follow_mode == crate::view::FollowMode::Replay {
-                self.stand_where_followed();
-            }
+        }
+        // A replay's caret stands in text that may only now have synced.
+        if self.presence.follow_mode == crate::view::FollowMode::Replay {
+            self.retry_standing_where_followed();
         }
     }
 
