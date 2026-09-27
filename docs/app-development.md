@@ -85,6 +85,8 @@ A standalone app builds the code this repository tests:
 - `.cargo/config.toml` carries Tilo's target CPU floor and hardening flags,
   and the profiles in `Cargo.toml` are Tilo's `dev`, `test`, `release` and
   `thin-app` profiles.
+- A `.gitignore` for `target/`, and a git repository of its own when the app
+  is not created inside one already.
 
 Without `--id`, an app outside this repository is named `local.dev.<name>`.
 That name cannot be published. Choose an id in a namespace you control before
