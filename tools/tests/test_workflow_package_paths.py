@@ -123,6 +123,7 @@ jobs:
                 )
             pairs = (
                 ("tilo-relay", ".forgejo/workflows/tilo-relay.yaml"),
+                ("fs", ".forgejo/workflows/tilo-relay.yaml"),
                 ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
             )
             violations: list[str] = []
@@ -154,6 +155,24 @@ jobs:
                     self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
             self.assertIn('    tags: ["v*"]', source)
             self.assertIn("\n  workflow_dispatch:\n", source)
+        with self.subTest(phase='relay image paths exclude test-only workspace edges'):
+            # The image Containerfile runs cargo build -p tilo-relay -p fs --bins.
+            # Dev-harness crates must not schedule that rebuild.
+            source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+                encoding="utf-8"
+            )
+            for block in workflow_path_blocks(source):
+                for path in (
+                    "apps/notes/**",
+                    "apps/chat/**",
+                    "crates/sdk/ui-core/**",
+                    "crates/browser/tilo-browser-runtime/**",
+                    "vendor/vello/**",
+                ):
+                    self.assertNotIn(path, block, path)
+                self.assertIn("crates/hosting/tilo-relay/**", block)
+                self.assertIn("crates/system/fs/**", block)
+                self.assertIn("vendor/genawaiter-proc-macro/**", block)
 
 
 if __name__ == "__main__":
