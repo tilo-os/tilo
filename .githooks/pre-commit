@@ -71,8 +71,13 @@ while IFS= read -r f; do
   fi
 done <<< "$staged_rs"
 
+# Source policy (ignore reasons, allow placement, dbg!) is ours to enforce on
+# our Rust; a vendored crate under vendor/ is upstream's code, kept as it
+# ships, the same exemption rustfmt already makes above.
+own_rs=('*.rs' ':!vendor/')
+
 # Require a reason for added #[ignore] attributes.
-added_ignores=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+\s*#\[ignore\]\s*$' || true)
+added_ignores=$(git diff --cached -U0 -- "${own_rs[@]}" | grep -E '^\+\s*#\[ignore\]\s*$' || true)
 if [ -n "$added_ignores" ]; then
   note "#[ignore] added with no reason string. Use #[ignore = \"why\"]."
   fail=1
@@ -92,7 +97,7 @@ if grep -qE '^\+(<{7}|={7}|>{7})( |$)' <<< "$staged_added"; then
 fi
 
 # Catch ineffective `#[allow]` attributes before CI.
-added=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+' || true)
+added=$(git diff --cached -U0 -- "${own_rs[@]}" | grep -E '^\+' || true)
 # A Clippy lint without its prefix is unknown and leaves the violation in place.
 bare=$(printf '%s\n' "$added" | grep -oE '#!?\[allow\(\s*(clippy::)?[a-z_]+' \
   | grep -v 'clippy::' \
@@ -102,7 +107,7 @@ if [ -n "$bare" ]; then
   fail=1
 fi
 # An attribute on a macro invocation in statement position is ignored.
-allow_context=$(git diff --cached -U0 -- '*.rs' | grep -A1 -E '^\+\s*#\[allow\(' || true)
+allow_context=$(git diff --cached -U0 -- "${own_rs[@]}" | grep -A1 -E '^\+\s*#\[allow\(' || true)
 if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|write|writeln|panic|vec|format)!' <<< "$allow_context"; then
   note "#[allow] directly above a macro invocation is ignored by rustc — put it on the enclosing function"
   fail=1
