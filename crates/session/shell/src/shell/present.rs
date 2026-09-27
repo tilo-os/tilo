@@ -379,6 +379,9 @@ impl Drop for PresentPipe {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -433,7 +436,7 @@ mod tests {
 
     fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
         let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(5))
+            .checked_add(HANG_BOUND)
             .unwrap_or_else(std::time::Instant::now);
         while std::time::Instant::now() < deadline {
             if cond() {

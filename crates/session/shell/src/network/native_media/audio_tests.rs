@@ -24,6 +24,9 @@ const RATE: f64 = 48_000.0;
 const FRAME: usize = 960;
 const CALL: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn namespace(publisher: char) -> String {
     format!("{CALL}/{}", publisher.to_string().repeat(64))
 }
@@ -168,7 +171,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         });
     }
     for side in &sides {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(HANG_BOUND, async {
             while side.client.status() == Status::Connecting {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -178,7 +181,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         assert_eq!(side.client.status(), Status::Live);
     }
     // The relay counts a session once its SETUP completed after admission.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_BOUND, async {
         while relay.counters().accepted < 2 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

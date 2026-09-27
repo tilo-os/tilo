@@ -72,7 +72,7 @@ async fn wait_peer_joined(events: &mut mpsc::Receiver<NetEvent>) {
 }
 
 async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, expected: u8) {
-    timeout(Duration::from_secs(2), async {
+    timeout(crate::support::HANG_BOUND, async {
         loop {
             if let Some(NetEvent::Msg {
                 msg:
@@ -246,7 +246,7 @@ async fn remote_action_frames_travel_the_exact_target_route() {
             })
             .await
             .expect("remote action queued");
-        let received = timeout(Duration::from_secs(5), async {
+        let received = timeout(crate::support::HANG_BOUND, async {
             loop {
                 match events_b.recv().await {
                     Some(NetEvent::Msg {

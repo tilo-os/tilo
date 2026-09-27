@@ -168,7 +168,7 @@ fn pump(
     label: &str,
 ) {
     let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();

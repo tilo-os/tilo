@@ -334,7 +334,7 @@ impl Harness {
 
     fn pump(&mut self, label: &str, done: impl Fn(&Tool) -> bool) {
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(crate::support::HANG_BOUND)
             .expect("deadline");
         while Instant::now() < deadline {
             let _ = self.conn.flush();

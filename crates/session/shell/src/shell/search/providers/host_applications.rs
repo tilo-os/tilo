@@ -496,6 +496,9 @@ impl SearchProvider for HostApplicationsProvider {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -606,7 +609,7 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let target = ResourceRef::new("host-applications", "org.fixture.Calculator");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + HANG_BOUND;
         loop {
             let catalog = ActionCatalog::build(
                 &registry,

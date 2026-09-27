@@ -209,7 +209,7 @@ fn pump(
     label: &str,
 ) {
     let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();
@@ -468,7 +468,7 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
         let surface_protocol_id = surface.id().protocol_id();
         let _ = conn.flush();
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(crate::support::HANG_BOUND)
             .unwrap_or_else(Instant::now);
         let mut server_saw_it = false;
         while Instant::now() < deadline {

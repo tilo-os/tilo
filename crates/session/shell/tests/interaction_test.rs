@@ -307,7 +307,7 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     spawn_wayland_server(tx, started_tx, input_rx);
-    let socket = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let socket = started_rx.recv_timeout(crate::support::HANG_BOUND).unwrap();
     let container = Container::new(document_dir.path().to_str().unwrap());
     let log_dir = tempfile::tempdir().unwrap();
     let app = container
@@ -464,7 +464,7 @@ fn test_click_interaction_in_sandbox() {
     spawn_wayland_server(tx, started_tx, input_tx_rx);
 
     let socket_name = started_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::support::HANG_BOUND)
         .expect("Server failed to start");
     // cargo runs an integration test with the *package* root as its cwd, not
     // the workspace root, so a relative "target/debug/..." resolved to

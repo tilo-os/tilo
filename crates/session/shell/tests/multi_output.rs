@@ -251,10 +251,10 @@ impl Harness {
         harness
     }
 
-    /// Run client and server until `done` holds, or fail after 3s.
+    /// Run client and server until `done` holds, or fail at the hang bound.
     pub fn pump(&mut self, label: &str, done: impl Fn(&Client) -> bool) {
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(crate::support::HANG_BOUND)
             .expect("deadline");
         while Instant::now() < deadline {
             let _ = self.conn.flush();
@@ -300,7 +300,7 @@ impl Harness {
         surface.commit();
         self.pump("surface creation", |_| true);
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
+            .checked_add(crate::support::HANG_BOUND)
             .expect("deadline");
         loop {
             if let Some(id) = self

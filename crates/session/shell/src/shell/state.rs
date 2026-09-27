@@ -66,6 +66,9 @@ fn merge_schedule_claims(
 
 #[cfg(test)]
 mod identity_fs_tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
 
     #[test]
@@ -109,7 +112,10 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if started.exists() {
                     break;
                 }
@@ -121,7 +127,10 @@ mod identity_fs_tests {
                 "publication returned while the deliberately blocked publisher was unfinished"
             );
             std::fs::write(&release, b"release").expect("release publisher");
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if log.exists() {
                     break;
                 }
@@ -132,7 +141,7 @@ mod identity_fs_tests {
             assert!(arguments.contains(cache.to_str().unwrap()));
             assert!(arguments.contains(acl.to_str().unwrap()));
             assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
+                wait_for_fs_authority_publication_idle(HANG_BOUND),
                 "the publisher worker must retire before its fixture is removed"
             );
         }

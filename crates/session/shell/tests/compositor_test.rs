@@ -130,7 +130,7 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     });
 
     let deadline = Instant::now()
-        .checked_add(Duration::from_secs(8))
+        .checked_add(crate::support::HANG_BOUND)
         .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -146,7 +146,7 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     }
     let _ = child.kill();
     let _ = child.wait();
-    panic!("compositor never printed `tilo compositor listening on …` within 8s");
+    panic!("compositor never printed `tilo compositor listening on …`");
 }
 
 fn extract_socket_name(line: &str) -> Option<String> {
@@ -425,7 +425,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     let _registry = display.get_registry(&qh, ());
 
     let mut client = TestClient::new();
-    round_trip_until_bound(&conn, &mut queue, &mut client, Duration::from_secs(3));
+    round_trip_until_bound(&conn, &mut queue, &mut client, crate::support::HANG_BOUND);
     let compositor = client
         .compositor
         .clone()
@@ -449,7 +449,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     }
 
     // Poll the state dump until the foreign tab with our app-id appears.
-    let adopted = poll_for(Duration::from_secs(3), || {
+    let adopted = poll_for(crate::support::HANG_BOUND, || {
         // Re-pump inside the poll: without it the test blocks on the file
         // system alone and nothing drives the compositor's loop after the
         // initial burst.
@@ -482,7 +482,7 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     drop(queue);
     drop(conn);
 
-    let reaped = poll_for(Duration::from_secs(2), || {
+    let reaped = poll_for(crate::support::HANG_BOUND, || {
         // `Some(true)` means "still adopted"; we want the inverse.
         match dump_has_foreign_app_id(dump_path, &app_id) {
             Some(false) => Some(true),

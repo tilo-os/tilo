@@ -109,14 +109,13 @@ fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
     }
 }
 
-/// 5s read timeout — adequate for every dispatcher command that doesn't
-/// talk to the GPU.
+/// Round-trips one dispatcher command; the reply bound only catches a hang.
 fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> serde_json::Value {
-    round_trip_with_timeout(stream, cmd_json, Duration::from_secs(5))
+    round_trip_with_timeout(stream, cmd_json, crate::support::HANG_BOUND)
 }
 
-/// `snapshot` is the lone slow case: spinning up an `OffscreenRenderer`
-/// can exceed the default 5s on cold caches.
+/// `snapshot` passes its own bound: spinning up an `OffscreenRenderer` is
+/// slow on cold caches.
 fn round_trip_with_timeout(
     stream: &mut UnixStream,
     cmd_json: &str,

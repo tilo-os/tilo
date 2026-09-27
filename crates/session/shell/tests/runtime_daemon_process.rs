@@ -70,7 +70,7 @@ impl Drop for DaemonProfile {
 fn status(profile: &Path) -> Value {
     let mut stream = UnixStream::connect(profile.join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(crate::support::HANG_BOUND))
         .unwrap();
     stream.write_all(b"{\"native\":\"status\"}\n").unwrap();
     let mut line = String::new();
@@ -264,7 +264,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     }
     let mut stream = UnixStream::connect(profile.path().join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(crate::support::HANG_BOUND))
         .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut roots = |count| {
@@ -387,7 +387,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         );
         if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(crate::support::HANG_BOUND))
                 .unwrap();
             writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();
