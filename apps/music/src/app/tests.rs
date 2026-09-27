@@ -444,13 +444,17 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
         "paused initialization needs ticks"
     );
 
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    // A hang bound: prerolling takes milliseconds once GStreamer is up, but a
+    // loaded test machine can stall its initialization and streaming threads
+    // for seconds. The loop ends as soon as the decoder delivers.
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
     while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
         app.tick();
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         assert!(
             Instant::now() < deadline,
-            "paused decoder failed to preroll"
+            "paused decoder failed to preroll: {}",
+            app.audio.diagnostics()
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
