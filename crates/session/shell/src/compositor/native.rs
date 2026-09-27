@@ -6456,6 +6456,8 @@ pub fn run() {
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
         std::collections::VecDeque::new();
+    // The pad whose map is held open, with its saved settings.
+    let mut pad_map_hold: Option<(String, Box<settings_store::hardware::TabletConfig>)> = None;
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6695,6 +6697,7 @@ pub fn run() {
                 event,
                 BackendEvent::Tablet(_)
                     | BackendEvent::TabletPad(_)
+                    | BackendEvent::TabletPadMap { .. }
                     | BackendEvent::TabletPadAdded(_)
                     | BackendEvent::TabletPadRemoved(_)
             )
@@ -6727,6 +6730,28 @@ pub fn run() {
                             session.is_locked(),
                         ));
                     }
+                    BackendEvent::TabletPadMap {
+                        pad,
+                        shown,
+                        time_msec,
+                    } => match shown {
+                        // Not on the lock screen: the map names what the
+                        // apps behind it do.
+                        Some(config) if !session.is_locked() => {
+                            let target =
+                                client_input::pad_focus_target(&state, &frame_builder, false);
+                            // The app learns the pad is there now, so it can
+                            // label the controls while the map is up.
+                            state.focus_tablet_pad(&pad, target, time_msec);
+                            pad_map_hold = Some((pad, config));
+                        }
+                        Some(_) => {}
+                        None => {
+                            if pad_map_hold.as_ref().is_some_and(|(held, _)| *held == pad) {
+                                pad_map_hold = None;
+                            }
+                        }
+                    },
                     BackendEvent::TabletPadAdded(description) => {
                         state.add_tablet_pad(description);
                     }
@@ -6734,6 +6759,20 @@ pub fn run() {
                     other => pending_events.push_back(other),
                 }
             }
+        }
+        // Rebuilt every tick while held, so labels an app sends after a mode
+        // switch replace the ones it gave for the last mode.
+        if pad_map_hold.is_some() && session.is_locked() {
+            pad_map_hold = None;
+        }
+        let pad_map = pad_map_hold
+            .as_ref()
+            .and_then(|(pad, config)| state.tablet_pad_map(pad, config));
+        if pad_map.is_none() {
+            pad_map_hold = None;
+        }
+        if pad_map.is_some() || frame_builder.chrome().pad_map.is_some() {
+            frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -7309,6 +7348,7 @@ pub fn run() {
                 BackendEvent::Redraw
                 | BackendEvent::Tablet(_)
                 | BackendEvent::TabletPad(_)
+                | BackendEvent::TabletPadMap { .. }
                 | BackendEvent::TabletPadAdded(_)
                 | BackendEvent::TabletPadRemoved(_) => {
                     // Redraw is implicit: the native loop paints every tick.

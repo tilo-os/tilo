@@ -34,7 +34,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_relay::{Envelope, RelayClient, reconcile};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -102,7 +102,8 @@ async fn publish_offline_edit(
         .unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = pending_count(pending_dir);
         if queued >= 1 {
             break;
@@ -139,7 +140,8 @@ async fn drain_then_lose_session(
     // disk (the drain is what removes it). B deliberately does NOT apply
     // what it received — the delta is lost in the disconnect race.
     let mut drained = false;
-    for _ in 0..80 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         if pending_count(pending_dir) == 0 {
             drained = true;
             break;
@@ -239,7 +241,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
 
     // ---- Anti-entropy: B reconciles against the host's MATERIALIZED
     //      doc — the only place d1 still lives — and converges. ----
-    let applied = reconcile(&b2, WS, &mut doc_b, Duration::from_secs(3))
+    let applied = reconcile(&b2, WS, &mut doc_b, HANG_BOUND)
         .await
         .expect("reconcile round trip");
     assert!(

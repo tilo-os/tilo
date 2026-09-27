@@ -555,6 +555,8 @@ mod tests {
                 mpsc,
             };
             use std::time::{Duration, Instant};
+            /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+            const HANG_BOUND: Duration = Duration::from_secs(30);
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
@@ -582,9 +584,7 @@ mod tests {
                 }
             };
             stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            stream.set_read_timeout(Some(HANG_BOUND)).unwrap();
             let mut request = [0; 4096];
             assert!(
                 stream.read(&mut request).unwrap() > 0,

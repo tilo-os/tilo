@@ -3925,6 +3925,7 @@ impl ChannelHandle {
 #[cfg(all(test, feature = "client"))]
 mod resolved_invocation_tests {
     use super::*;
+
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
@@ -4543,6 +4544,7 @@ impl ChannelHandle {
 #[cfg(all(test, feature = "client"))]
 mod reliable_invocation_tests {
     use super::*;
+
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};

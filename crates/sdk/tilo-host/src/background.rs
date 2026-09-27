@@ -568,6 +568,7 @@ impl Executor for NoBackground {
 mod tests {
     use super::*;
     use crate::wake::WakeScope;
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 

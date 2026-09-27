@@ -89,6 +89,7 @@ input-pen-button-disabled = Do nothing
 input-pad-title = { $name } buttons
 input-pad-button = Button { $number }
 input-pad-button-none = Do nothing
+input-pad-button-show-map = Show what the buttons do
 input-pad-no-buttons = This pad reports no buttons
 input-pad-mode-button-description = Switches the rings, strips and buttons to their next mode
 input-pad-ring = Ring { $number }

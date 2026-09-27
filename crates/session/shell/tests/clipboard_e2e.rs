@@ -1354,6 +1354,9 @@ impl TestClient {
         String::from_utf8(bytes).expect("selection bytes were not UTF-8")
     }
 
+    /// A selection set just before this call may still be on its way, with
+    /// an earlier selection's offer already delivered, so wait for an offer
+    /// that advertises `mime` rather than taking the first one.
     fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         // Successive copies each publish a new selection, and an earlier one
         // (the text a caller copied before an image, say) can reach this

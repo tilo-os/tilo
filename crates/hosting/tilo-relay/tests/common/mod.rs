@@ -217,6 +217,9 @@ pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Wait until `relay` has accepted `peer`'s subscription to `workspace`.
 ///
 /// For a federation link this is the moment from which a delta published on

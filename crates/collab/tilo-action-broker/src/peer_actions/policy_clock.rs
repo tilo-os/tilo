@@ -230,6 +230,7 @@ impl PolicyTime {
 mod tests {
     use super::*;
     use std::time::Duration;
+
     #[test]
     fn owner_policy_clock_retained_sampling_uses_same_controlled_clock() {
         let (clock, control) = OwnerPolicyClock::for_test(200);

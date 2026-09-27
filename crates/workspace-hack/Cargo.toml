@@ -34,8 +34,7 @@ bytes = { version = "1", features = ["serde"] }
 chacha20 = { version = "0.10", default-features = false, features = ["legacy", "rng", "xchacha", "zeroize"] }
 chacha20poly1305 = { version = "0.10" }
 chrono = { version = "0.4", features = ["serde"] }
-cipher-9fbad63c4bcf4a8f = { package = "cipher", version = "0.4", default-features = false, features = ["zeroize"] }
-cipher-d8f496e17d97b5cb = { package = "cipher", version = "0.5", default-features = false, features = ["block-padding", "rand_core", "stream-wrapper"] }
+cipher = { version = "0.5", default-features = false, features = ["block-padding", "rand_core", "stream-wrapper"] }
 color = { version = "0.3", default-features = false, features = ["bytemuck", "std"] }
 concurrent-queue = { version = "2" }
 const-oid-274715c4dabd11b0 = { package = "const-oid", version = "0.9", default-features = false, features = ["db", "std"] }
@@ -48,17 +47,17 @@ crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", d
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
 curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
-curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core", "serde"] }
+curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
+derive_more = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 ecdsa = { version = "0.17", features = ["algorithm", "getrandom", "pem", "std"] }
-ed25519 = { version = "3", default-features = false, features = ["pem", "serde"] }
-ed25519-dalek = { version = "3", features = ["pem", "rand_core", "serde"] }
+ed25519 = { version = "3", default-features = false, features = ["alloc", "pkcs8", "serde"] }
+ed25519-dalek = { version = "3", features = ["alloc", "pkcs8", "rand_core", "serde"] }
 either = { version = "1", features = ["use_std"] }
 elliptic-curve-582f2526e08bb6a0 = { package = "elliptic-curve", version = "0.14", features = ["ecdh", "getrandom", "pem", "std"] }
 elliptic-curve-594e8ee84c453af0 = { package = "elliptic-curve", version = "0.13", default-features = false, features = ["ecdh", "hazmat", "pem", "std"] }
@@ -86,7 +85,7 @@ guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
@@ -95,7 +94,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data", "utf16_iter", "utf8_iter"] }
@@ -106,11 +105,6 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
-iroh = { version = "1" }
-iroh-base = { version = "1", features = ["key"] }
-iroh-dns = { version = "1", features = ["tls-ring"] }
-iroh-metrics = { version = "1", features = ["service"] }
-iroh-relay = { version = "1", features = ["server"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -124,9 +118,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-noq = { version = "1", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
-noq-proto = { version = "1", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
-noq-udp = { version = "1", default-features = false, features = ["fast-apple-datapath", "tracing"] }
 notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
@@ -143,7 +134,7 @@ phf = { version = "0.13", features = ["macros"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
-portable-atomic = { version = "1", features = ["serde"] }
+portable-atomic = { version = "1" }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
@@ -155,20 +146,18 @@ rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = 
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-rcgen = { version = "0.14", features = ["x509-parser"] }
+rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
 resvg = { version = "0.47" }
-ring = { version = "0.17", features = ["std"] }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
-rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -178,7 +167,6 @@ sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
 signature = { version = "3", default-features = false, features = ["alloc", "digest", "rand_core"] }
 simd-adler32 = { version = "0.3" }
-simdutf8 = { version = "0.1", features = ["aarch64_neon"] }
 siphasher = { version = "1" }
 skrifa = { version = "0.42" }
 slab = { version = "0.4" }
@@ -199,7 +187,7 @@ tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = { version = "0.7", features = ["codec", "compat", "io-util", "rt"] }
+tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -252,8 +240,7 @@ cc = { version = "1", default-features = false, features = ["parallel"] }
 chacha20 = { version = "0.10", default-features = false, features = ["legacy", "rng", "xchacha", "zeroize"] }
 chacha20poly1305 = { version = "0.10" }
 chrono = { version = "0.4", features = ["serde"] }
-cipher-9fbad63c4bcf4a8f = { package = "cipher", version = "0.4", default-features = false, features = ["zeroize"] }
-cipher-d8f496e17d97b5cb = { package = "cipher", version = "0.5", default-features = false, features = ["block-padding", "rand_core", "stream-wrapper"] }
+cipher = { version = "0.5", default-features = false, features = ["block-padding", "rand_core", "stream-wrapper"] }
 color = { version = "0.3", default-features = false, features = ["bytemuck", "std"] }
 concurrent-queue = { version = "2" }
 const-oid-274715c4dabd11b0 = { package = "const-oid", version = "0.9", default-features = false, features = ["db", "std"] }
@@ -266,19 +253,19 @@ crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", d
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
 curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
-curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core", "serde"] }
+curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
-derive_more-impl = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
+derive_more = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
+derive_more-impl = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 displaydoc = { version = "0.2" }
 ecdsa = { version = "0.17", features = ["algorithm", "getrandom", "pem", "std"] }
-ed25519 = { version = "3", default-features = false, features = ["pem", "serde"] }
-ed25519-dalek = { version = "3", features = ["pem", "rand_core", "serde"] }
+ed25519 = { version = "3", default-features = false, features = ["alloc", "pkcs8", "serde"] }
+ed25519-dalek = { version = "3", features = ["alloc", "pkcs8", "rand_core", "serde"] }
 either = { version = "1", features = ["use_std"] }
 elliptic-curve-582f2526e08bb6a0 = { package = "elliptic-curve", version = "0.14", features = ["ecdh", "getrandom", "pem", "std"] }
 elliptic-curve-594e8ee84c453af0 = { package = "elliptic-curve", version = "0.13", default-features = false, features = ["ecdh", "hazmat", "pem", "std"] }
@@ -306,7 +293,7 @@ guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", features = ["num-traits"] }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
@@ -315,7 +302,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data", "utf16_iter", "utf8_iter"] }
@@ -326,11 +313,6 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
-iroh = { version = "1" }
-iroh-base = { version = "1", features = ["key"] }
-iroh-dns = { version = "1", features = ["tls-ring"] }
-iroh-metrics = { version = "1", features = ["service"] }
-iroh-relay = { version = "1", features = ["server"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -344,9 +326,6 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-noq = { version = "1", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
-noq-proto = { version = "1", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
-noq-udp = { version = "1", default-features = false, features = ["fast-apple-datapath", "tracing"] }
 notify = { version = "8" }
 num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
 num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
@@ -363,7 +342,7 @@ phf = { version = "0.13", features = ["macros"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
-portable-atomic = { version = "1", features = ["serde"] }
+portable-atomic = { version = "1" }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
@@ -375,20 +354,18 @@ rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = 
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-rcgen = { version = "0.14", features = ["x509-parser"] }
+rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider"] }
 resvg = { version = "0.47" }
-ring = { version = "0.17", features = ["std"] }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
-rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -398,7 +375,6 @@ sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
 signature = { version = "3", default-features = false, features = ["alloc", "digest", "rand_core"] }
 simd-adler32 = { version = "0.3" }
-simdutf8 = { version = "0.1", features = ["aarch64_neon"] }
 siphasher = { version = "1" }
 skrifa = { version = "0.42" }
 slab = { version = "0.4" }
@@ -420,7 +396,7 @@ tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = { version = "0.7", features = ["codec", "compat", "io-util", "rt"] }
+tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -458,16 +434,12 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hickory-net = { version = "0.26", default-features = false, features = ["https-ring"] }
-hickory-resolver = { version = "0.26", features = ["https-ring"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
-ipnet = { version = "2", features = ["serde"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
-noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
@@ -481,8 +453,7 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
-tokio-rustls = { version = "0.26", default-features = false, features = ["early-data"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "rand", "ring", "rustls-bring-your-own-connector", "server", "sha1_smol"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
@@ -498,16 +469,12 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hickory-net = { version = "0.26", default-features = false, features = ["https-ring"] }
-hickory-resolver = { version = "0.26", features = ["https-ring"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
-ipnet = { version = "2", features = ["serde"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
-noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
@@ -521,8 +488,7 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
-tokio-rustls = { version = "0.26", default-features = false, features = ["early-data"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "rand", "ring", "rustls-bring-your-own-connector", "server", "sha1_smol"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
@@ -538,16 +504,12 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hickory-net = { version = "0.26", default-features = false, features = ["https-ring"] }
-hickory-resolver = { version = "0.26", features = ["https-ring"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
-ipnet = { version = "2", features = ["serde"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
-noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
@@ -561,8 +523,7 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
-tokio-rustls = { version = "0.26", default-features = false, features = ["early-data"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "rand", "ring", "rustls-bring-your-own-connector", "server", "sha1_smol"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
@@ -578,16 +539,12 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hickory-net = { version = "0.26", default-features = false, features = ["https-ring"] }
-hickory-resolver = { version = "0.26", features = ["https-ring"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
-ipnet = { version = "2", features = ["serde"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "server-auto"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
-noq-udp = { version = "1" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
@@ -601,8 +558,7 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
-tokio-rustls = { version = "0.26", default-features = false, features = ["early-data"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "rand", "ring", "rustls-bring-your-own-connector", "server", "sha1_smol"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }

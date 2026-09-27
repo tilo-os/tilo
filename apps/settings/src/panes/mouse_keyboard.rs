@@ -27,7 +27,8 @@
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{
     EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, PadDial,
-    PadDialAction, ShortcutAction, StylusButtonAction, TouchpadClickMethod, TouchpadScrollMethod,
+    PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig, TouchpadClickMethod,
+    TouchpadScrollMethod,
 };
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
@@ -206,6 +207,8 @@ pub const WHOLE_DESKTOP: &str = "desktop";
 pub const MAX_PAD_BUTTONS: u32 = 32;
 /// The Pad-button choice for a button that does nothing.
 const PAD_BUTTON_NONE: &str = "none";
+/// The Pad-button choice for the button that shows the pad's map.
+const PAD_BUTTON_SHOW_MAP: &str = "show-map";
 /// Rings and strips Settings offers a mapping for, of each kind.
 pub const MAX_PAD_DIALS: u32 = 4;
 /// Modes per ring or strip Settings offers a mapping for.
@@ -435,23 +438,67 @@ pub fn pad_dials(device: &InputDeviceSnapshot) -> Vec<(PadDial, u32)> {
         .collect()
 }
 
-/// What a pad button can do: nothing, or any shortcut.
+/// What a pad button does in an app without tablet support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadButtonChoice {
+    Nothing,
+    /// Shows what every control does while held.
+    ShowMap,
+    Shortcut(ShortcutAction),
+}
+
+/// What a pad button can do: nothing, show the pad's map, or any shortcut.
 pub fn pad_button_choices() -> Vec<(String, String)> {
-    std::iter::once((PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")))
-        .chain(shortcut_choices())
-        .collect()
+    [
+        (PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")),
+        (
+            PAD_BUTTON_SHOW_MAP.to_string(),
+            t("input-pad-button-show-map"),
+        ),
+    ]
+    .into_iter()
+    .chain(shortcut_choices())
+    .collect()
 }
 
-pub fn pad_button_id(shortcut: Option<ShortcutAction>) -> String {
-    shortcut.map_or_else(|| PAD_BUTTON_NONE.to_string(), shortcut_id)
-}
-
-/// `Some(None)` clears the button; `None` is not a choice.
-pub fn pad_button_for_id(id: &str) -> Option<Option<ShortcutAction>> {
-    if id == PAD_BUTTON_NONE {
-        return Some(None);
+/// The choice `config` makes for pad button `button`.
+pub fn pad_button_id(config: &TabletConfig, button: u32) -> String {
+    if config.pad_map_button == Some(button) {
+        return PAD_BUTTON_SHOW_MAP.to_string();
     }
-    shortcut_for_id(id).map(Some)
+    config.pad_buttons.get(&button).map_or_else(
+        || PAD_BUTTON_NONE.to_string(),
+        |shortcut| shortcut_id(*shortcut),
+    )
+}
+
+/// The choice an id names; `None` when it is not one.
+pub fn pad_button_for_id(id: &str) -> Option<PadButtonChoice> {
+    match id {
+        PAD_BUTTON_NONE => Some(PadButtonChoice::Nothing),
+        PAD_BUTTON_SHOW_MAP => Some(PadButtonChoice::ShowMap),
+        _ => shortcut_for_id(id).map(PadButtonChoice::Shortcut),
+    }
+}
+
+/// Make pad button `button` do `choice`. One button shows the map: picking
+/// it for another moves it there.
+pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
+    if config.pad_map_button == Some(button) {
+        config.pad_map_button = None;
+    }
+    match choice {
+        PadButtonChoice::Nothing => {
+            config.pad_buttons.remove(&button);
+        }
+        PadButtonChoice::ShowMap => {
+            config.pad_buttons.remove(&button);
+            config.pad_map_button = Some(button);
+        }
+        PadButtonChoice::Shortcut(shortcut) => {
+            config.pad_buttons.insert(button, shortcut);
+        }
+    }
 }
 
 /// "Ring 1", or "Ring 1 · Mode 2" when its group has several modes.
@@ -1354,7 +1401,7 @@ impl MouseKeyboardPane {
                                 &resource,
                                 &format!("button-{button}"),
                                 pad_button_choices(),
-                                &pad_button_id(config.pad_buttons.get(&button).copied()),
+                                &pad_button_id(&config, button),
                                 &label,
                             )),
                         )
@@ -2073,11 +2120,22 @@ mod tests {
             "every listed shortcut can go on a pen button"
         );
 
-        assert_eq!(pad_button_for_id("none"), Some(None));
+        assert_eq!(pad_button_for_id("none"), Some(PadButtonChoice::Nothing));
+        let mut pad = TabletConfig::default();
+        set_pad_button(&mut pad, 2, PadButtonChoice::Shortcut(ShortcutAction::Lock));
         assert_eq!(
-            pad_button_for_id(&pad_button_id(Some(ShortcutAction::Lock))),
-            Some(Some(ShortcutAction::Lock))
+            pad_button_for_id(&pad_button_id(&pad, 2)),
+            Some(PadButtonChoice::Shortcut(ShortcutAction::Lock))
         );
+        set_pad_button(&mut pad, 2, PadButtonChoice::ShowMap);
+        assert_eq!(pad_button_id(&pad, 2), "show-map");
+        assert!(
+            pad.pad_buttons.is_empty(),
+            "the map button runs no shortcut"
+        );
+        set_pad_button(&mut pad, 0, PadButtonChoice::ShowMap);
+        assert_eq!(pad.pad_map_button, Some(0), "one button shows the map");
+        assert_eq!(pad_button_id(&pad, 2), "none");
         assert_eq!(pad_button_for_id("left"), None, "a pad runs shortcuts only");
 
         for id in ["native", "left", "back", "shortcut:search"] {

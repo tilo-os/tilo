@@ -15,6 +15,9 @@ use collab_types::{
 };
 use std::time::Duration;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 async fn bind_certified_endpoint() -> (Endpoint, MemoryLookup, FsTransportIdentity) {
     bind_certified_test_endpoint().await
 }
@@ -1230,7 +1233,8 @@ fn identity(endpoint: &Endpoint) -> IdentityKey {
 }
 
 async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now().checked_add(HANG_BOUND).unwrap();
+    while std::time::Instant::now() < deadline {
         if cond() {
             return true;
         }

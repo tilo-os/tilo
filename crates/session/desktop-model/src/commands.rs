@@ -872,6 +872,27 @@ pub fn apply_command(
     Ok(())
 }
 
+/// [`apply_command`] on the workspace of `room` in `tree`: the reduction a
+/// host runs against the desktop it renders.
+///
+/// # Errors
+///
+/// Returns a description when `room` is not in `tree`, or as [`apply_command`].
+pub fn apply_in_room(
+    tree: &mut DesktopTree,
+    room: &str,
+    command: &DesktopCommand,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+    create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
+) -> Result<(), String> {
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room.to_string() == room)
+        .ok_or("command room is not in this desktop")?;
+    apply_command(workspace, command, mint, create)
+}
+
 /// An identity the owner already reserved in its own namespace, handed to a
 /// topology operation that mints exactly one.
 struct Reserved(u64);

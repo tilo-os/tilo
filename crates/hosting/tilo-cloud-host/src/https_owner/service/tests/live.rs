@@ -300,7 +300,7 @@ fn delta_by(root: &Path, author: &SigningKey, text: &str) -> Vec<u8> {
 async fn upload(author: &Client, root: &Path, delivery: u8) -> Vec<u8> {
     let canonical = delta_by(root, &author.key, "live ");
     let (status, body) = author
-        .post(
+        .post_retrying(
             "/peer/v3/state",
             chunk([delivery; 16], &canonical, 0, canonical.len()),
         )

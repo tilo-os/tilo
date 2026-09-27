@@ -497,6 +497,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2145,7 +2148,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // pass, never synchronously by the keystroke/query path. Exercise the
         // real lifecycle here: the first update starts the worker and a later
         // one publishes its immutable snapshot and refreshes the visible rows.
-        for _ in 0..200 {
+        let index_started = std::time::Instant::now();
+        while index_started.elapsed() < HANG_BOUND {
             h.host.update(&mut doc, &automerge::ROOT);
             if h.host
                 .search_results

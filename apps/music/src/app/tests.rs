@@ -450,7 +450,8 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         assert!(
             Instant::now() < deadline,
-            "paused decoder failed to preroll"
+            "paused decoder failed to preroll: {}",
+            app.audio.diagnostics()
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

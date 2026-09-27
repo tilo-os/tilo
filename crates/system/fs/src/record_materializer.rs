@@ -952,6 +952,7 @@ pub enum RecordMaterializerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::time::UNIX_EPOCH;
 
     use collab_types::{

@@ -468,7 +468,7 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     .await;
     ended.expect("revoked publisher's namespace ends at the viewer");
     // A's own session is told to go away and closes.
-    tokio::time::timeout(Duration::from_secs(3), a.session().closed())
+    tokio::time::timeout(tilo_test_env::hang_bound(), a.session().closed())
         .await
         .expect("revoked session closes");
     assert!(
@@ -670,7 +670,7 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
     assert_eq!(inject_and_read(&f, &mut from_a, A, b"ok-1").await, b"ok-1");
     let old = b.member(&path(A)).await.unwrap();
     f.a.store(false, Ordering::SeqCst);
-    tokio::time::timeout(Duration::from_secs(3), a.session().closed())
+    tokio::time::timeout(tilo_test_env::hang_bound(), a.session().closed())
         .await
         .expect("revoked");
     // The withdrawn namespace closes at the subscriber (clients must watch

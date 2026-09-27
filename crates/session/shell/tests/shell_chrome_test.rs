@@ -1,5 +1,5 @@
-//! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
-//! `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
+//! Interaction tests for shell chrome widgets (`OverviewView`, the search
+//! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
 
 #![allow(
     clippy::unwrap_used,
@@ -81,72 +81,15 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
     }
 }
 
-use shell::shell::global_search::GlobalSearch;
-
 #[test]
-fn global_search_opens_filters_by_context_and_paints_an_opaque_surface() {
-    // Phase `global_search_seeds_commands_and_filters`.
-    {
-        let mut s = GlobalSearch::new();
-        s.seed_default_commands(); // "Create Workspace", "Rename Workspace", "Open Settings", ...
-        s.palette_mut().set_query("create");
-        assert!(
-            s.palette()
-                .visible_entries()
-                .iter()
-                .any(|e| e.label.contains("Create"))
-        );
-    }
-
-    // Phase `global_search_context_filter_narrows_results`.
-    {
-        let mut s = GlobalSearch::new();
-        s.seed_default_commands();
-        s.set_context_kind(shell::shell::global_search::SearchContext::Files);
-        let labels: Vec<String> = s
-            .palette()
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
-        assert!(
-            labels
-                .iter()
-                .all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open"))
-        );
-    }
-
-    // Phase `global_search_surface_alpha_is_opaque_and_matches_the_modal_tint`.
-    // The `GlobalSearch` palette surface is opaque (a tint would read as
-    // chrome bleeding through long result rows), leaning on the scrim below
-    // for depth. Pinned against `overlay_host::MODAL_SURFACE_ALPHA`, since
-    // the palette and workspace-settings modal share one value.
-    {
-        use shell::shell::global_search::GlobalSearch;
-        use shell::shell::overlay_host::MODAL_SURFACE_ALPHA;
-        let a = GlobalSearch::surface_alpha();
-        assert!(
-            (a - 1.0).abs() < f32::EPSILON,
-            "GlobalSearch surface alpha must be 1.0 so long result rows stay \
-             legible over a busy desktop; got {a}"
-        );
-        assert!(
-            (a - MODAL_SURFACE_ALPHA).abs() < f32::EPSILON,
-            "the palette tint must stay in step with MODAL_SURFACE_ALPHA \
-             ({MODAL_SURFACE_ALPHA}); got {a}"
-        );
-    }
-
-    // Phase `cmd_k_opens_and_escape_closes_search`.
-    {
-        use shell::shell::Shell;
-        use shell::shell::test_support::{Mods, key_press};
-        let mut shell = Shell::new_for_test();
-        shell.dispatch_key(key_press("K", Mods::CMD));
-        assert!(shell.search_visible());
-        shell.dispatch_key(key_press("Escape", Mods::NONE));
-        assert!(!shell.search_visible());
-    }
+fn cmd_k_opens_and_escape_closes_search() {
+    use shell::shell::Shell;
+    use shell::shell::test_support::{Mods, key_press};
+    let mut shell = Shell::new_for_test();
+    shell.dispatch_key(key_press("K", Mods::CMD));
+    assert!(shell.search_visible());
+    shell.dispatch_key(key_press("Escape", Mods::NONE));
+    assert!(!shell.search_visible());
 }
 
 #[test]

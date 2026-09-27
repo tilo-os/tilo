@@ -769,6 +769,7 @@ fn configure_pipewire(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::voice::RECEIVE_LIFETIME;
     use std::sync::atomic::{AtomicBool, Ordering};
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
