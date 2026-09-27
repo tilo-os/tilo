@@ -65,6 +65,16 @@ pub use source::{Hosted, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
 pub use view::RichTextView;
 
+/// A block editor for short rich text: a composer, a reply, a message row.
+/// Lines wrap, paragraphs sit close, and blocks have no drag handles.
+#[must_use]
+pub fn compact_editor() -> ui::widget::BlockEditor {
+    ui::widget::BlockEditor::new()
+        .with_wrap_lines(true)
+        .with_compact_paragraph_spacing(true)
+        .with_block_handles(false)
+}
+
 /// Rich text in a view: `cx.rich_text()`.
 pub trait RichTextViews {
     /// The document, editable where the participant may edit it.
