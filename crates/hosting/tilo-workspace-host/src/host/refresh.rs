@@ -116,13 +116,12 @@ mod tests {
             .await
             .unwrap();
         let mut session = host.connect(&owner).await.unwrap();
-        tokio::time::timeout(crate::HANG_BOUND, async {
+        tilo_test_env::within("the live session to become ready", async {
             while !session.is_ready() {
                 session.recv().await.expect("live actual subscription");
             }
         })
-        .await
-        .unwrap();
+        .await;
         let old_generation = owner.committed_generation();
         let old_checkpoint = owner
             .outgoing()
@@ -130,9 +129,8 @@ mod tests {
             .map(|entry| entry.bytes.to_vec())
             .collect::<Vec<_>>();
         session.request_checkpoint_refresh().unwrap();
-        let request = tokio::time::timeout(crate::HANG_BOUND, requests.recv())
+        let request = tilo_test_env::within("the checkpoint refresh request", requests.recv())
             .await
-            .unwrap()
             .unwrap();
         if fail_store {
             std::fs::rename(

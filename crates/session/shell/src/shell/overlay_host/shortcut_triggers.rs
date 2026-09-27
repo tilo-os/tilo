@@ -280,7 +280,7 @@ impl ShellOverlayHost {
                         tilo_automation::TriggerSpec::Keyboard { .. }
                     ) {
                         chrome.borrow_mut().push_warning_notification(
-                            "The shortcut didn't run",
+                            crate::shell::i18n::t("shortcut-trigger-failed"),
                             error.to_string(),
                         );
                     }

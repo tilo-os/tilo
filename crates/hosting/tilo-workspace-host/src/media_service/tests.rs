@@ -511,7 +511,7 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     let publisher = connect(publisher_proof.clone(), Some(outgoing.consume()), None)
         .await
         .unwrap();
-    let actual = tokio::time::timeout(crate::HANG_BOUND, async {
+    let actual = tilo_test_env::within("the audio frame through the relay", async {
         let b = incoming
             .consume()
             .routed_broadcast(namespace.as_str())
@@ -521,8 +521,7 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
         let mut g = t.recv_group().await.unwrap().unwrap();
         g.read_frame().await.unwrap().unwrap().payload.to_vec()
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(actual, expected);
     assert_eq!(
         publisher.session.version(),
@@ -531,12 +530,16 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     // A replayed proof is refused in the admission preface.
     assert!(connect(publisher_proof, None, None).await.is_err());
     f.service.invalidate();
-    let _ = tokio::time::timeout(Duration::from_secs(1), publisher.closed())
-        .await
-        .expect("publisher revocation deadline");
-    let _ = tokio::time::timeout(Duration::from_secs(1), subscriber.closed())
-        .await
-        .expect("subscriber revocation deadline");
+    let _ = tilo_test_env::within(
+        "the publisher to close after revocation",
+        publisher.closed(),
+    )
+    .await;
+    let _ = tilo_test_env::within(
+        "the subscriber to close after revocation",
+        subscriber.closed(),
+    )
+    .await;
     drop(broadcast);
 }
 

@@ -34,7 +34,7 @@ pub use tilo_desktop_model::{
     TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
     WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    compose_id, counter_of, peer_salt_of, role_label,
+    compose_id, counter_of, peer_salt_of, role_from_id, role_id,
 };
 pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
@@ -140,16 +140,20 @@ mod identity_fs_tests {
             assert!(arguments.contains("publish-authority"));
             assert!(arguments.contains(cache.to_str().unwrap()));
             assert!(arguments.contains(acl.to_str().unwrap()));
-            assert!(
-                wait_for_fs_authority_publication_idle(HANG_BOUND),
-                "the publisher worker must retire before its fixture is removed"
+            // The released publisher only has to exit; the budget is a
+            // backstop, and a stall reports the worker's attempt history.
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| {
+                    panic!(
+                        "the publisher worker must retire before its fixture is removed: {report}"
+                    )
+                },
             );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
         {
             use std::os::unix::fs::PermissionsExt;
-            use std::time::Duration;
 
             let temp = tempfile::tempdir().expect("temp");
             let publisher = temp.path().join("late-publisher.sh");
@@ -179,9 +183,8 @@ mod identity_fs_tests {
             // retirement is the event to wait on. Four backed-off failures take
             // about 1.5 s of sleeps plus five process spawns; the budget is only
             // a backstop for a worker that never succeeds.
-            assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(60)),
-                "the retry worker never published the queued ACL"
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| panic!("the retry worker never published the queued ACL: {report}"),
             );
             assert!(
                 log.exists(),

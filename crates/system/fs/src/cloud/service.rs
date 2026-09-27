@@ -709,7 +709,7 @@ pub fn run_mount(mount_point: &Path, state_dir: &Path) -> io::Result<()> {
     ];
     config.n_threads = Some(4);
     config.acl = fuser::SessionACL::Owner;
-    let session = fuser::spawn_mount2(
+    let session = fuser::spawn_mount(
         super::fuse::CloudFs::new(Arc::clone(&volume)),
         mount_point,
         &config,

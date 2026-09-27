@@ -726,16 +726,9 @@ mod tests {
                 let mut screen = crate::widget::identity_flow::pair_device::PairDeviceScreen::new();
                 screen.perform_pairing(&payload, &pairer_channel).unwrap()
             });
-            let mut completed = false;
-            let deadline = crate::time::now() + HANG_BOUND;
-            while crate::time::now() < deadline {
-                if host.poll_handshake(&channel).unwrap() {
-                    completed = true;
-                    break;
-                }
-                std::thread::sleep(crate::time::Duration::from_millis(2));
-            }
-            assert!(completed);
+            tilo_test_env::wait_until("the host's pairing handshake", || {
+                host.poll_handshake(&channel).unwrap()
+            });
             let host_identity = host.take_completed_identity().unwrap();
             let pairer_identity = pairer.join().unwrap();
             assert_eq!(

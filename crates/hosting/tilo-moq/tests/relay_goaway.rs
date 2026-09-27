@@ -33,8 +33,6 @@ use tilo_moq::relay::{
 };
 use tilo_moq::voice::{FRAME_SAMPLES, VoiceObject};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 /// The relay's existing revocation bound (see tests/relay.rs).
 const REVOCATION_BOUND: Duration = Duration::from_secs(1);
 /// Objects already on the wire when the relay cuts a session off.
@@ -156,14 +154,14 @@ async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
     let (_bb, b_track) = b_pub.publish("drain-call/b");
     let (a_sent, b_sent, a_got, b_got): (Log, Log, Log, Log) = Default::default();
     let a_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"drain-a", Some(&a_pub), Some(&a_sub)),
     )
     .await
     .unwrap()
     .unwrap();
     let b_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"drain-b", Some(&b_pub), Some(&b_sub)),
     )
     .await
@@ -177,7 +175,7 @@ async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
     ];
 
     // Media flows both ways before the revocation.
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while a_got.lock().unwrap().len() < 20 || b_got.lock().unwrap().len() < 20 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

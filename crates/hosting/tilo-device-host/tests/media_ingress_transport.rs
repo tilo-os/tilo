@@ -8,7 +8,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rcgen::{CertifiedKey, KeyPair};
@@ -19,8 +18,6 @@ use web_transport_quinn::proto::{
 };
 
 const MOQ_PROTOCOL: &str = tilo_moq::carrier::PROTOCOL;
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 struct H3Pair {
     server: web_transport_quinn::Server,
@@ -205,7 +202,7 @@ async fn actual_h3_rejects_raw_aliases_before_moq_setup_parsing() -> Result<()> 
         let sent_target = raw_target.clone();
         let server_authority = expected_authority.clone();
         let server_task = tokio::spawn(async move {
-            let incoming = tokio::time::timeout(HANG_BOUND, server.accept())
+            let incoming = tokio::time::timeout(tilo_test_env::hang_bound(), server.accept())
                 .await
                 .context("H3 accept deadline")?
                 .context("H3 listener closed")?;
@@ -287,7 +284,7 @@ async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_drive
     let serving = relay.clone();
     let route_authority = expected_authority.clone();
     let server_task = tokio::spawn(async move {
-        let incoming = tokio::time::timeout(HANG_BOUND, server.accept())
+        let incoming = tokio::time::timeout(tilo_test_env::hang_bound(), server.accept())
             .await
             .context("H3 accept deadline")?
             .context("H3 listener closed")?;
@@ -316,7 +313,7 @@ async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_drive
         .await?;
     let connected = tilo_moq::carrier::start(transport, b"canonical-proof", None, None).await?;
 
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while relay.counters().active != 1 {
             tokio::task::yield_now().await;
         }
@@ -330,7 +327,7 @@ async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_drive
     // protocol driver. The client must observe closure without a detached task.
     server_task.abort();
     assert!(server_task.await.is_err());
-    tokio::time::timeout(HANG_BOUND, connected.closed())
+    tokio::time::timeout(tilo_test_env::hang_bound(), connected.closed())
         .await
         .context("client stayed open after generic relay task cancellation")?;
     assert_eq!(relay.counters().active, 0);
@@ -372,7 +369,7 @@ async fn admission_after(
         .connect(request(url, &expected_authority, VOICE_PATH))
         .await?;
     let outcome = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         tilo_moq::carrier::start(transport, proof, None, None),
     )
     .await

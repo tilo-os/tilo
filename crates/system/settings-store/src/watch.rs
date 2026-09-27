@@ -98,13 +98,13 @@ mod tests {
         let mut theme = serde_json::Map::new();
         theme.insert("theme".into(), serde_json::json!("Light"));
         crate::update_section_at(&path, "appearance", theme.clone()).unwrap();
-        changes.recv_timeout(HANG_BOUND).unwrap();
+        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
 
         theme.insert("theme".into(), serde_json::json!("Dark"));
         crate::update_section_at(&path, "appearance", theme).unwrap();
         changes
-            .recv_timeout(HANG_BOUND)
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("a second atomic save still reaches the watch");
         std::fs::remove_dir_all(root).unwrap();
     }

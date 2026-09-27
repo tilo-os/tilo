@@ -11,10 +11,9 @@ use http_body_util::{BodyExt, Full};
 use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tilo_delivery_protocol::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
 use tilo_peer_state::join::*;
-use tokio::time::timeout;
 
 struct Client {
     address: std::net::SocketAddr,
@@ -77,9 +76,8 @@ async fn call(
     let original = OnboardingRequest::decode(&wire).unwrap();
     let transport = client.post(original.operation.path(), wire.clone());
     let actor = async {
-        let request = timeout(crate::HANG_BOUND, receiver.recv())
+        let request = tilo_test_env::within("the onboarding request", receiver.recv())
             .await
-            .unwrap()
             .unwrap();
         // The exact HTTPS receiver and original body charge enter the real owner turn.
         let mut scope = f
@@ -112,11 +110,10 @@ async fn call(
         drop(current);
         drop(scope);
     };
-    let ((status, bytes), ()) = timeout(Duration::from_secs(15), async {
+    let ((status, bytes), ()) = tilo_test_env::within("the transport and actor", async {
         tokio::join!(transport, actor)
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(status, StatusCode::OK);
     let response = OnboardingResponse::decode(&bytes).unwrap();
     response.verify_host_signature(&original, f.now).unwrap();
@@ -284,9 +281,8 @@ async fn onboarding_pinned_tls_five_operations_reach_actual_scoped_service() {
             .is_ok()
     );
     stop.send(true).unwrap();
-    timeout(crate::HANG_BOUND, serving)
+    tilo_test_env::within("the server to stop serving", serving)
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     host.shutdown().await.unwrap();

@@ -6662,7 +6662,7 @@ mod tests {
         root: &ObjId,
         mut done: impl FnMut(&CameraApp) -> bool,
     ) {
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while !done(app) && Instant::now() < deadline {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
@@ -7494,7 +7494,7 @@ mod tests {
 
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
-            let deadline = Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline
                 && std::fs::read_dir(&dir).map_or(true, |entries| {
                     !entries.flatten().any(|e| {

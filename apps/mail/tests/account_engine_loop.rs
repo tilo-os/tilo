@@ -21,7 +21,6 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 use mail::account::AccountStore;
 use mail::engine::{EngineEvent, EngineRequest};
@@ -46,7 +45,7 @@ const HANG_BOUND: Duration = Duration::from_secs(30);
 fn recv(
     rx: &std::sync::mpsc::Receiver<EngineEvent>,
 ) -> Result<EngineEvent, std::sync::mpsc::RecvTimeoutError> {
-    rx.recv_timeout(HANG_BOUND)
+    rx.recv_timeout(tilo_test_env::hang_bound())
 }
 
 /// Verify the MIME generated for a draft by structure and content. Independent

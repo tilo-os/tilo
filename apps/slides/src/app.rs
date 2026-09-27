@@ -12080,7 +12080,7 @@ mod history_interruption_tests {
             .as_ref()
             .unwrap()
             .rx
-            .recv_timeout(HANG_BOUND)
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         let DocumentJobResult::Save { result, .. } = &completed else {
             panic!("expected a save completion");

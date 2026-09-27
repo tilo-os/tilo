@@ -78,9 +78,8 @@ async fn publish_and_leave(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    let ready = tokio::time::timeout(HANG_BOUND, a_client.recv())
+    let ready = tilo_test_env::within("A Ready timeout", a_client.recv())
         .await
-        .expect("A Ready timeout")
         .expect("A Ready closed");
     assert!(matches!(
         ready,
@@ -151,9 +150,8 @@ async fn catch_up_after_restart(
         if got_delta && got_ready {
             break;
         }
-        let env = tokio::time::timeout(HANG_BOUND, b_client.recv())
+        let env = tilo_test_env::within("B catch-up timeout", b_client.recv())
             .await
-            .expect("B catch-up timeout")
             .expect("B channel closed");
         match env {
             Envelope::Delta {

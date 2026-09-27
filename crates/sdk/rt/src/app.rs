@@ -168,7 +168,7 @@ mod tests {
                 tx.send((current.id(), current.name().map(str::to_owned)))
                     .unwrap();
             });
-            let (ran_on, name) = rx.recv_timeout(HANG_BOUND).unwrap();
+            let (ran_on, name) = tilo_test_env::recv("the task's thread and name", &rx);
             assert_ne!(ran_on, caller);
             assert_eq!(ran_on, runtime.thread_id());
             assert_eq!(name.as_deref(), Some(APP_THREAD));
@@ -190,7 +190,7 @@ mod tests {
                 },
                 move |out| tx.send(out).unwrap(),
             );
-            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "slept");
+            assert_eq!(tilo_test_env::recv("the slept task's output", &rx), "slept");
         }
     }
 

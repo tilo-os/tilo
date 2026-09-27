@@ -39,7 +39,7 @@ async fn request(
     };
     socket.write_all(wire.as_bytes()).await.unwrap();
     let mut bytes = vec![];
-    tokio::time::timeout(Duration::from_secs(15), socket.read_to_end(&mut bytes))
+    tokio::time::timeout(tilo_test_env::hang_bound(), socket.read_to_end(&mut bytes))
         .await
         .unwrap()
         .unwrap();
@@ -64,7 +64,7 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         .unwrap();
     let pid = child.id();
     let host = Host(child);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let metadata = loop {
         assert!(
             Instant::now() < deadline,
@@ -295,7 +295,7 @@ async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actio
 
     let (mut host, metadata, _) = start(&state, &ready).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if !status["error"].is_null() || !status["action_error"].is_null() {
@@ -367,7 +367,7 @@ async fn reconnect_status_waits_for_durable_action_registration() {
     SessionOwner::initialize(&state).unwrap();
     let (mut host, metadata, _) = start(&state, &ready).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let generation = loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["actions"] == "ready" {
@@ -386,7 +386,7 @@ async fn reconnect_status_waits_for_durable_action_registration() {
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["qualification"]["action_registration"]["armed"] == true {
@@ -400,7 +400,7 @@ async fn reconnect_status_waits_for_durable_action_registration() {
     }
     writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let held = loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["native_subscription_generation"].as_u64().unwrap() > generation
@@ -423,7 +423,7 @@ async fn reconnect_status_waits_for_durable_action_registration() {
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["actions"] == "ready" {
@@ -453,7 +453,7 @@ async fn ended_private_attachment_reconnects_without_poisoning_actions() {
     SessionOwner::initialize(&state).unwrap();
     let (mut host, metadata, _) = start(&state, &ready).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let generation = loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["actions"] == "ready" {
@@ -475,7 +475,7 @@ async fn ended_private_attachment_reconnects_without_poisoning_actions() {
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         assert_ne!(
@@ -512,7 +512,7 @@ async fn failed_private_attachment_withdraws_actions() {
     SessionOwner::initialize(&state).unwrap();
     let (mut host, metadata, _) = start(&state, &ready).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["actions"] == "ready" {
@@ -534,7 +534,7 @@ async fn failed_private_attachment_withdraws_actions() {
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["actions"] == "unavailable" {
@@ -909,7 +909,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
 
     let (mut host, metadata, _) = start(&state, &ready).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         let fired = tilo_relay::peer::checkpoint_prefix_post_first_promotion_state(&workspace_root)
@@ -945,7 +945,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         web_time::SystemTime::now(),
     )
     .unwrap();
-    let recovery_deadline = Instant::now() + Duration::from_secs(30);
+    let recovery_deadline = tilo_test_env::hang_deadline();
     let (client, replayed) =
         connect_observer(&recovered_binding, room, &mut recovered, recovery_deadline)
             .await
@@ -1177,7 +1177,7 @@ async fn checked_application_catalogue(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let event = client.recv().await.unwrap();
             if matches!(event, Envelope::Ready { .. }) {
@@ -1194,7 +1194,7 @@ async fn checked_application_catalogue(
     client
         .send_action(EnvelopeV2::EnableBrokerClient { room })
         .unwrap();
-    let deadline = Instant::now() + HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     let (broker_host, catalogue) = loop {
         let request_id = uuid::Uuid::new_v4();
         client
@@ -1519,7 +1519,7 @@ async fn checked_application_catalogue(
             .as_u64()
             .unwrap();
     writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let (_, status) = request(origin, "/status", None, None).await;
         if status["actions"] == "ready"
@@ -1600,7 +1600,7 @@ async fn checked_application_catalogue(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let event = client.recv().await.unwrap();
             if matches!(event, Envelope::Ready { .. }) {
@@ -1617,7 +1617,7 @@ async fn checked_application_catalogue(
     client
         .send_action(EnvelopeV2::EnableBrokerClient { room })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let (_, status) = request(origin2, "/status", None, None).await;
         if status["actions"] == "ready" {
@@ -1695,7 +1695,7 @@ async fn checked_application_catalogue(
             message: ActionMessage::CatalogueRefresh { scope: None },
         }))
         .unwrap();
-    let current_catalogue = tokio::time::timeout(HANG_BOUND, async {
+    let current_catalogue = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let EnvelopeV2::Delivered {
                 action,
@@ -1758,7 +1758,7 @@ async fn checked_application_catalogue(
             message: faulted,
         }))
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let (_, status) = request(origin2, "/status", None, None).await;
         if status["actions"] == "unavailable" && status["native_peer"] == "disconnected" {
@@ -1780,7 +1780,7 @@ async fn checked_application_catalogue(
     // an explicit post-unregistration relay refusal, never a fake success.
     let mut probes = std::collections::BTreeSet::new();
     let mut probe_tick = tokio::time::interval(Duration::from_millis(100));
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             tokio::select! {
                 _ = probe_tick.tick() => {
@@ -2017,7 +2017,7 @@ async fn invoke_and_observe_until(
     pending.insert(directed.clone()).unwrap();
     client.send_action(EnvelopeV2::Directed(directed)).unwrap();
     let mut success = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if success && complete(remote) { break; }
             tokio::select! {
@@ -2297,7 +2297,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         .unwrap();
     let host = LocalHost::start(&owner).await.unwrap();
     let mut native = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !native.is_ready() {
             if let tilo_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
                 owner
@@ -2339,16 +2339,11 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         web_time::SystemTime::now(),
     )
     .unwrap();
-    let (client, _) = connect_observer(
-        &binding,
-        room,
-        &mut remote,
-        Instant::now() + Duration::from_secs(10),
-    )
-    .await
-    .unwrap();
+    let (client, _) = connect_observer(&binding, room, &mut remote, tilo_test_env::hang_deadline())
+        .await
+        .unwrap();
     publish(&owner, &native).unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         // Leave one actual checkpoint unadmitted so recovery must do more than
         // count replay frames: it must fill the missing document in this peer.
         let mut omitted_chat = false;
@@ -2504,7 +2499,7 @@ async fn active_replacement(
         "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
-    let deadline = Instant::now() + HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         if status["qualification"]["armed"] == true {
@@ -2783,7 +2778,7 @@ async fn owner_and_room_isolation(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !matches!(second.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
     .await
@@ -2807,7 +2802,7 @@ async fn owner_and_room_isolation(
                 },
             }))
             .unwrap();
-        tokio::time::timeout(HANG_BOUND, async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if let EnvelopeV2::Delivered {
                     action,
@@ -2850,7 +2845,7 @@ async fn owner_and_room_isolation(
             message: ActionMessage::Status { invocation },
         }))
         .unwrap();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             match first.recv_action().await.unwrap() {
                 EnvelopeV2::Unavailable {
@@ -2884,7 +2879,7 @@ async fn observe_native_publication(
     remote: &mut tilo_peer_state::StatePeer,
 ) {
     let started = Instant::now();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let (code, target) = request(origin, "/status", None, None).await;
         assert_eq!(code, 200);
         assert_eq!(target["actions"], "ready");
@@ -2975,7 +2970,7 @@ async fn selective_publication_failure_after_commit(
     )
     .unwrap();
     host.0.stdin.as_mut().unwrap().flush().unwrap();
-    let deadline = Instant::now() + HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = request(origin, "/status", None, None).await.1;
         let armed = match failure {
@@ -3004,7 +2999,7 @@ async fn selective_publication_failure_after_commit(
             message: operation,
         }))
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut status_request = None;
     let mut terminal = false;
     let recovered = loop {

@@ -909,7 +909,7 @@ mod tests {
         assert!(!engine.poll_binding(), "still binding");
 
         release.send(()).unwrap();
-        wakes.recv_timeout(HANG_BOUND).unwrap();
+        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(!engine.take_bound(), "a failed bind announces nothing");
         assert!(!engine.is_live());
         assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));
@@ -1001,7 +1001,7 @@ mod tests {
             }
 
             // B receives the encoded audio off the wire.
-            let received = drain_until(&mut b, packets.len(), Duration::from_secs(15));
+            let received = drain_until(&mut b, packets.len(), tilo_test_env::hang_bound());
             assert_eq!(
                 received.len(),
                 packets.len(),

@@ -1460,14 +1460,14 @@ mod scheduling_tests {
             .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
             .await
             .unwrap();
-        let observed = tokio::time::timeout(HANG_BOUND, action_inbound.recv()).await;
+        let observed =
+            tokio::time::timeout(tilo_test_env::hang_bound(), action_inbound.recv()).await;
 
         let _ = release_tx.send(());
         drop(state_tx);
         drop(action_tx);
-        let finished = tokio::time::timeout(HANG_BOUND, pump)
+        let finished = tilo_test_env::within("released v2 pump did not finish", pump)
             .await
-            .expect("released v2 pump did not finish")
             .unwrap();
         assert!(
             finished,
@@ -1538,15 +1538,19 @@ mod scheduling_tests {
             .await
             .unwrap();
         assert_eq!(
-            tokio::time::timeout(HANG_BOUND, action_inbound.recv(),)
-                .await
-                .expect("continuously ready writer starved the inbound response"),
+            tilo_test_env::within(
+                "continuously ready writer starved the inbound response",
+                action_inbound.recv()
+            )
+            .await,
             Some(response)
         );
-        tokio::time::timeout(HANG_BOUND, enable_seen_rx)
-            .await
-            .expect("continuous state refills extended the finite enable prefix")
-            .unwrap();
+        tilo_test_env::within(
+            "continuous state refills extended the finite enable prefix",
+            enable_seen_rx,
+        )
+        .await
+        .unwrap();
 
         let encoded_subscribe = tilo_delivery_protocol::transport_v2::encode_state(
             &Envelope::Subscribe { workspace_id },
@@ -1571,9 +1575,8 @@ mod scheduling_tests {
 
         drop(relay_write);
         assert!(
-            !tokio::time::timeout(HANG_BOUND, pump)
+            !tilo_test_env::within("reader EOF did not stop the shared pump", pump)
                 .await
-                .expect("reader EOF did not stop the shared pump")
                 .unwrap()
         );
     }
@@ -1612,9 +1615,8 @@ mod scheduling_tests {
         started_rx.await.unwrap();
         drop(relay_write);
         assert!(
-            !tokio::time::timeout(HANG_BOUND, pump)
+            !tilo_test_env::within("reader EOF did not stop the shared pump", pump)
                 .await
-                .expect("reader EOF did not stop the shared pump")
                 .unwrap()
         );
         assert!(
@@ -1655,9 +1657,8 @@ mod scheduling_tests {
         started_rx.await.unwrap();
         drop(state_tx);
         assert!(
-            tokio::time::timeout(HANG_BOUND, pump)
+            tilo_test_env::within("closed state producer did not stop the shared pump", pump)
                 .await
-                .expect("closed state producer did not stop the shared pump")
                 .unwrap()
         );
         let polls_after_return = polls.load(std::sync::atomic::Ordering::SeqCst);
@@ -1771,13 +1772,12 @@ mod scheduling_tests {
             run_v2_reader(&mut reader, &incoming, &actions, None).await;
         });
 
-        tokio::time::timeout(HANG_BOUND, async {
+        tilo_test_env::within("reader never reached the full state sink", async {
             while bytes_read.load(std::sync::atomic::Ordering::SeqCst) < first_len {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("reader never reached the full state sink");
+        .await;
         assert_eq!(
             bytes_read.load(std::sync::atomic::Ordering::SeqCst),
             first_len,
@@ -2108,9 +2108,7 @@ mod session_carrier_tests {
         );
         assert_eq!(*events.lock().unwrap(), ["disconnect"]);
         finished.notify_one();
-        tokio::time::timeout(HANG_BOUND, &mut closing)
-            .await
-            .unwrap();
+        tilo_test_env::within("closing to complete", &mut closing).await;
         assert_eq!(*events.lock().unwrap(), ["disconnect"]);
     }
 
@@ -2131,9 +2129,7 @@ mod session_carrier_tests {
         );
         assert_eq!(*events.lock().unwrap(), ["close-owned"]);
         finished.notify_one();
-        tokio::time::timeout(HANG_BOUND, &mut closing)
-            .await
-            .unwrap();
+        tilo_test_env::within("closing to complete", &mut closing).await;
     }
 
     #[tokio::test]

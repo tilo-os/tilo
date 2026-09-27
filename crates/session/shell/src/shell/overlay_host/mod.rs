@@ -873,6 +873,12 @@ pub struct ShellOverlayHost {
     /// The emoji picker. Its picks wait here for the compositor, which
     /// commits them through the seat's input method.
     emoji_picker: crate::shell::emoji_picker::EmojiPicker,
+    /// The focused text field's caret in desktop coordinates, as the
+    /// compositor last reported it; the emoji picker opens against it.
+    text_caret: Option<Rect>,
+    /// A Bluetooth pairing question from the compositor's agent, modal
+    /// above the desktop while it waits for the person.
+    pairing: crate::bluetooth_prompt::PairingOverlay,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1966,6 +1972,13 @@ impl ShellOverlayHost {
                 presence,
             );
         }
+        self.pairing.draw(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         self.capture_studio.draw(
             &mut above_quick_settings,
             transform,
@@ -2197,6 +2210,9 @@ impl ShellOverlayHost {
         // Offer Switch user only where the display manager can open a greeter
         // beside this session; greetd cannot.
         host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
+            crate::bluetooth::PairingPromptHandle::global(),
+        );
         host
     }
 
@@ -2437,6 +2453,8 @@ impl ShellOverlayHost {
             window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             emoji_picker: crate::shell::emoji_picker::EmojiPicker::new(),
+            text_caret: None,
+            pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -2525,10 +2543,14 @@ impl ShellOverlayHost {
     /// identity cannot be located, or its backup ceremony cannot be opened.
     pub fn open_portable_identity_backup(&mut self) -> Result<(), String> {
         if self.onboarding.is_some() {
-            return Err("Finish the current identity flow before creating another backup.".into());
+            return Err(crate::shell::i18n::t("identity-backup-busy"));
         }
-        let identity_dir = runtime_identity::identity_dir_from_env()
-            .map_err(|error| format!("Could not locate the active identity: {error}"))?;
+        let identity_dir = runtime_identity::identity_dir_from_env().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "identity-backup-locate-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
         self.onboarding_released = false;
@@ -3178,14 +3200,16 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
-    /// Open the emoji picker over the display with focus, or close it.
+    /// Open the emoji picker at the focused field's caret (centred on the
+    /// display with focus when the field reports none), or close it.
     pub fn toggle_emoji_picker(&mut self) {
         if self.emoji_picker.is_open() {
             self.emoji_picker.close();
         } else {
-            let viewport = self.emoji_picker_viewport();
+            let caret = self.text_caret;
+            let viewport = self.emoji_picker_viewport_for(caret);
             self.emoji_picker
-                .open(viewport, &crate::shell::i18n::current_locale());
+                .open_at(viewport, caret, &crate::shell::i18n::current_locale());
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -3194,6 +3218,12 @@ impl ShellOverlayHost {
 
     pub fn emoji_picker_open(&self) -> bool {
         self.emoji_picker.is_open()
+    }
+
+    /// Where the focused text field's caret is, in desktop coordinates, or
+    /// `None` when no field takes text or it has not said.
+    pub fn set_text_caret(&mut self, caret: Option<Rect>) {
+        self.text_caret = caret;
     }
 
     /// The emoji picked since the last call, for the compositor to commit
@@ -3218,8 +3248,30 @@ impl ShellOverlayHost {
         &self.emoji_picker
     }
 
-    /// The display with focus on a partitioned desktop, else the desktop.
+    /// The display the open picker is placed on.
     fn emoji_picker_viewport(&self) -> Rect {
+        self.emoji_picker_viewport_for(self.emoji_picker.anchor())
+    }
+
+    /// The display holding `caret`, else the display with focus on a
+    /// partitioned desktop, else the desktop.
+    fn emoji_picker_viewport_for(&self, caret: Option<Rect>) -> Rect {
+        let output_rect = |output: &OutputGeometry| {
+            Rect::new(
+                output.x,
+                output.y,
+                output.x + output.width,
+                output.y + output.height,
+            )
+        };
+        if let Some(display) = caret.and_then(|caret| {
+            self.outputs
+                .iter()
+                .map(output_rect)
+                .find(|display| display.contains(caret.center()))
+        }) {
+            return display;
+        }
         let focused = self
             .is_partitioned()
             .then(|| {
@@ -3230,14 +3282,7 @@ impl ShellOverlayHost {
             .flatten();
         focused
             .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map_or(self.rect, |output| {
-                Rect::new(
-                    output.x,
-                    output.y,
-                    output.x + output.width,
-                    output.y + output.height,
-                )
-            })
+            .map_or(self.rect, output_rect)
     }
 
     /// Open global search, as a lone Super tap does.
@@ -3261,7 +3306,7 @@ impl ShellOverlayHost {
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Politeness, Role};
         let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name("Tilo workspace"));
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
         if let Some(stack) = self.notification_stack.as_ref()
             && let Some(node) = Widget::accessibility(stack)
         {
@@ -3276,7 +3321,7 @@ impl ShellOverlayHost {
         });
         root.children.push(
             AccessNode::new(Role::StaticText)
-                .with_name("Status readout")
+                .with_name(t("a11y-status-readout"))
                 .with_live(Politeness::Polite)
                 .with_value(readout.unwrap_or_default()),
         );
@@ -3690,7 +3735,9 @@ impl ShellOverlayHost {
                             .map(|human| RememberedInvitee {
                                 name: human.display_name,
                                 user_public_key: human.root_public_key,
-                                verification: "Workspace-verified identity".to_string(),
+                                verification: crate::shell::i18n::t(
+                                    "invite-workspace-verified-identity",
+                                ),
                             })
                             .collect()
                     })
@@ -4058,9 +4105,9 @@ impl ShellOverlayHost {
     /// Shell chrome on screen that holds a secret: the administrator
     /// authentication and network-secrets sheets, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
-    /// for an `AirPlay` PIN or password, and the setup steps that restore or
-    /// back up the identity (passphrases and a nearby device's pairing
-    /// code). A capture always draws these as the placeholder — see
+    /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
+    /// setup steps that restore or back up the identity (passphrases and a
+    /// nearby device's pairing code). A capture always draws these as the placeholder — see
     /// [`crate::shell::capture_protection`].
     pub fn secret_prompt_rects(&self) -> Vec<Rect> {
         let mut rects = Vec::new();
@@ -4092,7 +4139,21 @@ impl ShellOverlayHost {
             rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
         }
         rects.extend(self.projection_overlay.secret_prompt_rect(now));
+        rects.extend(self.pairing.secret_rect());
         rects
+    }
+
+    /// Draw Bluetooth pairing questions from `handle` instead of the
+    /// session's. Tests use a private handle so their prompts never reach
+    /// another host.
+    #[doc(hidden)]
+    pub fn set_pairing_prompt_handle(&mut self, handle: crate::bluetooth::PairingPromptHandle) {
+        self.pairing = crate::bluetooth_prompt::PairingOverlay::new(handle);
+    }
+
+    /// The Bluetooth pairing dialog, when one is open.
+    pub fn pairing_prompt(&self) -> Option<&crate::bluetooth_prompt::PairingPromptView> {
+        self.pairing.view()
     }
 
     /// Serve administrator-authentication and network-secrets sheets (and
@@ -5323,13 +5384,13 @@ impl ShellOverlayHost {
             // On a partitioned strip, the focused display's windows only:
             // a new window opens where the person is looking.
             let focused = focused_display.map(|d| row.group_ids_on(d));
-            Some(crate::shell::placement::StripViewport {
+            Some(tilo_desktop_model::commands::StripViewport {
                 strip: sid,
                 groups: row
                     .group_canvas_spans()
                     .into_iter()
                     .filter(|(id, _, _)| focused.as_ref().is_none_or(|on| on.contains(id)))
-                    .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
+                    .map(|(id, x0, x1)| tilo_desktop_model::commands::GroupSpan { id, x0, x1 })
                     .collect(),
                 visible_x0,
                 visible_x1,
@@ -15282,7 +15343,8 @@ impl ShellOverlayHost {
             | WorkspaceSettingsOutcome::ComposerSubmit => {}
             WorkspaceSettingsOutcome::ManagePermissionProfiles => {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query("permission role");
+                self.palette
+                    .set_query(&crate::shell::i18n::t("palette-query-permission-roles"));
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
@@ -15360,7 +15422,8 @@ impl ShellOverlayHost {
                     // parameter flow. It keeps setup usable with keyboard,
                     // pointer, accessibility tools, and automation alike.
                     self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                    self.palette.set_query("Invite agent to workspace");
+                    self.palette
+                        .set_query(&crate::shell::i18n::t("search-action-agent-invite"));
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
             }
@@ -16655,6 +16718,9 @@ impl Widget for ShellOverlayHost {
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
         }
+        if let Some(pairing) = self.pairing.view_mut() {
+            pairing.sync(s, p);
+        }
     }
 
     #[allow(
@@ -16665,6 +16731,7 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.update(doc, path);
         }
+        let pairing_dirty = self.pairing.pump(doc, path);
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -16812,6 +16879,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || pairing_dirty
             || close_dirty
             || palette_dirty
             || sidebar_dirty
@@ -17037,6 +17105,9 @@ impl Widget for ShellOverlayHost {
             self.onboarding_node = Some(onboarding_node);
             children.push(onboarding_node);
         }
+        if let Some(pairing_node) = self.pairing.build_layout(taffy, theme, node_map) {
+            children.push(pairing_node);
+        }
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -17216,6 +17287,8 @@ impl Widget for ShellOverlayHost {
                 Point::new(self.rect.x0, self.rect.y0),
             );
         }
+        self.pairing
+            .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
         self.publish_strip_viewport();
     }
 
@@ -17353,6 +17426,26 @@ impl Widget for ShellOverlayHost {
             if *handled || self.capture_studio.modal_capture().is_some() {
                 return;
             }
+        }
+        // A Bluetooth pairing question owns input until it is answered:
+        // nothing behind it may be clicked into agreeing, and no desktop
+        // shortcut runs while it waits.
+        if self.onboarding.is_none()
+            && self.pairing.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            )
+        {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
         }
         // A display tool's change waits for Keep or Revert, possibly with a
         // screen blanked: the answer comes before any other surface.
@@ -19039,6 +19132,9 @@ impl Widget for ShellOverlayHost {
                 .iter()
                 .map(|(_, mirror)| mirror as &dyn Widget),
         );
+        if let Some(pairing) = self.pairing.view() {
+            out.push(pairing);
+        }
         out
     }
 
@@ -19064,11 +19160,15 @@ impl Widget for ShellOverlayHost {
                 .iter_mut()
                 .map(|(_, mirror)| mirror as &mut dyn Widget),
         );
+        if let Some(pairing) = self.pairing.view_mut() {
+            out.push(pairing);
+        }
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        std::mem::take(&mut self.onboarding_focus_reset)
+        self.pairing.take_focus_reset()
+            | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
                 .as_mut()
@@ -19118,7 +19218,8 @@ impl Widget for ShellOverlayHost {
             .is_some_and(|s| s.take_structure_dirty());
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
-        content | sidebar | palette | capture_mirrors | resynced | workspace_layout
+        let pairing = self.pairing.take_structure_dirty();
+        content | sidebar | palette | capture_mirrors | resynced | workspace_layout | pairing
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -20560,6 +20661,16 @@ impl ShellOverlayHost {
         );
     }
 
+    /// The input devices and last-used modality the chrome adapts to.
+    pub fn interaction_environment(&self) -> ui::InteractionEnvironment {
+        self.interaction
+    }
+
+    /// Input language the help overlay is written in.
+    pub fn shortcut_help_modality(&self) -> ui::InputModality {
+        self.interaction.preferred_hint_modality()
+    }
+
     /// The shortcut-guide affordance is persistent chrome, not modal
     /// content. Keep it behind every temporary shell-owned surface: drawing
     /// it later would let its label overlap a popover at small sizes or large
@@ -20753,10 +20864,8 @@ impl ShellOverlayHost {
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
 
-        if matches!(
-            self.interaction.preferred_hint_modality(),
-            ui::InputModality::Keyboard | ui::InputModality::Pointer
-        ) {
+        let help_modality = self.shortcut_help_modality();
+        if help_modality != ui::InputModality::Touch {
             let feedback = if let Some(action) = self.shortcut_rebind {
                 Some(self.shortcut_rebind_message.clone().map_or_else(
                     || {
@@ -20782,7 +20891,7 @@ impl ShellOverlayHost {
             }
         }
 
-        match self.interaction.preferred_hint_modality() {
+        match help_modality {
             ui::InputModality::Controller => {
                 InputDeviceGlyph::paint_controller(
                     scene,

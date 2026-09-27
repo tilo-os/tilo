@@ -1060,8 +1060,17 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     }
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
-            let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND);
+            let _ = crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
+                tilo_test_env::hang_bound(),
+            );
         }
+    }
+    #[track_caller]
+    fn settle_publication(step: &str) {
+        crate::shell::fs_authority::wait_for_fs_authority_publication_idle(
+            tilo_test_env::hang_bound(),
+        )
+        .unwrap_or_else(|report| panic!("{step}: {report}"));
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
@@ -1103,7 +1112,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     }
     let owner = NativeWorkspaceOwner::open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
-    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
+    settle_publication("baseline ACL export must publish");
     let baseline_acl = std::fs::read(&acl).unwrap();
     assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
@@ -1121,7 +1130,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         failed.is_err(),
         "candidate side-effect consumed the failure before the actual owner barrier"
     );
-    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
+    settle_publication("failed install must leave publication idle");
     assert_eq!(tree.read().room_of(local), Some(previous));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::read(&acl).unwrap(), baseline_acl);
@@ -1130,7 +1139,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         "no authority publisher may see the failed candidate"
     );
     owner.install(&complete, now).unwrap();
-    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
+    settle_publication("committed install must publish its ACL");
     let committed_acl = std::fs::read(&acl).unwrap();
     assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
@@ -1143,7 +1152,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     std::fs::remove_file(&observed_acl).unwrap();
     std::fs::remove_file(&observed_state).unwrap();
     stale.flush_to_disk();
-    assert!(crate::shell::fs_authority::wait_for_fs_authority_publication_idle(HANG_BOUND));
+    settle_publication("stale flush must leave publication idle");
     assert_eq!(std::fs::read(&acl).unwrap(), committed_acl);
     assert!(
         !observed_acl.exists(),

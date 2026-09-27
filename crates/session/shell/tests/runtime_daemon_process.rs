@@ -70,7 +70,7 @@ impl Drop for DaemonProfile {
 fn status(profile: &Path) -> Value {
     let mut stream = UnixStream::connect(profile.join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(crate::support::HANG_BOUND))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     stream.write_all(b"{\"native\":\"status\"}\n").unwrap();
     let mut line = String::new();
@@ -90,7 +90,7 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     let mut manager = ui::collaboration::CollaborationManager::new();
     let started = Instant::now();
     while manager.state() == ui::collaboration::CollaborationState::Connecting
-        && started.elapsed() < Duration::from_secs(10)
+        && started.elapsed() < tilo_test_env::hang_bound()
     {
         let _ = manager.poll();
         std::thread::sleep(Duration::from_millis(10));
@@ -264,11 +264,11 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     }
     let mut stream = UnixStream::connect(profile.path().join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(crate::support::HANG_BOUND))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut roots = |count| {
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();
@@ -387,7 +387,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         );
         if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
             stream
-                .set_read_timeout(Some(crate::support::HANG_BOUND))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();

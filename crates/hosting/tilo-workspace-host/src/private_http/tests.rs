@@ -199,7 +199,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             service.submit_with_policy_time(proof, peer, Instant::now() + HANG_BOUND, time.clone())
         })
         .unwrap();
-        let reply = tokio::time::timeout(HANG_BOUND, async {
+        let reply = tilo_test_env::within("the private HTTP reply", async {
             loop {
                 if let Some(reply) = pending.try_reply().unwrap() {
                     break reply;
@@ -207,8 +207,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
                 tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         assert_eq!(reply.request_id, action.request_id);
         assert_eq!(reply.source, action.target);
         assert_eq!(reply.target, action.source);

@@ -30,9 +30,6 @@ use tilo_moq::relay::{
 };
 use tilo_moq::voice::{FRAME_SAMPLES, VoiceObject};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 #[test]
 fn shared_ingress_route_requires_exact_raw_authority_and_target() {
     let expected = "media.example.test:443";
@@ -172,7 +169,7 @@ async fn exact_voice_route_accepts_and_rejects_other_routes_and_queries() {
 }
 
 async fn read(origin: &Origin, path: &str) -> Vec<u8> {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let broadcast = origin.broadcast(path).await;
         let mut track = broadcast
             .track("audio")
@@ -211,14 +208,14 @@ async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnec
     let (_ab, mut at) = a_pub.publish("opaque-call/a");
     let (_bb, mut bt) = b_pub.publish("opaque-call/b");
     let a_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"isolated-a", Some(&a_pub), Some(&a_sub)),
     )
     .await
     .unwrap()
     .unwrap();
     let b_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"isolated-b", Some(&b_pub), Some(&b_sub)),
     )
     .await
@@ -234,7 +231,7 @@ async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnec
     assert_eq!(b_rx, voice(0));
     drop(a_session);
     let again = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"isolated-a", Some(&a_pub), Some(&a_sub)),
     )
     .await
@@ -242,7 +239,7 @@ async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnec
     .unwrap();
     assert_eq!(again.session.version(), lite);
     at.write_frame(moq_net::Timestamp::ZERO, voice(5)).unwrap();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while read(&b_sub, "opaque-call/a").await != voice(5) {
             at.write_frame(moq_net::Timestamp::ZERO, voice(5)).unwrap();
         }
@@ -620,14 +617,14 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
     let (a_pub, b_sub) = (Origin::new(), Origin::new());
     let (_ab, mut at) = a_pub.publish("opaque-call/a");
     let a_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"isolated-a", Some(&a_pub), None),
     )
     .await
     .unwrap()
     .unwrap();
     let b_session = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         dialer.connect(b"isolated-b", None, Some(&b_sub)),
     )
     .await
@@ -635,7 +632,7 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
     .unwrap();
     let mut bundle = voice(2);
     bundle.extend_from_slice(&voice(1));
-    let received = tokio::time::timeout(HANG_BOUND, async {
+    let received = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let broadcast = b_sub.broadcast("opaque-call/a").await;
         let mut track = broadcast
             .track("audio")

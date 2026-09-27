@@ -1282,14 +1282,14 @@ fn delivery_replay_guard_prevents_concurrent_owner_update_until_selection_finish
         done_tx.send(()).unwrap();
         owner
     });
-    started_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+    tilo_test_env::recv("the waiter to start", &started_rx);
     assert!(
         done_rx
             .recv_timeout(std::time::Duration::from_millis(20))
             .is_err()
     );
     drop(current);
-    done_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+    tilo_test_env::recv("the waiter to finish", &done_rx);
     let owner = waiting.join().unwrap();
     assert_eq!(owner.pending().len(), 1);
 }

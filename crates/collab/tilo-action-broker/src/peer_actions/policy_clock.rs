@@ -316,7 +316,7 @@ mod tests {
         let time = origin.capture().unwrap();
         let held = clock.0.state.lock().unwrap();
         let reader = std::thread::spawn(move || time.now_ns());
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while Arc::strong_count(&origin.0) != 2 {
             assert!(Instant::now() < deadline, "sampler did not retain origin");
             std::thread::yield_now();

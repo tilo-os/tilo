@@ -4883,7 +4883,7 @@ mod behavior_tests {
             driver.set_modifiers(&["ctrl".into()]);
             driver.key("Enter");
             driver.set_modifiers(&[]);
-            assert!(driver.wait_until(HANG_BOUND, |_| {
+            assert!(driver.wait_until(tilo_test_env::hang_bound(), |_| {
                 // SAFETY: same stable allocation; the mutable frame borrow has
                 // ended before this condition callback runs.
                 unsafe { (&*app_ptr).session.query_gen > generation }

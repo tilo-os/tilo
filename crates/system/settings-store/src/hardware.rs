@@ -411,6 +411,14 @@ pub struct InputDeviceSnapshot {
     pub kind: InputDeviceKind,
     /// Physical buttons on a tablet pad; zero for every other kind.
     pub pad_buttons: u32,
+    /// A tablet pad's touch rings, in libinput's order: how many modes each
+    /// one's mode group has.
+    pub pad_rings: Vec<u32>,
+    /// A tablet pad's touch strips, like [`Self::pad_rings`].
+    pub pad_strips: Vec<u32>,
+    /// Pad buttons (libinput's numbers, from zero) that switch their mode
+    /// group to its next mode rather than doing anything themselves.
+    pub pad_mode_buttons: Vec<u32>,
 }
 
 /// Read-only state written atomically by the compositor in the private user
@@ -500,6 +508,50 @@ pub enum StylusButtonAction {
     Disabled,
 }
 
+/// What the eraser end of a pen does. `Native` reports it as an eraser:
+/// tablet-aware apps erase with it, everything else sees a left click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EraserAction {
+    #[default]
+    Native,
+    /// Touching the surface presses this mouse button in every app.
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+    /// Touching the surface presses the chord bound to this shortcut.
+    Shortcut(ShortcutAction),
+}
+
+/// What turning a pad's touch ring or sliding along its strip does in an app
+/// that does not take tablet input itself. Tablet-aware apps always get the
+/// ring and strip as they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PadDialAction {
+    Nothing,
+    /// Scroll whatever is under the pointer.
+    #[default]
+    Scroll,
+    /// Zoom in and out (Ctrl+= and Ctrl+-).
+    Zoom,
+    /// Grow and shrink the brush (`]` and `[`), as drawing apps bind them.
+    BrushSize,
+    /// Step the output volume.
+    Volume,
+    /// Step the display brightness.
+    Brightness,
+}
+
+/// A pad control that turns or slides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PadDial {
+    Ring(u32),
+    Strip(u32),
+}
+
 /// Pressure curves Settings offers, softest first, as Bézier control points
 /// `[x1, y1, x2, y2]` between `(0, 0)` and `(1, 1)`. The middle one is linear.
 pub const PRESSURE_CURVE_PRESETS: [[f64; 4]; 7] = [
@@ -572,8 +624,59 @@ pub struct TabletConfig {
     pub upper_button: StylusButtonAction,
     /// A third barrel button, on pens that have one.
     pub third_button: StylusButtonAction,
+    /// What the eraser end of the pen does.
+    pub eraser: EraserAction,
     /// Pad button number (libinput's, from zero) to the shortcut it runs.
     pub pad_buttons: BTreeMap<u32, ShortcutAction>,
+    /// Pad ring number to what it does in each mode of its mode group,
+    /// indexed by mode. Modes past the end scroll.
+    pub pad_rings: BTreeMap<u32, Vec<PadDialAction>>,
+    /// Pad strip number to what it does in each mode, like
+    /// [`Self::pad_rings`].
+    pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
+}
+
+impl TabletConfig {
+    fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
+        match dial {
+            PadDial::Ring(index) => (&self.pad_rings, index),
+            PadDial::Strip(index) => (&self.pad_strips, index),
+        }
+    }
+
+    /// What `dial` does in `mode` for an app without tablet support.
+    pub fn dial_action(&self, dial: PadDial, mode: u32) -> PadDialAction {
+        let (dials, index) = self.dials(dial);
+        dials
+            .get(&index)
+            .and_then(|modes| modes.get(usize::try_from(mode).ok()?))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Make `dial` do `action` in `mode`, leaving its other modes as they are.
+    pub fn set_dial_action(&mut self, dial: PadDial, mode: u32, action: PadDialAction) {
+        let (dials, index) = match dial {
+            PadDial::Ring(index) => (&mut self.pad_rings, index),
+            PadDial::Strip(index) => (&mut self.pad_strips, index),
+        };
+        let Ok(mode) = usize::try_from(mode) else {
+            return;
+        };
+        let modes = dials.entry(index).or_default();
+        if modes.len() <= mode {
+            modes.resize(mode.saturating_add(1), PadDialAction::default());
+        }
+        if let Some(slot) = modes.get_mut(mode) {
+            *slot = action;
+        }
+        while modes.last() == Some(&PadDialAction::default()) {
+            modes.pop();
+        }
+        if modes.is_empty() {
+            dials.remove(&index);
+        }
+    }
 }
 
 impl Default for TabletConfig {
@@ -586,7 +689,10 @@ impl Default for TabletConfig {
             lower_button: StylusButtonAction::Default,
             upper_button: StylusButtonAction::Default,
             third_button: StylusButtonAction::Default,
+            eraser: EraserAction::Native,
             pad_buttons: BTreeMap::new(),
+            pad_rings: BTreeMap::new(),
+            pad_strips: BTreeMap::new(),
         }
     }
 }
@@ -2893,7 +2999,7 @@ mod tests {
             key: input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen"),
             name: "Wacom Intuos S Pen".into(),
             kind: InputDeviceKind::Tablet,
-            pad_buttons: 0,
+            ..InputDeviceSnapshot::default()
         };
         assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
         let pid = std::process::id();
@@ -2987,6 +3093,56 @@ mod tests {
         assert!(
             (feel_for_pressure_curve([0.02, 0.73, 0.26, 0.98]) - 0.0).abs() < f64::EPSILON,
             "a hand-edited curve reads as its nearest preset"
+        );
+    }
+
+    #[test]
+    fn pad_dials_keep_a_choice_per_mode_and_the_eraser_its_own() {
+        let mut pad = TabletConfig::default();
+        assert_eq!(
+            pad.dial_action(PadDial::Ring(0), 0),
+            PadDialAction::Scroll,
+            "an untouched ring scrolls"
+        );
+        pad.set_dial_action(PadDial::Ring(0), 2, PadDialAction::BrushSize);
+        pad.set_dial_action(PadDial::Strip(1), 0, PadDialAction::Volume);
+        assert_eq!(
+            pad.dial_action(PadDial::Ring(0), 2),
+            PadDialAction::BrushSize
+        );
+        assert_eq!(pad.dial_action(PadDial::Ring(0), 1), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Ring(0), 7), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Ring(1), 2), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Strip(1), 0), PadDialAction::Volume);
+        assert_eq!(
+            pad.dial_action(PadDial::Strip(0), 0),
+            PadDialAction::Scroll,
+            "rings and strips are numbered apart"
+        );
+
+        let value = serde_json::to_value(&pad).unwrap();
+        assert_eq!(
+            value["pad_rings"]["0"],
+            serde_json::json!(["scroll", "scroll", "brush_size"])
+        );
+        assert_eq!(value["pad_strips"]["1"], serde_json::json!(["volume"]));
+        assert_eq!(value["eraser"], "native");
+        let back: TabletConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(back, pad);
+
+        pad.set_dial_action(PadDial::Ring(0), 2, PadDialAction::Scroll);
+        assert!(
+            pad.pad_rings.is_empty(),
+            "a ring back on its defaults stores nothing"
+        );
+
+        let pen = TabletConfig {
+            eraser: EraserAction::Shortcut(ShortcutAction::Search),
+            ..TabletConfig::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&pen).unwrap()["eraser"],
+            serde_json::json!({"shortcut": "search"})
         );
     }
 

@@ -405,9 +405,7 @@ fn settle(fb: &mut FrameBuilder) {
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     // First wait for this exact client to latch as presented. A configure or
     // strip-layout change can delay that edge; measuring the dissolve from
     // publication would then spend the entire allowance on the opening card.

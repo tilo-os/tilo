@@ -480,10 +480,9 @@ fn retirement_lifecycle_outer_close_waits_for_entered_probe_before_wake_and_capt
     let (handle, wake) = ready_rx.recv().unwrap();
     let entered = retirement_test_probe(&handle).unwrap();
     begin_tx.send(()).unwrap();
-    let deadline = std::time::Instant::now() + crate::HANG_BOUND;
-    while !retirement_test_requested(&handle) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
+    tilo_test_env::wait_until("the retirement request", || {
+        retirement_test_requested(&handle)
+    });
     let began_retirement = retirement_test_requested(&handle);
     let still_waiting = matches!(capture_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
     let wake_open = wake.is_active();

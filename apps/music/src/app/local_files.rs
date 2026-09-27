@@ -517,7 +517,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
-            let first_output = std::time::Instant::now() + DECODER_HANG_BOUND;
+            let first_output = tilo_test_env::hang_deadline();
             while app.audio.frames_rendered() < 2 {
                 app.tick();
                 assert!(std::time::Instant::now() < first_output);
@@ -555,7 +555,7 @@ mod tests {
                 app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                     .is_none()
             );
-            let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.tick();
                 if let Some(result) =
@@ -738,7 +738,7 @@ mod tests {
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                 .is_none()
         );
-        let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         let update = loop {
             app.tick();
             if let Some(update) =
@@ -1016,7 +1016,7 @@ mod tests {
             .capture()
             .expect("tests capture decoded audio")
             .clone();
-        let until = std::time::Instant::now() + DECODER_HANG_BOUND;
+        let until = tilo_test_env::hang_deadline();
         // A playing source must also be rendering before the caller acts on
         // it. Unlike a sound server's sink, the capture sink can stall when it
         // is paused while still completing its switch to PLAYING.
@@ -1081,7 +1081,7 @@ mod tests {
             assert!(!json.contains("local song"));
             app.on_toggle_play(&mut doc);
             assert!(!app.pb.playing);
-            let paused_by = std::time::Instant::now() + DECODER_HANG_BOUND;
+            let paused_by = tilo_test_env::hang_deadline();
             while app.audio.is_playing_real() {
                 assert!(
                     std::time::Instant::now() < paused_by,
@@ -1119,7 +1119,7 @@ mod tests {
                 app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                     .is_none()
             );
-            let deadline = std::time::Instant::now() + DECODER_HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.tick();
                 if let Some(result) =
@@ -1331,7 +1331,7 @@ mod tests {
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             );
-            let until = std::time::Instant::now() + DECODER_HANG_BOUND;
+            let until = tilo_test_env::hang_deadline();
             loop {
                 app.sync(&mut doc, &automerge::ROOT);
                 app.tick();

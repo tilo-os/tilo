@@ -357,7 +357,7 @@ impl Harness {
 
     /// Tick until something reaches a field, failing after a generous bound.
     fn tick_until_delivered(&mut self, field: &Field) -> Vec<DeliveredText> {
-        let deadline = Instant::now() + crate::support::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let delivered = self.tick(field);
             if !delivered.is_empty() {
@@ -672,4 +672,91 @@ fn a_password_field_gets_the_emoji_but_it_is_not_remembered() {
         recents.is_empty(),
         "nothing typed into a secret field is remembered"
     );
+}
+
+#[test]
+fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
+    use shell::compositor::foreign::store;
+    use vello::kurbo::Rect;
+
+    let mut h = Harness::new();
+    // A field enables its text input, and reports its caret, only while an
+    // input method is there to hear it.
+    let _keyboard_session = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    assert!(h.state.text_input_active(), "the field takes text");
+    // Where the window is laid out on the desktop.
+    let window = Rect::new(200.0, 150.0, 1000.0, 650.0);
+    store().note_placement(field.surface_id, window);
+    let screen = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+
+    // The field reports its caret in surface coordinates, as toolkits do on
+    // every enable and whenever the caret moves.
+    let open_with_caret = |h: &mut Harness, caret: Option<(i32, i32)>| -> Rect {
+        let text_input = field.text_input();
+        if let Some((x, y)) = caret {
+            text_input.set_cursor_rectangle(x, y, 2, 18);
+        } else {
+            // Re-enabling resets what the field declared.
+            text_input.disable();
+            text_input.commit();
+            text_input.enable();
+        }
+        text_input.commit();
+        h.pump();
+        assert!(h.tick(&field).is_empty());
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        assert!(h.host.emoji_picker_open());
+        let card = h.host.emoji_picker().card_rect();
+        assert!(card.area() > 0.0);
+        assert!(
+            card.x0 >= screen.x0
+                && card.y0 >= screen.y0
+                && card.x1 <= screen.x1
+                && card.y1 <= screen.y1,
+            "the card stays on the display: {card:?}"
+        );
+        h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+        assert!(!h.host.emoji_picker_open());
+        card
+    };
+
+    // Phase `below_the_caret`.
+    let caret = Rect::new(320.0, 190.0, 322.0, 208.0);
+    let card = open_with_caret(&mut h, Some((120, 40)));
+    assert!(
+        (card.x0 - caret.x0).abs() < 0.5,
+        "the card starts at the caret: {card:?}"
+    );
+    assert!(
+        card.y0 >= caret.y1 && card.y0 <= caret.y1 + 24.0,
+        "the card opens just below the caret: {card:?}"
+    );
+
+    // Phase `above_a_caret_near_the_bottom`.
+    let caret = Rect::new(320.0, 630.0, 322.0, 648.0);
+    let card = open_with_caret(&mut h, Some((120, 480)));
+    assert!(
+        card.y1 <= caret.y0 && card.y1 >= caret.y0 - 24.0,
+        "the card flips above the caret when the display ends first: {card:?}"
+    );
+
+    // Phase `clamped_at_the_right_edge`.
+    let caret = Rect::new(990.0, 190.0, 992.0, 208.0);
+    let card = open_with_caret(&mut h, Some((790, 40)));
+    assert!(
+        card.x0 < caret.x0 && card.x1 < screen.x1,
+        "the card is pulled back onto the display: {card:?}"
+    );
+    assert!(card.y0 >= caret.y1);
+
+    // Phase `centred_without_a_caret`.
+    let card = open_with_caret(&mut h, None);
+    drop(h);
+    assert!(
+        (card.center().x - screen.center().x).abs() < 0.5,
+        "a field that reports no caret gets the card centred: {card:?}"
+    );
+
+    store().forget(field.surface_id);
 }

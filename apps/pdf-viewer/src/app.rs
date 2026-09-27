@@ -5223,17 +5223,17 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        if !self.has_document {
+        // A document is not open for interaction until the host admits its
+        // markup record: until then every event and action is refused, so it
+        // is still opening, not a page anyone can act on.
+        let opening = self.pending_open.is_some() || self.awaiting_markup_record;
+        if !self.has_document || self.awaiting_markup_record {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(if self.pending_open.is_some() {
-                        "Opening PDF"
-                    } else {
-                        "Open a PDF"
-                    })
+                    .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
                     .with_hashed_key("pdf.empty.heading"),
             ];
-            if self.pending_open.is_some() {
+            if opening {
                 children.push(
                     AccessNode::new(Role::StaticText)
                         .with_name("Opening PDF")
@@ -6216,7 +6216,7 @@ mod tests {
             // Exercise the production worker, not load_path's synchronous test
             // substitute. The host checks out records before calling sync.
             app.queue_worker_open(&b);
-            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 record_frame(&mut app, &mut st, &mut set, &mut room);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6256,7 +6256,7 @@ mod tests {
             let mut st = ui::State::new();
             let original = st.doc.get_heads();
             app.queue_worker_open(&path);
-            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6270,6 +6270,11 @@ mod tests {
                 assert!(app.awaiting_markup_record);
                 assert!(app.has_pending_visual_work());
                 assert!(Widget::resources(&app, &st.doc).is_empty());
+                let semantics = format!("{:?}", Widget::accessibility(&app));
+                assert!(
+                    semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
+                    "a document awaiting its record offers no page to act on"
+                );
                 assert!(!app.perform_semantic_action(
                     "pdf.tool:2",
                     &ui::a11y::Action::Activate,
@@ -6302,7 +6307,7 @@ mod tests {
                 let mut state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
-                let deadline = std::time::Instant::now() + HANG_BOUND;
+                let deadline = tilo_test_env::hang_deadline();
                 while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
                     app.drain_raster_events(&mut state);
@@ -9043,7 +9048,7 @@ mod tests {
             let mut app = PdfApp::empty();
             let mut st = ui::State::new();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));

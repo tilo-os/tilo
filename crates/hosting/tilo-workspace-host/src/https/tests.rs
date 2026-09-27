@@ -63,15 +63,14 @@ fn cancelled_http_asset_resolution_keeps_queued_worker_charged() {
                 )
                 .await
                 .unwrap();
-            timeout(HANG_BOUND, async {
+            tilo_test_env::within("the pool to charge the held request bodies", async {
                 while receiver.available_bytes()
                     != receiver.initial_bytes - CONNECTION_BYTES - (4 * IO_BYTES + HEADER_BYTES)
                 {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             let _ = fixture.stop.send(true);
             (&mut fixture.task).await.unwrap().unwrap();
             let retained_bytes = receiver.available_bytes();
@@ -79,15 +78,14 @@ fn cancelled_http_asset_resolution_keeps_queued_worker_charged() {
             gate.finish().await;
             // The lease drops on the blocking worker: its bytes, then its
             // request slot. Wait for both rather than observing between them.
-            timeout(HANG_BOUND, async {
+            tilo_test_env::within("the pool and asset permits to be released", async {
                 while receiver.available_bytes() != receiver.initial_bytes
                     || fixture.ingress.asset_requests.available_permits() != 24
                 {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             assert_eq!(
                 retained_bytes,
                 receiver.initial_bytes - (4 * IO_BYTES + HEADER_BYTES),
@@ -130,15 +128,14 @@ fn cancelled_asset_read_keeps_queued_file_and_buffer_work_charged() {
             gate.finish().await;
             // The lease drops on the blocking worker: its bytes, then its
             // request slot. Wait for both rather than observing between them.
-            timeout(HANG_BOUND, async {
+            tilo_test_env::within("the pool and asset permits to be released", async {
                 while receiver.available_bytes() != receiver.initial_bytes
                     || ingress.asset_requests.available_permits() != 24
                 {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             assert_eq!(
                 retained_bytes,
                 receiver.initial_bytes - (4 * IO_BYTES + HEADER_BYTES),
@@ -191,21 +188,19 @@ async fn h2_slow_reader_keeps_response_backing_charged_until_drain_or_reset() {
         if reset {
             drop(body);
         } else {
-            let rest = timeout(HANG_BOUND, body.collect())
+            let rest = tilo_test_env::within("the rest of the body", body.collect())
                 .await
-                .unwrap()
                 .unwrap()
                 .to_bytes();
             assert_eq!(first.len() + rest.len(), BODY_BYTES);
             assert!(rest.iter().all(|byte| *byte == 0x6a));
         }
-        timeout(HANG_BOUND, async {
+        tilo_test_env::within("the request lease to be released", async {
             while lease.upgrade().is_some() {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         assert_eq!(
             receiver.available_bytes(),
             receiver.initial_bytes - CONNECTION_BYTES
@@ -279,13 +274,12 @@ async fn h2_final_static_frame_retains_its_asset_charge_until_drain_or_reset() {
             assert_eq!(first.len() + rest.len(), IO_BYTES);
             assert!(rest.iter().all(|byte| *byte == 0x78));
         }
-        timeout(HANG_BOUND, async {
+        tilo_test_env::within("the pool to charge only the connection", async {
             while receiver.available_bytes() != receiver.initial_bytes - CONNECTION_BYTES {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         fixture.finish().await;
         assert_eq!(receiver.available_bytes(), receiver.initial_bytes);
         drop(sender);
@@ -402,9 +396,8 @@ async fn h2_read_frame(
     socket: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
 ) -> (u8, u8, u32, Vec<u8>) {
     let mut header = [0; 9];
-    timeout(HANG_BOUND, socket.read_exact(&mut header))
+    tilo_test_env::within("the response header", socket.read_exact(&mut header))
         .await
-        .unwrap()
         .unwrap();
     let length = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
     assert!(length <= 16384);
@@ -440,7 +433,9 @@ async fn stalled_h2_headers_leave_control_lane_available_and_continuation_flood_
     h2_frame(&mut stalled, 1, 1, 3, &headers).await; // No END_HEADERS.
     let response = fixture.raw("/peer/v3/challenge", "", b"challenge bytes");
     let control = async {
-        let request = timeout(HANG_BOUND, receiver.recv()).await.unwrap().unwrap();
+        let request = tilo_test_env::within("the challenge request", receiver.recv())
+            .await
+            .unwrap();
         assert_eq!(request.route(), Route::Challenge);
         request
             .respond(
@@ -530,9 +525,8 @@ async fn slow_body_and_unanswered_control_expire_and_release_admission() {
     let pending = receiver.recv().await.unwrap();
     let read = async |mut socket: tokio_rustls::client::TlsStream<tokio::net::TcpStream>| {
         let mut bytes = Vec::new();
-        timeout(Duration::from_secs(7), socket.read_to_end(&mut bytes))
+        tilo_test_env::within("the response", socket.read_to_end(&mut bytes))
             .await
-            .unwrap()
             .unwrap();
         String::from_utf8(bytes).unwrap()
     };
@@ -762,9 +756,8 @@ impl Fixture {
         socket.write_all(format!("POST {path} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\nContent-Length: {}\r\n{extra}\r\n", self.address.port(), body.len()).as_bytes()).await.unwrap();
         socket.write_all(body).await.unwrap();
         let mut output = Vec::new();
-        tokio::time::timeout(HANG_BOUND, socket.read_to_end(&mut output))
+        tilo_test_env::within("the response", socket.read_to_end(&mut output))
             .await
-            .unwrap()
             .unwrap();
         String::from_utf8(output).unwrap()
     }
@@ -773,9 +766,8 @@ impl Fixture {
         socket.write_all(format!("POST /peer/v3/challenge HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n{headers}\r\n", self.address.port()).as_bytes()).await.unwrap();
         socket.write_all(body).await.unwrap();
         let mut output = Vec::new();
-        timeout(HANG_BOUND, socket.read_to_end(&mut output))
+        tilo_test_env::within("the response", socket.read_to_end(&mut output))
             .await
-            .unwrap()
             .unwrap();
         String::from_utf8(output).unwrap()
     }
@@ -969,7 +961,9 @@ async fn media_tls_routes_preserve_inert_request_and_reject_oversize_reply() {
             b"bounded-inert-body",
         );
         let actor = async {
-            let request = timeout(HANG_BOUND, receiver.recv()).await.unwrap().unwrap();
+            let request = tilo_test_env::within("the routed request", receiver.recv())
+                .await
+                .unwrap();
             assert_eq!(request.target(), route.path());
             assert_eq!(request.body(), b"bounded-inert-body");
             assert_eq!(request.proof(), Some(&[0, 17][..]));
@@ -1259,7 +1253,9 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let before = owner.committed_generation();
     let client = fixture.raw("/tilo-peer/enrollment/complete", &headers, &body);
     let actor = async {
-        let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
+        let command = tilo_test_env::within("the enrollment completion command", requests.recv())
+            .await
+            .unwrap();
         let EnrollmentRequest::Complete(request) = command.request else {
             panic!("wrong native command")
         };
@@ -1328,10 +1324,12 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
     let mut socket = fixture.connect(false).await;
     socket.write_all(format!("GET / HTTP/1.1\r\nHost: localhost:{}\r\nCookie: __Host-tilo-local-owner={credential}\r\nConnection: close\r\n\r\n",fixture.address.port()).as_bytes()).await.unwrap();
     let mut navigation = Vec::new();
-    timeout(HANG_BOUND, socket.read_to_end(&mut navigation))
-        .await
-        .unwrap()
-        .unwrap();
+    tilo_test_env::within(
+        "the navigation response",
+        socket.read_to_end(&mut navigation),
+    )
+    .await
+    .unwrap();
     let navigation = String::from_utf8(navigation).unwrap();
     assert!(navigation.starts_with("HTTP/1.1 200"));
     assert!(navigation.ends_with("real asset bytes"));
@@ -1360,11 +1358,12 @@ async fn local_enrollment_owner_wait_deadline_cancels_unconsumed_private_command
     let mut socket = fixture.connect(false).await;
     socket.write_all(format!("POST /tilo-peer/enrollment/challenge HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: https://localhost:{}\r\nCookie: __Host-tilo-local-owner={credential}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",fixture.address.port(),fixture.address.port(),body.len()).as_bytes()).await.unwrap();
     socket.write_all(&body).await.unwrap();
-    let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
-    let mut response = Vec::new();
-    timeout(Duration::from_secs(6), socket.read_to_end(&mut response))
+    let command = tilo_test_env::within("the enrollment command", requests.recv())
         .await
-        .unwrap()
+        .unwrap();
+    let mut response = Vec::new();
+    tilo_test_env::within("the enrollment response", socket.read_to_end(&mut response))
+        .await
         .unwrap();
     assert!(
         String::from_utf8(response)
@@ -1619,7 +1618,9 @@ async fn local_https_enrollment_renewal_may_only_request_governance_omission() {
         let request_headers = format!("{headers}{extra}");
         let client = fixture.raw(path, &request_headers, &complete);
         let actor = async {
-            let command = timeout(HANG_BOUND, requests.recv()).await.unwrap().unwrap();
+            let command = tilo_test_env::within("the HTTPS command", requests.recv())
+                .await
+                .unwrap();
             assert!(command.is_https());
             assert_eq!(command.omits_governance(), expected);
             assert!(matches!(command.request, EnrollmentRequest::Complete(_)));

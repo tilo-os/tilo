@@ -314,10 +314,11 @@ async fn interactive_owner_is_exactly_cert_and_room_scoped() {
             workspace_id: workspace_id.wrapping_add(1),
         })
         .unwrap();
-    assert!(matches!(
-        tokio::time::timeout(HANG_BOUND, client.recv()).await,
-        Ok(None)
-    ));
+    assert!(
+        tilo_test_env::within("client to close", client.recv())
+            .await
+            .is_none()
+    );
     drop(client);
     drop(owner_client);
     relay.shutdown().await;

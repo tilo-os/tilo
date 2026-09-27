@@ -87,7 +87,7 @@ async fn observe(admit: bool) -> Vec<Status> {
     )
     .unwrap();
     let mut seen = vec![client.status()];
-    let deadline = Instant::now() + HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         let status = client.status();
         if seen.last() != Some(&status) {
@@ -154,7 +154,7 @@ fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
 }
 
 async fn until_live(client: &Client) {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while client.status() != Status::Live {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -173,7 +173,7 @@ fn opus(timestamp_48k: u64) -> tilo_moq::client::CapturedOpus {
 }
 
 async fn received(client: &Client) -> tilo_moq::client::ReceivedOpus {
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let Some(value) = client.try_recv() {
                 return value;
@@ -196,7 +196,7 @@ async fn a_replacement_publisher_is_heard_from_its_first_object() {
     publisher.try_send(opus(0)).unwrap();
     assert_eq!(received(&listener).await.object.timestamp, 0);
     publisher.close();
-    tokio::time::timeout(HANG_BOUND, async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while listener.status() == Status::Live {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -210,7 +210,7 @@ async fn a_replacement_publisher_is_heard_from_its_first_object() {
     until_live(&fresh).await;
     replacement.enable_publication().unwrap();
     replacement.try_send(opus(10 * 960)).unwrap();
-    let object = tokio::time::timeout(HANG_BOUND, async {
+    let object = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let Some(value) = fresh.try_recv() {
                 return value;

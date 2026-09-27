@@ -7,6 +7,7 @@
     clippy::arithmetic_side_effects,
     reason = "bounded integration assertions"
 )]
+use crate::typed_peer;
 use automerge::AutoCommit;
 use chat::{
     actions::ChatAction,
@@ -17,9 +18,8 @@ use std::time::{Duration, Instant};
 use tilo_actions::Action;
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
-use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
-mod typed_peer;
 use typed_peer::{TypedPeer, send};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 const CHAT: &str = "so.tilo.chat";
 const WP: &str = "so.tilo.word-processor";
 
@@ -229,7 +229,7 @@ fn scenario_outcome(
             s.run_until(Instant::now() + Duration::from_secs(3))
                 .unwrap()
         });
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         if owner_released {
             send(
                 &mut owner,
@@ -263,6 +263,7 @@ fn scenario_outcome(
                         action,
                         argument,
                         actor,
+                        context,
                         ..
                     } => {
                         invocations += 1;
@@ -279,6 +280,7 @@ fn scenario_outcome(
                             action,
                             argument.as_deref(),
                             &actor,
+                            context.as_deref(),
                         );
                         assert!(
                             document

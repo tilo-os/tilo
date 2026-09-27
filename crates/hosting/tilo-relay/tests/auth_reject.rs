@@ -172,9 +172,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         client
             .send(tilo_relay::Envelope::Subscribe { workspace_id: 33 })
             .unwrap();
-        let _ = tokio::time::timeout(HANG_BOUND, client.recv())
-            .await
-            .unwrap();
+        let _ = tilo_test_env::within("a message on client", client.recv()).await;
 
         let mut entry = RevocationEntry {
             user_public_key: user.user_pk,
@@ -186,9 +184,10 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
         tilo_relay::store::save_revocations(state.path(), &[entry]).unwrap();
 
-        assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, client.recv()).await,
-            Ok(None)
-        ));
+        assert!(
+            tilo_test_env::within("client to close", client.recv())
+                .await
+                .is_none()
+        );
     }
 }

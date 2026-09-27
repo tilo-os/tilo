@@ -43,9 +43,7 @@ async fn subscribed(
     client
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let ready = tokio::time::timeout(HANG_BOUND, client.recv())
-        .await
-        .expect("ready timeout");
+    let ready = tilo_test_env::within("ready timeout", client.recv()).await;
     assert!(
         matches!(ready, Some(Envelope::Ready { .. })),
         "got {ready:?}"
@@ -70,7 +68,7 @@ fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
 }
 
 async fn next(client: &RelayClient, who: &str) -> Envelope {
-    tokio::time::timeout(HANG_BOUND, client.recv())
+    tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| panic!("{who} timed out"))
         .unwrap_or_else(|| panic!("{who} connection closed"))

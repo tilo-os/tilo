@@ -1608,11 +1608,11 @@ mod tests {
             };
             tx.send(EngineRequest::send(account, Box::new(draft)))
                 .unwrap();
-            let evt = rx.recv_timeout(HANG_BOUND).unwrap();
+            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, message, .. }
                 if context == "send" && message.contains("validated") && message.contains("did not send")));
             assert!(matches!(
-                rx.recv_timeout(HANG_BOUND).unwrap(),
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Send,
                     ..
@@ -1628,10 +1628,10 @@ mod tests {
                 ..Default::default()
             }))
             .unwrap();
-            let evt = rx.recv_timeout(HANG_BOUND).unwrap();
+            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, .. } if context == "offline"));
             assert!(matches!(
-                rx.recv_timeout(HANG_BOUND).unwrap(),
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Connect,
                     ..

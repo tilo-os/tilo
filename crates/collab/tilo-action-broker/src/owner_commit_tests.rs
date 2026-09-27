@@ -1045,7 +1045,7 @@ mod owner_commit_tests {
             manager,
         )
         .unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let (surface, action) = loop {
             app.pump_collab_presence();
             if let Some(found) =
@@ -1064,7 +1064,7 @@ mod owner_commit_tests {
                 break found;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "actual checked Writer did not publish actions"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1085,7 +1085,7 @@ mod owner_commit_tests {
                 break;
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "checked Writer invocation failed to terminate: {:?}",
                 actions.status(job.id)
             );
@@ -1519,9 +1519,8 @@ mod owner_commit_tests {
         }
         tokio::task::LocalSet::new()
             .run_until(async {
-                tokio::time::timeout(Duration::from_secs(10), scenario())
-                    .await
-                    .expect("bounded actual host worker RPC regression");
+                tilo_test_env::within("bounded actual host worker RPC regression", scenario())
+                    .await;
             })
             .await;
     }
@@ -1543,10 +1542,12 @@ mod owner_commit_tests {
                         .get()
                         .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
                     let response = tokio::task::spawn_local(request.send().promise);
-                    let pending = tokio::time::timeout(crate::HANG_BOUND, f.mailbox.recv())
-                        .await
-                        .expect("native enrolled document bypassed the actual owner service")
-                        .unwrap();
+                    let pending = tilo_test_env::within(
+                        "native enrolled document bypassed the actual owner service",
+                        f.mailbox.recv(),
+                    )
+                    .await
+                    .unwrap();
                     assert!(
                         !response.is_finished(),
                         "RPC acknowledged before durable owner"
@@ -1600,9 +1601,8 @@ mod owner_commit_tests {
             };
             let expected = request.clone();
             let result = tokio::spawn(async move { publisher.commit_owner(request).await });
-            let pending = tokio::time::timeout(crate::HANG_BOUND, mailbox.recv())
+            let pending = tilo_test_env::within("offline commit bypassed owner", mailbox.recv())
                 .await
-                .expect("offline commit bypassed owner")
                 .unwrap();
             assert!(!result.is_finished());
             if fail {
@@ -1697,10 +1697,12 @@ mod owner_commit_tests {
                 let completion = tokio::task::spawn_local(async move {
                     state.commit_effect_before_terminal(&pending, &update).await
                 });
-                let commit = tokio::time::timeout(crate::HANG_BOUND, f.mailbox.recv())
-                    .await
-                    .expect("enrolled native effect bypassed owner receipt")
-                    .unwrap();
+                let commit = tilo_test_env::within(
+                    "enrolled native effect bypassed owner receipt",
+                    f.mailbox.recv(),
+                )
+                .await
+                .unwrap();
                 assert!(!completion.is_finished());
                 // An unavailable native operation must remain failure, never a legacy receipt.
                 drop(commit);

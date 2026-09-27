@@ -1,0 +1,17 @@
+[package]
+edition = "2024"
+name = "google-cast-protocol"
+version = "0.1.0"
+description = "Google Cast protocol types"
+license = "MIT"
+repository = "https://gitlab.futo.org/videostreaming/fcast"
+publish = false
+
+[lib]
+name = "google_cast_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+prost = "0.14.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

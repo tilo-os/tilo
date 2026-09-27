@@ -1824,7 +1824,7 @@ mod tests {
     /// Waits for `cond`, or gives up. Polling beats a fixed sleep: the
     /// monitor runs on its own thread and the box is shared.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             if cond() {
                 return true;

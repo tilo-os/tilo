@@ -18,7 +18,7 @@ async fn mount_refresh_commits_before_normal_worker_factory() {
     let mut runtime = ActionRuntime::new(committed.clone());
     let host = LocalHost::start(&owner).await.unwrap();
     let mut connected = host.connect(&owner).await.unwrap();
-    tokio::time::timeout(crate::HANG_BOUND, async {
+    tilo_test_env::within("the native session to become ready", async {
         while !connected.is_ready() {
             connected
                 .recv()
@@ -26,8 +26,7 @@ async fn mount_refresh_commits_before_normal_worker_factory() {
                 .expect("actual live native subscription");
         }
     })
-    .await
-    .unwrap();
+    .await;
     let mut session = Some(connected);
     let mut action_error = None;
     let mut cadence = CheckpointCadence::new();
@@ -132,7 +131,7 @@ fn mount_refresh_original_origin_retired_after_encoding_never_writes() {
             // Real authority retirement invalidates its captured origin before
             // waiting for the already-held owner turn. No clock is substituted.
             *thread_slot.lock().unwrap() = Some(std::thread::spawn(move || retiring.invalidate()));
-            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while time.now_ns().is_ok() {
                 assert!(
                     std::time::Instant::now() < deadline,

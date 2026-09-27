@@ -284,9 +284,7 @@ mod tests {
     /// stuck worker fails the test instead of hanging). The injected
     /// verifiers here resolve in microseconds, so this returns immediately.
     fn poll_to_completion(c: &mut LockController) -> UnlockOutcome {
-        let deadline = Instant::now()
-            .checked_add(HANG_BOUND)
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(o) = c.poll_verification() {
                 return o;

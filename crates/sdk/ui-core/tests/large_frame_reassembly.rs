@@ -12,9 +12,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::collaboration::CollabRequest;
 
@@ -26,7 +23,6 @@ fn large_frame_survives_split_reads() {
     let broker = TypedBroker::new();
     let mut a = broker.manager("alice");
     let mut b = broker.manager("bob");
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
 
@@ -37,19 +33,15 @@ fn large_frame_survives_split_reads() {
 
     // Poll B until the frame arrives, accumulating it across reads.
     let mut got: Option<Vec<u8>> = None;
-    let deadline = std::time::Instant::now() + HANG_BOUND;
-    while std::time::Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(50));
+    tilo_test_env::wait_until("the large snapshot at B", || {
         for e in b.poll() {
             if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
             {
                 got = Some(data);
             }
         }
-        if got.is_some() {
-            break;
-        }
-    }
+        got.is_some()
+    });
 
     let data = got.expect("B must receive the large document snapshot");
     assert_eq!(data.len(), big.len(), "payload length must match");

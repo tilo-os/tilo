@@ -360,7 +360,10 @@ mod tests {
             .wait_timeout(Duration::from_millis(10))
             .expect_err("nothing has answered yet");
         let producer = std::thread::spawn(move || completer.complete("done"));
-        assert_eq!(answer.wait_timeout(HANG_BOUND).ok(), Some(Some("done")));
+        assert_eq!(
+            answer.wait_timeout(tilo_test_env::hang_bound()).ok(),
+            Some(Some("done"))
+        );
         producer.join().expect("producer thread");
     }
 

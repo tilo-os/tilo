@@ -220,7 +220,7 @@ fn cancelled_queued_real_upload_worker_keeps_backing_credit_until_completion() {
         entered_tx.send(()).unwrap();
         release_rx.recv().unwrap();
     });
-    entered_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+    tilo_test_env::recv("the blocker to start", &entered_rx);
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     drop(result_rx);
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -232,7 +232,7 @@ fn cancelled_queued_real_upload_worker_keeps_backing_credit_until_completion() {
     drop(worker);
     assert_eq!(f.pool.available_bytes(), charged);
     release_tx.send(()).unwrap();
-    done_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+    tilo_test_env::recv("the append worker to finish", &done_rx);
     assert_eq!(f.pool.available_bytes(), baseline);
     runtime.block_on(blocker).unwrap();
     assert_eq!(

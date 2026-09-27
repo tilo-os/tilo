@@ -17,9 +17,7 @@ fn wait_for_native_consent_child(
     child: &mut std::process::Child,
     test_name: &str,
 ) -> std::process::ExitStatus {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("deadline within the monotonic clock range");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         match child.try_wait().expect("poll isolated native-consent test") {
             Some(status) => return status,
@@ -89,9 +87,7 @@ pub(crate) fn native_consent_fixture_root() -> PathBuf {
 }
 
 pub(crate) fn wait_for_local_session_worker_teardown(lifecycle: &LocalSessionLifecycle) {
-    let deadline = Instant::now()
-        .checked_add(HANG_BOUND)
-        .expect("deadline within the monotonic clock range");
+    let deadline = tilo_test_env::hang_deadline();
     while lifecycle.snapshot().is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

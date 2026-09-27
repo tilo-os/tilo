@@ -99,11 +99,11 @@ async fn provider_host_serves_only_current_cross_user_members() {
                 .send(Envelope::Subscribe { workspace_id: 77 })
                 .unwrap();
             assert!(matches!(
-                tokio::time::timeout(HANG_BOUND, client.recv()).await,
-                Ok(Some(Envelope::Ready {
+                tilo_test_env::within("a message on client", client.recv()).await,
+                Some(Envelope::Ready {
                     workspace_id: 77,
                     ..
-                }))
+                })
             ));
         }
         alice_client
@@ -116,9 +116,9 @@ async fn provider_host_serves_only_current_cross_user_members() {
             })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, bob_client.recv()).await,
-            Ok(Some(Envelope::Delta { author_device_public_key, .. })) if author_device_public_key == alice_key
-        ));
+        tilo_test_env::within("a message on bob_client", bob_client.recv()).await,
+        Some(Envelope::Delta { author_device_public_key, .. }) if author_device_public_key == alice_key
+            ));
 
         let charlie_client = RelayClient::connect_to_pinned_host(
             client_endpoint().await,
@@ -133,11 +133,11 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 77 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, charlie_client.recv()).await,
-            Ok(Some(Envelope::NotAuthorised {
+            tilo_test_env::within("a message on charlie_client", charlie_client.recv()).await,
+            Some(Envelope::NotAuthorised {
                 workspace_id: 77,
                 ..
-            }))
+            })
         ));
     }
     // Phase `provider_membership_removal_closes_a_live_tenant_session`.
@@ -192,15 +192,16 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 78 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, client.recv()).await,
-            Ok(Some(Envelope::Ready { .. }))
+            tilo_test_env::within("a message on client", client.recv()).await,
+            Some(Envelope::Ready { .. })
         ));
 
         let store = tilo_relay::store::WorkspaceStore::open(state.path(), 78, true).unwrap();
         store.save_membership(&[]).unwrap();
-        assert!(matches!(
-            tokio::time::timeout(HANG_BOUND, client.recv()).await,
-            Ok(None)
-        ));
+        assert!(
+            tilo_test_env::within("client to close", client.recv())
+                .await
+                .is_none()
+        );
     }
 }
