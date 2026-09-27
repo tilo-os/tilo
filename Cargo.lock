@@ -2148,8 +2148,10 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dav",
+ "percent-encoding",
  "serde",
  "serde_json",
  "test-http",
@@ -2164,6 +2166,7 @@ dependencies = [
 name = "cloud-source-dropbox"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
@@ -2182,6 +2185,7 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-gdrive",
  "md-5",
@@ -2202,6 +2206,7 @@ name = "cloud-source-icloud"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-icloud",
  "getrandom 0.4.3",
@@ -2227,8 +2232,10 @@ name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-onedrive",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
@@ -7286,16 +7293,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
@@ -8358,7 +8355,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.0",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand 0.10.1",
@@ -11809,10 +11806,12 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "app-cli",
  "app-host",
+ "async-imap",
  "atomic-file",
  "chrono-tz",
  "cli",
@@ -11839,6 +11838,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-ui",
@@ -13028,6 +13028,7 @@ dependencies = [
  "os-actions",
  "package-store",
  "parking_lot",
+ "percent-encoding",
  "pipewire",
  "pollster",
  "postcard",
@@ -13103,6 +13104,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tts",
+ "url",
  "uuid",
  "vello",
  "vello_encoding",
@@ -14879,6 +14881,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-test-env",
+ "url",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -17809,7 +17812,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",

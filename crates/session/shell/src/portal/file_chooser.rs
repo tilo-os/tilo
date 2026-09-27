@@ -33,8 +33,6 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 use zbus::zvariant::{OwnedValue, Value};
@@ -277,21 +275,10 @@ pub(super) fn paths_to_open_response(
     (0, results)
 }
 
-/// Encode an absolute Unix path as an RFC 8089 file URI without forcing
-/// arbitrary filesystem bytes through lossy UTF-8 conversion.
+/// Encode an absolute path as an RFC 8089 file URI, percent-encoding bytes
+/// that are not UTF-8 rather than converting them lossily.
 pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut uri = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
-            uri.push(char::from(*byte));
-        } else {
-            write!(uri, "%{byte:02X}").ok()?;
-        }
-    }
-    Some(uri)
+    url::Url::from_file_path(path).ok().map(String::from)
 }
 
 #[cfg(test)]
@@ -300,6 +287,7 @@ mod tests {
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
     use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
+    use std::os::unix::ffi::OsStrExt as _;
 
     use std::sync::Arc;
 

@@ -93,24 +93,21 @@ impl FixedChord {
         self.key == key && self.mods == mods
     }
 
-    /// Human key names, modifiers first (`Super+Shift+S`).
+    /// The chord as the active keyboard layout's keycaps spell it, modifiers
+    /// first (`Super+Shift+S`, `Strg+Alt+Entf` on a German layout).
     pub fn display(self) -> String {
-        let key = key_name(self.key);
-        let mut parts: Vec<&str> = Vec::new();
-        if self.mods.logo {
-            parts.push("Super");
-        }
-        if self.mods.ctrl {
-            parts.push("Ctrl");
-        }
-        if self.mods.alt {
-            parts.push("Alt");
-        }
-        if self.mods.shift {
-            parts.push("Shift");
-        }
-        parts.push(&key);
-        parts.join("+")
+        let modifiers = [
+            (self.mods.logo, "Super"),
+            (self.mods.ctrl, "Ctrl"),
+            (self.mods.alt, "Alt"),
+            (self.mods.shift, "Shift"),
+        ];
+        ui::keycaps::active().chord(
+            modifiers
+                .into_iter()
+                .filter_map(|(held, name)| held.then_some(name)),
+            &key_name(self.key),
+        )
     }
 }
 
@@ -161,23 +158,24 @@ fn route<'a>(modifiers: impl Iterator<Item = &'a str>, key: &str) -> Option<Fixe
     Some(chord(routed, mods))
 }
 
+/// The canonical name of `key`, the one [`route`] reads back.
 fn key_name(key: ChordKey) -> String {
     match key {
-        ChordKey::Space => "Space".into(),
-        ChordKey::Tab => "Tab".into(),
-        ChordKey::Enter => "Enter".into(),
-        ChordKey::PageUp => "Page Up".into(),
-        ChordKey::PageDown => "Page Down".into(),
-        ChordKey::PrintScreen => "Print Screen".into(),
-        ChordKey::ArrowLeft => "Left".into(),
-        ChordKey::ArrowRight => "Right".into(),
-        ChordKey::ArrowUp => "Up".into(),
-        ChordKey::ArrowDown => "Down".into(),
-        ChordKey::Escape => "Esc".into(),
-        ChordKey::Delete => "Delete".into(),
-        ChordKey::NumLock => "Num Lock".into(),
-        ChordKey::Function(n) => format!("F{n}"),
-        ChordKey::Char(c) => c.to_ascii_uppercase().to_string(),
+        ChordKey::Space => "space".into(),
+        ChordKey::Tab => "tab".into(),
+        ChordKey::Enter => "enter".into(),
+        ChordKey::PageUp => "pageup".into(),
+        ChordKey::PageDown => "pagedown".into(),
+        ChordKey::PrintScreen => "printscreen".into(),
+        ChordKey::ArrowLeft => "left".into(),
+        ChordKey::ArrowRight => "right".into(),
+        ChordKey::ArrowUp => "up".into(),
+        ChordKey::ArrowDown => "down".into(),
+        ChordKey::Escape => "escape".into(),
+        ChordKey::Delete => "delete".into(),
+        ChordKey::NumLock => "numlock".into(),
+        ChordKey::Function(n) => format!("f{n}"),
+        ChordKey::Char(c) => c.to_string(),
         ChordKey::Modifier | ChordKey::Other => String::new(),
     }
 }
@@ -410,6 +408,36 @@ mod tests {
         assert_eq!(
             display(FixedChordAction::ToggleMouseKeys).as_deref(),
             Some("Alt+Shift+Num Lock")
+        );
+    }
+
+    #[test]
+    fn display_names_follow_the_active_keyboard_layout() {
+        let display = |action| entry_for(action).map(FixedChordEntry::display);
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+        let german = [
+            display(FixedChordAction::ChangeWorkspace),
+            display(FixedChordAction::ToggleMouseKeys),
+            display(FixedChordAction::Screenshot),
+            display(FixedChordAction::CloseTab),
+        ];
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("us", "mac"));
+        let mac = display(FixedChordAction::CaptureScreenshot);
+        ui::keycaps::set_active(ui::Keycaps::US);
+        assert_eq!(
+            german.map(Option::unwrap_or_default),
+            [
+                "Super+Bild↑  /  Super+Bild↓",
+                "Alt+Umschalt+Num",
+                "Druck",
+                "Alt+F4  /  Super+W",
+            ]
+        );
+        assert_eq!(mac.as_deref(), Some("⌘⇧S"));
+        // Routing is untouched: the chord is still the canonical one.
+        assert_eq!(
+            fixed_action(ChordKey::PageUp, SUPER),
+            Some(FixedChordAction::ChangeWorkspace)
         );
     }
 

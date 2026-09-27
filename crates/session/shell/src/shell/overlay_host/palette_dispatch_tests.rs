@@ -1224,6 +1224,47 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
 }
 
 #[test]
+fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
+    use settings_store::hardware::{KeyChord, ShortcutAction};
+
+    let (mut host, chrome) = host_with_chrome();
+    host.shortcut_config
+        .set(
+            ShortcutAction::Search,
+            KeyChord::parse("Ctrl+Shift+G").expect("chord"),
+        )
+        .expect("free chord");
+    chrome.borrow_mut().overlays.shortcut_help = true;
+    let guide_description = |host: &ShellOverlayHost| {
+        host.accessibility()
+            .expect("shell semantics")
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .and_then(|guide| guide.description.clone())
+            .expect("guide description")
+    };
+
+    ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+    let german_rows = shortcut_reference_rows(&host.shortcut_config);
+    let german = guide_description(&host);
+    ui::keycaps::set_active(ui::Keycaps::US);
+    let english = guide_description(&host);
+
+    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
+    assert!(german.contains("Screenshot: Druck"), "{german}");
+    assert!(german.contains("Strg+Umschalt+G"), "{german}");
+    // The layout, not the stored chord, changed: switching back restores it.
+    assert!(english.contains("Ctrl+Shift+G"), "{english}");
+    assert!(english.contains("Screenshot: Print Screen"), "{english}");
+    assert_eq!(
+        host.shortcut_config.bindings[&ShortcutAction::Search].display(),
+        "Ctrl+Shift+g"
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
