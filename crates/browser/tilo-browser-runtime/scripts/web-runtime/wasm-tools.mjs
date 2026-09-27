@@ -6,6 +6,8 @@
 //   wasm-tools.mjs section IN NAME              print a custom section as text
 //   wasm-tools.mjs exports IN                   print export names, one per line
 //   wasm-tools.mjs imports-from IN MODULE       print imports from one module
+//   wasm-tools.mjs import-names SIDE            symbols a side module needs from the core
+//   wasm-tools.mjs linkable-symbols [--own CRATES] FILE...  defined non-local symbols of objects/rlibs
 //   wasm-tools.mjs check-links SIDE CORE_EXPORTS  side module imports the core lacks
 //   wasm-tools.mjs profile IN [TOP]             code size by crate and function
 import {readFileSync, writeFileSync} from 'node:fs';
@@ -179,8 +181,95 @@ export function unresolvedImports(side, coreExports) {
   return {missing, foreign};
 }
 
-/** Function names from the `name` section, by function index. */
-function functionNames(bytes) {
+/** Members of a GNU or BSD `ar` archive (an rlib): [{name, bytes}]. */
+export function archiveMembers(bytes) {
+  if (utf8.decode(bytes.subarray(0, 8)) !== '!<arch>\n') throw Error('not an archive');
+  const members = [];
+  let at = 8, longNames = '';
+  while (at + 60 <= bytes.length) {
+    let name = utf8.decode(bytes.subarray(at, at + 16)).trimEnd();
+    const size = Number(utf8.decode(bytes.subarray(at + 48, at + 58)).trim());
+    let body = at + 60, length = size;
+    if (name === '//') longNames = utf8.decode(bytes.subarray(body, body + size));
+    else if (/^\/\d+$/.test(name)) name = longNames.slice(Number(name.slice(1))).split(/\/?\n/)[0];
+    else if (name.startsWith('#1/')) {
+      const nameLength = Number(name.slice(3));
+      name = utf8.decode(bytes.subarray(body, body + nameLength)).replace(/\0+$/, '');
+      body += nameLength; length -= nameLength;
+    } else name = name.replace(/\/$/, '');
+    if (name && name !== '/' && name !== '//' && !name.startsWith('__.SYMDEF')) members.push({name, bytes: bytes.subarray(body, body + length)});
+    at += 60 + size + (size % 2);
+  }
+  return members;
+}
+
+const SYMBOL_UNDEFINED = 0x10, SYMBOL_LOCAL = 0x2;
+/**
+ * Names of the functions and data an object file defines with non-local
+ * binding: what another module may link against. From the `linking`
+ * section's symbol table.
+ */
+export function definedSymbols(bytes) {
+  const linking = sections(bytes).find(s => s.id === 0 && s.name === 'linking');
+  if (!linking) return [];
+  const names = [];
+  let at = linking.payload;
+  [, at] = uleb(bytes, at); // version
+  const name = () => {
+    let length;
+    [length, at] = uleb(bytes, at);
+    const text = utf8.decode(bytes.subarray(at, at + length));
+    at += length;
+    return text;
+  };
+  while (at < linking.end) {
+    const type = bytes[at++];
+    let size;
+    [size, at] = uleb(bytes, at);
+    const end = at + size;
+    if (type === 8) { // WASM_SYMBOL_TABLE
+      let count;
+      [count, at] = uleb(bytes, at);
+      while (count--) {
+        const kind = bytes[at++];
+        let flags;
+        [flags, at] = uleb(bytes, at);
+        const defined = !(flags & SYMBOL_UNDEFINED), exported = defined && !(flags & SYMBOL_LOCAL);
+        if (kind === 1) { // data
+          const symbol = name();
+          if (defined) {[, at] = uleb(bytes, at); [, at] = uleb(bytes, at); [, at] = uleb(bytes, at);}
+          if (exported) names.push(symbol);
+        } else if (kind === 3) { // section
+          [, at] = uleb(bytes, at);
+        } else { // function, global, tag, table
+          [, at] = uleb(bytes, at);
+          if (defined || flags & 0x40) {
+            const symbol = name();
+            if (exported && kind === 0) names.push(symbol);
+          }
+        }
+      }
+    }
+    at = end;
+  }
+  return names;
+}
+
+/** Defined non-local symbols of objects and archives (rlibs). */
+export function linkableSymbols(files, read) {
+  const names = new Set();
+  for (const file of files) {
+    const bytes = read(file);
+    const objects = utf8.decode(bytes.subarray(0, 8)) === '!<arch>\n'
+      ? archiveMembers(bytes).filter(member => member.name.endsWith('.o')).map(member => member.bytes)
+      : [bytes];
+    for (const object of objects) for (const symbol of definedSymbols(object)) names.add(symbol);
+  }
+  return [...names].sort();
+}
+
+/** Names from the `name` section: functions (kind 1) or data segments (kind 9), by index. */
+function functionNames(bytes, wanted = 1) {
   const names = new Map();
   const section = sections(bytes).find(s => s.id === 0 && s.name === 'name');
   if (!section) return names;
@@ -190,7 +279,7 @@ function functionNames(bytes) {
     let size;
     [size, at] = uleb(bytes, at);
     const end = at + size;
-    if (kind === 1) {
+    if (kind === wanted) {
       let count;
       [count, at] = uleb(bytes, at);
       while (count--) {
@@ -248,19 +337,39 @@ export function profile(bytes) {
   }
   const data = all.filter(s => s.id === 11).reduce((n, s) => n + s.end - s.start, 0);
   const custom = all.filter(s => s.id === 0).map(s => ({name: s.name, bytes: s.end - s.start}));
-  const crates = new Map();
-  for (const fn of functions) {
-    const crate = crateOf(fn.name);
-    const row = crates.get(crate) ?? {crate, bytes: 0, functions: 0};
-    row.bytes += fn.bytes; row.functions++;
-    crates.set(crate, row);
+  // Data segments, named per symbol when linked with --no-merge-data-segments.
+  const segments = [];
+  const dataSection = all.find(s => s.id === 11);
+  if (dataSection) {
+    const segmentNames = functionNames(bytes, 9);
+    let [count, at] = uleb(bytes, dataSection.body);
+    for (let index = 0; index < count; index++) {
+      const flags = bytes[at++];
+      if (flags === 2) [, at] = uleb(bytes, at);
+      if (flags !== 1) {while (bytes[at] !== 0x0b) at++; at++;}
+      let size;
+      [size, at] = uleb(bytes, at);
+      segments.push({name: (segmentNames.get(index) ?? `segment${index}`).replace(/^\.(rodata|data|tdata|bss)\./, ''), bytes: size});
+      at += size;
+    }
   }
+  const crates = new Map();
+  const tally = (name, size, key) => {
+    const crate = crateOf(name);
+    const row = crates.get(crate) ?? {crate, bytes: 0, code: 0, data: 0, functions: 0};
+    row.bytes += size; row[key] += size;
+    if (key === 'code') row.functions++;
+    crates.set(crate, row);
+  };
+  for (const fn of functions) tally(fn.name, fn.bytes, 'code');
+  if (segments.length > 2) for (const segment of segments) tally(segment.name, segment.bytes, 'data');
   return {
     total: bytes.length,
     code: functions.reduce((n, fn) => n + fn.bytes, 0),
     data, custom,
     crates: [...crates.values()].sort((a, b) => b.bytes - a.bytes),
     functions: functions.sort((a, b) => b.bytes - a.bytes),
+    segments: segments.sort((a, b) => b.bytes - a.bytes),
   };
 }
 
@@ -268,10 +377,16 @@ function formatProfile(result, top) {
   const kib = n => `${(n / 1024).toFixed(1)} KiB`;
   const lines = [`total ${kib(result.total)}  code ${kib(result.code)}  data ${kib(result.data)}`];
   for (const section of result.custom) lines.push(`custom ${section.name}: ${kib(section.bytes)}`);
-  lines.push('', 'code by crate:');
-  for (const row of result.crates.slice(0, top)) lines.push(`${kib(row.bytes).padStart(12)}  ${String(row.functions).padStart(6)} fns  ${row.crate}`);
+  lines.push('', 'by crate (code + data):');
+  for (const row of result.crates.slice(0, top)) {
+    lines.push(`${kib(row.bytes).padStart(12)}  code ${kib(row.code).padStart(11)}  data ${kib(row.data).padStart(11)}  ${String(row.functions).padStart(6)} fns  ${row.crate}`);
+  }
   lines.push('', 'largest functions:');
   for (const fn of result.functions.slice(0, top)) lines.push(`${kib(fn.bytes).padStart(12)}  ${fn.name}`);
+  if (result.segments.length > 2) {
+    lines.push('', 'largest data:');
+    for (const segment of result.segments.slice(0, top)) lines.push(`${kib(segment.bytes).padStart(12)}  ${segment.name}`);
+  }
   return lines.join('\n');
 }
 
@@ -305,6 +420,21 @@ function main([command, ...args]) {
   }
   case 'exports':
     process.stdout.write(exportNames(read(args[0])).join('\n') + '\n');
+    break;
+  case 'linkable-symbols': {
+    // --own CRATES: only items those crates define, not their instantiations
+    // of other crates' generics.
+    let own;
+    if (args[0] === '--own') {own = new Set(args[1].split(/\s+/).filter(Boolean)); args = args.slice(2);}
+    const symbols = linkableSymbols(args, read).filter(symbol => !own || own.has(crateOf(symbol)));
+    process.stdout.write(symbols.join('\n') + '\n');
+    break;
+  }
+  case 'import-names':
+    // What a side module needs from the core, one name per line.
+    for (const entry of imports(read(args[0]))) {
+      if (['env', 'GOT.mem', 'GOT.func'].includes(entry.module) && !LOADER_PROVIDED.has(entry.name)) console.log(entry.name);
+    }
     break;
   case 'imports-from':
     for (const entry of imports(read(args[0])).filter(entry => entry.module === args[1])) console.log(`${entry.module}.${entry.name}`);
