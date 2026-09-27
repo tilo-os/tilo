@@ -437,11 +437,12 @@ fn large_document_parse_and_serialize_is_fast() {
     assert_eq!(built.blocks.len(), N, "built N blocks");
 
     // Guard #2 (mode-independent): appended order keys grow logarithmically
-    // (three bytes cover millions of sequential appends) instead of linearly,
-    // which would make comparison O(n) and building/sorting O(n^2).
+    // (three bytes, plus two salt bytes, cover millions of sequential appends)
+    // instead of linearly, which would make comparison O(n) and
+    // building/sorting O(n^2).
     let max_key_len = d.block_order_key_lengths().into_iter().max().unwrap_or(0);
     assert!(
-        max_key_len <= 3,
+        max_key_len <= 5,
         "max block order-key length is {max_key_len} bytes for {N} blocks — key_between must keep \
          it bounded; linear growth is O(n^2) (holds in debug and release)"
     );
