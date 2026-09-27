@@ -6170,9 +6170,8 @@ pub fn run() {
             rt.handle(),
             "tray",
             async move {
-                let conn = zbus::connection::Builder::session()?.build().await?;
                 crate::tray::watcher::serve(
-                    conn,
+                    zbus::connection::Builder::session()?,
                     std::sync::Arc::clone(crate::tray::Tray::global()),
                 )
                 .await
