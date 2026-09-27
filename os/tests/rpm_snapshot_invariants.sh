@@ -110,6 +110,14 @@ has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
 has "$workflow" 'runner: runner-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
+snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
+if printf '%s\n' "$snapshot_job" | grep -Fq 'Install and check native snapshot host tools' \
+  && printf '%s\n' "$snapshot_job" | grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' \
+  && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
+  ok 'native RPM snapshot installs and checks host tools before accessing the base'
+else
+  bad 'native RPM snapshot may access the base without its required host tools'
+fi
 has "$workflow" 'platforms: ${{ matrix.platform }}' \
   'snapshot explicitly selects each native OCI platform'
 has "$workflow" 'needs: [fingerprint, snapshot]' \
