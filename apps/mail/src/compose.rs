@@ -990,7 +990,7 @@ impl ComposeWindow {
         }
     }
 
-    fn read_plain(doc: &mut automerge::AutoCommit) -> String {
+    fn read_plain(doc: &automerge::AutoCommit) -> String {
         MailDoc::draft_body(doc)
             .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
             .map(|blocks| plain_of(&blocks))
