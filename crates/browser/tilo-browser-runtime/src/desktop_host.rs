@@ -560,6 +560,7 @@ pub(crate) struct DesktopRoot {
     required_records: Vec<desktop::Requirement>,
     unsupported_apps: Vec<String>,
     pub(crate) activity: Option<crate::desktop_activity::BrowserActivity>,
+    overlays: crate::desktop_overlays::DesktopOverlays,
     pub(crate) activity_close_reason: Option<crate::desktop_activity::ActivityCloseReason>,
     pending_view_request: Option<activity::WorkspaceViewRequest>,
     surface_node: Option<NodeId>,
@@ -784,6 +785,7 @@ impl DesktopRoot {
             required_records: admission.required,
             unsupported_apps: admission.unsupported,
             activity: None,
+            overlays: Default::default(),
             activity_close_reason: None,
             pending_view_request: None,
             surface_node: None,
@@ -831,6 +833,10 @@ impl DesktopRoot {
             topbar: Box::new(
                 tilo_desktop::topbar::TopBarChrome::from_tree(tree).with_chrome(source),
             ),
+            // Navigation sits beside the surface, so no rail covers the canvas.
+            empty_workspace: Some(Box::new(
+                tilo_desktop::launchpad::CollaborationLaunchpad::new(|_| 0.0),
+            )),
             notify: Some(notify),
             ..SurfaceChrome::default()
         }
@@ -872,6 +878,68 @@ impl DesktopRoot {
             activity.finish();
             self.activity_close_reason = Some(reason);
             self.dirty = true;
+        }
+    }
+    /// Queue a desktop command for the room's topology owner, rendering its
+    /// expected result on the next frame.
+    fn enqueue_command(
+        &mut self,
+        command: tilo_desktop_model::commands::BoundCommand,
+    ) -> Result<uuid::Uuid, String> {
+        let mut queue = self.handle.session_requests.borrow_mut();
+        if queue.len() >= 32 {
+            self.handle
+                .errors
+                .borrow_mut()
+                .push("desktop request queue is full".into());
+            return Err("desktop request queue is full".into());
+        }
+        let invocation = uuid::Uuid::new_v4();
+        if let Ok(tree) = self.handle.tree.try_borrow() {
+            // Render the reorder on the next frame; the durable command
+            // confirms (or snaps back) in the background.
+            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
+        }
+        queue.push((invocation, command));
+        self.dirty = true;
+        (self.notify)();
+        Ok(invocation)
+    }
+    /// Route the empty-workspace card the person chose through the same
+    /// open and Activity paths the palette and navigation use.
+    fn launchpad_request(&mut self, action: tilo_desktop::launchpad::LaunchpadAction) {
+        use tilo_desktop::launchpad::LaunchpadAction;
+        use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+        let (active, room) = {
+            let tree = self.handle.tree.borrow();
+            (
+                tree.active,
+                tree.active_workspace().map(|w| w.room.to_string()),
+            )
+        };
+        let result = match (action.app_target(), action) {
+            (Some((app, _)), _) => match room {
+                Some(room) => self
+                    .enqueue_command(BoundCommand {
+                        source: CommandSource {
+                            room,
+                            heads: self.source_heads.clone(),
+                        },
+                        command: DesktopCommand::OpenApp { app: app.into() },
+                    })
+                    .map(|_| ()),
+                None => Err("No workspace is active".into()),
+            },
+            (None, LaunchpadAction::Activity) => {
+                self.queue_view_request(activity::WorkspaceViewRequest::OpenActivity {
+                    workspace: active,
+                    view: activity::ActivityView::default(),
+                })
+            }
+            (None, _) => Err("Inviting people is not available in this peer yet".into()),
+        };
+        if let Err(error) = result {
+            self.handle.errors.borrow_mut().push(error);
         }
     }
     /// External operations are inert until update: a frame must capture its
@@ -1539,6 +1607,12 @@ impl DesktopRoot {
                 tilo_desktop::chrome::ChromeIntent::SwitchWorkspace(delta) => {
                     Self::switch_workspace(&self.handle, &mut tree, delta);
                 }
+                tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceSettings => {
+                    self.overlays.toggle_settings();
+                }
+                tilo_desktop::chrome::ChromeIntent::ToggleCollaborators => {
+                    self.overlays.toggle_collaborators();
+                }
                 // The browser has no Quick Settings; its top-bar control opens
                 // the notification centre.
                 tilo_desktop::chrome::ChromeIntent::ToggleQuickSettings => {
@@ -1965,23 +2039,7 @@ impl Widget for DesktopRoot {
         }
         let command: tilo_desktop_model::commands::BoundCommand =
             serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let mut queue = self.handle.session_requests.borrow_mut();
-        if queue.len() >= 32 {
-            self.handle
-                .errors
-                .borrow_mut()
-                .push("desktop request queue is full".into());
-            return Err("desktop request queue is full".into());
-        }
-        let invocation = uuid::Uuid::new_v4();
-        if let Ok(tree) = self.handle.tree.try_borrow() {
-            // Render the reorder on the next frame; the durable command
-            // confirms (or snaps back) in the background.
-            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
-        }
-        queue.push((invocation, command));
-        self.dirty = true;
-        (self.notify)();
+        let invocation = self.enqueue_command(command)?;
         Ok(Some(tilo_actions::ActionOutput {
             value: Some(serde_json::Value::String(invocation.to_string())),
             resources: vec![],
@@ -2013,6 +2071,9 @@ impl Widget for DesktopRoot {
                 Some(result.map(|(_, invocation)| invocation));
             changed |= self.reconcile();
         }
+        if let Some(action) = tilo_desktop::launchpad::LaunchpadAction::take(doc, path) {
+            self.launchpad_request(action);
+        }
         let updated = self.surface.update(doc, path);
         let notices = self.notification_layer.tick();
         changed || updated || notices
@@ -2022,6 +2083,7 @@ impl Widget for DesktopRoot {
         // request reaches the next update. Keep that deferred work scheduled.
         self.pending_view_request.is_some()
             || self.dirty
+            || self.overlays.needs_redraw()
             || (self.activity.is_some() && !self.handle.history_available.get())
             || self.handle.inbox.borrow().is_some()
             || self.activity.as_ref().is_some_and(Widget::needs_redraw)
@@ -2083,6 +2145,16 @@ impl Widget for DesktopRoot {
             .draw(scene, transform, text, theme, presence);
         if let Some(activity) = &mut self.activity {
             activity.draw(scene, transform, text, theme, presence);
+        } else {
+            let tree = self.handle.tree.borrow();
+            self.overlays.draw(
+                scene,
+                transform,
+                text,
+                theme,
+                self.surface.get_rect(),
+                (&tree, &self.resolver.host.author),
+            );
         }
         self.refresh_navigation(false);
         self.capture_live();
@@ -2111,6 +2183,28 @@ impl Widget for DesktopRoot {
                 self.activity_node.unwrap_or(node),
                 tree,
             );
+            return;
+        }
+        let (consumed, request) = self.overlays.handle_event(event, scale, || {
+            self.handle
+                .tree
+                .borrow()
+                .active_workspace()
+                .map_or(0, |workspace| workspace.collaborators.len())
+        });
+        if consumed {
+            *handled = true;
+            if request == Some(crate::desktop_overlays::OverlayRequest::OpenActivity) {
+                let workspace = self.handle.tree.borrow().active;
+                if let Err(error) =
+                    self.queue_view_request(activity::WorkspaceViewRequest::OpenActivity {
+                        workspace,
+                        view: activity::ActivityView::default(),
+                    })
+                {
+                    self.handle.errors.borrow_mut().push(error);
+                }
+            }
             return;
         }
         self.notification_layer.handle_event(
