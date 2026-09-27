@@ -150,7 +150,90 @@ fn suggests_emoji_for_words() {
 fn locale_falls_back_to_english() {
     assert_eq!(Catalogue::for_locale("en-GB").locale(), "en");
     assert_eq!(Catalogue::for_locale("xx").locale(), "en");
+    assert_eq!(Catalogue::for_locale("").locale(), "en");
+    assert_eq!(
+        Catalogue::for_locale("pt-BR").search("thumbs", 1)[0].text(),
+        "👍"
+    );
     assert!(Catalogue::locales().any(|l| l == "en"));
+}
+
+#[test]
+fn locale_tags_resolve_to_their_language() {
+    assert_eq!(
+        Catalogue::locales().collect::<Vec<_>>(),
+        ["en", "de", "es", "fr", "it", "ja", "zh"]
+    );
+    for (tag, locale) in [
+        ("de-DE", "de"),
+        ("de_AT.UTF-8", "de"),
+        ("FR", "fr"),
+        ("es-419", "es"),
+        ("it_IT@euro", "it"),
+        ("ja-JP", "ja"),
+        ("zh-Hans-CN", "zh"),
+    ] {
+        assert_eq!(Catalogue::for_locale(tag).locale(), locale, "{tag}");
+    }
+    // One catalogue per language, built once.
+    assert!(std::ptr::eq(
+        Catalogue::for_locale("de-DE"),
+        Catalogue::for_locale("de-CH")
+    ));
+}
+
+#[test]
+fn translated_names_and_search() {
+    let de = Catalogue::for_locale("de-DE");
+    assert_eq!(de.get("👍").unwrap().name(), "Daumen hoch");
+    assert_eq!(de.search("daumen", 1)[0].text(), "👍");
+    assert_eq!(de.search("Daumen runter", 1)[0].text(), "👎");
+    assert_eq!(de.groups()[8].label(), "Flaggen");
+    assert_eq!(de.suggest("pizza", 1)[0].text(), "🍕");
+
+    let fr = Catalogue::for_locale("fr-FR");
+    assert_eq!(fr.search("pouce vers le haut", 1)[0].text(), "👍");
+    // "cœur" folds to "coeur".
+    assert_eq!(fr.search("coeur rouge", 1)[0].text(), "❤\u{FE0F}");
+    for (locale, query) in [
+        ("fr", "pouce"),
+        ("es", "pulgar"),
+        ("it", "pollice"),
+        ("ja", "親指"),
+        ("zh", "拇指"),
+    ] {
+        let found = texts(&Catalogue::for_locale(locale).search(query, 5));
+        assert!(found.contains(&"👍"), "{locale} {query}: {found:?}");
+    }
+
+    // A translated catalogue searches its own language, not English.
+    assert!(de.search("thumbs", 5).is_empty());
+    // Structure is shared: tones and genders work the same in every locale.
+    assert_eq!(de.with_skin_tone("👍", Some(SkinTone::Dark)), Some("👍🏿"));
+    assert_eq!(de.emoji().len(), cat().emoji().len());
+}
+
+#[test]
+fn untranslated_entries_keep_their_english_names() {
+    // CLDR 46 names Sark's flag in English only.
+    let english = cat().get("🇨🇶").unwrap().name();
+    assert_eq!(english, "flag: Sark");
+    for locale in Catalogue::locales() {
+        let cat = Catalogue::for_locale(locale);
+        assert_eq!(cat.get("🇨🇶").unwrap().name(), english, "{locale}");
+        // Every emoji and group has a real name in every locale.
+        assert!(cat.emoji().iter().all(|e| e.name() != e.text()), "{locale}");
+        assert!(cat.groups().iter().all(|g| g.label() != g.id()), "{locale}");
+    }
+    assert_eq!(
+        Catalogue::for_locale("de").search("sark", 1)[0].text(),
+        "🇨🇶"
+    );
+    // Italian CLDR inherits the smileys label, so it stays English.
+    assert_eq!(
+        Catalogue::for_locale("it").groups()[0].label(),
+        "Smileys & Emotion"
+    );
 }
 
 #[test]
