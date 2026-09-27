@@ -12923,21 +12923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shell-redraw-bench"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "serde",
- "serde_json",
- "shell",
- "tempfile",
- "tilo-ui",
- "vello",
- "vello_encoding",
- "winit",
-]
-
-[[package]]
 name = "shell-words"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
