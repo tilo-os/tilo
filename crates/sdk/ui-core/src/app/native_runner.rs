@@ -49,6 +49,9 @@ struct AppHandler {
     ime_state: Option<ImeWindowState>,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
+    /// The field with the keyboard was touched since the last IME sync.
+    #[cfg(target_os = "android")]
+    text_input_touched: bool,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
     last_primary_frame_presented: u64,
@@ -842,13 +845,26 @@ impl AppHandler {
         if super::android_text_input::bridge::installed() {
             let field = next.and(self.app.focused_node);
             let restart = self.text_input.refocus(field);
-            if next != self.ime_state || restart {
+            let touched = std::mem::take(&mut self.text_input_touched);
+            if next != self.ime_state || restart || touched {
+                let surrounding = field.and_then(|node| {
+                    self.app
+                        .inspect_node(node, crate::ime::ImeSurroundingText::from_widget)
+                        .ok()
+                        .flatten()
+                });
                 super::android_text_input::bridge::update(
                     next.as_ref(),
+                    surrounding.as_ref(),
                     window.scale_factor(),
                     restart,
                 );
                 self.ime_state = next;
+            }
+            // After the update, so the fresh connection starts from the
+            // caret the touch just placed.
+            if touched {
+                super::android_text_input::bridge::touched();
             }
             return;
         }
@@ -3006,7 +3022,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     native_input_isolation::EventOrigin::Platform,
                 );
             }
-            super::android_text_input::bridge::touched();
+            self.text_input_touched = true;
         }
         self.route_window_event(
             event_loop,
@@ -3654,6 +3670,8 @@ impl App {
             ime_state: None,
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
+            #[cfg(target_os = "android")]
+            text_input_touched: false,
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             last_primary_frame_presented: 0,

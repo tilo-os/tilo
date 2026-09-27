@@ -18,6 +18,7 @@ use winit::window::ImePurpose;
 
 use super::{TextInputOp, named_key};
 use crate::app::{ImeWindowState, UserEvent};
+use crate::ime::ImeSurroundingText;
 
 const CLASS: &str = "so.tilo.android.TiloTextInput";
 const MAX_DELETE: u32 = 4096;
@@ -65,7 +66,13 @@ pub(in crate::app) fn drain() -> Vec<TextInputOp> {
 
 /// Points the keyboard at the focused field, or dismisses it for `None`.
 /// `restart` discards what the input method knows of the previous field.
-pub(in crate::app) fn update(field: Option<&ImeWindowState>, scale: f64, restart: bool) {
+/// `surrounding` is what the next input connection starts from.
+pub(in crate::app) fn update(
+    field: Option<&ImeWindowState>,
+    surrounding: Option<&ImeSurroundingText>,
+    scale: f64,
+    restart: bool,
+) {
     let physical = |logical: u32| {
         #[allow(
             clippy::cast_possible_truncation,
@@ -87,19 +94,43 @@ pub(in crate::app) fn update(field: Option<&ImeWindowState>, scale: f64, restart
         None => (false, 0, [JValue::Int(0); 4]),
     };
     let [x, y, width, height] = rect;
-    call(
-        "update",
-        "(ZIIIIIZ)V",
-        &[
-            JValue::Bool(jboolean::from(enabled)),
-            JValue::Int(purpose),
-            x,
-            y,
-            width,
-            height,
-            JValue::Bool(jboolean::from(restart)),
-        ],
-    );
+    let (text, [anchor, focus]) = surrounding.map_or((String::new(), [0; 2]), utf16_selection);
+    with_env("update", |env, class| {
+        let text = env.new_string(text)?;
+        env.call_static_method(
+            class,
+            "update",
+            "(ZIIIIIZLjava/lang/String;II)V",
+            &[
+                JValue::Bool(jboolean::from(enabled)),
+                JValue::Int(purpose),
+                x,
+                y,
+                width,
+                height,
+                JValue::Bool(jboolean::from(restart)),
+                JValue::Object(&text),
+                JValue::Int(anchor),
+                JValue::Int(focus),
+            ],
+        )?;
+        Ok(())
+    });
+}
+
+/// The text with its selection in UTF-16 units, which Java strings count in.
+fn utf16_selection(surrounding: &ImeSurroundingText) -> (String, [jint; 2]) {
+    let units = |byte: usize| {
+        let count = surrounding
+            .text
+            .get(..byte)
+            .map_or(0, |prefix| prefix.encode_utf16().count());
+        jint::try_from(count).unwrap_or(jint::MAX)
+    };
+    (
+        surrounding.text.clone(),
+        [units(surrounding.anchor), units(surrounding.focus)],
+    )
 }
 
 /// The user touched the window while a field had the keyboard: bring the
@@ -109,6 +140,16 @@ pub(in crate::app) fn touched() {
 }
 
 fn call(name: &str, sig: &str, args: &[JValue<'_, '_>]) {
+    with_env(name, |env, class| {
+        env.call_static_method(class, name, sig, args)?;
+        Ok(())
+    });
+}
+
+fn with_env(
+    name: &str,
+    body: impl FnOnce(&mut JNIEnv<'_>, &JClass<'_>) -> jni::errors::Result<()>,
+) {
     let Some(java) = JAVA.get() else {
         return;
     };
@@ -116,7 +157,7 @@ fn call(name: &str, sig: &str, args: &[JValue<'_, '_>]) {
         return;
     };
     let class: &JClass<'_> = java.class.as_obj().into();
-    if let Err(error) = env.call_static_method(class, name, sig, args) {
+    if let Err(error) = env.with_local_frame(8, |env| body(env, class)) {
         clear_exception(&env);
         tracing::warn!(target: "tilo_ui::ime", %error, name, "TiloTextInput call failed");
     }
