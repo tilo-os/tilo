@@ -30,6 +30,7 @@ use super::{
 };
 use crate::shell::automation_host;
 use crate::shell::collab_broker::CrdtRoute;
+use crate::shell::keyboard_shortcuts;
 use tilo_automation::SHORTCUTS_APP_ID;
 
 impl BrokerActor {
@@ -346,6 +347,10 @@ impl CapnpBrokerState {
         let roots = self.action_directory_roots();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
+        // Keyboard shortcuts are this device's own settings: offered to
+        // callers on this machine, never to a remote device.
+        let keymap = (with_rows && caller.device_public_key().is_none())
+            .then(settings_store::hardware::ShortcutConfig::load);
         for (workspace, policy) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -456,6 +461,23 @@ impl CapnpBrokerState {
                         action_row(workspace_provider(&room), SHORTCUTS_APP_ID, descriptor)
                     }),
             );
+            if let Some(keymap) = &keymap {
+                rows.extend(
+                    keyboard_shortcuts::catalogue_rows(&workspace_provider(&room), keymap)
+                        .into_iter()
+                        .filter(|row| {
+                            row.action.as_ref().is_some_and(|descriptor| {
+                                Self::allowed(
+                                    &workspace,
+                                    &policy,
+                                    keyboard_shortcuts::APP_ID,
+                                    &descriptor.address.action,
+                                    descriptor.contract.permission,
+                                )
+                            })
+                        }),
+                );
+            }
             if caller.room().is_some() {
                 rows.extend(
                     crate::shell::launcher::gui_apps()
@@ -1291,6 +1313,11 @@ impl CapnpBrokerState {
         if address.resource == automation_host::LIBRARY_RESOURCE {
             return self.start_shortcut_library(caller, actor, room, &address.action, argument);
         }
+        if keyboard_shortcuts::is_resource(&address.resource)
+            && caller.device_public_key().is_none()
+        {
+            return self.start_keyboard_shortcut_action(caller, actor, room, address, argument);
+        }
         if crate::shell::workspace_settings::is_governance_action(&address.action) {
             return self
                 .invoke_workspace_profile_action(
@@ -1375,6 +1402,67 @@ impl CapnpBrokerState {
             id,
             actor.id.clone(),
             tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+        );
+        Ok(id)
+    }
+
+    /// List or change the desktop's keyboard shortcuts for `caller` in
+    /// `room`. Changing one takes the same Settings grant as changing any
+    /// other setting; a clash fails naming what holds the chord.
+    fn start_keyboard_shortcut_action(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<u64, ActionHostError> {
+        let mut keymap = settings_store::hardware::ShortcutConfig::load();
+        let descriptor = keyboard_shortcuts::descriptor_at(&keymap, address)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if !Self::allowed(
+            &workspace,
+            &policy,
+            keyboard_shortcuts::APP_ID,
+            &address.action,
+            descriptor.contract.permission,
+        ) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let outcome =
+            keyboard_shortcuts::decode(&keymap, address, argument).and_then(|operation| {
+                let output = keyboard_shortcuts::apply(&mut keymap, &operation)?;
+                if operation.changes() {
+                    keymap.save().map_err(|error| {
+                        Box::new(tilo_actions::ActionFailure {
+                            code: "save_failed".into(),
+                            message: error.to_string(),
+                            details: None,
+                            retryable: true,
+                        })
+                    })?;
+                }
+                Ok(output)
+            });
+        self.record_completion(
+            id,
+            actor.id.clone(),
+            match outcome {
+                Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: *error,
+                },
+            },
         );
         Ok(id)
     }
