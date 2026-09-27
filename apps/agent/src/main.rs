@@ -100,8 +100,9 @@ struct Cli {
     #[arg(long, value_enum)]
     triage: Option<TriageIn>,
     /// With `--triage`: the forge account (Settings → Accounts) approved
-    /// issues are filed with. Without one, drafts can still be approved and
-    /// filing waits until an account is connected.
+    /// issues are filed with. Without one, the one forge account connected
+    /// on this device; with none, drafts can still be approved and filing
+    /// waits until an account is connected.
     #[arg(long, requires = "triage")]
     forge_account: Option<String>,
 }
@@ -129,10 +130,11 @@ fn triage(cli: &Cli, place: TriageIn) -> anyhow::Result<()> {
             agent: cli.name.clone(),
         })
     };
-    let forge: Box<dyn triage::forge::Forge> = match &cli.forge_account {
-        Some(account) => Box::new(triage::forge::AccountService::from_env(account.clone())),
-        None => Box::new(triage::forge::Unconnected),
-    };
+    // Without a named account the accounts service files with the one forge
+    // account the team connected; without the service, filing waits.
+    let forge: Box<dyn triage::forge::Forge> = Box::new(triage::forge::AccountService::from_env(
+        cli.forge_account.clone().unwrap_or_default(),
+    ));
     let mut agent = participant::Participant::connect(
         participant::Config {
             room: cli.workspace,

@@ -10,7 +10,6 @@
 
 use std::os::unix::net::{UnixListener, UnixStream};
 
-use accounts::AccountId;
 use tilo_account_service::{
     ClientError, Frame, HANDOFF_FRAMING, RPC_VERSION, Request, Response, app_of_handoff,
     read_frame, write_frame,
@@ -25,11 +24,12 @@ pub fn answer(custodian: &Custodian, app_id: &str, request: &Request) -> Respons
         return Response::refused("this app may not ask the accounts service for that");
     }
     let result = match request {
-        Request::FindForgeIssue { account, marker } => {
-            custodian.find_forge_issue(&AccountId::new(account.clone()), marker)
-        }
+        Request::FindForgeIssue { account, marker } => custodian
+            .forge_account(account)
+            .and_then(|account| custodian.find_forge_issue(&account, marker)),
         Request::FileForgeIssue { account, issue } => custodian
-            .file_forge_issue(&AccountId::new(account.clone()), issue)
+            .forge_account(account)
+            .and_then(|account| custodian.file_forge_issue(&account, issue))
             .map(Some),
     };
     match result {

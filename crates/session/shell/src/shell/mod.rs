@@ -155,6 +155,7 @@ pub mod tile;
 pub mod tool_intents;
 pub mod topbar;
 pub mod topbar_chrome;
+pub mod triage_runtime;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;

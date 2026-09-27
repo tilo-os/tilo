@@ -251,6 +251,30 @@ impl Custodian {
         result
     }
 
+    /// The forge account `named`, or, when the caller names none, the one
+    /// forge account this person connected: the team connects one in
+    /// Settings and the triage agent files with it.
+    ///
+    /// # Errors
+    /// [`CustodyError::Account`] when none is named and there is not exactly
+    /// one forge account.
+    pub fn forge_account(&self, named: &str) -> Result<AccountId, CustodyError> {
+        if !named.trim().is_empty() {
+            return Ok(AccountId::new(named.trim()));
+        }
+        let store = self.store();
+        let forges = store.list(&accounts::AccountTypeId::from(FORGEJO_TYPE));
+        match forges.as_slice() {
+            [only] => Ok(only.id.clone()),
+            [] => Err(CustodyError::Account(
+                "no forge account is connected; add one in Settings › Accounts".into(),
+            )),
+            _ => Err(CustodyError::Account(
+                "several forge accounts are connected; name the one to file with".into(),
+            )),
+        }
+    }
+
     /// The issue filed for `marker` in forge account `id`'s repository.
     ///
     /// # Errors
@@ -483,6 +507,11 @@ mod tests {
         let forge = FakeForge::start("sealed-token");
         let id = connect(&root, "forge-tilo", &forge);
         let custodian = Custodian::for_root(Some(root));
+        assert_eq!(
+            custodian.forge_account("").unwrap(),
+            id,
+            "the one forge account"
+        );
         assert_eq!(custodian.find_forge_issue(&id, "m_draft").unwrap(), None);
         let filed = custodian.file_forge_issue(&id, &issue("m_draft")).unwrap();
         assert_eq!(filed.number, 1);

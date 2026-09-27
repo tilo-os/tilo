@@ -388,6 +388,15 @@ It is not a backend:
   Tilo team's triage agent helps sort reports here". The reporter can remove
   it like any agent, and removing it also revokes the operator grant. The
   agent is only admitted when the room is created, so a removal sticks.
+- **Always running.** Nobody launches the agent per room. The Tilo team's
+  desktop keeps it running (`shell::triage_runtime`, using the same
+  managed-agent launch path as Task Center agents) in every room that admits
+  it and lets the team operate it: the community room and each direct room.
+  A room that appears with those grants gets the agent. A room that loses
+  them does not get it back, and the agent there stops as soon as the broker
+  says it was removed. A reporter's desktop never starts it, even though the
+  reporter administers their own room. Filing uses the team's one connected
+  forge account unless the agent is told another.
 - **Nobody speaks through its Chat.** Chat's posting actions carry the
   participant tag (`ActionSpec::as_participant`). The broker delivers such an
   action only when the caller is the participant the app runs for, so a

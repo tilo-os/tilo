@@ -825,6 +825,12 @@ pub struct ShellOverlayHost {
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
+    /// The team's triage agent sessions, kept running in every room that
+    /// lets this desktop operate it.
+    triage_runtime: crate::shell::triage_runtime::TriageRuntime,
+    /// Whether this desktop is the Tilo team's, read once from the community
+    /// configuration; only the team's desktop runs its triage agent.
+    team_desktop: Option<bool>,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -2482,6 +2488,8 @@ impl ShellOverlayHost {
             app_action_broker: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
+            triage_runtime: crate::shell::triage_runtime::TriageRuntime::default(),
+            team_desktop: None,
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
@@ -5877,6 +5885,46 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Keep the team's triage agent running in every room that admits it
+    /// and lets this person operate it — the community room and each
+    /// reporter's direct room — through the managed-agent launch path. Only
+    /// the Tilo team's desktop runs it; nobody starts it per room.
+    fn keep_triage_agents_running(&mut self) {
+        let team_desktop = *self.team_desktop.get_or_insert_with(|| {
+            crate::shell::community::load().is_ok_and(|config| {
+                config
+                    .team
+                    .is_some_and(|team| team.person_id() == crate::shell::state::local_user_id())
+            })
+        });
+        let Some(chrome) = self.chrome.as_ref().filter(|_| team_desktop) else {
+            return;
+        };
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let me = crate::shell::state::local_user_id();
+        let wanted = crate::shell::triage_runtime::wanted(&tree, &me, tilo_clock::unix_now());
+        let workspaces = tree.desktop.workspaces.clone();
+        drop(tree);
+        drop(st);
+        self.triage_runtime
+            .reconcile(&wanted, std::time::Instant::now(), &mut |want| {
+                let workspace = workspaces
+                    .iter()
+                    .find(|ws| ws.room == want.room)
+                    .ok_or_else(|| "the room is gone".to_string())?;
+                crate::shell::launcher::launch_managed_agent(
+                    crate::shell::workspace_settings::TRIAGE_AGENT,
+                    workspace,
+                    crate::shell::launcher::ManagedAgentWork::Triage {
+                        direct: want.direct,
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+            });
+    }
+
     /// Turns app-launcher worker-thread failures into notifications (a clean
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
@@ -5940,6 +5988,8 @@ impl ShellOverlayHost {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
             }
+            self.triage_runtime
+                .observe(&event, std::time::Instant::now());
             // A failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
             // [`Self::retire_notices_for_opened_windows`]'s job. A clean
@@ -17555,6 +17605,7 @@ impl Widget for ShellOverlayHost {
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        self.keep_triage_agents_running();
         let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
