@@ -684,6 +684,23 @@ persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
 choices.
 
+Every package run prints where the bytes go: each payload file, largest first,
+with entrypoint binaries split into code, read-only data, dynamic-linking
+tables and the rest, then the signed package against the 8 MiB application
+limit. An app can hold itself to a tighter ceiling in `tilo-app.toml`:
+
+```toml
+[budget]
+package = "1 MiB"   # the signed .tapp
+binary = "900 KiB"  # each entrypoint binary
+```
+
+Sizes are byte counts or strings in B, KB, MB (powers of ten), KiB or MiB
+(powers of two); an unknown key is an error, so a misspelt ceiling cannot
+quietly stop applying. The budget is a build-time check, not package metadata.
+A package over budget fails with the amount it is over, and the previous output
+is left in place. `--json` carries the same breakdown under `size`.
+
 ## The app shape
 
 Keep the binary boring:

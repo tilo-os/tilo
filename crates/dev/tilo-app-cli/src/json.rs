@@ -142,6 +142,7 @@ impl PackageOutcome {
         json!({
             "output": absolute(&self.output),
             "entrypoints": self.entrypoints.iter().map(|path| absolute(path)).collect::<Vec<_>>(),
+            "size": self.size.to_json(),
         })
     }
 }
