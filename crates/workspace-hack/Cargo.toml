@@ -468,7 +468,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-le
 ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
-log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
@@ -506,7 +505,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-le
 ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
-log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
@@ -544,7 +542,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-le
 ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
-log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
@@ -582,7 +579,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-le
 ipnet = { version = "2", features = ["serde"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
-log = { version = "0.4", default-features = false, features = ["max_level_debug", "release_max_level_info"] }
 naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl-out", "spv-out"] }
 nom = { version = "7" }
 noq-udp = { version = "1" }
