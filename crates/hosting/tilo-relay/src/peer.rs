@@ -18,7 +18,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::auth::AuthenticatedPeer;
 use crate::frame::FrameReader;
 use crate::store::StoreError;
-use crate::transport::Envelope;
+use crate::transport::{Envelope, Refusal};
 use crate::workspace::{OutboundFrame, SharedWorkspace, Subscriber, encode_frame};
 
 /// Maximum live fan-out backlog per connected peer, in frames. Frames are
@@ -423,17 +423,24 @@ async fn handle_redeem(
     workspace_id: u64,
     invite_id: [u8; 32],
 ) -> Envelope {
-    let refuse = |reason: String| Envelope::NotAuthorised {
+    let refuse = |refusal: Refusal, reason: String| Envelope::NotAuthorised {
         workspace_id,
+        refusal,
         reason,
     };
     // A federating relay speaks for other devices; only a device may redeem
     // for itself.
     if peer.role != crate::auth::PeerRole::Device {
-        return refuse("only a device may redeem an invitation for itself".into());
+        return refuse(
+            Refusal::NotMember,
+            "only a device may redeem an invitation for itself".into(),
+        );
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refuse("workspace not bound on this relay".into());
+        return refuse(
+            Refusal::NotHosted,
+            "workspace not bound on this relay".into(),
+        );
     };
     let wr = ws.lock_owned().await;
     let member_user = peer.user_public_key;
@@ -491,9 +498,21 @@ async fn handle_redeem(
         }
         Ok(Err(error)) => {
             tracing::info!(workspace_id, %error, "refused a standing-invitation redemption");
-            refuse(error.to_string())
+            refuse(redemption_refusal(&error), error.to_string())
         }
-        Err(_) => refuse("redemption failed".into()),
+        Err(_) => refuse(Refusal::Busy, "redemption failed".into()),
+    }
+}
+
+/// Whether a refused redemption can succeed when asked again unchanged.
+fn redemption_refusal(error: &crate::public_room::PublicRoomError) -> Refusal {
+    use crate::public_room::PublicRoomError as E;
+    match error {
+        E::NotHosted => Refusal::NotHosted,
+        E::UnknownInvite | E::Revoked | E::InvalidInvite(_) | E::Delegation(_) => {
+            Refusal::NotMember
+        }
+        E::Admission(_) | E::Store(_) | E::Json(_) => Refusal::Busy,
     }
 }
 
@@ -529,6 +548,7 @@ async fn handle_subscribe(
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -552,9 +572,10 @@ async fn handle_subscribe(
     .await
     .map_err(|_| PeerError::Io(std::io::Error::other("subscribe replay scan panicked")))?;
     let (retained_count, pending_count) = match prepared? {
-        SubscribeOutcome::Rejected(reason) => {
+        SubscribeOutcome::Rejected(refusal, reason) => {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
+                refusal,
                 reason: reason.into(),
             }));
         }
@@ -604,7 +625,7 @@ struct PreparedReplay {
 
 enum SubscribeOutcome {
     Admitted(PreparedReplay),
-    Rejected(&'static str),
+    Rejected(Refusal, &'static str),
 }
 
 /// Refresh membership, admit the peer, and load its replay backlog. Blocking
@@ -616,6 +637,7 @@ fn prepare_subscribe(
 ) -> Result<SubscribeOutcome, PeerError> {
     if !wr.has_subscriber(&admission.device) && wr.subscribers.len() >= admission.max_subscribers {
         return Ok(SubscribeOutcome::Rejected(
+            Refusal::Busy,
             "workspace subscriber limit reached",
         ));
     }
@@ -634,6 +656,7 @@ fn prepare_subscribe(
             wr.admit_device(admission.device)?;
         } else {
             return Ok(SubscribeOutcome::Rejected(
+                Refusal::NotMember,
                 "device not in workspace membership",
             ));
         }
@@ -837,6 +860,7 @@ async fn handle_delta(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -1102,6 +1126,7 @@ async fn handle_sync_request(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotHosted,
             reason: "workspace not bound on this relay".into(),
         }));
     };
@@ -1116,6 +1141,7 @@ async fn handle_sync_request(
     {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
+            refusal: Refusal::NotMember,
             reason: "device not in workspace membership".into(),
         }));
     }

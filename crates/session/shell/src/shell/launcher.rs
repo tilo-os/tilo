@@ -1085,22 +1085,26 @@ pub fn write_trusted_identities_projection(
 
 /// Publish a complete accepted room-governance projection for later Files
 /// launches. Callers derive this from `WorkspaceTree`'s accepted room document,
-/// never Contacts or presence.
+/// never Contacts or presence. Answers whether the room's projection changed,
+/// which is whether who may be in the room did.
 pub fn set_trusted_identity_projection(
     room: RoomId,
     projection: &tilo_user_identity::TrustedIdentityProjectionV2,
-) {
+) -> bool {
     if projection.validate().is_err() {
-        return;
+        return false;
     }
-    if let Ok(mut projections) = TRUSTED_IDENTITY_PROJECTIONS.lock() {
-        projections.insert(room, projection.clone());
-    }
+    let changed = TRUSTED_IDENTITY_PROJECTIONS
+        .lock()
+        .is_ok_and(|mut projections| {
+            projections.insert(room, projection.clone()).as_ref() != Some(projection)
+        });
     // Existing Files sandboxes bind the containing directory, so this atomic
     // replacement becomes visible to them as well as to later launches.
     if let Err(error) = write_trusted_identities_projection(room, projection) {
         tracing::warn!(%room, %error, "could not publish live governed identity projection");
     }
+    changed
 }
 
 fn stage_current_trusted_identities(room: RoomId) -> std::io::Result<PathBuf> {

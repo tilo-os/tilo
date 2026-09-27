@@ -208,6 +208,8 @@ pub enum Inbound {
     /// The host refused this device the workspace. The session carries
     /// nothing more; `reason` says why, for the log a person reads.
     Refused {
+        /// Whether asking again unchanged can help.
+        refusal: tilo_relay_protocol::transport::Refusal,
         /// The host's reason.
         reason: String,
     },
@@ -517,8 +519,10 @@ impl RelayCoeditSession {
                         pending: pending_deltas,
                     });
                 }
-                Envelope::NotAuthorised { reason, .. } => {
-                    return Some(Inbound::Refused { reason });
+                Envelope::NotAuthorised {
+                    refusal, reason, ..
+                } => {
+                    return Some(Inbound::Refused { refusal, reason });
                 }
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.

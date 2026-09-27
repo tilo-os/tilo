@@ -313,6 +313,12 @@ pub enum NetCmd {
         ws: WorkspaceId,
         invite_id: [u8; 32],
     },
+    /// Who may be in `ws` changed — an invitation issued, a role granted, a
+    /// member's device certified. Ask every workspace host that refused the
+    /// room for good again, now.
+    ReconsiderHosts {
+        ws: WorkspaceId,
+    },
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -492,6 +498,8 @@ enum HostEvent {
         author: EndpointId,
         msg: NeighbourMsg,
     },
+    /// The host refused the room; `Closed` follows.
+    Refused(tilo_relay_protocol::transport::Refusal),
     Closed,
 }
 
@@ -835,6 +843,8 @@ struct ActorState {
     /// Standing invitations to redeem at hosts before subscribing, per room
     /// topic, until a host's subscription for that room succeeds.
     host_redemptions: HashMap<WorkspaceId, [u8; 32]>,
+    /// When each room is next asked for at each host.
+    host_retries: super::host_retry::HostRetries,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
@@ -1210,6 +1220,9 @@ impl ActorState {
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.hosts.insert(id, (addr.clone(), expectation.clone()));
+                // Named again, perhaps configured anew: every room is worth
+                // asking it for once more.
+                self.host_retries.reconsider_host(id);
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
@@ -1226,40 +1239,55 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        &self.host_retries,
                     );
                 }
             }
             Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
+            Some(NetCmd::ReconsiderHosts { ws }) => {
+                self.host_retries.reconsider_room(ws);
+                self.schedule_room_at_hosts(ws);
+            }
             Some(NetCmd::RedeemAtHosts { ws, invite_id }) => {
                 self.host_redemptions.insert(ws, invite_id);
-                if let Some(identity) = self.host_identity.as_ref()
-                    && self.topics.contains_key(&ws)
-                {
-                    for (addr, expectation) in self.hosts.values().cloned() {
-                        schedule_host_topic(
-                            &self.endpoint,
-                            identity,
-                            ws,
-                            addr,
-                            expectation,
-                            Some(invite_id),
-                            &self.internal_tx,
-                            &self.host_sessions,
-                            &mut self.connecting_hosts,
-                            &mut self.content_discovery_tasks,
-                        );
-                    }
-                }
+                self.host_retries.reconsider_room(ws);
+                self.schedule_room_at_hosts(ws);
             }
             None => return false,
         }
         true
     }
 
+    /// Ask every workspace host for `ws` that is due to be asked.
+    fn schedule_room_at_hosts(&mut self, ws: WorkspaceId) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        if !self.topics.contains_key(&ws) {
+            return;
+        }
+        for (addr, expectation) in self.hosts.values().cloned() {
+            schedule_host_topic(
+                &self.endpoint,
+                identity,
+                ws,
+                addr,
+                expectation,
+                self.host_redemptions.get(&ws).copied(),
+                &self.internal_tx,
+                &self.host_sessions,
+                &mut self.connecting_hosts,
+                &mut self.content_discovery_tasks,
+                &self.host_retries,
+            );
+        }
+    }
+
     /// Stop relay sessions and discovery tasks for one host.  `remove_content`
     /// is reserved for an explicit enrolled-home-peer removal: an address
     /// refresh must never revoke a still-valid Files hydration source.
     fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        self.host_retries.reconsider_host(id);
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -1844,6 +1872,7 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
+        self.host_retries.reconsider_room(ws);
         if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
             let bootstrap = self.peers.keys().copied().collect();
             match self.gossip.subscribe(topic_id(ws), bootstrap).await {
@@ -1884,6 +1913,7 @@ impl ActorState {
                     &self.host_sessions,
                     &mut self.connecting_hosts,
                     &mut self.content_discovery_tasks,
+                    &self.host_retries,
                 );
             }
         }
@@ -2276,7 +2306,13 @@ impl ActorState {
                     .insert((ws, peer), HostRuntime::new(session, pump));
             }
             Err(error) => {
-                tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
+                let wait = self.host_retries.failed(
+                    ws,
+                    peer,
+                    Instant::now(),
+                    super::host_retry::entropy(),
+                );
+                tracing::warn!(ws, peer = %peer, %error, ?wait, "workspace host connection failed");
             }
         }
     }
@@ -2286,6 +2322,7 @@ impl ActorState {
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         let mapped = match event {
             HostEvent::Ready => {
+                self.host_retries.succeeded(ws, peer);
                 if let Some(runtime) = self.host_sessions.get(&(ws, peer)) {
                     runtime.become_ready(ws);
                 }
@@ -2325,10 +2362,24 @@ impl ActorState {
                 peer: author,
                 msg,
             }),
+            HostEvent::Refused(refusal) => {
+                if self.host_retries.refused(ws, peer, refusal) {
+                    tracing::info!(
+                        ws,
+                        peer = %peer,
+                        ?refusal,
+                        "not asking the workspace host for this room again until its membership or the host changes"
+                    );
+                }
+                None
+            }
             HostEvent::Closed => {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
                     runtime.pump.abort();
                 }
+                // Parked pairs stay parked; anything else backs off.
+                self.host_retries
+                    .failed(ws, peer, Instant::now(), super::host_retry::entropy());
                 Some(NetEvent::PeerLeft {
                     ws,
                     peer,
@@ -2395,6 +2446,7 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        &self.host_retries,
                     );
                 }
             }
@@ -2903,6 +2955,7 @@ async fn run(
         host_sessions: HashMap::new(),
         connecting_hosts: HashSet::new(),
         host_redemptions: HashMap::new(),
+        host_retries: super::host_retry::HostRetries::new(heartbeat_interval),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
@@ -3160,6 +3213,7 @@ fn schedule_host_topic(
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    retries: &super::host_retry::HostRetries,
 ) {
     let host = addr.id;
     if let Some(expectation) = expectation.clone()
@@ -3217,7 +3271,10 @@ fn schedule_host_topic(
         });
         content_discovery_tasks.insert((ws, host), task);
     }
-    if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
+    if sessions.contains_key(&(ws, host))
+        || !retries.due(ws, host, Instant::now())
+        || !connecting.insert((ws, host))
+    {
         return;
     }
     let endpoint = endpoint.clone();
@@ -3453,10 +3510,10 @@ fn spawn_host_pump(
         while let Some(inbound) = session.recv().await {
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
-                HostInbound::Refused { reason } => {
+                HostInbound::Refused { refusal, reason } => {
                     // Said once per room and reason: the actor asks again
-                    // on its reconnect cadence, and a host that does not
-                    // carry a room keeps saying so.
+                    // after a back-off (or, for a final refusal, once the
+                    // room or host changes), and the host says it again.
                     static REFUSALS: std::sync::OnceLock<
                         Mutex<std::collections::HashSet<(WorkspaceId, String)>>,
                     > = std::sync::OnceLock::new();
@@ -3465,10 +3522,17 @@ fn spawn_host_pump(
                         .lock()
                         .is_ok_and(|mut seen| seen.insert((ws, reason.clone())));
                     if first {
-                        tracing::warn!(ws, host = %host, %reason, "the workspace host refused this device");
+                        tracing::warn!(ws, host = %host, ?refusal, %reason, "the workspace host refused this device");
                     } else {
-                        tracing::debug!(ws, host = %host, %reason, "the workspace host refused this device");
+                        tracing::debug!(ws, host = %host, ?refusal, %reason, "the workspace host refused this device");
                     }
+                    let _ = tx
+                        .send(InternalEvent::Host {
+                            ws,
+                            peer: host,
+                            event: HostEvent::Refused(refusal),
+                        })
+                        .await;
                     // A refused session carries nothing; publishing on it
                     // would only have the host end it as a protocol breach.
                     break;
@@ -4521,6 +4585,9 @@ mod tests {
                             &HashMap::new(),
                             &mut connecting,
                             &mut discoveries,
+                            &crate::network::host_retry::HostRetries::new(Duration::from_millis(
+                                100,
+                            )),
                         );
                         let rejected = matches!(
                             timeout(Duration::from_secs(5), rx.recv()).await,
@@ -5012,6 +5079,94 @@ mod tests {
             }
         }
         (cmd_a, rx_a, cmd_b, rx_b)
+    }
+
+    /// A relay that does not carry a room says so once; the actor then stops
+    /// asking it for that room, however many retry rounds pass, until the
+    /// room's membership changes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_that_does_not_carry_a_room_is_not_asked_again_until_the_room_changes() {
+        const TEST_HEARTBEAT: Duration = Duration::from_millis(50);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "host");
+        // Someone else's device, as a community relay admits them: any
+        // certified device may connect, and no room of theirs is bound.
+        let stranger = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (key, cert) = enrol(&stranger, DeviceCapabilities::primary(), "a");
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                trust_policy: tilo_relay::policy::TrustPolicy::AllowAny,
+                ..RelayConfig::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host_key,
+                device_cert: host_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let (endpoint, lookup) = identified_endpoint(&key).await;
+        let (cmd, _task) = Actor::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            Some(HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            TEST_HEARTBEAT,
+        );
+        let (events, _rx) = mpsc::channel(16);
+        cmd.send(NetCmd::JoinWorkspace {
+            ws: 42,
+            on_event: events,
+        })
+        .await
+        .unwrap();
+        cmd.send(NetCmd::ConnectHost {
+            addr: relay.node_addr(),
+            expectation: None,
+        })
+        .await
+        .unwrap();
+        let attempts = || relay.metrics().conns_authed;
+        timeout(Duration::from_secs(10), async {
+            while attempts() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the actor asks the relay for the room");
+
+        // Forty retry rounds: the old cadence would have asked forty times.
+        tokio::time::sleep(TEST_HEARTBEAT * 40).await;
+        assert_eq!(
+            attempts(),
+            1,
+            "a relay that does not carry the room is asked once, not every round"
+        );
+
+        cmd.send(NetCmd::ReconsiderHosts { ws: 42 }).await.unwrap();
+        timeout(Duration::from_secs(10), async {
+            while attempts() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a membership change asks the relay again");
+        tokio::time::sleep(TEST_HEARTBEAT * 20).await;
+        assert_eq!(
+            attempts(),
+            2,
+            "and it is parked again after the same answer"
+        );
     }
 
     /// A chat record in a feedback room: remarks retained on the host, then

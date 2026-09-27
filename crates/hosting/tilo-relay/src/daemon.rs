@@ -2011,9 +2011,10 @@ async fn handle_peer_relay_envelope(
         }
         Envelope::NotAuthorised {
             workspace_id,
+            refusal,
             reason,
         } => {
-            tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+            tracing::warn!(workspace_id, ?refusal, %reason, "peer relay refused subscribe");
         }
         Envelope::Ping => {
             let _ = client.send(Envelope::Pong);

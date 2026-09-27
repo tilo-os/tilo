@@ -3,6 +3,7 @@ pub mod behaviour;
 pub mod coverage;
 pub mod decoder;
 pub mod encoder;
+mod host_retry;
 pub mod hub;
 pub mod identity;
 pub mod input_firewall;

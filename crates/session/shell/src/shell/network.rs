@@ -2025,6 +2025,14 @@ impl ShellNetwork {
         Self::explicit_topic_for_message(msg).unwrap_or_else(|| self.active_ws_for_publish())
     }
 
+    /// Who may be in `room` changed: ask the workspace hosts that refused it
+    /// for good again.
+    fn reconsider_hosts(&self, room: RoomId) {
+        let _ = self.cmd_tx.try_send(NetCmd::ReconsiderHosts {
+            ws: room_topic_id(room),
+        });
+    }
+
     fn join_topic(&self, ws: u64) -> bool {
         let Ok(mut joined) = self.joined_topics.lock() else {
             return false;
@@ -3027,6 +3035,7 @@ impl ShellNetwork {
             tree.flush_to_disk();
         }
         self.publish_sync_requests();
+        self.reconsider_hosts(room);
         self.room_status(room)
     }
 
@@ -3636,6 +3645,9 @@ impl ShellNetwork {
             crate::shell::launcher::set_trusted_identity_projection(room, &projection);
         }
         self.join_topic(room_topic_id(room));
+        // An invitation changes who may join: a host that refused the room
+        // may carry it now (its owner hosts it there before inviting).
+        self.reconsider_hosts(room);
 
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
         let parsed = crate::network::invite::validate_invite_token(&token)?;
@@ -3801,7 +3813,9 @@ impl ShellNetwork {
             );
             rep.tree.read().trusted_identity_projection(room)
         };
-        crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        if crate::shell::launcher::set_trusted_identity_projection(room, &projection) {
+            self.reconsider_hosts(room);
+        }
         true
     }
 
@@ -6750,8 +6764,10 @@ impl ShellNetwork {
             refreshed_room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
         let outgoing = rep.drain_outgoing();
         drop(rep);
-        if let Some((room, projection)) = refreshed_projection {
-            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        if let Some((room, projection)) = refreshed_projection
+            && crate::shell::launcher::set_trusted_identity_projection(room, &projection)
+        {
+            self.reconsider_hosts(room);
         }
         for out_msg in outgoing {
             let _ = self.publish_message(out_msg);
