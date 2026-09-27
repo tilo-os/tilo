@@ -5,11 +5,6 @@ Uses FORGEJO_TOKEN or --token-file authentication. Does not cancel manual, tag, 
 unknown-workflow, or already-started runs. Run periodically outside Actions.
 Forgejo has no atomic cancel-if-still-waiting API: the final read narrows but
 cannot eliminate the scheduler race between inspection and cancellation.
-
-check.yml is coalesced too; lint.yml never is. A main check run selects every
-commit since the last main commit whose own check run started
-(tools/ci/check_base.py), so the kept run covers the commits of the runs
-cancelled here, which never started.
 """
 
 import argparse
@@ -23,7 +18,7 @@ from urllib.error import URLError
 
 WORKFLOWS = frozenset({
     "build-image.yml", "package-desktop.yml",
-    "release-apps.yml", "fs-fuse.yml", "legacy-app-e2e.yml", "check.yml",
+    "release-apps.yml", "fs-fuse.yml", "legacy-app-e2e.yml",
 })
 UNSTARTED = {None, "", "1970-01-01T00:00:00Z", "0001-01-01T00:00:00Z"}
 
@@ -123,14 +118,7 @@ def coalesce(api, max_pages, max_cancel, apply):
             jobs = api.call(f"{api.base}/{original['id']}/jobs")
             if not isinstance(jobs, list) or not jobs:
                 raise ValueError("missing or invalid jobs response; refusing cancellation")
-            # Conditional jobs can already be marked skipped although the run
-            # has never started. A task ID, however, means a runner may have
-            # claimed work; never cancel that run through this coalescer.
-            if any(
-                job.get("status") not in {"waiting", "blocked", "skipped"}
-                or job.get("task_id", 0) != 0
-                for job in jobs
-            ):
+            if any(job.get("status") not in {"waiting", "blocked"} for job in jobs):
                 report["changed"].append(original["id"])
                 continue
             current = api.call(f"{api.base}/{original['id']}")
