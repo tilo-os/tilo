@@ -133,7 +133,7 @@ mod identity_fs_tests {
             assert!(arguments.contains(acl.to_str().unwrap()));
             // The released publisher only has to exit; the budget is a
             // backstop, and a stall reports the worker's attempt history.
-            wait_for_fs_authority_publication_idle(Duration::from_secs(60)).unwrap_or_else(
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
                 |report| {
                     panic!(
                         "the publisher worker must retire before its fixture is removed: {report}"
@@ -145,7 +145,6 @@ mod identity_fs_tests {
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
         {
             use std::os::unix::fs::PermissionsExt;
-            use std::time::Duration;
 
             let temp = tempfile::tempdir().expect("temp");
             let publisher = temp.path().join("late-publisher.sh");
@@ -175,7 +174,7 @@ mod identity_fs_tests {
             // retirement is the event to wait on. Four backed-off failures take
             // about 1.5 s of sleeps plus five process spawns; the budget is only
             // a backstop for a worker that never succeeds.
-            wait_for_fs_authority_publication_idle(Duration::from_secs(60)).unwrap_or_else(
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
                 |report| panic!("the retry worker never published the queued ACL: {report}"),
             );
             assert!(

@@ -27,6 +27,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

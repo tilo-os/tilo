@@ -20,7 +20,6 @@
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
@@ -32,21 +31,10 @@ use tilo_user_identity::{
 use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
-/// How long the enrolled device waits for the host's `Ready`. The host
-/// persists the membership (fsynced) before it answers, so this only turns a
-/// hang into a named failure; it is not a latency budget.
-const REPLY: Duration = Duration::from_secs(120);
-
 fn wait_for_file(path: &std::path::Path, what: &str) {
-    let started = Instant::now();
-    while !path.is_file() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "timed out waiting for {what} at {}",
-            path.display()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until(format_args!("{what} at {}", path.display()), || {
+        path.is_file()
+    });
 }
 
 fn signed_cert(
@@ -330,11 +318,11 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(REPLY, client.recv()).await,
-        Ok(Some(Envelope::Ready {
+        tilo_test_env::within("the file workspace's Ready", client.recv()).await,
+        Some(Envelope::Ready {
             workspace_id: FILE_WORKSPACE,
             ..
-        }))
+        })
     ));
     let continuity = tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes());
     relay
@@ -352,8 +340,8 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(REPLY, client.recv()).await,
-        Ok(Some(Envelope::Ready { workspace_id, .. })) if workspace_id == continuity
+        tilo_test_env::within("the continuity workspace's Ready", client.recv()).await,
+        Some(Envelope::Ready { workspace_id, .. }) if workspace_id == continuity
     ));
 }
 

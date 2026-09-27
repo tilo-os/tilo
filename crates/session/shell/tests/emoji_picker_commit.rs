@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use shell::compositor::input_method::TrustedInputMethod;
 use shell::compositor::state::{ClientState, State};
@@ -357,7 +357,7 @@ impl Harness {
 
     /// Tick until something reaches a field, failing after a generous bound.
     fn tick_until_delivered(&mut self, field: &Field) -> Vec<DeliveredText> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let delivered = self.tick(field);
             if !delivered.is_empty() {

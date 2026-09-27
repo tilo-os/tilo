@@ -761,7 +761,7 @@ mod tests {
                 assert!(store.get(url).is_some(), "{url} decoded");
             }
             assert!(store.get("four.png").is_none());
-            store.block_until_idle(Duration::from_secs(5));
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(store.get("four.png").is_some(), "parking pumps the queue");
         }
 

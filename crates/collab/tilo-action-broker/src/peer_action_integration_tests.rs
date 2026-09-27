@@ -88,18 +88,15 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the relay client to be ready", async {
         while !matches!(client.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
-    .await
-    .unwrap();
+    .await;
     client
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), client.recv_action())
-            .await
-            .unwrap(),
+        tilo_test_env::within("`client.recv_action()`", client.recv_action()).await,
         Some(EnvelopeV2::ActionsReady { .. })
     ));
     client
@@ -108,7 +105,7 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
     client
 }
 async fn reply(client: &RelayClient, id: Uuid) -> ActionMessage {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the reply to this request", async {
         loop {
             match client.recv_action().await.unwrap() {
                 EnvelopeV2::Delivered { action, .. } if action.request_id == id => {
@@ -122,7 +119,6 @@ async fn reply(client: &RelayClient, id: Uuid) -> ActionMessage {
         }
     })
     .await
-    .unwrap()
 }
 fn send(client: &RelayClient, room: Uuid, seed: u8, message: ActionMessage) -> Uuid {
     let request_id = Uuid::new_v4();
@@ -182,7 +178,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        let catalogue = tokio::time::timeout(Duration::from_secs(5), async { loop {
+        let catalogue = tilo_test_env::within("attached broker must answer catalogue", async { loop {
             let id = send(
                 &caller,
                 room,
@@ -193,7 +189,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue }) => { assert_eq!(host, request.host); break catalogue; }
                 _ => tokio::task::yield_now().await,
             }
-        }}).await.expect("attached broker must answer catalogue");
+        }}).await;
         assert!(catalogue["surfaces"].as_array().unwrap().iter().any(|s| s["app_id"] == request.app_id));
         // Enrol a further certified caller after startup, outside the fixture's
         // former fixed device list; current root authority accepts it dynamically.
@@ -262,7 +258,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let signed_delivery = signed.try_recv().expect("real application signed mutation admitted");
         assert_eq!(postcard::from_bytes::<SignedOp>(&signed_delivery.op_bytes).unwrap(), mutation);
         session.publish_retained_delta([7; 32], signed_delivery.op_bytes).unwrap();
-        let Envelope::Delta { delta: payload, .. } = tokio::time::timeout(Duration::from_secs(5), caller.recv()).await.unwrap().unwrap() else { panic!("signed resulting state missing") };
+        let Envelope::Delta { delta: payload, .. } = tilo_test_env::within("`caller.recv()`", caller.recv()).await.unwrap() else { panic!("signed resulting state missing") };
         let Some(tilo_relay::CoeditPayload::RetainedDelta { body, .. }) = tilo_relay::CoeditPayload::decode(&payload) else { panic!("retained signed state missing") };
         assert_eq!(postcard::from_bytes::<SignedOp>(&body).unwrap(), mutation);
 
@@ -349,7 +345,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (queue, host) = reopened.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        tokio::time::timeout(Duration::from_secs(5), async { loop {
+        tilo_test_env::within("the recovered broker catalogue", async { loop {
             let id = send(
                 &caller,
                 room,
@@ -357,7 +353,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
                 ActionMessage::CatalogueRefresh { scope: None },
             );
             if matches!(tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await, Ok(ActionMessage::BrokerCatalogue { .. })) { break; }
-        }}).await.unwrap();
+        }}).await;
         let recovered = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, recovered).await, ActionMessage::Observation { update: Some(update), .. } if update == terminal));
         let unknown = send(&caller, room, 52, invoke(&silent));
@@ -369,16 +365,16 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         reopened.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
         let mut blocked = request.clone(); blocked.invocation = tilo_actions::InvocationId::new();
         let refused = send(&caller, room, 52, invoke(&blocked));
-        assert!(tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap().is_err());
+        assert!(tilo_test_env::within("`server`", server).await.unwrap().is_err());
         let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: blocked.invocation });
-        tokio::time::timeout(Duration::from_secs(5), async { loop {
+        tilo_test_env::within("the refused request to become unavailable", async { loop {
             match caller.recv_action().await {
                 Some(EnvelopeV2::Delivered { action, .. }) if action.request_id == refused => assert!(matches!(action.message, ActionMessage::Rejected { .. })),
                 Some(EnvelopeV2::Unavailable { request_id, .. }) if request_id == unavailable => break,
                 None => break,
                 _ => {},
             }
-        }}).await.unwrap();
+        }}).await;
         assert!(reopened.invocation_rx.try_recv().is_err());
         assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
         worker.abort(); let _ = worker.await;
@@ -552,13 +548,15 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                     completed.set(completed.get() + 1);
                 });
             }
-            tokio::time::timeout(Duration::from_secs(1), async {
-                while entered.get() != 32 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("all32 requests must drain into actual blocked directory futures");
+            tilo_test_env::within(
+                "all32 requests must drain into actual blocked directory futures",
+                async {
+                    while entered.get() != 32 {
+                        tokio::task::yield_now().await;
+                    }
+                },
+            )
+            .await;
             assert!(
                 queue.request_for_test(None).await.is_err(),
                 "33rd request must be refused while32 drained requests remain inflight"
@@ -567,13 +565,12 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             assert_eq!(completed.get(), 0);
 
             releases.borrow_mut().pop_front().unwrap().send(()).unwrap();
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tilo_test_env::within("the first request to complete", async {
                 while completed.get() != 1 {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             assert_eq!(
                 queue.available_permits_for_test(),
                 1,
@@ -590,13 +587,12 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                 tokio::task::spawn_local(
                     async move { more.request_for_test(Some(evidence)).await },
                 );
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tilo_test_env::within("the 33rd request to enter", async {
                 while entered.get() != 33 {
                     tokio::task::yield_now().await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
             assert_eq!(queue.available_permits_for_test(), 0);
             waiting_caller.abort();
             assert!(waiting_caller.await.unwrap_err().is_cancelled());

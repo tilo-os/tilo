@@ -6419,7 +6419,7 @@ mod tests {
             assert_eq!(presentation.workspace_id, cluster_id.to_string());
             assert_eq!(presentation.device_certificate, b"fixture certificate");
             assert_eq!(presentation.proof, vec![7; 64]);
-            let requests = requests_rx.recv_timeout(HANG_GUARD).unwrap();
+            let requests = tilo_test_env::recv("the host identity requests", &requests_rx);
             manager.send(CollabRequest::document_incremental(
                 b"fixture document change".to_vec(),
             ));
@@ -6429,12 +6429,14 @@ mod tests {
                     runtime_identity::wire::Request::CollaborationOp { .. }
                 )
             };
-            assert!(wait_until(
-                || host_identity_requests(&requests.lock().unwrap())
-                    .iter()
-                    .any(is_op),
-                HANG_GUARD
-            ));
+            tilo_test_env::wait_until(
+                "`host_identity_requests(&requests.lock().unwrap()).iter().any(is_op)`",
+                || {
+                    host_identity_requests(&requests.lock().unwrap())
+                        .iter()
+                        .any(is_op)
+                },
+            );
             let requests = host_identity_requests(&requests.lock().unwrap());
             assert!(
                 matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
@@ -6511,7 +6513,7 @@ mod tests {
                 _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
             }
             assert_eq!(
-                attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
+                tilo_test_env::recv("the primary join attempt", &attempt_rx),
                 channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
             );
             assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -6519,9 +6521,7 @@ mod tests {
                 attempt_rx.try_recv().is_err(),
                 "must not retry another route"
             );
-            stop_rx
-                .recv_timeout(HANG_GUARD)
-                .expect("fixture broker stops after failed manager");
+            tilo_test_env::recv("fixture broker stops after failed manager", &stop_rx);
         }
     }
 
@@ -6558,7 +6558,7 @@ mod tests {
             );
             let _ = result_tx.send(result.map(drop));
         });
-        started_rx.recv_timeout(HANG_GUARD).unwrap();
+        tilo_test_env::recv("the fixture broker to start", &started_rx);
         let result = result_rx
             .recv_timeout(SHOVEL_INIT_TIMEOUT * 2)
             .expect("a pending host handoff must not hang its caller");
@@ -6569,9 +6569,10 @@ mod tests {
             }
             _ => panic!("a pending handoff cannot produce a connected session"),
         }
-        dropped_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("timed-out async handoff must release its owned resources");
+        tilo_test_env::recv(
+            "timed-out async handoff must release its owned resources",
+            &dropped_rx,
+        );
     }
 
     #[test]
@@ -6624,7 +6625,7 @@ mod tests {
             "must wait for the worker-side route deadline"
         );
         assert_eq!(
-            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
+            tilo_test_env::recv("the primary join attempt", &attempt_rx),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -6632,9 +6633,10 @@ mod tests {
             attempt_rx.try_recv().is_err(),
             "must not retry another route"
         );
-        stop_rx
-            .recv_timeout(HANG_GUARD)
-            .expect("timed-out primary join must cancel and close the fixture broker");
+        tilo_test_env::recv(
+            "timed-out primary join must cancel and close the fixture broker",
+            &stop_rx,
+        );
         drop(release);
     }
 
@@ -6810,9 +6812,9 @@ mod tests {
                 output: tilo_actions::ActionOutput::default(),
             },
         });
-        assert!(
-            wait_until(|| !manager.is_connected(), Duration::from_secs(2)),
-            "SDK stayed healthy after owner document RPC failed"
+        tilo_test_env::wait_until(
+            "the SDK to disconnect after the owner document RPC failed",
+            || !manager.is_connected(),
         );
         assert_eq!(
             captures.lock().unwrap().terminal_updates,
@@ -6849,10 +6851,7 @@ mod tests {
                 },
             });
         }
-        assert!(wait_until(
-            || !manager.is_connected(),
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`!manager.is_connected()`", || !manager.is_connected());
         assert_eq!(
             captures.lock().unwrap().terminal_updates,
             2,
@@ -6897,12 +6896,14 @@ mod tests {
             record: Some("second".into()),
         };
         manager.join_route(secondary.clone());
-        assert!(wait_until(
-            || broker_state(&manager)
-                .document_reads
-                .publishable(&secondary.channel_id()),
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until(
+            "`broker_state(&manager).document_reads.publishable(&secondary.channel_id())`",
+            || {
+                broker_state(&manager)
+                    .document_reads
+                    .publishable(&secondary.channel_id())
+            },
+        );
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
         let first = manager.begin_document_publication_barrier().unwrap();
         assert!(
@@ -6916,20 +6917,17 @@ mod tests {
         let second = manager.begin_document_publication_barrier().unwrap();
         let mut gates = gates.into_iter();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &entered);
         assert_eq!(first.try_complete(), Ok(None));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &entered);
         // The second RPC can only begin after the first marker has resolved.
         assert_eq!(first.wait(Some(Instant::now())), Ok(()));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
-        assert_eq!(
-            second.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(second.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
         assert!(manager.is_connected());
         drop(manager);
@@ -7270,7 +7268,7 @@ mod tests {
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
             Ok(receipt) => receipt
-                .wait(Some(Instant::now() + Duration::from_secs(2)))
+                .wait(Some(tilo_test_env::hang_deadline()))
                 .unwrap_err(),
             Err(error) => error,
         };
@@ -7308,7 +7306,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::document_incremental(
             b"retained original".to_vec()
         )));
@@ -7317,10 +7315,9 @@ mod tests {
         let ready = state.document_reads.close_for_test(&key);
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Ok(())).unwrap();
-        assert!(wait_until(
-            || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
+            captures.lock().unwrap().signed_ops.len() == 1
+        });
         std::thread::sleep(Duration::from_millis(60));
         assert_eq!(
             receipt.try_complete(),
@@ -7329,10 +7326,7 @@ mod tests {
         );
         assert!(state.command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
         ready.store(true, Ordering::Release);
-        assert_eq!(
-            receipt.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(captured.len(), 2);
         let envelope: SignedOp = postcard::from_bytes(&captured[1]).unwrap();
@@ -7379,7 +7373,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
         let state = broker_state(&manager);
         let ready = state
@@ -7387,15 +7381,14 @@ mod tests {
             .close_for_test(&manager.primary_route().unwrap().route.channel_id());
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Ok(())).unwrap();
-        assert!(wait_until(
-            || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
-        ));
+        tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
+            captures.lock().unwrap().signed_ops.len() == 1
+        });
         if invalidate {
             state.fail_closed("actual test worker invalidation");
         }
         let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(5)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap_err();
         assert!(
             matches!(error, DocumentPublicationError::Failed(_)),
@@ -7406,10 +7399,10 @@ mod tests {
         ready.store(true, Ordering::Release);
         assert!(!manager.send(CollabRequest::document_incremental(b"late reopen".to_vec())));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`state.command_bytes.0.load(Ordering::Acquire) == 0`",
             || state.command_bytes.0.load(Ordering::Acquire) == 0,
-            Duration::from_secs(2)
-        ));
+        );
         drop(manager);
         thread.join().unwrap();
     }
@@ -7438,11 +7431,11 @@ mod tests {
         let (fd, _, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Err("document RPC refused".into())).unwrap();
         let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap_err();
         assert!(
             error.to_string().contains("document RPC refused"),
@@ -7539,7 +7532,7 @@ mod tests {
             manager
                 .begin_document_publication_barrier()
                 .unwrap()
-                .wait(Some(Instant::now() + Duration::from_secs(2))),
+                .wait(Some(tilo_test_env::hang_deadline())),
             Ok(())
         );
         assert!(manager.is_connected());
@@ -7574,26 +7567,23 @@ mod tests {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 1,
             command: Request::new(Command::SetMuted { muted: false })
         }));
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 1`",
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
-        ));
+        );
         let start = Instant::now();
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 2,
             command: Request::new(Command::Leave)
         }));
-        assert!(
-            wait_until(
-                || captures.lock().unwrap().media_commands.len() == 2,
-                Duration::from_secs(1)
-            ),
-            "Leave waited behind document/unmute RPC"
+        tilo_test_env::wait_until(
+            "Leave to dispatch past the wedged document and unmute RPCs",
+            || captures.lock().unwrap().media_commands.len() == 2,
         );
         assert!(start.elapsed() < Duration::from_secs(1));
         let requests = captures.lock().unwrap().media_commands.clone();
@@ -7601,24 +7591,18 @@ mod tests {
         assert!(requests[1].intent > requests[0].intent);
         let _ = unmute_reply.send(());
         let mut retired = false;
-        assert!(
-            wait_until(
-                || {
-                    retired |= manager.poll().into_iter().any(|event| {
-                        matches!(
-                            event,
-                            CollabEvent::NativeMediaCommandResult {
-                                request_id: 1,
-                                result: Err(_)
-                            }
-                        )
-                    });
-                    retired
-                },
-                Duration::from_secs(1)
-            ),
-            "superseded unmute must retire its pending request"
-        );
+        tilo_test_env::wait_until("superseded unmute must retire its pending request", || {
+            retired |= manager.poll().into_iter().any(|event| {
+                matches!(
+                    event,
+                    CollabEvent::NativeMediaCommandResult {
+                        request_id: 1,
+                        result: Err(_)
+                    }
+                )
+            });
+            retired
+        });
         release.send(Ok(())).unwrap();
         drop(manager);
         worker.join().unwrap();
@@ -7653,28 +7637,28 @@ mod tests {
                 channel_id: "voice".into()
             })
         }));
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 1`",
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
-        ));
+        );
         assert!(manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the gated document RPC", &observed);
         drop(manager);
-        assert!(
-            wait_until(
-                || captures
+        tilo_test_env::wait_until(
+            "manager drop must use reserved teardown before document completion",
+            || {
+                captures
                     .lock()
                     .unwrap()
                     .media_commands
                     .iter()
-                    .any(|request| request.intent == u64::MAX
-                        && matches!(request.command, Command::Leave)),
-                Duration::from_secs(1)
-            ),
-            "manager drop must use reserved teardown before document completion"
+                    .any(|request| {
+                        request.intent == u64::MAX && matches!(request.command, Command::Leave)
+                    })
+            },
         );
         release.send(Ok(())).unwrap();
         worker.join().unwrap();
@@ -7713,7 +7697,7 @@ mod tests {
         manager
             .begin_document_publication_barrier()
             .unwrap()
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .wait(Some(tilo_test_env::hang_deadline()))
             .unwrap();
         for (index, route) in routes.into_iter().enumerate() {
             assert!(
@@ -7728,10 +7712,10 @@ mod tests {
                     .is_ok()
             );
         }
-        assert!(wait_until(
+        tilo_test_env::wait_until(
+            "`captures.lock().unwrap().media_commands.len() == 8`",
             || captures.lock().unwrap().media_commands.len() == 8,
-            Duration::from_secs(1)
-        ));
+        );
         assert!(
             !manager.send(CollabRequest::NativeMediaCommand {
                 request_id: 9,
@@ -7746,15 +7730,14 @@ mod tests {
             }),
             "full normal lane cannot block teardown"
         );
-        assert!(wait_until(
-            || captures
+        tilo_test_env::wait_until("the reserved Leave to reach the broker", || {
+            captures
                 .lock()
                 .unwrap()
                 .media_commands
                 .iter()
-                .any(|request| matches!(request.command, Command::Leave)),
-            Duration::from_secs(1)
-        ));
+                .any(|request| matches!(request.command, Command::Leave))
+        });
         for release in releases {
             let _ = release.send(());
         }
@@ -7813,7 +7796,7 @@ mod tests {
                             Command::SetMuted { muted: false }
                         })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tilo_test_env::within("the stop command to reach the broker", async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
@@ -7821,8 +7804,7 @@ mod tests {
                             tokio::task::yield_now().await;
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     let captured = captures.lock().unwrap();
                     assert_eq!(
                         captured.media_stops, 1,
@@ -7883,13 +7865,12 @@ mod tests {
                         1,
                         Request::new(Command::SetMuted { muted: true })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tilo_test_env::within("the mute command to reach the broker", async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     assert!(sender.send(
                         "fixture-admitted-route".into(),
                         2,
@@ -7909,7 +7890,7 @@ mod tests {
                     } else {
                         drop(release);
                     }
-                    let later = tokio::time::timeout(Duration::from_secs(1), async {
+                    let later = tilo_test_env::within("the later unmute result", async {
                         loop {
                             if let CollabEvent::NativeMediaCommandResult {
                                 request_id: 2,
@@ -7920,8 +7901,7 @@ mod tests {
                             }
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                     if succeed {
                         assert!(later.is_ok());
                         assert!(captures.lock().unwrap().media_pending_consent);
@@ -8052,39 +8032,22 @@ mod tests {
         (manager, scope, wakes)
     }
 
-    /// Upper bound for waits on the fake broker. Every wait returns as soon
-    /// as its condition holds; the guard only turns a lost message into a
-    /// failure instead of a hang, so it can be generous without slowing a
-    /// passing run.
-    const HANG_GUARD: Duration = Duration::from_secs(30);
-
-    /// Poll until the events received so far satisfy `done`, or
-    /// [`HANG_GUARD`] passes. Returns everything received either way, so the
-    /// caller's assertions report what did arrive.
+    /// Poll until the events received so far satisfy `done`, or the hang
+    /// bound passes. Returns everything received either way, so the caller's
+    /// assertions report what did arrive.
     fn poll_until(
         mgr: &mut CollaborationManager,
         mut done: impl FnMut(&[CollabEvent]) -> bool,
     ) -> Vec<CollabEvent> {
-        let start = crate::time::now();
+        let deadline = tilo_test_env::hang_deadline();
         let mut events = Vec::new();
         loop {
             events.extend(mgr.poll());
-            if done(&events) || start.elapsed() >= HANG_GUARD {
+            if done(&events) || crate::time::now() >= deadline {
                 return events;
             }
             thread::sleep(Duration::from_millis(5));
         }
-    }
-
-    fn wait_until<F: FnMut() -> bool>(mut cond: F, deadline: Duration) -> bool {
-        let start = crate::time::now();
-        while start.elapsed() < deadline {
-            if cond() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        false
     }
 
     #[test]
@@ -8549,10 +8512,9 @@ mod tests {
                 presentation.clone(),
             );
 
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD,),
-                "join_channel must be observed"
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             assert_eq!(joined[0].1, presentation);
@@ -8583,21 +8545,18 @@ mod tests {
             // This calls the production layout/draw passes. No input, palette,
             // explicit publication, or app-owned action invocation primes the app.
             crate::app::draw_prepared_component_test_frame(&mut app);
-            assert!(
-                wait_until(
-                    || {
-                        let seen = captures.lock().unwrap();
-                        seen.action_directories.iter().any(|id| id == &app_id)
-                            && seen.action_publications.iter().any(|(id, actions)| {
-                                id == &app_id
-                                    && actions.iter().any(|(label, action)| {
-                                        label == "Complete" && action == "activate"
-                                    })
-                            })
-                    },
-                    Duration::from_secs(2)
-                ),
-                "the first rendered frame must publish its semantic actions to the broker without input"
+            tilo_test_env::wait_until(
+                "the first rendered frame must publish its semantic actions to the broker without input",
+                || {
+                    let seen = captures.lock().unwrap();
+                    seen.action_directories.iter().any(|id| id == &app_id)
+                        && seen.action_publications.iter().any(|(id, actions)| {
+                            id == &app_id
+                                && actions.iter().any(|(label, action)| {
+                                    label == "Complete" && action == "activate"
+                                })
+                        })
+                },
             );
         }
     }
@@ -8677,10 +8636,9 @@ mod tests {
             let cluster = Uuid::new_v4();
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must be observed"
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             // The channel id carries the whole address, app id included.
@@ -8704,13 +8662,9 @@ mod tests {
                 envelope: Box::new(op),
             });
 
-            assert!(
-                wait_until(
-                    || !captures.lock().unwrap().signed_ops.is_empty(),
-                    HANG_GUARD,
-                ),
-                "send() must reach the SDK",
-            );
+            tilo_test_env::wait_until("send() must reach the SDK", || {
+                !captures.lock().unwrap().signed_ops.is_empty()
+            });
             let seen = captures.lock().unwrap().signed_ops.clone();
             assert_eq!(seen, vec![expected_bytes]);
         }
@@ -8739,33 +8693,23 @@ mod tests {
             let delta = document.save_after(&heads);
             // The route refuses documents until it is joined and its document
             // mode is resolved; the first refused attempt starts that join.
-            assert!(
-                wait_until(
-                    || {
-                        manager
-                            .try_send_to_route(
-                                route.clone(),
-                                CollabRequest::document_snapshot(snapshot.clone()),
-                            )
-                            .is_ok()
-                    },
-                    HANG_GUARD
-                ),
-                "the owned route becomes publishable"
-            );
+            tilo_test_env::wait_until("the owned route becomes publishable", || {
+                manager
+                    .try_send_to_route(
+                        route.clone(),
+                        CollabRequest::document_snapshot(snapshot.clone()),
+                    )
+                    .is_ok()
+            });
             manager
                 .try_send_to_route(
                     route.clone(),
                     CollabRequest::document_incremental(delta.clone()),
                 )
                 .unwrap();
-            assert!(
-                wait_until(
-                    || captures.lock().unwrap().signed_ops.len() == 2,
-                    HANG_GUARD
-                ),
-                "both raw requests reach SDK signed RPC"
-            );
+            tilo_test_env::wait_until("both raw requests reach SDK signed RPC", || {
+                captures.lock().unwrap().signed_ops.len() == 2
+            });
             let captured = captures.lock().unwrap();
             assert!(captured.joined.iter().any(|(channel, _)| channel
                 == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
@@ -8820,7 +8764,7 @@ mod tests {
             manager
                 .begin_document_publication_barrier()
                 .expect("the broker transport supports publication barriers")
-                .wait(Some(crate::time::now() + HANG_GUARD))
+                .wait(Some(tilo_test_env::hang_deadline()))
                 .expect("every queued document was published");
             assert_eq!(
                 captures.lock().unwrap().signed_ops.len(),
@@ -8843,10 +8787,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must be observed",
-            );
+            tilo_test_env::wait_until("join_channel must be observed", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
 
             let key = PresenceKey::Tab {
                 id: "note-1".to_owned(),
@@ -8878,20 +8821,17 @@ mod tests {
                 payload: PresencePayload::Left,
             });
 
-            assert!(
-                wait_until(
-                    || {
-                        let c = captures.lock().unwrap();
-                        c.pointer_publishes.len() == 1
-                            && c.caret_publishes.len() == 1
-                            && c.selection_publishes.len() == 1
-                            && c.typing_publishes.len() == 1
-                            && c.arrived.len() == 1
-                            && c.left.len() == 1
-                    },
-                    HANG_GUARD,
-                ),
+            tilo_test_env::wait_until(
                 "every presence variant must reach the corresponding SDK method",
+                || {
+                    let c = captures.lock().unwrap();
+                    c.pointer_publishes.len() == 1
+                        && c.caret_publishes.len() == 1
+                        && c.selection_publishes.len() == 1
+                        && c.typing_publishes.len() == 1
+                        && c.arrived.len() == 1
+                        && c.left.len() == 1
+                },
             );
             let (
                 pointer_publishes,
@@ -9198,10 +9138,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
-            assert!(wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                HANG_GUARD
-            ));
+            tilo_test_env::wait_until("`!captures.lock().unwrap().joined.is_empty()`", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
             mgr.install_document_encryption(
                 RouteSpec {
                     app_id: app_id.to_owned(),
@@ -9484,10 +9423,9 @@ mod tests {
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-            assert!(
-                wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
-                "join_channel must precede scrollback fetch",
-            );
+            tilo_test_env::wait_until("join_channel must precede scrollback fetch", || {
+                !captures.lock().unwrap().joined.is_empty()
+            });
 
             let artifact = collab_types::ArtifactId::new();
             mgr.send(CollabRequest::FetchScrollback {
@@ -9610,7 +9548,7 @@ mod tests {
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {
         let error = manager
             .begin_document_publication_barrier()
-            .and_then(|receipt| receipt.wait(Some(Instant::now() + Duration::from_secs(2))))
+            .and_then(|receipt| receipt.wait(Some(tilo_test_env::hang_deadline())))
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
@@ -9711,13 +9649,10 @@ mod tests {
             b"default before hydration".to_vec()
         )));
         let mut initial = None;
-        assert!(wait_until(
-            || {
-                initial = manager.prepare_native_record(&want.id);
-                initial.is_some()
-            },
-            Duration::from_secs(3)
-        ));
+        tilo_test_env::wait_until("the native record to hydrate", || {
+            initial = manager.prepare_native_record(&want.id);
+            initial.is_some()
+        });
         let read = initial.unwrap();
         let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut state = crate::state::State::new();
@@ -9739,17 +9674,16 @@ mod tests {
             captures.lock().unwrap().signed_ops.is_empty(),
             "no default was signed or sent"
         );
-        assert!(wait_until(
-            || broker_state(&manager).document_reads.publishable(
+        tilo_test_env::wait_until("the primary route to become publishable", || {
+            broker_state(&manager).document_reads.publishable(
                 &manager
                     .primary_route
                     .accepted
                     .as_ref()
                     .unwrap()
                     .route
-                    .channel_id()
-            ),
-            Duration::from_secs(3)
-        ));
+                    .channel_id(),
+            )
+        });
     }
 }
