@@ -32,6 +32,21 @@ impl Condition {
         }
     }
 
+    /// The final assembly `MOVE`'s headers for this condition. Plain
+    /// `If-Match`/`If-None-Match` would test the request URI, the virtual
+    /// `.file`, which always exists; the destination is tested with
+    /// `Overwrite` and an `If` header tagged with its URL.
+    fn assembly_headers(&self, destination: &Url) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Create => vec![("Overwrite", "F".to_owned())],
+            Self::Match(None) => vec![("Overwrite", "T".to_owned())],
+            Self::Match(Some(revision)) => vec![
+                ("Overwrite", "T".to_owned()),
+                ("If", format!("<{destination}> ([{}])", revision.as_str())),
+            ],
+        }
+    }
+
     fn failed(&self) -> Error {
         match self {
             Self::Create => Error::AlreadyExists,
@@ -255,19 +270,25 @@ impl UploadSession for Chunked {
         }
         let destination = self.destination()?;
         let total = self.state.size.to_string();
+        let condition = self.state.condition.assembly_headers(&destination);
+        let mut headers = vec![
+            ("Destination", destination.as_str()),
+            ("OC-Total-Length", total.as_str()),
+        ];
+        headers.extend(
+            condition
+                .iter()
+                .map(|(name, value)| (*name, value.as_str())),
+        );
         let response = self
             .source
             .client()?
             .send(
                 "MOVE",
                 self.file(".file")?,
-                &[
-                    ("Destination", destination.as_str()),
-                    ("OC-Total-Length", total.as_str()),
-                    ("Overwrite", "T"),
-                ],
+                &headers,
                 Body::Empty,
-                self.state.condition.precondition(),
+                Precondition::None,
             )
             .map_err(|_| Error::Offline)?;
         match response.status() {

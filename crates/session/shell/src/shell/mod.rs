@@ -123,6 +123,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub mod shell_narrator;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
