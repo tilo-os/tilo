@@ -14,7 +14,8 @@
 //! The Super key is always called `Super` on PC keyboards: the key carries a
 //! vendor logo rather than a word, and `Super` is the name the desktop's
 //! documentation and onboarding use for it. Apple keyboards and XKB's Mac
-//! layout variants use the symbols printed on Apple keycaps (⌘ ⌥ ⌃ ⇧).
+//! layout variants use the symbols printed on Apple keycaps, in Apple's
+//! order: ⌃ ⌥ ⇧ ⌘.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -211,14 +212,15 @@ impl Keycaps {
 
     /// A canonical chord (`["Super", "Shift"]`, `"s"`) as the keyboard spells
     /// it. PC legends are joined with `+`; Apple symbols are written
-    /// together, as Apple does (`⌘⇧S`). Modifiers are always listed in the
-    /// same order, Super first, whatever order they were given in.
+    /// together, as Apple does (`⇧⌘S`). Modifiers are listed in the
+    /// keyboard's own order ([`Self::order`]) whatever order they were given
+    /// in.
     pub fn chord<'a>(self, modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> String {
         let mut held: Vec<KeyboardModifier> = modifiers
             .into_iter()
             .filter_map(canonical_modifier)
             .collect();
-        held.sort_by_key(|modifier| display_rank(*modifier));
+        held.sort_by_key(|modifier| self.order(*modifier));
         held.dedup();
         let parts = held
             .into_iter()
@@ -230,6 +232,30 @@ impl Keycaps {
             "+"
         };
         parts.collect::<Vec<_>>().join(separator)
+    }
+
+    /// Where `modifier` is listed in a chord. PC keyboards lead with the
+    /// desktop's own modifier (`Super+Ctrl+Alt+Shift`); Apple keyboards use
+    /// Apple's order, Command last (`⌃⌥⇧⌘`).
+    pub fn order(self, modifier: KeyboardModifier) -> u8 {
+        use KeyboardModifier as M;
+        if self.family == KeyboardFamily::Apple {
+            return match modifier {
+                M::Fn => 0,
+                M::Control => 1,
+                M::Alt | M::AltGr => 2,
+                M::Shift => 3,
+                M::Command | M::System => 4,
+            };
+        }
+        match modifier {
+            M::Command | M::System => 0,
+            M::Control => 1,
+            M::Alt => 2,
+            M::AltGr => 3,
+            M::Shift => 4,
+            M::Fn => 5,
+        }
     }
 
     /// One token of a free-text chord (`Super`, `Ctrl`, `pageup`, `K`) as the
@@ -295,18 +321,6 @@ fn canonical_modifier(token: &str) -> Option<KeyboardModifier> {
         "fn" => KeyboardModifier::Fn,
         _ => return None,
     })
-}
-
-/// The order modifiers are listed in: the desktop's own modifier first.
-pub(crate) fn display_rank(modifier: KeyboardModifier) -> u8 {
-    match modifier {
-        KeyboardModifier::Command | KeyboardModifier::System => 0,
-        KeyboardModifier::Control => 1,
-        KeyboardModifier::Alt => 2,
-        KeyboardModifier::AltGr => 3,
-        KeyboardModifier::Shift => 4,
-        KeyboardModifier::Fn => 5,
-    }
 }
 
 fn english_key(name: &str) -> Option<&'static str> {
@@ -559,7 +573,9 @@ mod tests {
         ] {
             let mac = Keycaps::from_xkb(layout, variant);
             assert_eq!(mac.family, KeyboardFamily::Apple, "{layout}:{variant}");
-            assert_eq!(chord(mac, &["Shift", "Super"], "s"), "⌘⇧S");
+            assert_eq!(chord(mac, &["Shift", "Super"], "s"), "⇧⌘S");
+            assert_eq!(chord(mac, &["Super", "Alt"], "s"), "⌥⌘S");
+            assert_eq!(chord(mac, &["Super", "Shift", "Alt", "Ctrl"], "k"), "⌃⌥⇧⌘K");
             assert_eq!(chord(mac, &["Ctrl", "Alt"], "escape"), "⌃⌥esc");
         }
         let mac = Keycaps::from_xkb("de", "mac_nodeadkeys");

@@ -168,8 +168,14 @@ impl KeyboardBinding {
         platform: PlatformConventions,
         family: KeyboardFamily,
     ) -> Vec<String> {
+        let keycaps =
+            crate::keycaps::active().on_family(if platform.platform() == Platform::MacOs {
+                KeyboardFamily::Apple
+            } else {
+                family
+            });
         let mut display_modifiers = self.modifiers.clone();
-        display_modifiers.sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
+        display_modifiers.sort_by_key(|modifier| keycaps.order(*modifier));
         display_modifiers
             .into_iter()
             .map(|modifier| modifier_label(modifier, platform, family).to_owned())
@@ -453,7 +459,7 @@ mod tests {
             );
             assert_eq!(
                 binding.keycap_labels(PlatformConventions::new(Platform::MacOs)),
-                ["⌘", "⌥", "⇧", "↩"]
+                ["⌥", "⇧", "⌘", "↩"]
             );
             let external_apple = KeyboardBinding::new(
                 [KeyboardModifier::System, KeyboardModifier::Alt],
@@ -464,7 +470,7 @@ mod tests {
                     PlatformConventions::new(Platform::Linux),
                     KeyboardFamily::Apple,
                 ),
-                ["⌘", "⌥", "↩"]
+                ["⌥", "⌘", "↩"]
             );
         }
 

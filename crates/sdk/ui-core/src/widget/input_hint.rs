@@ -828,7 +828,7 @@ mod tests {
                 KeyLegend::Enter,
             ));
             keyboard.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-            assert_eq!(keyboard.accessible_label(), "⌘ + ⇧ + ↩");
+            assert_eq!(keyboard.accessible_label(), "⇧ + ⌘ + ↩");
 
             let mut controller =
                 InputHint::new(InputBinding::Controller(ControllerBinding::new([

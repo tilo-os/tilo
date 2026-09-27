@@ -14,8 +14,8 @@ tab-closed-undo-hint-unbound = Select to undo
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears. Super+P moves to the next choice.
-display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
+display-sheet-subtitle = Choose where your desktop appears. { $chord } moves to the next choice.
+display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, { $chord } moves to the next layout, Escape closes.
 display-mode-extend = Extend
 display-mode-extend-detail = One desktop across every display
 display-mode-mirror = Mirror
@@ -284,8 +284,8 @@ qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
 
 # Quick Settings: editing the control grid
 qs-edit-controls = Edit controls
-qs-edit-help = Drag to reorder · Ctrl + Up/Down
-qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
+qs-edit-help = Drag to reorder · { $chord }
+qs-edit-a11y-description = Edit controls; drag or use { $modifier } plus Arrow keys to reorder
 qs-edit-active-heading = ACTIVE CONTROLS
 qs-edit-available-heading = AVAILABLE
 qs-edit-reset = Reset defaults
@@ -295,8 +295,8 @@ qs-edit-done-a11y = Finish editing Quick Settings
 qs-edit-required-a11y = Required Quick Settings control
 qs-edit-remove-a11y = Remove Quick Settings control
 qs-edit-add-a11y = Add Quick Settings control
-qs-edit-required-control-a11y = Required; use Control plus Arrow keys to reorder
-qs-edit-optional-control-a11y = Select to add or remove; use Control plus Arrow keys to reorder
+qs-edit-required-control-a11y = Required; use { $modifier } plus Arrow keys to reorder
+qs-edit-optional-control-a11y = Select to add or remove; use { $modifier } plus Arrow keys to reorder
 
 # Quick Settings: Wi-Fi
 qs-wifi = Wi-Fi
@@ -767,7 +767,7 @@ capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
 # The shortcut-guide pill in the display corner
-help-pill = Help  F1 · Super+?
+help-pill = Help  F1 · { $chord }
 
 # Workspace overview panel
 overview-go-to = Go to
@@ -1685,12 +1685,12 @@ onboarding-tour-skip = Skip tour
 onboarding-tour-enter = Enter Tilo
 onboarding-tour-navigate-title = Everything is close at hand
 onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
-onboarding-tour-search-title = Search  ·  Super+K or Super+Space
+onboarding-tour-search-title = Search  ·  { $search } or { $alternate }
 onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
-onboarding-tour-overview-title = Overview  ·  Super+Tab or four-finger swipe
+onboarding-tour-overview-title = Overview  ·  { $chord } or four-finger swipe
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
-onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
+onboarding-tour-move-title = Move  ·  { $modifier }+arrow keys or three-finger swipe
 onboarding-tour-move-body = Up and down switch workspaces. Left and right step between tiled windows along the current strip.
 onboarding-tour-organise-title = A place for each kind of work
 onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
@@ -1699,7 +1699,7 @@ onboarding-tour-workspace-body = A durable place for a project, its people, perm
 onboarding-tour-strip-title = Strip
 onboarding-tour-strip-body = A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.
 onboarding-tour-window-group-title = Window group
-onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.
+onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with { $previous } or { $next }.
 onboarding-tour-tab-title = Tab
 onboarding-tour-tab-body = An app or document inside a window group. Drag tabs to arrange them without overlapping windows.
 onboarding-tour-collaborate-title = Sharing stays deliberate
@@ -1868,7 +1868,7 @@ shell-path-open-failed = Cannot open { $path }: { $error }
 shell-path-read-failed = Cannot read { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
-editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
+editor-hint-focused = Live-shared code  ·  { $chord } to undo
 editor-hint-click = Click to edit
 notes-empty-title = This note is empty
 notes-empty-body = Jot anything here. Changes are saved as you type.
