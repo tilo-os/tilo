@@ -130,7 +130,7 @@ WorkspaceTree
 ├── active_strip: HashMap<WorkspaceId, StripId>
 ├── active_group: HashMap<StripId, GroupId>
 ├── collaborators: Vec<Collaborator>
-└── doc: automerge::AutoCommit          # backing CRDT, #[serde(skip)]
+└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge
 ```
 
 `TileContent` variants with payload encode the discriminant as a string scalar plus a serde-JSON blob in a sibling `Bytes` field — payload merges are last-write-wins for v1.

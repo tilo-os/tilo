@@ -277,6 +277,65 @@ fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
         assert_eq!(st.editing_workspace_name, None);
         assert_eq!(st.tree().desktop.active_workspace().unwrap().name, original);
     }
+
+    // Phase `a_rename_writes_only_the_name_into_the_tree_document`. Activity
+    // and Replay read this document's history; rewriting the workspace list
+    // on a rename made every workspace look deleted and re-added.
+    {
+        use automerge::ReadDoc as _;
+        fn workspace_objects(
+            doc: &automerge::AutoCommit,
+        ) -> (automerge::ObjId, Vec<automerge::ObjId>) {
+            let list = doc.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1;
+            let entries = (0..doc.length(&list))
+                .map(|i| doc.get(&list, i).unwrap().unwrap().1)
+                .collect();
+            (list, entries)
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
+        tree.desktop
+            .workspaces
+            .push(shell::shell::state::Workspace::new(
+                shell::shell::state::WorkspaceId(0x7e57_0002),
+                "Lab",
+            ));
+        let chrome = ChromeState::new(tree);
+        let (before, objects) = {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            tree.seed_doc_from_cache();
+            (tree.current_heads(), workspace_objects(&tree.doc))
+        };
+
+        chrome.borrow_mut().editing_workspace_name = Some("Studio".into());
+        chrome.borrow_mut().commit_workspace_name();
+
+        let st = chrome.borrow();
+        let mut tree = st.tree_mut();
+        assert_eq!(tree.desktop.workspaces[0].name, "Studio");
+        let after = tree.current_heads();
+        let patches = tree.doc.diff(&before, &after);
+        assert_eq!(
+            patches.len(),
+            1,
+            "a rename is one write, not a rewrite of the workspace list: {patches:?}"
+        );
+        assert_eq!(patches[0].obj, objects.1[0]);
+        assert!(
+            matches!(
+                &patches[0].action,
+                automerge::PatchAction::PutMap { key, .. } if key == "name"
+            ),
+            "{patches:?}"
+        );
+        assert_eq!(
+            workspace_objects(&tree.doc),
+            objects,
+            "the list and every workspace entry keep their objects"
+        );
+    }
 }
 
 #[test]
