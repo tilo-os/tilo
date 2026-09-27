@@ -266,6 +266,14 @@ fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
 pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
 pub use ui::search::system::SearchScope;
 
+/// The placeholder line for a new tab whose document could not be created.
+fn new_document_unavailable(error: &impl std::fmt::Display) -> String {
+    crate::shell::i18n::t_args(
+        "new-document-unavailable",
+        &[("error", error.to_string().into())],
+    )
+}
+
 /// The shell's localized and addressable view of a [`SearchScope`].
 pub trait SearchScopeText {
     /// `ActiveApp` renders the tab's title instead of this static
@@ -297,7 +305,7 @@ impl SearchScopeText for SearchScope {
 }
 
 /// Normally decided by
-/// [`crate::shell::placement::placement_for_new_window`].
+/// [`crate::shell::placement::placement_for`].
 /// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
 /// sets — one-shot, cleared on palette close, so a later launch is
 /// never silently aimed at a stale group.
@@ -730,7 +738,7 @@ pub struct ChromeState {
     wheel_summon: Option<vello::kurbo::Point>,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
-    strip_viewport: Option<crate::shell::placement::StripViewport>,
+    strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
     /// Logical desktop bounds from the overlay host's latest layout pass.
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
@@ -885,11 +893,14 @@ impl ChromeState {
 
     /// Called once per layout pass by the overlay host, so the
     /// placement rule can read the active strip's layout.
-    pub fn set_strip_viewport(&mut self, viewport: Option<crate::shell::placement::StripViewport>) {
+    pub fn set_strip_viewport(
+        &mut self,
+        viewport: Option<tilo_desktop_model::commands::StripViewport>,
+    ) {
         self.strip_viewport = viewport;
     }
 
-    pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
+    pub fn strip_viewport(&self) -> Option<&tilo_desktop_model::commands::StripViewport> {
         self.strip_viewport.as_ref()
     }
 
@@ -1132,10 +1143,8 @@ impl ChromeState {
                     });
             }
             Err(error) => {
-                self.failed_tab_records.insert(
-                    tab,
-                    (identity, format!("New document unavailable: {error}")),
-                );
+                self.failed_tab_records
+                    .insert(tab, (identity, new_document_unavailable(&error)));
             }
         }
     }
@@ -1169,10 +1178,7 @@ impl ChromeState {
                 Err(error) => {
                     self.failed_tab_records.insert(
                         pending.identity.tab,
-                        (
-                            pending.identity,
-                            format!("New document unavailable: {error}"),
-                        ),
+                        (pending.identity, new_document_unavailable(&error)),
                     );
                     changed = true;
                 }
@@ -2040,8 +2046,11 @@ impl ChromeState {
             return;
         }
         self.push_error_notification(
-            "Collaboration unavailable",
-            format!("Apps in this session cannot share edits. {reason}"),
+            crate::shell::i18n::t("collab-unavailable-title"),
+            crate::shell::i18n::t_args(
+                "collab-unavailable-body",
+                &[("reason", reason.as_str().into())],
+            ),
         );
         self.collab_unavailable = Some(reason);
     }
@@ -2529,20 +2538,24 @@ impl ChromeState {
     /// automatic hold while presenting or sharing, or the focus schedule and
     /// when it ends. `None` when notifications show normally.
     pub fn quiet_status(&self, local_minute: u16, weekday_from_monday: u8) -> Option<String> {
+        use crate::shell::i18n::{t, t_args};
         if self.dnd() {
-            return Some("Do Not Disturb".into());
+            return Some(t("quiet-status-dnd"));
         }
         if self.notifications_auto_quiet() {
             return Some(if self.presenting {
-                "Do Not Disturb while presenting".into()
+                t("quiet-status-dnd-presenting")
             } else {
-                "Do Not Disturb while sharing".into()
+                t("quiet-status-dnd-sharing")
             });
         }
         self.notification_policy
             .focus
             .active_until(local_minute, weekday_from_monday)
-            .map(|end| format!("Focus until {:02}:{:02}", end / 60, end % 60))
+            .map(|end| {
+                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                t_args("quiet-status-focus-until", &[("time", time.into())])
+            })
     }
 
     // ---------- D-Bus notification wiring ----------

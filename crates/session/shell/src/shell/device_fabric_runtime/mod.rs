@@ -651,9 +651,7 @@ impl NearbyStagingPermit {
                 owner: owner.to_string(),
                 generation,
             })
-            .ok_or_else(|| {
-                "Nearby Send staging is busy; retry when another transfer finishes".into()
-            })
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-nearby-busy"))
     }
 
     fn valid(&self) -> bool {
@@ -4145,43 +4143,42 @@ pub fn request_bluetooth_handoff(
         || name.len() > 128
         || name.chars().any(char::is_control)
     {
-        return Err("that Bluetooth accessory identity is invalid".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-bt-identity-invalid",
+        ));
     }
     let accessory = os_actions::list_bt_devices()?
         .into_iter()
         .find(|device| device.mac.eq_ignore_ascii_case(address) && device.connected)
-        .ok_or_else(|| {
-            "only a paired accessory currently connected to this device can be handed off"
-                .to_string()
-        })?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-not-connected"))?;
     if accessory.name.is_empty()
         || accessory.name.len() > 128
         || accessory.name.chars().any(char::is_control)
     {
-        return Err("the local Bluetooth accessory name is invalid".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-bt-name-invalid"));
     }
     let (local, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     if target == &local {
-        return Err("the Bluetooth accessory is already on this device".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-bt-already-here"));
     }
     let fabric = network.device_fabric();
     let destination = fabric
         .snapshots()
         .get(target)
-        .ok_or_else(|| "the target is not an enrolled device".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-target-not-enrolled"))?;
     if !destination.presence.online {
-        return Err("the target device is offline".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-target-offline"));
     }
     if bluetooth_handoff_state()
         .lock()
-        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-bt-coordinator"))?
         .transactions
         .len()
         >= MAX_BLUETOOTH_HANDOFFS
     {
-        return Err("too many Bluetooth handoffs are already in progress".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-bt-too-many"));
     }
     let request_id = network.send_personal_fabric_action(
         target,
@@ -4192,7 +4189,7 @@ pub fn request_bluetooth_handoff(
     )?;
     let mut state = bluetooth_handoff_state()
         .lock()
-        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-bt-coordinator"))?;
     state.transactions.insert(
         request_id,
         BluetoothHandoffTransaction {
@@ -4226,7 +4223,7 @@ pub fn authorize_bluetooth_handoff(
     let (transaction, authorization) = {
         let mut state = bluetooth_handoff_state()
             .lock()
-            .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("device-fabric-error-bt-coordinator"))?;
         let transaction = state
             .transactions
             .get_mut(&request_id)
@@ -4234,7 +4231,7 @@ pub fn authorize_bluetooth_handoff(
                 !transaction.outbound
                     && transaction.phase == BluetoothHandoffPhase::AwaitingLocalAuthorization
             })
-            .ok_or_else(|| "that Bluetooth handoff approval is no longer pending".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-approval-gone"))?;
         let transaction = transaction.clone();
         let authorization = if approved {
             let mut authorization = [0; 16];
@@ -4299,11 +4296,11 @@ pub fn cancel_bluetooth_handoff(
     require_continuity(ContinuityCapability::Media)?;
     let transaction = bluetooth_handoff_state()
         .lock()
-        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-bt-coordinator"))?
         .transactions
         .get(&request_id)
         .cloned()
-        .ok_or_else(|| "that Bluetooth handoff is no longer active".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-inactive"))?;
     let delivery = network.send_personal_fabric_action(
         &transaction.peer,
         PersonalFabricAction::BluetoothHandoffCancel {
@@ -4333,7 +4330,7 @@ pub fn retry_bluetooth_handoff(
     require_continuity(ContinuityCapability::Media)?;
     let transaction = bluetooth_handoff_state()
         .lock()
-        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-bt-coordinator"))?
         .outcomes
         .get(&request_id)
         .filter(|outcome| {
@@ -4344,7 +4341,7 @@ pub fn retry_bluetooth_handoff(
                 )
         })
         .map(|outcome| outcome.transaction.clone())
-        .ok_or_else(|| "that Bluetooth handoff cannot be retried".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-no-retry"))?;
     let new_request = request_bluetooth_handoff(
         network,
         &transaction.address,
@@ -4372,7 +4369,7 @@ pub fn request_media_handoff(
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
     let report = media::handoff::playback_report(session_id)
-        .ok_or_else(|| "that media session is no longer available".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-media-session-gone"))?;
     let transfer = network
         .device_fabric()
         .handoff_media(session_id, target)
@@ -4413,7 +4410,7 @@ pub fn request_media_handoff(
     };
     let route = network
         .current_personal_route(target)
-        .ok_or_else(|| "target has no current authenticated personal route".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-route"))?;
     let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
     let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
     if let Some(transfer) = local_transfer
@@ -4559,9 +4556,11 @@ pub(crate) fn cancel_media_handoff(
         .map_err(|_| "media handoff status is unavailable".to_string())?
         .get(&request_id)
         .cloned()
-        .ok_or_else(|| "that media handoff is no longer available".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-handoff-gone"))?;
     if status.phase != MediaHandoffPhase::Pending {
-        return Err("that media handoff is no longer pending".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-handoff-not-pending",
+        ));
     }
     let delivery = network.send_personal_fabric_action_on_route(
         &status.route,
@@ -4586,12 +4585,14 @@ pub(crate) fn retry_media_handoff(
         .map_err(|_| "media handoff status is unavailable".to_string())?
         .get(&request_id)
         .cloned()
-        .ok_or_else(|| "that media handoff is no longer available".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-handoff-gone"))?;
     if !matches!(
         status.phase,
         MediaHandoffPhase::Failed(_) | MediaHandoffPhase::Cancelled
     ) {
-        return Err("only a failed or cancelled media handoff can be retried".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-handoff-no-retry",
+        ));
     }
     request_media_handoff(network, &status.session_id, &status.target)
 }
@@ -4696,7 +4697,9 @@ pub fn play_media_on_speaker_group(
         .iter()
         .any(|session| session.id == session_id)
     {
-        return Err("that media session is no longer available".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-media-session-gone",
+        ));
     }
     crate::shell::speaker_group_runtime::start_session(
         network,
@@ -4736,12 +4739,16 @@ pub fn request_nearby_drop(
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| super::device_fabric::valid_nearby_file_name(name))
-        .ok_or_else(|| "file name is not portable".to_string())?
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-name-not-portable"))?
         .to_string();
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("source cannot be inspected: {error}"))?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        crate::shell::i18n::t_args(
+            "device-fabric-error-inspect-failed",
+            &[("error", error.to_string().into())],
+        )
+    })?;
     if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
-        return Err("nearby drop requires one regular file or folder".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-drop-one-item"));
     }
     if metadata.is_dir()
         || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
@@ -4784,7 +4791,12 @@ pub fn request_nearby_drop(
                     result,
                 });
             })
-            .map_err(|error| format!("nearby transfer could not start: {error}"))?;
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "device-fabric-error-transfer-start",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
         if let Ok(mut state) = nearby_drop_state().lock() {
             state.events.push_back(NearbyDropEvent::Sending {
                 file_name,
@@ -4794,19 +4806,29 @@ pub fn request_nearby_drop(
         return Ok(transfer_id);
     }
     if metadata.len() == 0 {
-        return Err("nearby drop cannot send an empty file".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|error| format!("file cannot be opened: {error}"))?;
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-open-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
     let mut bytes = Vec::new();
     file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("file cannot be read: {error}"))?;
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-read-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
     if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
-        return Err("file changed while being read".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
     let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let request = network.send_personal_fabric_action(
@@ -4892,7 +4914,12 @@ pub fn request_nearby_drop_secure(
                     result,
                 });
             })
-            .map_err(|error| format!("nearby transfer could not start: {error}"))?;
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "device-fabric-error-transfer-start",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
         if let Ok(mut state) = nearby_drop_state().lock() {
             state.events.push_back(NearbyDropEvent::Sending {
                 file_name,
@@ -4902,16 +4929,21 @@ pub fn request_nearby_drop_secure(
         return Ok(transfer_id);
     }
     if metadata.len() == 0 {
-        return Err("nearby drop cannot send an empty file".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
     let mut bytes = Vec::new();
     source
         .into_file()
         .take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("file cannot be read: {error}"))?;
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-read-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
     if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
-        return Err("file changed while being read".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
     let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let request = network.send_personal_fabric_action(
@@ -4949,7 +4981,7 @@ pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> 
         .large_offers
         .get(&transfer_id)
         .cloned()
-        .ok_or_else(|| "nearby transfer is not active".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-transfer-inactive"))?;
     let (target, request_id, _) = pending;
     network.send_personal_fabric_action(
         &target,
@@ -4984,7 +5016,9 @@ pub fn decide_nearby_transfer_at(
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
     if accept && destination.is_none() {
-        return Err("Nearby Send requires an approved destination".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-destination-unapproved",
+        ));
     }
     let pending = nearby_drop_state()
         .lock()
@@ -4993,17 +5027,19 @@ pub fn decide_nearby_transfer_at(
         .remove(&transfer_id);
     let Some(pending) = pending else {
         if !accept {
-            return Err("nearby transfer consent expired".into());
+            return Err(crate::shell::i18n::t("device-fabric-error-consent-expired"));
         }
-        let destination =
-            destination.ok_or_else(|| "Nearby Send destination expired".to_string())?;
+        let destination = destination
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
         let resumed = with_nearby_transfer_store(|store| {
             let entry = store
                 .inbox()
                 .iter()
                 .find(|entry| entry.id == transfer_id)
                 .cloned()
-                .ok_or_else(|| "nearby transfer is no longer recoverable".to_string())?;
+                .ok_or_else(|| {
+                    crate::shell::i18n::t("device-fabric-error-transfer-unrecoverable")
+                })?;
             let (committed_offset, prefix_hash) = store.begin_incoming(
                 entry.id,
                 entry.source.clone(),
@@ -5048,7 +5084,9 @@ pub fn decide_nearby_transfer_at(
                 }
                 destination
                     .as_ref()
-                    .ok_or_else(|| "Nearby Send destination expired".to_string())?
+                    .ok_or_else(|| {
+                        crate::shell::i18n::t("device-fabric-error-destination-expired")
+                    })?
                     .install_inline(&pending.name, &bytes)
             });
             let accepted = install_result.as_ref().is_some_and(Result::is_ok);
@@ -5120,8 +5158,8 @@ pub fn decide_nearby_transfer_at(
                     unix_now_ms(),
                 )
             })?;
-            let destination =
-                destination.ok_or_else(|| "Nearby Send destination expired".to_string())?;
+            let destination = destination
+                .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
             nearby_drop_state()
                 .lock()
                 .map_err(|_| "nearby transfer state is unavailable".to_string())?
@@ -5152,7 +5190,9 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
         .iter()
         .any(|entry| entry.id == transfer_id);
     if !exists {
-        return Err("nearby transfer is no longer retryable".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-transfer-no-retry",
+        ));
     }
     if let Ok(mut state) = nearby_drop_state().lock() {
         state.large_offers.remove(&transfer_id);
@@ -5186,7 +5226,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     let fabric = network.device_fabric();
     let label = |device: &crate::shell::personal_continuity::DeviceId| {
         fabric.snapshots().get(device).map_or_else(
-            || "Nearby device".to_string(),
+            || crate::shell::i18n::t("device-fabric-nearby-device"),
             |snapshot| snapshot.presence.label.clone(),
         )
     };
@@ -5808,7 +5848,7 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
     let graph = media::audio::enumerate();
     let sink = graph
         .sink_by_id(node_id)
-        .ok_or_else(|| "that audio output is no longer connected".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-output-gone"))?;
     let target_serial = sink.serial;
     let control = media::audio::real_control();
     control.set_default_sink(node_id)?;
@@ -5846,7 +5886,7 @@ pub fn select_local_input(node_id: u32) -> Result<(), String> {
         .sources
         .iter()
         .find(|source| source.id == node_id)
-        .ok_or_else(|| "that input is no longer connected".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-input-gone"))?;
     let target_serial = source.serial;
     let control = media::audio::real_control();
     control.set_default_source(node_id)?;
@@ -5892,7 +5932,7 @@ pub fn step_input_level(node_id: u32, raise: bool) -> Result<(), String> {
         .sources
         .iter()
         .find(|source| source.id == node_id)
-        .ok_or_else(|| "that input is no longer connected".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-input-gone"))?;
     let control = media::audio::real_control();
     control.set_node_volume(node_id, stepped_input_level(source.volume, raise))?;
     if raise && source.muted == Some(true) {
@@ -5944,7 +5984,7 @@ pub fn record_spatial_sensor_evidence(
     }
     spatial_calibration_state()
         .lock()
-        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
         .record_sensor_evidence(evidence)
         .then_some(())
         .ok_or_else(|| "sensor evidence is outside the bounded calibration profile".into())
@@ -5979,7 +6019,7 @@ pub fn apply_spatial_calibration(
     let proposal = spatial_calibration_proposals(network)
         .into_iter()
         .find(|proposal| &proposal.peer == target)
-        .ok_or_else(|| "that calibration proposal is no longer current".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-proposal-stale"))?;
     network.send_personal_fabric_action(
         target,
         PersonalFabricAction::SetDisplayPlacement {
@@ -5988,7 +6028,7 @@ pub fn apply_spatial_calibration(
     )?;
     spatial_calibration_state()
         .lock()
-        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
         .remember_apply(&proposal);
     Ok(())
 }
@@ -6003,7 +6043,7 @@ pub fn dismiss_spatial_calibration(
 ) -> Result<(), String> {
     spatial_calibration_state()
         .lock()
-        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
         .dismiss(target);
     Ok(())
 }
@@ -6021,16 +6061,16 @@ pub fn revert_spatial_calibration(
     require_continuity(ContinuityCapability::DisplayInput)?;
     let previous = spatial_calibration_state()
         .lock()
-        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
         .revert_rect(target)
-        .ok_or_else(|| "there is no applied calibration to revert".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-applied-calibration"))?;
     network.send_personal_fabric_action(
         target,
         PersonalFabricAction::SetDisplayPlacement { rect: previous },
     )?;
     spatial_calibration_state()
         .lock()
-        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-spatial-unavailable"))?
         .finish_revert(target);
     Ok(())
 }
@@ -6050,29 +6090,31 @@ pub fn place_device(
     require_continuity(ContinuityCapability::DisplayInput)?;
     let (local, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let local_rect = fabric
         .snapshots()
         .get(&local)
         .and_then(|snapshot| snapshot.display.as_ref())
         .map(|display| display.rect)
-        .ok_or_else(|| "this device has no published display placement".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-placement"))?;
     let target_snapshot = fabric
         .snapshots()
         .get(target)
-        .ok_or_else(|| "the target is not an enrolled device".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-target-not-enrolled"))?;
     if !target_snapshot.presence.online
         || !target_snapshot.presence.capabilities.display
         || !target_snapshot.presence.capabilities.pointer
     {
-        return Err("the target is not an online controllable display".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-target-not-display",
+        ));
     }
     let target_rect = target_snapshot
         .display
         .as_ref()
         .map(|display| display.rect)
-        .ok_or_else(|| "the target has no published display".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-target-no-display"))?;
     let target_width = i32::try_from(target_rect.width).unwrap_or(i32::MAX);
     let target_height = i32::try_from(target_rect.height).unwrap_or(i32::MAX);
     let rect = match edge {
@@ -6109,7 +6151,7 @@ pub fn place_device(
                 .as_ref()
                 .is_some_and(|display| rect.intersects(display.rect))
     }) {
-        return Err("another enrolled display already occupies that side".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-side-taken"));
     }
     network
         .send_personal_fabric_action(target, PersonalFabricAction::SetDisplayPlacement { rect })
@@ -6145,15 +6187,17 @@ pub fn grant_input_control(
     prune_spatial_leases(network);
     let (target, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let presence = fabric
         .snapshots()
         .get(controller)
         .map(|snapshot| &snapshot.presence)
-        .ok_or_else(|| "the controller is not an enrolled device".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-controller-not-enrolled"))?;
     if !presence.online || !(presence.capabilities.pointer || presence.capabilities.keyboard) {
-        return Err("the controller has no online pointer or keyboard capability".into());
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-controller-no-input",
+        ));
     }
     let mut nonce = [0_u8; 16];
     SysRng
@@ -6214,7 +6258,7 @@ pub fn revoke_input_control(
         .cloned()
         .collect::<Vec<_>>();
     if leases.is_empty() {
-        return Err("that device does not have an active control lease".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-no-lease"));
     }
     let mut delivery_error = None;
     for lease in &leases {
@@ -6254,7 +6298,7 @@ pub fn send_spatial_input(
         .received
         .get(target)
         .cloned()
-        .ok_or_else(|| "that device has not granted control".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-control-not-granted"))?;
     lease
         .validate_at(unix_now_ms())
         .map_err(|error| error.to_string())?;
@@ -6265,7 +6309,7 @@ pub fn send_spatial_input(
         FabricInputEvent::Key { .. } => lease.allow_keyboard,
     };
     if !allowed {
-        return Err("the active lease does not allow that input device".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-lease-input"));
     }
     spatial_input_state()
         .lock()
@@ -6560,23 +6604,23 @@ pub fn request_display_mirror(
     require_continuity(ContinuityCapability::DisplayInput)?;
     let (local, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     if target == &local {
-        return Err("this display is already local".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-display-local"));
     }
     if personal_display_state()
         .lock()
-        .map_err(|_| "personal display coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-display-coordinator"))?
         .outbound
         .contains_key(target)
     {
-        return Err("that device already has an active display stream".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-display-busy"));
     }
     let fabric = network.device_fabric();
     if !fabric.snapshots().get(target).is_some_and(|snapshot| {
         snapshot.presence.online && snapshot.presence.capabilities.video_output
     }) {
-        return Err("the certified target cannot receive video".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-no-video"));
     }
     drop(fabric);
     let mut session_id = [0; 16];
@@ -6586,10 +6630,10 @@ pub fn request_display_mirror(
     {
         let mut state = display_mirror_state()
             .lock()
-            .map_err(|_| "display mirror coordinator is unavailable".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("device-fabric-error-mirror-coordinator"))?;
         state.prune();
         if state.sessions.len() >= MAX_DISPLAY_MIRROR_SESSIONS {
-            return Err("too many display mirror sessions are active".into());
+            return Err(crate::shell::i18n::t("device-fabric-error-mirror-too-many"));
         }
         state.sessions.insert(
             session_id,
@@ -6632,12 +6676,12 @@ pub fn resolve_display_mirror_consent(
     require_continuity(ContinuityCapability::DisplayInput)?;
     let session = display_mirror_state()
         .lock()
-        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-mirror-coordinator"))?
         .sessions
         .get(&session_id)
         .filter(|session| !session.outbound && session.phase == DisplayMirrorPhase::AwaitingConsent)
         .cloned()
-        .ok_or_else(|| "that display mirror consent is no longer pending".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-mirror-consent-gone"))?;
     if approved && !display_mirror_receiver_available(network, &session.peer) {
         finish_display_mirror(
             network,
@@ -6659,15 +6703,17 @@ pub fn resolve_display_mirror_consent(
     if approved {
         if personal_display_state()
             .lock()
-            .map_err(|_| "personal display coordinator is unavailable".to_string())?
+            .map_err(|_| crate::shell::i18n::t("device-fabric-error-display-coordinator"))?
             .inbound
             .is_some()
         {
-            return Err("this display is already receiving another stream".into());
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-display-receiving",
+            ));
         }
         let (local, _) = network
             .local_device_fabric_identity()
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         network.authorize_personal_display_session(session_id, session.peer.clone(), local)?;
         if let Ok(mut state) = display_mirror_state().lock()
             && let Some(pending) = state.sessions.get_mut(&session_id)
@@ -6713,7 +6759,7 @@ pub fn stop_display_mirror(network: &ShellNetwork, session_id: [u8; 16]) -> Resu
     require_continuity(ContinuityCapability::DisplayInput)?;
     let session = display_mirror_state()
         .lock()
-        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-mirror-coordinator"))?
         .sessions
         .get(&session_id)
         .filter(|session| {
@@ -6723,7 +6769,7 @@ pub fn stop_display_mirror(network: &ShellNetwork, session_id: [u8; 16]) -> Resu
             )
         })
         .cloned()
-        .ok_or_else(|| "that display mirror session is no longer active".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-mirror-inactive"))?;
     let result = network.send_personal_fabric_action(
         &session.peer,
         PersonalFabricAction::DisplayMirrorStop { session_id },
@@ -7677,12 +7723,22 @@ fn require_continuity(capability: ContinuityCapability) -> Result<(), String> {
     ContinuityPolicySnapshot::load()
         .permits(capability)
         .then_some(())
-        .ok_or_else(|| {
-            format!(
-                "{} continuity is disabled on this device",
-                capability.label()
-            )
-        })
+        .ok_or_else(|| crate::shell::i18n::t(continuity_disabled_key(capability)))
+}
+
+/// The whole sentence saying `capability` is switched off here.
+const fn continuity_disabled_key(capability: ContinuityCapability) -> &'static str {
+    match capability {
+        ContinuityCapability::Clipboard => "continuity-disabled-clipboard",
+        ContinuityCapability::Notifications => "continuity-disabled-notifications",
+        ContinuityCapability::WifiSettings => "continuity-disabled-wifi-settings",
+        ContinuityCapability::Media => "continuity-disabled-media",
+        ContinuityCapability::DisplayInput => "continuity-disabled-display-input",
+        ContinuityCapability::FileTransfer => "continuity-disabled-file-transfer",
+        ContinuityCapability::RealtimeSessions => "continuity-disabled-realtime",
+        ContinuityCapability::TypedGamepad => "continuity-disabled-gamepad",
+        ContinuityCapability::AppContinuations => "continuity-disabled-app-continuations",
+    }
 }
 
 /// Ask one certified device to expose a constrained virtual gamepad for an
@@ -7723,7 +7779,9 @@ pub fn request_typed_gamepad_forwarding(
             .lock()
             .map_err(|_| "typed-gamepad state is unavailable".to_string())?;
         if state.sessions.len() >= MAX_GAMEPAD_FORWARDINGS {
-            return Err("typed-gamepad forwarding capacity is exhausted".into());
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-gamepad-capacity",
+            ));
         }
     }
     network.send_personal_fabric_action(
@@ -7804,7 +7862,7 @@ pub fn authorize_typed_gamepad_forwarding(
         .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?
         .decide(forwarding_id, approved);
     if !decided {
-        return Err("typed-gamepad authorization is unknown or already decided".into());
+        return Err(crate::shell::i18n::t("device-fabric-error-gamepad-decided"));
     }
     Ok(())
 }
@@ -7856,7 +7914,7 @@ pub fn send_typed_gamepad_event(
             .ok_or_else(|| "typed-gamepad forwarding is unknown".to_string())?;
         let lease_nonce = session
             .lease_nonce
-            .ok_or_else(|| "typed-gamepad target has not granted a lease".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-gamepad-no-lease"))?;
         let sequence = session
             .sequence
             .checked_add(1)

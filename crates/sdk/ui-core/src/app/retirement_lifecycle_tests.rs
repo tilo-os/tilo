@@ -460,7 +460,7 @@ fn retirement_lifecycle_paused_capture_cannot_admit_a_late_probe() {
 
 #[test]
 fn retirement_lifecycle_outer_close_waits_for_entered_probe_before_wake_and_capture() {
-    use std::{sync::mpsc, time::Duration};
+    use std::sync::mpsc;
     let (ready_tx, ready_rx) = mpsc::channel();
     let (begin_tx, begin_rx) = mpsc::channel();
     let (capture_tx, capture_rx) = mpsc::channel();
@@ -480,10 +480,9 @@ fn retirement_lifecycle_outer_close_waits_for_entered_probe_before_wake_and_capt
     let (handle, wake) = ready_rx.recv().unwrap();
     let entered = retirement_test_probe(&handle).unwrap();
     begin_tx.send(()).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !retirement_test_requested(&handle) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
+    tilo_test_env::wait_until("the retirement request", || {
+        retirement_test_requested(&handle)
+    });
     let began_retirement = retirement_test_requested(&handle);
     let still_waiting = matches!(capture_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
     let wake_open = wake.is_active();
