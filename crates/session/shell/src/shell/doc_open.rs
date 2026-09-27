@@ -578,8 +578,9 @@ pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: 
         || path.display().to_string(),
         |n| n.to_string_lossy().to_string(),
     );
-    let mut n = Notification::new(format!("Couldn't open {name}"), detail.to_string())
-        .with_severity(NotificationSeverity::Error);
+    let title = crate::shell::i18n::t_args("doc-open-failed", &[("name", name.into())]);
+    let mut n =
+        Notification::new(title, detail.to_string()).with_severity(NotificationSeverity::Error);
     if let Some(surface) = surface {
         n = n.with_app_name(surface);
     }
@@ -737,7 +738,7 @@ pub fn continuity_file_reference_label(
             .map(|name| name.to_string_lossy().into_owned())
     })
     .filter(|name| !name.trim().is_empty())
-    .unwrap_or_else(|| "File".to_string())
+    .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
 }
 
 /// Production activation for a synchronized file-reference tab.  Resolution

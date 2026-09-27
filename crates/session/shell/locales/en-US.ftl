@@ -2268,3 +2268,16 @@ workspace-settings-stat-app-rules = { $count ->
     [one] app rule
    *[other] app rules
 }
+
+# Leftover shell notices: document opens, host app provenance, quiet status, collaboration
+doc-open-failed = Couldn't open { $name }
+doc-open-unnamed-file = File
+host-app-source-flatpak = Flatpak
+host-app-source-system = System
+new-document-unavailable = New document unavailable: { $error }
+collab-unavailable-title = Collaboration unavailable
+collab-unavailable-body = Apps in this session cannot share edits. { $reason }
+quiet-status-dnd = Do Not Disturb
+quiet-status-dnd-presenting = Do Not Disturb while presenting
+quiet-status-dnd-sharing = Do Not Disturb while sharing
+quiet-status-focus-until = Focus until { $time }
