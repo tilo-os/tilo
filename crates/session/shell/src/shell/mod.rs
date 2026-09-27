@@ -25,6 +25,7 @@ pub mod app_action_consent;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
+pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod channel_encryption;

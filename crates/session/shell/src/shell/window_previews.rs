@@ -12,8 +12,8 @@
 //!   through the rest, so a desktop with many windows never stalls a frame.
 //! - **Bounded.** At most [`MAX_PREVIEWS`] previews of at most
 //!   [`MAX_PREVIEW_WIDTH`] × [`MAX_PREVIEW_HEIGHT`] pixels exist at once.
-//! - **Private.** A window of an app that holds secrets
-//!   ([`capture_protected_app`]) never gets one: the card shows its app
+//! - **Private.** A capture-protected window
+//!   ([`crate::shell::capture_protection`]) never gets one: the card shows its app
 //!   mark and title instead. Previews live only in this device's chrome;
 //!   nothing here is shared with collaborators, streamed, or dumped as
 //!   pixels.
@@ -41,28 +41,6 @@ pub const MAX_PREVIEWS: usize = 16;
 pub const MAX_PREVIEW_WIDTH: u32 = 352;
 pub const MAX_PREVIEW_HEIGHT: u32 = 220;
 
-/// Apps whose windows show secrets — password managers and authenticator
-/// codes — so a preview would put a vault on screen the moment someone
-/// presses Alt+Tab. Matched against the Wayland app id, ignoring case.
-const CAPTURE_PROTECTED_APP_IDS: &[&str] = &[
-    "so.tilo.passwords",
-    "so.tilo.totp",
-    "org.keepassxc.keepassxc",
-    "com.bitwarden.desktop",
-    "bitwarden",
-    "1password",
-    "org.gnome.world.secrets",
-    "org.gnome.seahorse.application",
-    "com.belmoussaoui.authenticator",
-];
-
-/// Whether windows of `app_id` must never be pictured in shell chrome.
-pub fn capture_protected_app(app_id: &str) -> bool {
-    CAPTURE_PROTECTED_APP_IDS
-        .iter()
-        .any(|protected| protected.eq_ignore_ascii_case(app_id))
-}
-
 /// Where a window's preview comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PreviewSource {
@@ -85,7 +63,7 @@ impl PreviewSource {
     pub fn for_tab(tile: &TileContent, group: GroupId, tab: u64, shown: bool) -> Self {
         match tile {
             TileContent::Foreign { app_id, surface_id } => {
-                if capture_protected_app(app_id) {
+                if crate::shell::foreign::store().is_capture_protected(*surface_id, app_id) {
                     Self::Withheld
                 } else {
                     Self::Client {
@@ -94,7 +72,7 @@ impl PreviewSource {
                 }
             }
             TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
-                if capture_protected_app(app_id) {
+                if crate::shell::capture_protection::holds_secrets(app_id) {
                     Self::Withheld
                 } else {
                     Self::Unavailable
