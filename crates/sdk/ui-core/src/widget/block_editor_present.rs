@@ -291,6 +291,11 @@ impl BlockEditor {
                 block.line.set_local_author(local_author.clone());
             }
         }
+        if let Some(paint) = self.mention_paint().cloned() {
+            for block in &mut self.blocks {
+                block.line.set_mention_paint(Some(paint.clone()));
+            }
+        }
         let old_focus = self.focused;
         self.focused = focused_id
             .and_then(|id| self.blocks.iter().position(|block| block.id == id))
@@ -392,6 +397,9 @@ impl BlockEditor {
             reshaped |= block_reshaped;
             if kind_changed && self.local_author.is_some() {
                 block.line.set_local_author(self.local_author.clone());
+            }
+            if kind_changed && self.mention_paint.is_some() {
+                block.line.set_mention_paint(self.mention_paint.clone());
             }
             if matches!(block.kind, BlockKind::Table { visual: true })
                 && let Some(table) = self.table_editors.get_mut(&block.id)
