@@ -10544,9 +10544,7 @@ pub mod tests {
                 Ok(71_u64)
             })
         });
-        effect_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("operation reached its admitted effect");
+        tilo_test_env::recv("operation reached its admitted effect", &effect_rx);
         state.request_stop();
         release_tx.send(()).expect("release operation");
         assert_eq!(
@@ -10612,15 +10610,13 @@ pub mod tests {
                 &CrdtRoute::cluster("self-drop-room"),
             );
         }));
-        sink_finished
-            .recv_timeout(Duration::from_secs(2))
-            .expect("broker-thread public sink completed without self-join");
+        tilo_test_env::recv(
+            "broker-thread public sink completed without self-join",
+            &sink_finished,
+        );
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(
             surviving_facade.peer_action_attachment().is_err(),
             "facade retained across thread exit is inert"
@@ -10693,16 +10689,14 @@ pub mod tests {
                 &CrdtRoute::cluster("off-thread-room"),
             );
         });
-        sink_finished
-            .recv_timeout(Duration::from_secs(2))
-            .expect("off-thread sink drop joined broker without deadlock");
+        tilo_test_env::recv(
+            "off-thread sink drop joined broker without deadlock",
+            &sink_finished,
+        );
         caller.join().expect("off-thread fanout caller");
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists());
     }
 
@@ -10767,18 +10761,16 @@ pub mod tests {
                 .send(facade.peer_action_attachment())
                 .expect("send facade result");
         });
-        let result = result_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("owner health callback returned without join deadlock");
+        let result = tilo_test_env::recv(
+            "owner health callback returned without join deadlock",
+            &result_rx,
+        );
         assert!(
             result.is_err(),
             "shutdown requested by the health callback fences its facade result"
         );
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists());
         let reopened = InvocationJournal::open(&journal_root)
             .expect("health callback shutdown releases journal");
@@ -10911,10 +10903,7 @@ pub mod tests {
             .expect("attached broker state")
             .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists(), "unwind releases owned socket custody");
         assert!(
             facade.peer_action_attachment().is_err(),

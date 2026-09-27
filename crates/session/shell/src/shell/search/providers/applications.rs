@@ -2260,7 +2260,7 @@ mod native_application_tests {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
                     HostedTileInputs::for_host_directory(directory.path()).unwrap();
-                state.set_strip_viewport(Some(crate::shell::placement::StripViewport {
+                state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
                         .iter()
@@ -2268,7 +2268,7 @@ mod native_application_tests {
                         .map(|(index, id)| {
                             let index =
                                 f64::from(u32::try_from(index).expect("fixture group index"));
-                            crate::shell::placement::GroupSpan {
+                            tilo_desktop_model::commands::GroupSpan {
                                 id: *id,
                                 x0: index * 100.0,
                                 x1: index.mul_add(100.0, 100.0),

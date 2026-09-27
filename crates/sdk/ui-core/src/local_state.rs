@@ -1053,8 +1053,6 @@ mod tests {
 
         // Case `authorized_update_can_finish_after_nonblocking_close`.
         {
-            use crate::time::Duration;
-
             let (mut scope, rx) = bound_scope();
             let state = {
                 let _entry = scope.enter();
@@ -1066,12 +1064,12 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 writer.try_update(|value| {
                     entered_tx.send(()).unwrap();
-                    resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    tilo_test_env::recv("the resume signal", &resume_rx);
                     *value = 2;
                 })
             });
-            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            // If close waits for the mutation callback, its 5s timeout fails the test.
+            tilo_test_env::recv("the mutation callback to start", &entered_rx);
+            // If close waits for the mutation callback, the hang-bounded wait fails the test.
             scope.close();
             let replacement_scope = WakeScope::new();
             let replacement = {

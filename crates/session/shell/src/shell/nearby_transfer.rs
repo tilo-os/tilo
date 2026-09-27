@@ -70,7 +70,7 @@ impl SecureNearbyDestination {
             .open(&display_root)
             .map_err(display)?;
         if !directory.metadata().map_err(display)?.is_dir() {
-            return Err("Nearby Send destination is not a directory".into());
+            return Err(crate::shell::i18n::t("nearby-error-destination-not-folder"));
         }
         Ok(Self {
             directory,
@@ -88,7 +88,7 @@ impl SecureNearbyDestination {
         {
             if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES
             {
-                return Err("nearby transfer exceeds the size limit".into());
+                return Err(crate::shell::i18n::t("nearby-error-too-large"));
             }
             return install_capability_file(&self.directory, name, &mut io::Cursor::new(bytes))
                 .map(|name| self.display_root.join(name));
@@ -99,7 +99,7 @@ impl SecureNearbyDestination {
             Ok(self.display_root.join(
                 anchored
                     .file_name()
-                    .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+                    .ok_or_else(|| crate::shell::i18n::t("nearby-error-destination-name"))?,
             ))
         }
     }
@@ -124,7 +124,7 @@ impl SecureNearbySource {
         let file = if metadata.is_dir() {
             let relative = requested
                 .strip_prefix(grant)
-                .map_err(|_| "Nearby Send source is outside this Files grant".to_string())?;
+                .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
             if relative.as_os_str().is_empty() {
                 root
             } else {
@@ -134,11 +134,11 @@ impl SecureNearbySource {
         } else if metadata.is_file() && requested == grant {
             root
         } else {
-            return Err("Nearby Send source is outside this Files grant".into());
+            return Err(crate::shell::i18n::t("nearby-error-outside-grant"));
         };
         let source_metadata = file.metadata().map_err(display)?;
         if !source_metadata.is_file() && !source_metadata.is_dir() {
-            return Err("Nearby Send requires one regular file or folder".into());
+            return Err(crate::shell::i18n::t("nearby-error-one-item"));
         }
         Ok(Self { file, name })
     }
@@ -335,7 +335,7 @@ impl NearbyTransferStore {
         let metadata = fs::symlink_metadata(source).map_err(display)?;
         let staged = if metadata.file_type().is_file() {
             if metadata.len() == 0 || metadata.len() > MAX_TRANSFER_BYTES {
-                return Err("nearby transfer exceeds the size limit".into());
+                return Err(crate::shell::i18n::t("nearby-error-too-large"));
             }
             self.ensure_capacity(metadata.len())?;
             copy_regular(source, &object).map(|()| TransferKind::File)
@@ -354,7 +354,7 @@ impl NearbyTransferStore {
         let (total_bytes, content_hash) = hash_file(&object)?;
         if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
             let _ = fs::remove_file(&object);
-            return Err("nearby transfer exceeds the size limit".into());
+            return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }
         if let Err(error) = self.ensure_capacity(total_bytes) {
             let _ = fs::remove_file(&object);
@@ -406,7 +406,7 @@ impl NearbyTransferStore {
         let name = source.name().to_string();
         let staged = if metadata.is_file() {
             if metadata.len() == 0 || metadata.len() > MAX_TRANSFER_BYTES {
-                return Err("nearby transfer exceeds the size limit".into());
+                return Err(crate::shell::i18n::t("nearby-error-too-large"));
             }
             self.ensure_capacity(metadata.len())?;
             copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
@@ -425,7 +425,7 @@ impl NearbyTransferStore {
         let (total_bytes, content_hash) = hash_file(&object)?;
         if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
             let _ = fs::remove_file(&object);
-            return Err("nearby transfer exceeds the size limit".into());
+            return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }
         if let Err(error) = self.ensure_capacity(total_bytes) {
             let _ = fs::remove_file(&object);
@@ -635,7 +635,7 @@ impl NearbyTransferStore {
             Ok(destination.display_root.join(
                 installed
                     .file_name()
-                    .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+                    .ok_or_else(|| crate::shell::i18n::t("nearby-error-destination-name"))?,
             ))
         }
     }
@@ -692,7 +692,7 @@ impl NearbyTransferStore {
             .saturating_add(self.index.inbox.len())
             >= MAX_TRANSFERS
         {
-            return Err("nearby transfer queue is full".into());
+            return Err(crate::shell::i18n::t("nearby-error-queue-full"));
         }
         let bytes = self
             .index
@@ -702,9 +702,9 @@ impl NearbyTransferStore {
             .sum::<u64>()
             .checked_add(self.index.inbox.iter().map(|e| e.total_bytes).sum())
             .and_then(|bytes| bytes.checked_add(candidate_bytes))
-            .ok_or_else(|| "nearby transfer quota is full".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("nearby-error-quota-full"))?;
         if bytes > MAX_TOTAL_BYTES {
-            return Err("nearby transfer quota is full".into());
+            return Err(crate::shell::i18n::t("nearby-error-quota-full"));
         }
         Ok(())
     }
@@ -763,7 +763,7 @@ impl NearbyTransferStore {
 
 fn validate_index(index: &StoreIndex) -> Result<(), String> {
     if index.outbox.len().saturating_add(index.inbox.len()) > MAX_TRANSFERS {
-        return Err("too many nearby transfers".into());
+        return Err(crate::shell::i18n::t("nearby-error-too-many"));
     }
     let mut ids = BTreeSet::new();
     let mut claimed_bytes = 0_u64;
@@ -814,7 +814,7 @@ fn copy_regular(source: &Path, destination: &Path) -> Result<(), String> {
         .open(source)
         .map_err(display)?;
     if !input.metadata().map_err(display)?.is_file() {
-        return Err("source is not a regular file".into());
+        return Err(crate::shell::i18n::t("nearby-error-not-regular"));
     }
     let mut output = create_private_new(destination)?;
     io::copy(&mut input, &mut output).map_err(display)?;
@@ -837,7 +837,7 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
             .cmp(b.path().strip_prefix(source).unwrap_or_else(|_| b.path()))
     });
     if entries.len() > MAX_FOLDER_ENTRIES {
-        return Err("folder contains too many entries".into());
+        return Err(crate::shell::i18n::t("nearby-error-folder-too-many"));
     }
     let mut source_bytes = 0_u64;
     for entry in entries.into_iter().skip(1) {
@@ -845,7 +845,7 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
         validate_relative(relative)?;
         let file_type = entry.file_type();
         if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
-            return Err("folder contains a link or special file".into());
+            return Err(crate::shell::i18n::t("nearby-error-folder-special"));
         }
         let mut header = tar::Header::new_gnu();
         header.set_uid(0);
@@ -868,9 +868,9 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
             let size = file.metadata().map_err(display)?.len();
             source_bytes = source_bytes
                 .checked_add(size)
-                .ok_or_else(|| "folder exceeds the size limit".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("nearby-error-folder-too-large"))?;
             if source_bytes > MAX_TRANSFER_BYTES {
-                return Err("folder exceeds the size limit".into());
+                return Err(crate::shell::i18n::t("nearby-error-folder-too-large"));
             }
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(size);
@@ -893,7 +893,7 @@ fn copy_open_regular(mut source: File, destination: &Path) -> Result<(), String>
     let mut output = create_private_new(destination)?;
     let copied = io::copy(&mut source, &mut output).map_err(display)?;
     if copied != metadata.len() {
-        return Err("nearby transfer source changed while staging".into());
+        return Err(crate::shell::i18n::t("nearby-error-source-changed"));
     }
     output.sync_all().map_err(display)
 }
@@ -923,7 +923,7 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
             .collect::<Result<Vec<_>, String>>()?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         if entries.len() >= MAX_FOLDER_ENTRIES {
-            return Err("folder contains too many entries".into());
+            return Err(crate::shell::i18n::t("nearby-error-folder-too-many"));
         }
         entries
     };
@@ -937,7 +937,7 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
         let mut opened = openat2_beneath(source, relative, is_directory)?;
         let metadata = opened.metadata().map_err(display)?;
         if !metadata.is_dir() && !metadata.is_file() {
-            return Err("folder contains a link or special file".into());
+            return Err(crate::shell::i18n::t("nearby-error-folder-special"));
         }
         let mut header = tar::Header::new_gnu();
         header.set_uid(0);
@@ -955,9 +955,9 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
             let size = metadata.len();
             source_bytes = source_bytes
                 .checked_add(size)
-                .ok_or_else(|| "folder exceeds the size limit".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("nearby-error-folder-too-large"))?;
             if source_bytes > MAX_TRANSFER_BYTES {
-                return Err("folder exceeds the size limit".into());
+                return Err(crate::shell::i18n::t("nearby-error-folder-too-large"));
             }
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(size);
@@ -1061,7 +1061,7 @@ fn install_file_create_new(source: &Path, root: &Path, name: &str) -> Result<Pat
 
 fn install_bytes_create_new(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
-        return Err("nearby transfer exceeds the size limit".into());
+        return Err(crate::shell::i18n::t("nearby-error-too-large"));
     }
     let destination = unique_destination(root, name)?;
     let mut output = create_private_new(&destination)?;
@@ -1096,10 +1096,10 @@ fn portable_name(path: &Path) -> Result<String, String> {
     let name = path
         .file_name()
         .and_then(|v| v.to_str())
-        .ok_or_else(|| "source name is not portable".to_string())?
+        .ok_or_else(|| crate::shell::i18n::t("nearby-error-name-not-portable"))?
         .to_string();
     if !super::device_fabric::valid_nearby_file_name(&name) {
-        return Err("source name is not portable".into());
+        return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
     }
     Ok(name)
 }

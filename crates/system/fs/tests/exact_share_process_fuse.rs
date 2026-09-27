@@ -35,10 +35,6 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-/// The daemons fsync their stores dozens of times before they mount, on a
-/// runner disk shared with everything else. Every wait ends as soon as its
-/// condition holds, so this bound only catches a hang.
-const HANG_BOUND: Duration = Duration::from_secs(300);
 const PAYLOAD: &[u8] = b"separate-process exact-share payload";
 
 struct MountedProcess {
@@ -51,7 +47,7 @@ struct MountedProcess {
 
 impl MountedProcess {
     fn wait_for_line(&self, expected: &str) {
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let line = self.output.recv_timeout(remaining).unwrap_or_else(|error| {
@@ -74,7 +70,7 @@ impl MountedProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         while self.child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
@@ -263,26 +259,12 @@ fn set_xattr(path: &Path, name: &str, value: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn wait_for<T>(timeout: Duration, mut inspect: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now().checked_add(timeout).unwrap();
-    loop {
-        if let Some(value) = inspect() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "state barrier timed out");
-        // The predicate above, never elapsed wall time, decides success. This
-        // short park only avoids burning a core while awaiting the next
-        // externally persisted state transition.
-        std::thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
 fn wait_for_process<T>(
     process: &mut MountedProcess,
-    timeout: Duration,
+    what: &str,
     mut inspect: impl FnMut() -> Option<T>,
 ) -> T {
-    wait_for(timeout, || {
+    tilo_test_env::wait_for(what, || {
         if let Some(status) = process.child.try_wait().unwrap() {
             let output = process.logs.lock().unwrap().join("\n");
             panic!("mounted process exited with {status}; output was:\n{output}");
@@ -306,7 +288,7 @@ async fn create_view_link_at(
     record_id: FileRecordId,
     expires_at_ms: u64,
 ) -> ShareControlResultV1 {
-    let deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         match tokio::net::UnixStream::connect(socket).await {
             Ok(stream) => break stream,
@@ -441,7 +423,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     host.wait_for_line("Mounting QuickFS");
     let host_file = host_mount.join("shared.bin");
-    let record_bytes = wait_for_process(&mut host, HANG_BOUND, || {
+    let record_bytes = wait_for_process(&mut host, "the host to stamp the record id", || {
         get_xattr(&host_file, fs::syncstate::RECORD_ID_XATTR).ok()
     });
     let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
@@ -477,7 +459,9 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &viewer_clock,
     );
     viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let viewer_file = wait_for_process(&mut viewer, HANG_BOUND, || one_visible_file(&viewer_mount));
+    let viewer_file = wait_for_process(&mut viewer, "the viewer to list the shared file", || {
+        one_visible_file(&viewer_mount)
+    });
     let write_error = std::fs::write(&viewer_file, b"forbidden").unwrap_err();
     assert_eq!(write_error.raw_os_error(), Some(libc::EROFS));
 
@@ -493,16 +477,20 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     assert_eq!(std::fs::read(&viewer_file).unwrap(), PAYLOAD);
 
     let availability_path = viewer_cache.join("availability.json");
-    let observation = wait_for_process(&mut viewer, HANG_BOUND, || {
-        let registry = AvailabilityRegistry::open(&availability_path).ok()?;
-        let record = registry.get(record_id)?;
-        (record.replica_observations.len() == 1
-            && record.residency
-                == Residency::Resident {
-                    bytes: PAYLOAD.len() as u64,
-                })
-        .then(|| record.replica_observations[0].clone())
-    });
+    let observation = wait_for_process(
+        &mut viewer,
+        "the viewer to record its replica observation",
+        || {
+            let registry = AvailabilityRegistry::open(&availability_path).ok()?;
+            let record = registry.get(record_id)?;
+            (record.replica_observations.len() == 1
+                && record.residency
+                    == Residency::Resident {
+                        bytes: PAYLOAD.len() as u64,
+                    })
+            .then(|| record.replica_observations[0].clone())
+        },
+    );
     assert_eq!(observation.device.as_bytes(), &host_device);
     assert_eq!(observation.record_id, record_id);
     assert_eq!(observation.issued_at_ms, clock_now);
@@ -528,17 +516,21 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         b"evict",
     )
     .unwrap();
-    wait_for_process(&mut viewer, HANG_BOUND, || {
+    wait_for_process(&mut viewer, "the viewer to evict the file", || {
         let registry = AvailabilityRegistry::open(&availability_path).ok()?;
         (registry.get(record_id)?.residency == Residency::NotResident).then_some(())
     });
-    wait_for_process(&mut viewer, HANG_BOUND, || {
-        (get_xattr(&viewer_file, fs::syncstate::SYNC_XATTR)
-            .ok()?
-            .as_slice()
-            == b"projected")
-            .then_some(())
-    });
+    wait_for_process(
+        &mut viewer,
+        "the viewer to project the evicted file",
+        || {
+            (get_xattr(&viewer_file, fs::syncstate::SYNC_XATTR)
+                .ok()?
+                .as_slice()
+                == b"projected")
+                .then_some(())
+        },
+    );
 
     viewer.stop();
     let completed = EvictionQueue::open(viewer_cache.join("evictions.json")).unwrap();
@@ -568,17 +560,23 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &viewer_clock,
     );
     restarted_viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let restarted_file = wait_for_process(&mut restarted_viewer, HANG_BOUND, || {
-        one_visible_file(&viewer_mount)
-    });
+    let restarted_file = wait_for_process(
+        &mut restarted_viewer,
+        "the restarted viewer to list the shared file",
+        || one_visible_file(&viewer_mount),
+    );
     assert_eq!(std::fs::read(&restarted_file).unwrap(), PAYLOAD);
-    wait_for_process(&mut restarted_viewer, HANG_BOUND, || {
-        (get_xattr(&restarted_file, fs::syncstate::SYNC_XATTR)
-            .ok()?
-            .as_slice()
-            == b"local")
-            .then_some(())
-    });
+    wait_for_process(
+        &mut restarted_viewer,
+        "the restarted viewer to report the file local",
+        || {
+            (get_xattr(&restarted_file, fs::syncstate::SYNC_XATTR)
+                .ok()?
+                .as_slice()
+                == b"local")
+                .then_some(())
+        },
+    );
     restarted_viewer.stop();
 
     let final_store = ContentStore::open(viewer_cache.join("blobs"))
@@ -614,9 +612,11 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &loss_clock,
     );
     loss_viewer.wait_for_line(fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
-    let loss_file = wait_for_process(&mut loss_viewer, HANG_BOUND, || {
-        one_visible_file(&loss_mount)
-    });
+    let loss_file = wait_for_process(
+        &mut loss_viewer,
+        "the loss viewer to list the shared file",
+        || one_visible_file(&loss_mount),
+    );
     set_xattr(
         &loss_file,
         fs::syncstate::AVAILABILITY_CONTROL_XATTR,
@@ -624,33 +624,45 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     )
     .unwrap();
     assert_eq!(std::fs::read(&loss_file).unwrap(), PAYLOAD);
-    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
-        let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
-        let record = registry.get(record_id)?;
-        (record.residency
-            == Residency::Resident {
-                bytes: PAYLOAD.len() as u64,
-            }
-            && !record.replica_observations.is_empty())
-        .then_some(())
-    });
+    wait_for_process(
+        &mut loss_viewer,
+        "the loss viewer to hydrate the file",
+        || {
+            let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
+            let record = registry.get(record_id)?;
+            (record.residency
+                == Residency::Resident {
+                    bytes: PAYLOAD.len() as u64,
+                }
+                && !record.replica_observations.is_empty())
+            .then_some(())
+        },
+    );
     set_xattr(
         &loss_file,
         fs::syncstate::AVAILABILITY_CONTROL_XATTR,
         b"evict",
     )
     .unwrap();
-    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
-        let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
-        (registry.get(record_id)?.residency == Residency::NotResident).then_some(())
-    });
-    wait_for_process(&mut loss_viewer, HANG_BOUND, || {
-        (get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
-            .ok()?
-            .as_slice()
-            == b"projected")
-            .then_some(())
-    });
+    wait_for_process(
+        &mut loss_viewer,
+        "the loss viewer to evict the file",
+        || {
+            let registry = AvailabilityRegistry::open(&loss_availability).ok()?;
+            (registry.get(record_id)?.residency == Residency::NotResident).then_some(())
+        },
+    );
+    wait_for_process(
+        &mut loss_viewer,
+        "the loss viewer to project the evicted file",
+        || {
+            (get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
+                .ok()?
+                .as_slice()
+                == b"projected")
+                .then_some(())
+        },
+    );
     host.stop();
     let unavailable = std::fs::read(&loss_file).unwrap_err();
     assert_eq!(unavailable.raw_os_error(), Some(libc::EIO));

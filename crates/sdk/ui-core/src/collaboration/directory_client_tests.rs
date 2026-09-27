@@ -216,20 +216,17 @@ fn sdk_lazy_directory_query_resolve_and_invoke_use_exact_runtime_methods() {
     }));
     assert!(manager.send(resolved_request(13)));
     let mut replies = vec![];
-    assert!(wait_until(
-        || {
-            replies.extend(manager.poll().into_iter().filter(|event| {
-                matches!(
-                    event,
-                    CollabEvent::ActionDirectoryPage { .. }
-                        | CollabEvent::PublishedActionResolution { .. }
-                        | CollabEvent::PublishedInvocationResult { .. }
-                )
-            }));
-            replies.len() == 3
-        },
-        Duration::from_secs(3)
-    ));
+    tilo_test_env::wait_until("the directory replies", || {
+        replies.extend(manager.poll().into_iter().filter(|event| {
+            matches!(
+                event,
+                CollabEvent::ActionDirectoryPage { .. }
+                    | CollabEvent::PublishedActionResolution { .. }
+                    | CollabEvent::PublishedInvocationResult { .. }
+            )
+        }));
+        replies.len() == 3
+    });
     assert!(
         matches!(&replies[0], CollabEvent::ActionDirectoryPage {request_id:11,result:Ok(page)} if page.rows==vec![directory_test_row()] && page.revision=="revision-7" && page.next_cursor==b"cursor-2" && page.budget_exhausted)
     );
@@ -275,21 +272,18 @@ fn sdk_lazy_directory_unsupported_method_never_falls_back_to_eager() {
     let (mut manager, captures, thread) = directory_manager(true);
     assert!(manager.send(resolved_request(14)));
     let mut result = None;
-    assert!(wait_until(
-        || {
-            for event in manager.poll() {
-                if let CollabEvent::PublishedInvocationResult {
-                    request_id: 14,
-                    result: reply,
-                } = event
-                {
-                    result = Some(reply);
-                }
+    tilo_test_env::wait_until("the directory replies", || {
+        for event in manager.poll() {
+            if let CollabEvent::PublishedInvocationResult {
+                request_id: 14,
+                result: reply,
+            } = event
+            {
+                result = Some(reply);
             }
-            result.is_some()
-        },
-        Duration::from_secs(3)
-    ));
+        }
+        result.is_some()
+    });
     assert!(result.unwrap().is_err());
     let captured = captures.lock().unwrap();
     assert_eq!(
@@ -356,7 +350,8 @@ fn pending_directory_rpc_releases_lane(method: &'static str) {
     }));
     let mut timeout = None;
     let mut progressed = false;
-    let finished = wait_until(
+    tilo_test_env::wait_until(
+        format_args!("the pending {method} RPC to time out without blocking the status lane"),
         || {
             for event in manager.poll() {
                 match event {
@@ -381,7 +376,6 @@ fn pending_directory_rpc_releases_lane(method: &'static str) {
             }
             timeout.is_some() && progressed
         },
-        Duration::from_secs(3),
     );
     let captured = captures.lock().unwrap();
     let calls = match method {
@@ -393,15 +387,7 @@ fn pending_directory_rpc_releases_lane(method: &'static str) {
     let eager = captured.directory.eager_invocations;
     drop(captured);
     drop(manager);
-    if finished {
-        thread.join().unwrap();
-    } else {
-        drop(thread);
-    }
-    assert!(
-        finished,
-        "permanently pending {method} RPC blocked the actual shovel/status lane"
-    );
+    thread.join().unwrap();
     assert_eq!(calls, 1, "timeout must not retry the request");
     assert_eq!(eager, 0, "timeout must not fall back to eager invocation");
     assert_eq!(statuses, vec![47]);
