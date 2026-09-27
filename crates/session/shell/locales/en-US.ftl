@@ -1,6 +1,10 @@
 # Continuing on this desktop what you were just doing on another device.
 continuity-continue = Continue { $app } from { $device }
 continuity-continue-subtitle = Focus the tab you were just using on { $device }
+continuity-bringing-record = Bringing its document over from another device…
+record-not-kept-here = That document is not kept on this device.
+record-too-large-to-bring = That document is too large to bring over.
+record-offset-past-end = That part of the document does not exist.
 continuity-dismiss-title = Dismiss “Continue { $app } from { $device }”
 continuity-dismiss-subtitle = Hidden until you switch tabs on { $device } again
 continuity-other-device = your other device
@@ -1915,7 +1919,7 @@ window-transfer-lost-detail = The app closed unexpectedly, so edits from its las
 window-transfer-late-edits-title = Your last edits in “{ $window }” came along
 window-transfer-late-edits-detail = Changes made in { $from } while the window was moving were added to the document.
 window-transfer-moved-away-title = “{ $window }” was moved to another workspace
-window-transfer-moved-away-to = { $person } moved it to { $to }. What you see here is how it was when it left; it can't be edited here any more.
+window-transfer-moved-away-to = { $person } moved it to { $to }, where it opens for you now. What you see here is how it was when it left; it can't be edited here any more.
 window-transfer-moved-away-elsewhere = { $person } moved it to a workspace you're not in. What you see here is how it was when it left; it can't be edited here any more.
 
 # Empty-workspace launchpad and the default command list

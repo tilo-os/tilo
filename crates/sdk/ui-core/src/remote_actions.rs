@@ -409,7 +409,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
-        | RemoteActionMessage::CancelResponse { .. } => None,
+        | RemoteActionMessage::CancelResponse { .. }
+        | RemoteActionMessage::RecordRequest { .. }
+        | RemoteActionMessage::RecordResponse { .. } => None,
     }
 }
 
