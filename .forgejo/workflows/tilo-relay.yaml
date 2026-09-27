@@ -12,6 +12,7 @@ on:
     paths:
       - "apps/calculator/**"
       - "apps/chat/**"
+      - "apps/ebook/**"
       - "apps/notes/**"
       - "apps/word-processor/**"
       - "crates/browser/tilo-browser-runtime/**"
@@ -138,6 +139,7 @@ on:
     paths:
       - "apps/calculator/**"
       - "apps/chat/**"
+      - "apps/ebook/**"
       - "apps/notes/**"
       - "apps/word-processor/**"
       - "crates/browser/tilo-browser-runtime/**"
