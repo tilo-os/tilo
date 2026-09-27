@@ -233,14 +233,20 @@ def clipboard_text(control: Control) -> str | None:
     return response.get("clipboard", {}).get("text")
 
 
-def wait_for_clipboard_text(control: Control, description: str, expected: str) -> str:
+def wait_for_clipboard_text(
+    control: Control, description: str, expected: str, *, after_sample: bool = False
+) -> str:
+    """Wait for the clipboard to hold `expected`, or with `after_sample` to end with it."""
     last_value: str | None = None
 
     def matching_text() -> str | None:
         nonlocal last_value
         value = clipboard_text(control)
         last_value = value
-        if value is not None and value.strip("\r\n") == expected:
+        if value is None:
+            return None
+        text = value.strip("\r\n")
+        if text == expected or (after_sample and text.endswith(expected)):
             return value
         return None
 
@@ -255,21 +261,23 @@ def wait_for_clipboard_text(control: Control, description: str, expected: str) -
 def verify_focus_and_select_probe(control: Control, app_id: str, frame: dict) -> dict:
     """Prove keyboard focus and leave known document contents selected.
 
-    A fixed delay after Ctrl+A/Backspace is not sufficient for heavyweight
-    clients such as LibreOffice: an unrelated repaint can satisfy the next
-    frame barrier before its document transition finishes. Replace any sample
-    content with a probe, use the real clipboard to acknowledge its selection,
-    and leave it selected so the payload's first character replaces it
-    atomically without a separate empty-document transition.
+    No keystroke may follow a Ctrl+A until something acknowledges the
+    selection. LibreOffice runs Select All from its dispatcher, after an
+    unrelated repaint has already satisfied the frame barrier. A key typed in
+    that gap is inserted first and then selected, so the next key replaces it.
+    That is how "tilofocusprobe" became "ilofocusprobe". Type the probe after
+    any sample content, then select everything and copy it. Copy is dispatched
+    after Select All, so the clipboard acknowledges both. Leaving it selected
+    lets the payload's first character replace the whole document atomically.
     """
     probe = "tilofocusprobe"
-    control.chord("a")
-    frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     frame = type_with_frame_barriers(control, app_id, frame, probe)
     control.chord("a")
     frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     control.chord("c")
-    wait_for_clipboard_text(control, f"{app_id} focus probe selection", probe)
+    wait_for_clipboard_text(
+        control, f"{app_id} focus probe selection", probe, after_sample=True
+    )
     return frame_for(control, app_id) or frame
 
 
