@@ -2543,10 +2543,14 @@ impl ShellOverlayHost {
     /// identity cannot be located, or its backup ceremony cannot be opened.
     pub fn open_portable_identity_backup(&mut self) -> Result<(), String> {
         if self.onboarding.is_some() {
-            return Err("Finish the current identity flow before creating another backup.".into());
+            return Err(crate::shell::i18n::t("identity-backup-busy"));
         }
-        let identity_dir = runtime_identity::identity_dir_from_env()
-            .map_err(|error| format!("Could not locate the active identity: {error}"))?;
+        let identity_dir = runtime_identity::identity_dir_from_env().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "identity-backup-locate-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
         self.onboarding_released = false;
@@ -3302,7 +3306,7 @@ impl ShellOverlayHost {
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Politeness, Role};
         let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name("Tilo workspace"));
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
         if let Some(stack) = self.notification_stack.as_ref()
             && let Some(node) = Widget::accessibility(stack)
         {
@@ -3317,7 +3321,7 @@ impl ShellOverlayHost {
         });
         root.children.push(
             AccessNode::new(Role::StaticText)
-                .with_name("Status readout")
+                .with_name(t("a11y-status-readout"))
                 .with_live(Politeness::Polite)
                 .with_value(readout.unwrap_or_default()),
         );
@@ -3731,7 +3735,9 @@ impl ShellOverlayHost {
                             .map(|human| RememberedInvitee {
                                 name: human.display_name,
                                 user_public_key: human.root_public_key,
-                                verification: "Workspace-verified identity".to_string(),
+                                verification: crate::shell::i18n::t(
+                                    "invite-workspace-verified-identity",
+                                ),
                             })
                             .collect()
                     })
@@ -15337,7 +15343,8 @@ impl ShellOverlayHost {
             | WorkspaceSettingsOutcome::ComposerSubmit => {}
             WorkspaceSettingsOutcome::ManagePermissionProfiles => {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query("permission role");
+                self.palette
+                    .set_query(&crate::shell::i18n::t("palette-query-permission-roles"));
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
@@ -15415,7 +15422,8 @@ impl ShellOverlayHost {
                     // parameter flow. It keeps setup usable with keyboard,
                     // pointer, accessibility tools, and automation alike.
                     self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                    self.palette.set_query("Invite agent to workspace");
+                    self.palette
+                        .set_query(&crate::shell::i18n::t("search-action-agent-invite"));
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
             }
