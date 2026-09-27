@@ -1208,6 +1208,7 @@ mod tests {
                 subject: "Maps".into(),
                 shared: true,
                 added: 1,
+                content: None,
             };
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");

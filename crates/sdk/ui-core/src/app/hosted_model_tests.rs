@@ -264,6 +264,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: owned_declared_directory_factory,
     };
     let context = HostContext::prepare(

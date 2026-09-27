@@ -2213,6 +2213,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             record_kind: ui::record::RecordKind::new("terminal"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: menu_component_factory,
         };
         let (mut widget, writes) = build_test_widget();
@@ -2370,6 +2371,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             record_kind: ui::record::RecordKind::new("terminal"),
             required: vec![],
             optional: vec![],
+            opens: &[],
             create: menu_component_factory,
         };
         MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));

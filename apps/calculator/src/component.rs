@@ -10,6 +10,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("calculator.document"),
         required: vec![],
         optional: vec![],
+        opens: &[],
         create: |context, target, _| create(context, &target),
     });
 

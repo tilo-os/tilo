@@ -227,6 +227,62 @@ are re-typed as JavaScript), `module` the core module; either may be a
 promise, so the core and the apps can be fetched in one batch.
 `runtimeAbiId()` reports the loaded core's id.
 
+## Handing an app a file to open
+
+A page opens a file in an app the way an OS file association does: it hands
+the bytes over as an explicit launch input, and the app decides what to do
+with them. Apps have no ambient filesystem and never see the URL.
+
+```js
+const phone = await mountDesktop(phoneElement, {
+  app: 'so.tilo.ebook',
+  newDocument: true,
+  open: {url: '/books/homer_the-odyssey_william-cullen-bryant.epub'},
+  onStatus: status => { if (status.opened) console.log(status.opened); },
+});
+phone.opened;   // {name, mediaType: 'application/epub+zip', resource: 'ebook.book:book:<32 hex>'}
+// A second mount of the same record needs no `open`: Books keeps the book in
+// its library and reopens the one last opened.
+const laptop = await mountDesktop(laptopElement, {app: 'so.tilo.ebook', record: phone.record, instance: 2});
+phone.invokeAction(phone.opened.resource, 'select-passage', {chapter: 3, start_block: 1, end_block: 2});
+phone.invokeAction(phone.opened.resource, 'highlight-selection');
+```
+
+- `open` is `{url, name?, mediaType?}` or `{bytes, name, mediaType?}`. The
+  bytes of a URL come through the same admitted path as an app's assets:
+  the mount's `loadAsset` when it has one, else a same-origin fetch. `name`
+  defaults to the URL's last segment and `mediaType` to what its extension
+  implies (`.epub`); at most 128 MiB (`MAX_OPEN_FILE_BYTES`).
+- An app declares the media types it opens (`ApplicationDefinition::opens`,
+  listed as `opens` by `applications()` and `mount.application`). Any other
+  type is refused before a byte is fetched, with `code:
+  'TILO_OPEN_UNSUPPORTED'`; a malformed option with `'TILO_OPEN_INVALID'`, a
+  failed fetch with `'TILO_OPEN_UNAVAILABLE'`. Each also reports
+  `{phase: 'failed', error}` through `onStatus`. When the app cannot read
+  the bytes the launch fails with its reason (Books: `Couldn’t open
+  NAME: …`).
+- The runtime hands the component an `OpenFile` through
+  `HostContext::provide_open_file`; the factory takes it with
+  `take_open_file` and reports the resource that now holds it
+  (`OpenFile::report_opened`), which the page reads as `mount.opened` and as
+  an `{opened}` status before `gpu-pending`.
+- Every standalone mount of one profile/device also shares a content store
+  (`HostContext::content`, a `tilo_content::ContentStore`) for the page's
+  lifetime, as it shares records. Books puts an opened EPUB there and records
+  it in its library row by content hash, exactly as it records an imported
+  file: the row (`ebook.book:book:<first 32 hex of BLAKE3>`), progress and
+  annotations are in the record, so the other mount shows the same book and
+  its annotations live. The store is memory only: after a reload the page
+  hands the file over again (the row, progress and annotations persist).
+- Books' `select-passage` takes `chapter` (0-based spine document; the open
+  chapter when omitted), `start_block`/`end_block` (0-based blocks of that
+  chapter: headings and paragraphs, so a Standard Ebooks chapter's first
+  paragraph is usually block 1) and optional character offsets.
+
+`open.html` in the dev output exercises this with two mounts (see
+[Building](#building)); put an EPUB next to it as `odyssey.epub`, or pass
+`?open=URL`, or pick a file.
+
 ## Loading from a registry
 
 The registry client (`crates/browser/web-registry-client`) verifies the
@@ -320,6 +376,7 @@ node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
   crates/browser/tilo-browser-runtime/web/core-loader.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-installer.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-directory.test.mjs \
+  crates/browser/tilo-browser-runtime/web/open-file.test.mjs \
   crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
 # after build-web-dev.sh: links every app into the core in Node, checks that
