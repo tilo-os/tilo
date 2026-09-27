@@ -374,10 +374,10 @@ esac
   || die "a publication (TILO_REQUIRE_PCR_PREDICTION=1) is built with TILO_RUST_LTO=thin"
 # Link jobs: a thin-LTO link holds a binary's whole program in memory, so the
 # Containerfile's default stays conservative; without LTO a link is light, and
-# the compile may use the machine.
+# the compile may use the machine: a CPU per job, as far as memory holds out at
+# about 2 GiB a job (8 jobs when memory cannot be read).
 if [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] && [ "$TILO_RUST_LTO" = off ]; then
-  TILO_CARGO_BUILD_JOBS="$(nproc 2>/dev/null || echo 4)"
-  [ "$TILO_CARGO_BUILD_JOBS" -le 8 ] || TILO_CARGO_BUILD_JOBS=8
+  TILO_CARGO_BUILD_JOBS="$(cargo_build_jobs 2)"
 fi
 _tilo_jobs_args=()
 [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
@@ -473,7 +473,7 @@ build_image() {
       (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
     layer_epoch="$TILO_RAW_LAYER_EPOCH"
   fi
-  podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
+  podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "TILO_RUST_LTO=$TILO_RUST_LTO" \
     "${_tilo_jobs_args[@]}" \

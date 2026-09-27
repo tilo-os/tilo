@@ -21,7 +21,6 @@ collab-types = { path = "../collab-types" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # Host retention channels are BLAKE3 digests of the message route.
 blake3.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The production codec; tests pin every variant's exact encoding.
@@ -33,3 +32,7 @@ ed25519-dalek.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

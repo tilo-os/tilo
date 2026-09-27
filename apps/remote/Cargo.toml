@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+private-fs = { path = "../../crates/system/private-fs" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -58,6 +59,7 @@ workspace-hack = { version = "0.1" }
 # race each other under cargo's default parallel runner.
 serial_test.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -83,6 +83,9 @@ def validate(root):
 
     for name in ("FEX", "FEXServer", "FEXOfflineCompiler"):
         record(f"usr/bin/{name}", (2, 183), executable=True)
+    # The image ships no Qt; FEX's Qt configuration GUI must not be built.
+    if (root / "usr/bin/FEXConfig").exists() or (root / "usr/bin/FEXConfig").is_symlink():
+        raise InvalidPayload("usr/bin/FEXConfig: Qt frontend present; build with BUILD_FEXCONFIG=OFF")
     for directory, (elf_class, machine, families, suffix) in GROUPS.items():
         for family in families:
             record(f"{directory}/lib{family}-{suffix}.so", (elf_class, machine))

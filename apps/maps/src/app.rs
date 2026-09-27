@@ -1254,7 +1254,7 @@ impl MapsApp {
             doc,
             MAPS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Maps", "Maps", action),
+            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
         );
         MapsDoc::apply_durable(doc, &mut self.model);
     }

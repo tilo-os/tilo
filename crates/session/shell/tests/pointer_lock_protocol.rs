@@ -2,7 +2,6 @@
 //! the compositor withdraws the lock when the game loses focus and when the
 //! person presses the release chord, and does not hand it back until focus
 //! has moved on.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -358,5 +357,7 @@ fn a_locked_game_gets_relative_motion_only_and_loses_the_lock_with_focus() {
         None,
         "a released game does not take the pointer straight back"
     );
-    assert!(!h.state.pointer_lock.is_engaged());
+    let engaged = h.state.pointer_lock.is_engaged();
+    drop(h);
+    assert!(!engaged);
 }

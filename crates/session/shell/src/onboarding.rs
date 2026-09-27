@@ -14,7 +14,7 @@
 //! recovery material is an encrypted portable backup. The only true thing to
 //! tell a user is that losing every local key and that backup loses the
 //! identity. The copy in
-//! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
+//! [`no_recovery_points`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
 //! recovery is ever wired up, this copy changes in the same commit —
@@ -23,6 +23,8 @@
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::shell::i18n::t;
 
 /// Where the ceremony currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,38 +40,59 @@ pub enum Screen {
 }
 
 /// Title and body for the first screen.
-pub const INTRO_TITLE: &str = "Create your local Tilo identity";
-pub const INTRO_BODY: &str = "Tilo will create a cryptographic identity that belongs to you, \
-     then certify a separate key for this device. Tilo uses that chain for collaboration and \
-     peer invitations. Individual app edits are not all cryptographically signed yet.";
+#[must_use]
+pub fn intro_title() -> String {
+    t("onboarding-intro-title")
+}
+
+#[must_use]
+pub fn intro_body() -> String {
+    t("onboarding-intro-body")
+}
 
 /// The specific things the identity does today, without promising that every
 /// application operation already carries a signature.
-pub const INTRO_POINTS: &[&str] = &[
-    "It gives collaboration a stable identity for you and certifies this device to peers.",
-    "It is created here, on this machine. Nothing is uploaded and no server holds a copy.",
-    "It is not an account and has no password — there is nothing to log in to.",
-];
+#[must_use]
+pub fn intro_points() -> Vec<String> {
+    vec![
+        t("onboarding-intro-point-collaboration"),
+        t("onboarding-intro-point-local"),
+        t("onboarding-intro-point-not-account"),
+    ]
+}
 
 /// Heading for the consequence screen — stated as a fact, not a warning to be dismissed.
-pub const NO_RECOVERY_TITLE: &str =
-    "If you lose this device without a backup, this identity is gone";
+#[must_use]
+pub fn no_recovery_title() -> String {
+    t("onboarding-no-recovery-title")
+}
 
 /// The plain truth, without making people read an implementation tour before
 /// they can reach the backup step. Read `tests::onboarding_copy_is_honest_about_identity_and_recovery`
 /// before editing these statements.
-pub const NO_RECOVERY_POINTS: &[&str] = &[
-    "There is no recovery service. No backup code and no recovery phrase can recreate this identity.",
-    "The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.",
-];
+#[must_use]
+pub fn no_recovery_points() -> Vec<String> {
+    vec![
+        t("onboarding-no-recovery-point-no-service"),
+        t("onboarding-no-recovery-point-backup"),
+    ]
+}
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
-pub const ACKNOWLEDGEMENT: &str =
-    "I understand that losing this device without a backup means losing this identity.";
+#[must_use]
+pub fn acknowledgement() -> String {
+    t("onboarding-acknowledgement")
+}
 
-pub const DONE_TITLE: &str = "Your identity is ready";
-pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. Tilo can \
-     present it in collaboration flows that support verification; you do not need to type it.";
+#[must_use]
+pub fn done_title() -> String {
+    t("onboarding-done-title")
+}
+
+#[must_use]
+pub fn done_body() -> String {
+    t("onboarding-done-body")
+}
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -435,7 +458,7 @@ mod tests {
         // deliberately not wired into this path. A user-held encrypted export is
         // a backup, but it is not escrow and cannot help without its passphrase.
         {
-            let all = NO_RECOVERY_POINTS.join(" ").to_lowercase();
+            let all = no_recovery_points().join(" ").to_lowercase();
             assert!(
                 all.contains("there is no recovery"),
                 "the no-recovery screen must say so outright: {all}"
@@ -459,24 +482,25 @@ mod tests {
         // Phase `the_acknowledgement_names_the_consequence`.
         // The acknowledgement states the consequence rather than asking for agreement, so ticking it means the user read a fact.
         {
-            let a = ACKNOWLEDGEMENT.to_lowercase();
+            let acknowledgement = acknowledgement();
+            let a = acknowledgement.to_lowercase();
             assert!(
                 a.contains("losing"),
-                "must name the loss: {ACKNOWLEDGEMENT}"
+                "must name the loss: {acknowledgement}"
             );
             assert!(
                 a.contains("identity"),
-                "must name what is lost: {ACKNOWLEDGEMENT}"
+                "must name what is lost: {acknowledgement}"
             );
             assert!(
                 !a.starts_with("i agree"),
-                "this is a fact to understand, not terms to accept: {ACKNOWLEDGEMENT}"
+                "this is a fact to understand, not terms to accept: {acknowledgement}"
             );
         }
         // Phase `the_intro_says_it_is_not_an_account`.
         // The intro must not describe the identity as an account — the mental model that makes people expect a password reset.
         {
-            let joined = INTRO_POINTS.join(" ").to_lowercase();
+            let joined = intro_points().join(" ").to_lowercase();
             assert!(
                 joined.contains("not an account"),
                 "the intro must rule out the account mental model: {joined}"
@@ -484,7 +508,7 @@ mod tests {
         }
         // Phase `identity_copy_does_not_overstate_per_edit_signing`.
         {
-            let copy = format!("{} {}", INTRO_BODY, INTRO_POINTS.join(" ")).to_lowercase();
+            let copy = format!("{} {}", intro_body(), intro_points().join(" ")).to_lowercase();
             assert!(copy.contains("not all cryptographically signed"));
             assert!(!copy.contains("signs the changes you make"));
             assert!(!copy.contains("edit in a shared document really came from you"));

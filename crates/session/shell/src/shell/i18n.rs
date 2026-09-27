@@ -21,7 +21,7 @@ const fn catalog() -> EmbeddedCatalog {
     let catalog = EmbeddedCatalog::new(
         "en-US",
         &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "continuity-dismiss",
+        "continuity-continue",
     )
     .with_system_locale();
     // Unit tests assert source copy throughout the shell; keep them
@@ -31,13 +31,24 @@ const fn catalog() -> EmbeddedCatalog {
     catalog
 }
 
+/// Load the shell's catalogue and the toolkit's widget labels on this
+/// thread, in the desktop's language. Startup calls it once; every lookup
+/// repeats it for free, so a thread that draws chrome without having
+/// resolved a shell string yet still gets translated toolkit widgets.
+pub fn ensure() {
+    CATALOG.ensure();
+    ui::i18n::I18nManager::register_widget_messages();
+}
+
 /// Resolve a shell string key.
 pub fn t(key: &str) -> String {
+    ensure();
     CATALOG.t(key)
 }
 
 /// Resolve a shell string key that interpolates the given nouns.
 pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    ensure();
     CATALOG.t_args(key, args)
 }
 
@@ -110,7 +121,6 @@ mod tests {
         for key in [
             "continuity-continue",
             "continuity-continue-subtitle",
-            "continuity-dismiss",
             "continuity-dismiss-title",
             "continuity-dismiss-subtitle",
             "continuity-other-device",
@@ -119,12 +129,6 @@ mod tests {
             "tab-closed-undo",
             "tab-closed-undo-hint",
             "tab-closed-undo-hint-unbound",
-            "window-switcher-title",
-            "window-switcher-description",
-            "window-switcher-app-title",
-            "window-switcher-app-description",
-            "window-switcher-untitled",
-            "window-switcher-caption-paged",
             "overview-windows-title",
             "overview-windows-description",
             "overview-window-move-failed",
@@ -285,13 +289,52 @@ mod tests {
         }
     }
 
+    /// Toolkit widgets the shell draws take their labels from the toolkit's
+    /// catalogue, which the shell loads with its own.
+    #[test]
+    fn toolkit_widgets_in_the_shell_follow_a_german_desktop() {
+        use ui::widget::Widget as _;
+        ensure();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let prompt = ui::widget::PermissionPrompt::new(
+            "org.example.app".into(),
+            t("capability-camera"),
+            true,
+        );
+        let node = prompt.accessibility();
+        ui::i18n::I18nManager::set_locale("en-US");
+        let node = node.expect("a permission prompt is semantic");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Kamerazugriff – angefragt von org.example.app")
+        );
+        let buttons: Vec<_> = node
+            .children
+            .iter()
+            .map(|button| button.name.as_deref())
+            .collect();
+        assert_eq!(
+            buttons,
+            [
+                Some("Erlauben"),
+                Some("Diese Sitzung"),
+                Some("Immer erlauben"),
+                Some("Ablehnen")
+            ]
+        );
+    }
+
     #[test]
     fn german_desktops_resolve_german_copy() {
-        let english = t("continuity-dismiss");
+        let english = t("tab-closed-undo");
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = t("continuity-dismiss");
+        let german = t("tab-closed-undo");
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english, "Dismiss");
-        assert_eq!(german, "Ausblenden");
+        assert_eq!(english, "Undo");
+        assert_eq!(german, "Rückgängig");
     }
 }
+
+#[cfg(test)]
+#[path = "i18n_copy_lint_tests.rs"]
+mod copy_lint_tests;

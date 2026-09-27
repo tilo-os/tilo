@@ -722,6 +722,14 @@ impl FloatingPlacement {
         self.attached_chrome = chrome.map(|value| value.max(0.0));
     }
 
+    /// Restore only app-local presentation; never restore desktop surface authority.
+    pub fn restore_local_offset(&mut self, offset: Vec2) {
+        self.reset_attached();
+        if offset.x.is_finite() && offset.y.is_finite() {
+            self.attachment = Attachment::App { offset };
+        }
+    }
+
     pub fn reset_attached(&mut self) {
         self.attachment = Attachment::App { offset: Vec2::ZERO };
         self.desktop_adopted = false;
@@ -1741,7 +1749,7 @@ mod tests {
 
             let (app_side, mut shell_side) = UnixStream::pair().unwrap();
             shell_side
-                .set_read_timeout(Some(crate::time::Duration::from_secs(1)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
             let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
@@ -1763,13 +1771,10 @@ mod tests {
             bytes.push(b'\n');
             shell_side.write_all(&bytes).unwrap();
             let mut received = Vec::new();
-            for _ in 0..100 {
+            tilo_test_env::wait_until("the inbound surface message", || {
                 received.extend(client.pump().unwrap());
-                if !received.is_empty() {
-                    break;
-                }
-                std::thread::yield_now();
-            }
+                !received.is_empty()
+            });
             assert_eq!(received, vec![inbound]);
         }
     }

@@ -1,7 +1,6 @@
 # Continuing on this desktop what you were just doing on another device.
 continuity-continue = Continue { $app } from { $device }
 continuity-continue-subtitle = Focus the tab you were just using on { $device }
-continuity-dismiss = Dismiss
 continuity-dismiss-title = Dismiss “Continue { $app } from { $device }”
 continuity-dismiss-subtitle = Hidden until you switch tabs on { $device } again
 continuity-other-device = your other device
@@ -67,14 +66,6 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
-
-# The Alt+Tab window switcher.
-window-switcher-title = Switch windows
-window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
-window-switcher-app-title = Switch windows of this app
-window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
-window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
 
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
@@ -451,75 +442,8 @@ portal-network-cert-system-domain = The network's certificate is checked against
 portal-network-cert-unchecked = The network's certificate is not checked. Only continue on a network you trust.
 
 # Top bar
-topbar-workspace-name-tooltip = Open workspace settings
-topbar-workspace-fallback = Workspace
-topbar-calendar-none = No calendar connected
-topbar-sharing-agent-controls = AGENT CONTROLS · { $name }
-topbar-sharing-agent-viewing = AGENT VIEWING · { $name }
-topbar-sharing-person-controls = CONTROLS · { $name }
-topbar-sharing-person-viewing = VIEWING · { $name }
-topbar-sharing-session-controls = SESSION CONTROLS · { $name }
-topbar-sharing-session-viewing = SESSION VIEWING · { $name }
-topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
-topbar-sharing-count = { $viewers } VIEWING
-topbar-sharing-surface = surface { $surface }
-topbar-open-overview = Open overview
-topbar-previous-workspace = Previous workspace
-topbar-next-workspace = Next workspace
-topbar-workspace-settings = Workspace settings for { $workspace }
-topbar-show-clock = Show clock
-topbar-show-system-monitor = Show system monitor
-topbar-show-calendar = Show calendar
-topbar-open-quick-settings = Open quick settings
-topbar-show-collaborators = Show collaborators
-topbar-viewer-can-control = can control { $targets }
-topbar-viewer-view-only = view only { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] agent
-        [person] person
-       *[session] unidentified session
-    }): { $access }
-topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
-topbar-capture-privacy = Privacy settings for active capture
-topbar-control = Top bar control
-topbar-editor-control = Top bar editor control
-topbar-editor-remove-clock = Remove clock from top bar
-topbar-editor-remove-system-monitor = Remove system monitor from top bar
-topbar-editor-remove-calendar = Remove calendar from top bar
-topbar-editor-add-clock = Add clock to top bar
-topbar-editor-add-system-monitor = Add system monitor to top bar
-topbar-editor-add-calendar = Add calendar to top bar
-topbar-editor-title = Edit top bar
-topbar-editor-hint = Drag to reorder · click Remove
-topbar-widget-clock = Clock
-topbar-widget-system-monitor = System monitor
-topbar-widget-calendar = Calendar
-topbar-editor-remove = Remove
-topbar-editor-add-clock-chip = + Clock
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Calendar
-topbar-invite = Invite
 topbar-clocks-notification-title = Clocks
 topbar-clocks-notification-body = Time is up
-topbar-activity-unread = { $headline }  ·  { $count } new
-topbar-clock-resume = Resume
-topbar-clock-pause = Pause
-topbar-clock-lap = Lap
-topbar-clock-add-minute = +1 min
-topbar-clock-close-stopwatch = Close floating stopwatch
-topbar-clock-close-timer = Close floating timer
-topbar-clock-floating-stopwatch = Floating stopwatch
-topbar-clock-floating-timer = Floating timer
-topbar-clock-floating-description = Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.
-topbar-clock-stopwatch = Stopwatch
-topbar-clock-timer = Timer
-topbar-clock-paused = Paused
-topbar-clock-running = Running
-topbar-clock-record-lap = Record lap
-topbar-clock-add-one-minute = Add one minute
-topbar-workspace-position = Workspace { $position } of { $total }
-topbar-desktop-navigation = Desktop navigation
-topbar-display-navigation = Display navigation
 
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
@@ -698,17 +622,6 @@ a11y-workspace-name = Workspace name
 a11y-workspace-settings-content = Workspace settings content
 a11y-at-a-glance = At a glance
 
-# Accessibility tree: retained notifications
-a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
-a11y-notifications-list = Retained notifications
-a11y-notifications-clear = Clear all notifications
-a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
-a11y-notifications-cleared = Notifications cleared
-a11y-notifications-undo = Undo clear notifications
-a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications = Notifications
-
 # Accessibility tree: clipboard history
 a11y-clipboard-data = Clipboard data
 a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
@@ -879,22 +792,6 @@ follow-stop = Stop
 # Search filter chips
 search-filter-all = All
 
-# Quick Settings: notification history
-qs-notifications-title = Notifications
-qs-notifications-empty = No recent notifications
-qs-notifications-cleared = Notifications cleared
-qs-notifications-clear-all = Clear all
-qs-notifications-position = Newest { $first }–{ $last } of { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Newer
-qs-notifications-at-newest = At newest
-qs-notifications-older = ↓ Older
-qs-notifications-at-oldest = At oldest
-
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here
 qs-devices-mic-current = Current microphone
@@ -1061,26 +958,6 @@ qs-wifi-protected = This network is protected
 
 # Retained history: sources and severities
 history-this-device = This device
-history-severity-info = Information
-history-severity-warning = Warning
-history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
-
-# Notification center rows
-notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
-        [yes] collapse
-       *[no] expand
-    }, Delete to dismiss them all.
-notification-center-dismiss-all = Dismiss all from { $app }
-notification-center-dismiss = Dismiss
-notification-center-hand-to = Hand to { $agent }
-notification-center-hand-to-description = Give this notification to the workspace agent as a task.
-notification-center-group-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
 
 # On-screen display for the hardware keys
 osd-play = Play
@@ -1122,13 +999,6 @@ status-other-displays-a11y = Other displays
 
 # Notification toasts
 notification-source-caption = { $app } · From { $device }
-notification-lock-count = { $count ->
-    [one] 1 notification
-   *[other] { $count } notifications
-}
-notification-dnd-held = { $status } · { $count } held
-notification-stack-a11y = Notifications
-notification-group-system = System
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
@@ -1260,6 +1130,9 @@ bluetooth-prompt-cancel = Cancel
 bluetooth-prompt-accept-match = They match
 bluetooth-prompt-accept-allow = Allow
 bluetooth-prompt-accept-pair = Pair
+bluetooth-prompt-code-label = Code shown on the device
+bluetooth-prompt-pin-label = PIN for the device
+bluetooth-prompt-a11y-code = Code { $code }
 
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
@@ -1272,143 +1145,1028 @@ portal-capture-default-camera = Default camera
 portal-capture-primary-display = Primary display
 portal-capture-system-audio = System audio
 
-# People panel, as assistive technology reads it
-a11y-shell-people = People
-a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
-a11y-shell-people-screen-visible = Screen visible now: { $exposure }
-a11y-shell-people-here-now = People here now
-a11y-shell-people-agent = Agent
-a11y-shell-people-invited = Invited, not currently present
-a11y-shell-people-present = Present now
-a11y-shell-people-now = Now: { $activity }
-a11y-shell-people-intent = Intent: { $status }
-a11y-shell-people-intent-inferred = Intent, inferred: { $status }
-a11y-shell-status-name = Your collaboration status
-a11y-shell-status-inferred = Inferred on this device from recent semantic actions
-a11y-shell-status-set = Set what you are trying to accomplish
-a11y-shell-status-automatic = Automatic status
-a11y-shell-status-manual = Manual status only
-a11y-shell-status-off = Hide status
-a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
-a11y-shell-status-manual-description = Share only text you enter yourself
-a11y-shell-status-off-description = Publish no status to this workspace
-a11y-shell-follow-collaborator = Follow collaborator
-a11y-shell-follow = Follow { $name }
-a11y-shell-follow-description = Mirror this participant's live workspace view
-a11y-shell-people-previous = Previous people
-a11y-shell-people-previous-description = Show the previous people in this workspace
-a11y-shell-people-next = Next people
-a11y-shell-people-next-description = Show the next people in this workspace
-a11y-shell-invite = Invite people
-a11y-shell-invite-description = Create an authenticated workspace invitation
-a11y-shell-join = Join workspace
-a11y-shell-join-description = Connect using an authenticated invitation
-a11y-shell-workspace-activity = Workspace activity
-a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
+# A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
+speaker-role-left = left speaker
+speaker-role-right = right speaker
+speaker-role-centre = centre speaker
+speaker-role-subwoofer = subwoofer
+speaker-role-surround-left = left surround speaker
+speaker-role-surround-right = right surround speaker
+speaker-role-room = room speaker
+speaker-group-summary = { $total ->
+    [one] { $ready } of 1 speaker ready
+   *[other] { $ready } of { $total } speakers ready
+}
+speaker-group-summary-waiting = { $total ->
+    [one] { $ready } of 1 speaker ready · { $waiting } waiting for approval
+   *[other] { $ready } of { $total } speakers ready · { $waiting } waiting for approval
+}
 
-# Empty-workspace launchpad
-a11y-shell-launchpad-title = Make something together
-a11y-shell-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
-a11y-shell-launchpad-open-app = Open an app
-a11y-shell-launchpad-discuss = Discuss
-a11y-shell-launchpad-notes = Notes
-a11y-shell-launchpad-tasks = Tasks
-a11y-shell-launchpad-meet = Plan a meeting
-a11y-shell-launchpad-invite = Invite people
-a11y-shell-launchpad-activity = Catch up
-a11y-shell-launchpad-discuss-detail = Open the shared conversation
-a11y-shell-launchpad-notes-detail = Write ideas together
-a11y-shell-launchpad-tasks-detail = Plan work in Calendar
-a11y-shell-launchpad-meet-detail = Open Chat, then start a voice or video call
-a11y-shell-launchpad-invite-detail = Bring someone into this workspace
-a11y-shell-launchpad-activity-detail = See what changed and why
+# A remote input, as the $input of a sentence
+remote-input-camera = camera
+remote-input-microphone = microphone
+remote-input-scanner = scanner
 
-# Workspace activity, as assistive technology reads it
-a11y-shell-activity-everyone = Everyone
-a11y-shell-activity-more-people = More people
-a11y-shell-activity-more-people-description = Show more contributor filters
-a11y-shell-activity-resume = Resume { $target }
-a11y-shell-activity-resume-description = Open the last resource you worked on: { $target }
-a11y-shell-activity-boundary-newer = Move the last action into the newer work session
-a11y-shell-activity-boundary-older = Move the first action into the older work session
-a11y-shell-activity-boundary-newer-description = Redraw this boundary by moving one action into the newer work session
-a11y-shell-activity-boundary-older-description = Redraw this boundary by moving one action into the older work session
-a11y-shell-activity-more-sessions = More work sessions
-a11y-shell-activity-more-sessions-description = Show more work sessions
-a11y-shell-activity-new-task = New task
-a11y-shell-activity-new-task-description = Create a workspace task without requiring a model
-a11y-shell-activity-create-task = Create task
-a11y-shell-activity-cancel-task = Cancel task creation
-a11y-shell-activity-everything = Everything
-a11y-shell-activity-agent-tasks = Agent tasks
-a11y-shell-activity-unclassified = Unclassified
-a11y-shell-activity-more-lenses = More lenses
-a11y-shell-activity-more-lenses-description = Show more history lenses
-a11y-shell-activity-history-entries = History entries
-a11y-shell-activity-previous-checkpoint = Previous checkpoint
-a11y-shell-activity-next-checkpoint = Next checkpoint
-a11y-shell-activity-pause-replay = Pause replay
-a11y-shell-activity-play-replay = Play replay
-a11y-shell-activity-history-scope = History scope
-a11y-shell-activity-history-view = History view
-a11y-shell-activity-time-range = Time range
-a11y-shell-activity-person-filter = Person filter
-a11y-shell-activity-brief-description = { $detail }; last changed { $when }; { $count } { $count ->
-        [one] change
-       *[other] changes
-    } by { $authors }
-a11y-shell-activity-task-unassigned = unassigned
-a11y-shell-activity-task-assigned-agent = assigned to an agent
-a11y-shell-activity-task-no-resource = no attached resource
-a11y-shell-activity-task-route = Task execution route
-a11y-shell-activity-task-composer-action = Task composer action
-a11y-shell-activity-task-action = Selected task action
-a11y-shell-activity-history-lens = History lens
-a11y-shell-activity-undo-task-description = Undo every affected record in this agent task; later collaborator edits are kept
-a11y-shell-activity-history-action = Selected history action
-a11y-shell-activity-explorer-panel = Explorer panel
-a11y-shell-activity-timeline-description = History entries; use arrow keys to navigate
-a11y-shell-activity-checkpoints-description = Move through workspace checkpoints
-a11y-shell-activity-replay-description = Play or pause the workspace replay
-a11y-shell-activity-view-catch-up = A summary of outcomes since this device last viewed the workspace
-a11y-shell-activity-view-tasks = Durable workspace tasks with resource links, execution routes, and audit trails
-a11y-shell-activity-view-explore = The complete workspace history with filters and provenance
-a11y-shell-activity-view-replay = A causal replay of workspace layout and participant activity
-a11y-shell-activity-entry-author = By { $author }
-a11y-shell-activity-tasks = Workspace tasks
-a11y-shell-activity-selected-detail = Selected history detail
-a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
-        [one] action
-       *[other] actions
-    }; by { $authors }
-a11y-shell-activity-agent-run-description = Instruction: { $instruction }; assigned by { $issuer }; run by { $agent }; reason: { $reason }
-a11y-shell-activity-reason-not-recorded = not recorded
-a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
-a11y-shell-activity-agent-review = Agent task review
-a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } audit events
-a11y-shell-activity-task-latest = latest: { $latest }
+# Why display mirroring ended, as the $reason of a sentence
+mirror-failure-denied = declined on the target
+mirror-failure-peer-offline = certified peer went offline
+mirror-failure-timed-out = session timed out
+mirror-failure-transport = private video route failed
+mirror-failure-policy = display continuity was disabled
 
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
+# Why moving media to another device failed, as the $reason of a sentence
+media-handoff-failure-destination-unavailable = destination unavailable
+media-handoff-failure-unsupported-output = destination cannot play this media
+media-handoff-failure-invalid-workspace = workspace is unavailable there
+media-handoff-failure-open-failed = destination could not open it
+media-handoff-failure-timed-out = destination did not respond
+media-handoff-failure-cancelled = cancelled
 
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-hint = Enter inserts · Esc closes
-emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
+# Why moving a Bluetooth accessory failed, as the $reason of a sentence
+bluetooth-handoff-failure-inspect-target = target inspection failed
+bluetooth-handoff-failure-target-unavailable = target unavailable or declined
+bluetooth-handoff-failure-disconnect-source = source could not release accessory
+bluetooth-handoff-failure-pair-target = target pairing failed
+bluetooth-handoff-failure-connect-target = target connection failed
+bluetooth-handoff-failure-send = certified route was interrupted
+bluetooth-handoff-failure-timed-out = transaction timed out
+bluetooth-handoff-failure-rollback = source rollback failed
+
+# Search result kinds, as the filter chips and group headers name them
+search-kind-actions = Actions
+search-kind-applications = Applications
+search-kind-host-apps = Host Apps
+search-kind-notes = Notes
+search-kind-records = Records
+search-kind-files = Files
+search-kind-folders = Folders
+search-kind-creators = Creators
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Window groups
+
+# Search scopes
+search-scope-this-app = This app
+search-scope-workspace = Workspace
+search-scope-everywhere = Everywhere
+
+# Where a launched app will open
+search-opens-beside = Opens in rightmost space
+search-opens-here = Opens here, as a tab
+
+# Search providers, as the search settings actions name them
+search-provider-now-playing = Now playing
+search-provider-records = Records
+search-provider-notes = Notes
+search-provider-editor = Editor
+search-provider-session = Session
+search-provider-shortcuts = Shortcuts
+search-provider-tray = Tray
+search-provider-files = Files
+search-provider-host-apps = Host apps
+search-provider-app-actions = Application resources and actions
+
+# Search result badges
+search-badge-media = Media
+search-badge-session = Session
+search-badge-quick-action = Quick action
+search-badge-shortcut = Shortcut
+search-badge-tray = Tray
+
+# Search: media transport for a running player
+search-media-pause = Pause { $player }
+search-media-play = Play { $player }
+search-media-next = Next track in { $player }
+search-media-previous = Previous track in { $player }
+search-media-seek = Seek in { $player }
+
+# Search: records
+search-record-file-missing = The file this record names is no longer there.
+search-record-in-this-workspace = In this workspace
+search-record-in-workspace = In { $workspace }
+search-record-in-another-workspace = In another workspace
+
+# Search: files
+search-files-no-app = No app on this desktop opens .{ $ext } documents.
+
+# Search: host apps
+search-host-app-open = Open { $app }
+search-host-app-subtitle = { $source } · unconfined host app · { $id }
+
+# Search: app action jobs and resources
+search-app-job = Action job { $id }
+search-app-job-cancel = Cancel action job { $id }
+search-app-job-cancel-detail = Requests cooperative cancellation
+search-app-job-accepted = accepted
+search-app-job-running = running
+search-app-job-streaming = streaming
+search-app-job-succeeded = succeeded
+search-app-job-failed = failed
+search-app-job-cancelled = cancelled
+search-app-resource-contains = { $app } · contains resources
+search-app-action-launches = { $resource } · { $app } · launches application
+
+# Search: session actions
+search-session-logout = Log out of Tilo
+search-session-logout-detail = End this desktop session cleanly and return to the display manager
+search-session-unsaved-work = An app has unsaved work
+search-session-inhibited = { $reason } — close the app or finish its work first.
+
+# Search: shortcuts
+search-shortcut-run-on = Run on { $resource }
+
+# Search: tray items
+search-tray-open = Open { $item }
+search-tray-in-top-bar = { $item } in the top bar
+search-tray-entry = { $item }: { $entry }
+search-tray-entry-on = { $item }: { $entry } (on)
+search-tray-entry-off = { $item }: { $entry } (off)
+
+# Search: desktop windows
+
+# Search: shell actions, as palette rows
+search-action-shortcut-help-toggle = Show desktop help
+search-action-shortcut-help-toggle-subtitle = F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide
+search-action-desktop-tour-open = Take the desktop tour
+search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction to navigation, organisation and collaboration
+search-action-overview-toggle = Toggle workspace overview
+search-action-overview-toggle-subtitle = Show all workspaces in the wheel view
+search-action-settings-open = Open workspace settings
+search-action-settings-open-subtitle = Identity, people, privacy, apps and files for this workspace
+search-action-settings-members-open = Open workspace people
+search-action-settings-members-open-subtitle = People, roles and invitations in this workspace
+search-action-settings-privacy-open = Open workspace privacy & security
+search-action-settings-privacy-open-subtitle = App grants and enforced access for this workspace
+search-action-settings-apps-open = Open workspace apps & files
+search-action-settings-apps-open-subtitle = Shared app defaults and your workspace overrides
+search-action-identity-devices-copy = Copy connected device list
+search-action-identity-devices-copy-subtitle = Copy device names, fingerprints, capabilities, and revocation state
+search-action-identity-device-enroll = Enroll another device
+search-action-identity-device-enroll-subtitle = Copy a device setup code that is valid for five minutes
+search-action-identity-home-peer-enroll = Pair a home server
+search-action-identity-home-peer-enroll-subtitle = Copy a five-minute setup code with always-on full-sync access
+search-action-quick-settings-open = Open quick settings
+search-action-quick-settings-open-subtitle = Brightness, volume, Wi-Fi, Bluetooth, power profile
+search-action-quick-settings-clipboard = Open clipboard history
+search-action-quick-settings-clipboard-subtitle = Search, pin, remove, or reuse private clipboard items
+search-action-quick-settings-devices = Open devices and media
+search-action-quick-settings-devices-subtitle = Certified devices, media routes, remote input, and handoffs
+search-action-projection-open = Choose where the desktop appears
+search-action-projection-open-subtitle = Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver
+search-action-display-layout-extend = Extend displays
+search-action-display-layout-extend-subtitle = Use every connected display as one larger desktop
+search-action-display-layout-mirror = Mirror displays
+search-action-display-layout-mirror-subtitle = Show the same picture on every connected display
+search-action-display-layout-builtin-only = Show only on this screen
+search-action-display-layout-builtin-only-subtitle = Turn external displays off and keep the built-in screen
+search-action-display-layout-external-only = Show only on external displays
+search-action-display-layout-external-only-subtitle = Turn the built-in screen off and use the external displays
+search-action-display-change-keep = Keep display settings
+search-action-display-change-keep-subtitle = Confirm the display layout that was just applied
+search-action-display-change-revert = Revert display settings
+search-action-display-change-revert-subtitle = Restore the display layout from before the last change
+search-action-bluetooth-pairing-decline = Decline Bluetooth pairing
+search-action-bluetooth-pairing-decline-subtitle = Refuse the pairing request on screen, or stop the pairing whose code it shows
+search-action-capture-open = Capture or float part of the screen
+search-action-capture-open-subtitle = Screenshot, record, or make PiP from one or more regions
+search-action-collaborators-open = Show collaborators
+search-action-collaborators-open-subtitle = Collaborators currently in this workspace
+search-action-presence-follow-stop = Stop following
+search-action-presence-follow-stop-subtitle = Return this view to local navigation
+search-action-room-activity-open = Show workspace activity
+search-action-room-activity-open-subtitle = History of this workspace: changes, permissions, who did what and when
+search-action-peer-invite = Invite a collaborator…
+search-action-peer-invite-subtitle = Review an invite before creating it
+search-action-peer-connect = Open join-workspace prompt
+search-action-peer-connect-subtitle = Enter and review an invite from a collaborator
+search-action-tab-new-terminal-here = New terminal tab here
+search-action-tab-new-terminal-here-subtitle = Open a terminal as a tab in the focused window group
+search-action-window-new-terminal = New terminal window
+search-action-window-new-terminal-subtitle = Open a terminal beside the focused window
+search-action-tab-duplicate = Duplicate this tab
+search-action-tab-duplicate-subtitle = Open a second instance of the focused app beside it
+search-action-tab-close = Close this tab
+search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
+search-action-tab-reopen = Reopen closed tab
+search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
+search-action-tab-split-right = Split this tab to the right
+search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
+search-action-tab-move-to-new-group = Move this tab to a new group
+search-action-tab-move-to-new-group-subtitle = Move the focused tab into a new window group at the end of its strip
+search-action-notifications-dnd-toggle = Toggle Do Not Disturb
+search-action-notifications-dnd-toggle-subtitle = Silence notification banners; held notifications go to history
+search-action-identity-connect = Add an existing identity
+search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
+search-action-identity-select = Use identity in this workspace
+search-action-identity-select-subtitle = Select one of the identities already connected to this device
+search-action-identity-device-revoke = Revoke an identity device
+search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
+search-action-capture-screenshot-send = Send the last screenshot
+search-action-capture-screenshot-send-subtitle = To one of your devices, or into this workspace's files
+search-action-presence-follow = Follow a collaborator
+search-action-presence-follow-subtitle = Keep this view attached to a connected person or visible agent
+search-action-presence-status-set = Set workspace status
+search-action-presence-status-set-subtitle = Publish an explicit status, or clear it with an empty value
+search-action-presence-status-sharing-set = Set status privacy
+search-action-presence-status-sharing-set-subtitle = Choose whether status is off, explicit-only, or automatically inferred
+search-action-peer-invite-named = Name collaborator and open invite
+search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
+search-action-agent-invite = Invite agent to workspace
+search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
+search-action-text-insert = Insert text into the focused note
+search-action-text-insert-subtitle = Write into the focused Notes or Editor tab at a character offset
+search-action-record-bring = Add an item to this workspace
+search-action-record-bring-subtitle = Make it available here without moving the original
+search-action-quick-settings-brightness-set = Set display brightness
+search-action-quick-settings-brightness-set-subtitle = Set a monitor's brightness percentage: the panel backlight or an external monitor over DDC/CI
+search-action-quick-settings-volume-set = Set output volume
+search-action-quick-settings-volume-set-subtitle = Set this device's default audio output percentage
+search-action-quick-settings-wifi-set-enabled = Set Wi-Fi enabled state
+search-action-quick-settings-wifi-set-enabled-subtitle = Enable or disable this device's Wi-Fi radio
+search-action-quick-settings-power-profile-set = Set power profile
+search-action-quick-settings-power-profile-set-subtitle = Choose saver, balanced, or performance for this device
+search-action-quick-settings-vpn-set-enabled = Set VPN enabled state
+search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one named VPN connection on this device
+
+# Search: search sources and workspace governance rows
+search-action-search-provider-set = Enable or disable a search source
+search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
+search-action-workspace-view-subtitle = Local workspace view
+search-action-quick-settings-unavailable = Quick Settings service is unavailable
+# Extra words a search for a workspace view matches; not shown.
+search-action-workspace-view-keywords = workspace activity history
+search-action-provider-enable = Enable { $source } search
+search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
+search-action-provider-disable = Disable { $source } search
+search-action-provider-disable-subtitle = Hide the `{ $id }` source in search and agent discovery
+search-action-provider-badge-on = ON
+search-action-provider-badge-off = OFF
+search-action-governance-subtitle = Signed workspace governance action for the active workspace
+search-action-permission-roles-subtitle = Manage reusable least-privilege workspace roles
+
+# Search: what a shell action did
+search-action-tab-close-failed = Can't close this tab
+search-action-tab-split-failed = Can't split this tab
+search-action-device-list-copied = Device list copied
+search-action-device-list-copied-body = { $count ->
+    [one] 1 device
+   *[other] { $count } devices
+}
+search-action-enrollment-copied = Enrollment token copied
+search-action-enrollment-copied-body = It expires in five minutes and cannot admit further devices.
+search-action-home-server-copied = Home-server setup code copied
+search-action-home-server-copied-body = It expires in five minutes and grants full workspace replication.
+search-action-device-revoked = Device revoked
+search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
+
+# Search: applications
+search-apps-group-start-here = Start here
+search-apps-group-everyday = Everyday
+search-apps-group-work = Work
+search-apps-group-media = Media
+search-apps-group-system-tools = System tools
+search-apps-group-more-apps = More apps
+search-apps-detail-grouped = { $group } · { $detail }
+search-apps-open = Open { $app }
+search-apps-open-subtitle = { $target } · { $detail }
+search-apps-shortcut-subtitle = { $target } · Shortcut
+search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
+search-apps-verification-pending = Registry verification pending
+search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-view-in-store = View { $app } in App Store
+search-apps-store-failed = Couldn't open App Store for { $app }
+search-apps-opening = Opening { $app }
+search-apps-opening-body = Loading…
+
+# Search: continuity actions across your certified devices
+search-continuity-certified-device = certified device
+search-continuity-play-on = Play { $source } on { $target }
+search-continuity-media-handoff-subtitle = Move this live media session to an exact certified device
+search-continuity-media-cancel = Cancel moving { $media }
+search-continuity-media-retry = Retry moving { $media }
+search-continuity-media-status-subtitle = Media handoff to { $device }
+search-continuity-bluetooth-allow = Allow handoff of { $accessory } from { $device }
+search-continuity-bluetooth-decline = Decline handoff of { $accessory } from { $device }
+search-continuity-bluetooth-consent-subtitle = Resolve this exact Bluetooth pairing handoff request
+search-continuity-bluetooth-retry = Retry handoff of { $accessory }
+search-continuity-bluetooth-cancel = Cancel handoff of { $accessory }
+search-continuity-bluetooth-status-subtitle = Bluetooth continuity with { $device }
+search-continuity-route-audio = Route audio to { $output }
+search-continuity-route-audio-subtitle = Choose an exact currently enumerated local audio output
+search-continuity-input-raise = Raise the input level of { $input }
+search-continuity-input-lower = Lower the input level of { $input }
+search-continuity-input-level-subtitle = Change the current microphone's level by one step
+search-continuity-input-select = Use { $input } as the microphone
+search-continuity-input-select-subtitle = Record from this local input from now on
+search-continuity-audio-forward-subtitle = Request a consented live-audio route to this certified device
+search-continuity-audio-allow = Allow live audio from { $device }
+search-continuity-audio-decline = Decline live audio from { $device }
+search-continuity-audio-consent-subtitle = Resolve this exact remote-audio consent request
+search-continuity-audio-stop = Stop routing { $source }
+search-continuity-audio-stop-subtitle = Close and neutralize this exact live-audio route
+search-continuity-speaker-join = Join { $group } as the { $role }
+search-continuity-speaker-decline = Decline to join { $group } as the { $role }
+search-continuity-speaker-consent-subtitle = { $device } asked this device to play in a speaker group
+search-continuity-speaker-leave = Leave { $group }
+search-continuity-speaker-leave-subtitle = Stop playing as the { $role } in this speaker group
+search-continuity-speaker-play-subtitle = Play through every ready speaker of this group
+search-continuity-speaker-media-subtitle = Keep playing here and send the sound to this speaker group
+search-continuity-speaker-stop = Stop playing on { $group }
+search-continuity-speaker-stop-subtitle = End this speaker group playback on every speaker
+search-continuity-place-left = Place { $device } left
+search-continuity-place-right = Place { $device } right
+search-continuity-place-above = Place { $device } above
+search-continuity-place-below = Place { $device } below
+search-continuity-place-subtitle = Arrange an exact certified display around this device
+search-continuity-control-revoke = Revoke control from { $device }
+search-continuity-control-grant = Grant control to { $device }
+search-continuity-control-subtitle = Change the short-lived cross-device input lease
+search-continuity-calibration-apply = Apply placement suggestion for { $device }
+search-continuity-calibration-dismiss = Dismiss placement suggestion for { $device }
+search-continuity-calibration-subtitle = Act on the current proximity-derived placement proposal
+search-continuity-calibration-revert = Revert placement for { $device }
+search-continuity-calibration-revert-subtitle = Restore the previous certified-display placement
+search-continuity-mirror-allow = Allow display mirroring from { $device }
+search-continuity-mirror-decline = Decline display mirroring from { $device }
+search-continuity-mirror-consent-subtitle = Resolve this exact view-only display request
+search-continuity-mirror-stop = Stop display mirroring with { $device }
+search-continuity-mirror-stop-subtitle = Close this exact view-only display session
+search-continuity-mirror-request = Mirror this display to { $device }
+search-continuity-mirror-request-subtitle = Request a consented view-only stream to this certified display
+search-continuity-tether-request = Ask { $device } for tethering
+search-continuity-tether-request-subtitle = Request a short-lived, phone-approved connection
+search-continuity-tether-allow = Allow tethering for { $device }
+search-continuity-tether-decline = Decline tethering for { $device }
+search-continuity-tether-consent-subtitle = Resolve this exact phone-side consent request
+search-continuity-tether-disconnect = Disconnect tethering from { $device }
+search-continuity-tether-disconnect-subtitle = Revoke this exact tethering request and its network route
+search-continuity-capture-camera = Use camera from { $device }
+search-continuity-capture-microphone = Use microphone from { $device }
+search-continuity-capture-scanner = Use scanner from { $device }
+search-continuity-capture-request-subtitle = Request a one-session remote input for the focused app
+search-continuity-capture-allow = Allow remote input for { $app }
+search-continuity-capture-decline = Decline remote input for { $app }
+search-continuity-capture-consent-subtitle = Resolve this exact source-side capture request
+search-continuity-capture-approve-app = Allow focused app from { $device }
+search-continuity-capture-stop = Stop remote input from { $device }
+search-continuity-capture-session-subtitle = Act on this exact remote capture session
+search-continuity-controller-stop = Stop forwarding { $controller }
+search-continuity-controller-stop-subtitle = Neutralize and close this controller session
+search-continuity-controller-start = Use { $controller } on { $device }
+search-continuity-controller-start-subtitle = Forward normalized controls to the currently focused app
+search-continuity-controller-allow = Allow { $controller } from { $device }
+search-continuity-controller-decline = Decline { $controller } from { $device }
+search-continuity-controller-consent-subtitle = Controller access for the locally verified focused app
+search-continuity-call-move = Move { $room } call to { $device }
+search-continuity-call-move-subtitle = Propose handoff to an exact certified device
+search-continuity-call-allow = Allow handoff for { $room }
+search-continuity-call-decline = Decline handoff for { $room }
+search-continuity-call-consent-subtitle = Resolve this exact call handoff consent
+
+# First-login identity setup: what the identity is
+onboarding-intro-title = Create your local Tilo identity
+onboarding-intro-body = Tilo will create a cryptographic identity that belongs to you, then certify a separate key for this device. Tilo uses that chain for collaboration and peer invitations. Individual app edits are not all cryptographically signed yet.
+onboarding-intro-point-collaboration = It gives collaboration a stable identity for you and certifies this device to peers.
+onboarding-intro-point-local = It is created here, on this machine. Nothing is uploaded and no server holds a copy.
+onboarding-intro-point-not-account = It is not an account and has no password — there is nothing to log in to.
+onboarding-intro-card-title = What it is for
+onboarding-host-intro-title = Set up your Tilo identity
+onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
+
+# First-login identity setup: no recovery service
+onboarding-no-recovery-title = If you lose this device without a backup, this identity is gone
+onboarding-no-recovery-point-no-service = There is no recovery service. No backup code and no recovery phrase can recreate this identity.
+onboarding-no-recovery-point-backup = The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.
+onboarding-acknowledgement = I understand that losing this device without a backup means losing this identity.
+onboarding-protect-title = Protect your Tilo identity
+onboarding-protect-message = There is no reset button. Create an encrypted portable backup after this step.
+onboarding-create-failed = Your identity was not created
+onboarding-create-failed-title = Your identity could not be created
+onboarding-create-failed-message = Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.
+
+# First-login identity setup: progress header
+onboarding-progress-eyebrow = Tilo identity setup
+onboarding-progress-stage = Step { $step } of { $total }  ·  { $stage }
+onboarding-progress-a11y = Identity setup, step { $step } of { $total }: { $stage }
+onboarding-stage-choose = Choose
+onboarding-stage-restore = Restore
+onboarding-stage-protect = Protect
+onboarding-stage-media = Media
+onboarding-stage-ready = Ready
+onboarding-stage-backup = Backup
+
+# First-login identity setup: resuming after a restart
+onboarding-progress-attention = Setup progress needs attention
+onboarding-progress-unreadable = The saved setup position could not be read ({ $error }). Your identity is safe; setup resumed at the completion step.
+onboarding-progress-invalid-identity = Setup found unfinished progress but could not validate the existing identity: { $error }
+onboarding-progress-save-failed = Setup could not save its restart position: { $error }. No identity action was repeated.
+onboarding-progress-clear-failed = Setup finished, but its restart marker could not be removed: { $error }. Try Finish again so this screen does not return next login.
+
+# First-login identity setup: shared buttons
+onboarding-back = Back
+onboarding-cancel = Cancel
+onboarding-continue = Continue
+onboarding-done = Done
+onboarding-use-existing = Use existing
+onboarding-create-identity = Create identity
+onboarding-create-local-identity = Create local identity
+onboarding-restore-backup = Restore selected backup
+
+# First-login identity setup: connecting an existing identity
+onboarding-connect-title = Connect an existing identity
+onboarding-connect-recovery-title = Your existing identity needs recovery
+onboarding-connect-recovery-message = Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.
+onboarding-connect-failed = That identity could not be connected
+onboarding-connect-nearby = Connect a nearby device
+onboarding-connect-nearby-instructions = On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.
+onboarding-connect-retry-keyring = Retry keyring
+onboarding-connect-browse = Browse…
+onboarding-connect-file = Identity backup file
+onboarding-connect-file-placeholder = Choose an encrypted backup or legacy identity JSON
+onboarding-connect-passphrase = Backup passphrase
+onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
+onboarding-connect-nearby-card = Nearby trusted device
+onboarding-connect-backup-card = Encrypted backup
+onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
+onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
+onboarding-picker-import-title = Choose a Tilo identity
+onboarding-picker-import-filter = Tilo identity
+
+# First-login identity setup: pairing with a nearby device
+onboarding-nearby-searching = Looking for a trusted device nearby…
+onboarding-nearby-start-failed = Could not start nearby setup: { $error }
+onboarding-nearby-unavailable = Nearby setup is unavailable in this session
+onboarding-nearby-cancelled = Nearby setup cancelled. Choose Connect nearby to try again.
+onboarding-nearby-code = Code { $code } · waiting for approval on your trusted device
+onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
+onboarding-nearby-invalid-identity = The trusted device returned an invalid identity. Choose Connect nearby to retry.
+onboarding-nearby-failed = Nearby setup did not finish: the pairing window closed or approval was cancelled. Choose Connect nearby to retry.
+onboarding-nearby-failed-detail = Nearby setup did not finish: { $detail }. Choose Connect nearby to retry.
+
+# First-login identity setup: encrypted backup
+onboarding-backup-title = Back up your Tilo identity
+onboarding-backup-identity-created = Your local identity was created
+onboarding-backup-explanation = Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
+onboarding-backup-passphrase = New backup passphrase
+onboarding-backup-passphrase-placeholder = Long, unique passphrase — 12+ characters
+onboarding-backup-confirmation = Confirm new backup passphrase
+onboarding-backup-confirmation-placeholder = Confirm passphrase
+onboarding-backup-save = Choose location and save backup…
+onboarding-backup-save-another = Save another copy
+onboarding-backup-skip-acknowledgement = I understand that without an encrypted backup, losing this device means losing this identity.
+onboarding-backup-continue-without = Continue without backup
+onboarding-backup-failed = The backup was not saved
+onboarding-backup-verified = Encrypted backup verified
+onboarding-backup-verified-earlier = The verified backup was saved before setup restarted.
+onboarding-passphrase-too-short = Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe.
+onboarding-passphrase-mismatch = The two passphrases do not match.
+onboarding-passphrase-unavailable = The passphrase fields are temporarily unavailable.
+onboarding-picker-backup-title = Save encrypted identity backup
+onboarding-picker-backup-filter = Encrypted Tilo identity
+
+# First-login identity setup: review renderer fixtures
+onboarding-snapshot-restore-error = That backup could not be opened. Check the file and passphrase, then try again.
+onboarding-snapshot-create-error = The identity could not be saved. Nothing was created; check available storage and try again.
+
+# First-login identity setup: identity ready
+onboarding-done-title = Your identity is ready
+onboarding-done-body = This fingerprint identifies your local cryptographic root. Tilo can present it in collaboration flows that support verification; you do not need to type it.
+onboarding-done-ready = Identity stored on this device
+onboarding-host-done-title = Your Tilo identity is ready
+onboarding-host-done-body = Tilo will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.
+onboarding-host-done-ready = Ready for Tilo collaboration
+onboarding-done-next-title = What happens next
+onboarding-done-next-body = The desktop is ready. Sharing remains off until you deliberately enable it in Settings.
+onboarding-done-backup-verified = Backup verified
+onboarding-done-backup-verified-body = Keep the encrypted backup file and its passphrase in separate places.
+onboarding-done-backup-recommended = Backup still recommended
+onboarding-done-backup-recommended-body = Create an encrypted portable backup from Settings before relying on this identity.
+onboarding-done-system-care-title = System care
+onboarding-done-system-care-body = Tilo checks signed system updates automatically after setup when the machine is online. You can check, stage, and roll back releases in Settings.
+onboarding-tour-take = Take a quick tour
+onboarding-finish = Continue to desktop
+
+# First-login setup: media codecs
+onboarding-codecs-title = Install media codecs?
+onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
+onboarding-codecs-enables-title = What it enables
+onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
+onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
+onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
+onboarding-codecs-source-title = Where it comes from
+onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+onboarding-codecs-progress = Progress: { $percent }%
+onboarding-codecs-starting = Starting…
+onboarding-codecs-installing-title = Installing media codecs
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
+onboarding-codecs-offline-title = Media codecs will install once you are online
+onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
+onboarding-codecs-installed-title = Media codecs installed
+onboarding-codecs-failed-title = Media codecs could not be installed
+onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
+onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-skip = Skip
+onboarding-codecs-not-now = Not now
+onboarding-codecs-retry = Try again
+onboarding-codecs-install = Install media codecs
+
+# Desktop tour
+onboarding-tour-eyebrow = Tilo  •  DESKTOP TOUR
+onboarding-tour-stage = { $stage }  ·  { $step } of 4
+onboarding-tour-progress-a11y = Desktop tour, step { $step } of 4: { $stage }
+onboarding-tour-stage-move = Move
+onboarding-tour-stage-arrange = Arrange
+onboarding-tour-stage-share = Share
+onboarding-tour-stage-begin = Begin
+onboarding-tour-skip = Skip tour
+onboarding-tour-enter = Enter Tilo
+onboarding-tour-navigate-title = Everything is close at hand
+onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
+onboarding-tour-search-title = Search  ·  Super+K or Super+Space
+onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
+onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
+onboarding-tour-overview-title = Overview  ·  Super+Tab or four-finger swipe
+onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
+onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
+onboarding-tour-move-body = Up and down switch workspaces. Left and right step between tiled windows along the current strip.
+onboarding-tour-organise-title = A place for each kind of work
+onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
+onboarding-tour-workspace-title = Workspace
+onboarding-tour-workspace-body = A durable place for a project, its people, permissions, apps, and history.
+onboarding-tour-strip-title = Strip
+onboarding-tour-strip-body = A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.
+onboarding-tour-window-group-title = Window group
+onboarding-tour-window-group-body = A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.
+onboarding-tour-tab-title = Tab
+onboarding-tour-tab-body = An app or document inside a window group. Drag tabs to arrange them without overlapping windows.
+onboarding-tour-collaborate-title = Sharing stays deliberate
+onboarding-tour-collaborate-intro = Collaboration is built into the workspace, not bolted onto individual apps. Nothing becomes shared merely because it is open.
+onboarding-tour-invite-settings-title = Invite from Workspace Settings
+onboarding-tour-invite-settings-body = Choose a role and review exactly which workspace the invitation opens.
+onboarding-tour-follow-title = Follow only when you choose
+onboarding-tour-follow-body = People keep their own focus and view. Follow is an explicit, reversible action.
+onboarding-tour-system-features-title = Undo and permissions are system features
+onboarding-tour-system-features-body = History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.
+onboarding-tour-start-title = Your first five minutes
+onboarding-tour-start-intro = Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.
+onboarding-tour-name-title = 1  Name the workspace
+onboarding-tour-name-body = Open Workspace Settings from the title and choose a recognisable project name.
+onboarding-tour-open-title = 2  Open a shared starting point
+onboarding-tour-open-body = Choose Notes, Calendar, or Chat, then add other apps beside it.
+onboarding-tour-invite-title = 3  Invite the right people
+onboarding-tour-invite-body = Choose Invite people in Workspace Settings and review each role before sharing.
+onboarding-tour-check-title = 4  Check work and recover mistakes
+onboarding-tour-check-body = Open Activity to catch up, compare versions, or undo only the change that went wrong.
+
+# Workspace invite card: inviting someone, joining with an invite, pending invites
+peer-sync-title-review = Review invitation
+peer-sync-title-invite = Invite someone
+peer-sync-title-join = Join a workspace
+peer-sync-title-workspace-invite = Workspace invite
+peer-sync-paste-token = Paste or type the invite token
+peer-sync-identity-copied = Identity copied — send it to the inviter
+peer-sync-invite-failed = Invite failed: { $error }
+peer-sync-identity-unavailable = Identity unavailable: { $error }
+peer-sync-joined-room = Joined room { $room }
+peer-sync-join-refused = Refused: { $error }
+peer-sync-pending-unavailable = Pending invites unavailable: { $error }
+peer-sync-resend-failed = Could not resend: { $error }
+peer-sync-invite-canceled = Invite canceled
+peer-sync-cancel-failed = Could not cancel: { $error }
+peer-sync-unexpected-response = Unexpected collaboration response
+peer-sync-using-verified-identity = Using verified identity · { $verification }
+peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
+peer-sync-name-required = Say who this invite is for
+peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
+peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
+peer-sync-copied = Copied
+peer-sync-pasted = Pasted — press Enter to join
+peer-sync-clipboard-empty = Nothing on the clipboard to paste
+peer-sync-identity-bound = Identity bound · { $fingerprint }
+peer-sync-identity-invalid = That is not a Tilo identity key (expected 64 hexadecimal characters)
+peer-sync-pending-heading = PENDING INVITES
+peer-sync-pending-heading-paged = PENDING INVITES · { $first }–{ $last } of { $total } · scroll
+peer-sync-role-expires = { $role } · { $unit ->
+    [now] expires in moments
+    [seconds] expires in { $count ->
+        [one] 1 second
+       *[other] { $count } seconds
+    }
+    [minutes] expires in { $count ->
+        [one] 1 minute
+       *[other] { $count } minutes
+    }
+    [hours] expires in { $count ->
+        [one] 1 hour
+       *[other] { $count } hours
+    }
+   *[days] expires in { $count ->
+        [one] 1 day
+       *[other] { $count } days
+    }
+}
+peer-sync-received-role-expires = { $role } access · { $unit ->
+    [now] expires in moments
+    [seconds] expires in { $count ->
+        [one] 1 second
+       *[other] { $count } seconds
+    }
+    [minutes] expires in { $count ->
+        [one] 1 minute
+       *[other] { $count } minutes
+    }
+    [hours] expires in { $count ->
+        [one] 1 hour
+       *[other] { $count } hours
+    }
+   *[days] expires in { $count ->
+        [one] 1 day
+       *[other] { $count } days
+    }
+}
+peer-sync-role-viewer = Viewer
+peer-sync-role-commenter = Commenter
+peer-sync-role-editor = Editor
+peer-sync-copy = Copy
+peer-sync-cancel = Cancel
+peer-sync-back = Back
+peer-sync-join = Join
+peer-sync-paste = Paste
+peer-sync-create-invite = Create invite
+peer-sync-review-invite = Review invite
+peer-sync-paste-identity = Paste new identity
+peer-sync-copy-identity = Copy my identity
+peer-sync-recipient-heading = WHO ARE YOU INVITING?
+peer-sync-recipient-new = Someone new · exchange their Tilo identity
+peer-sync-role-heading = ACCESS THEY WILL RECEIVE
+peer-sync-review-workspace = Workspace · { $workspace }
+peer-sync-review-workspace-this = Workspace · this workspace
+peer-sync-review-inviter = Invited by · { $inviter }
+peer-sync-review-inviter-you = Invited by · You
+peer-sync-review-recipient = Recipient · { $name }
+peer-sync-review-recipient-unnamed = Recipient · Someone
+peer-sync-review-role = Access · { $role }
+peer-sync-review-identity = Bound identity · { $fingerprint }
+peer-sync-review-identity-missing = Bound identity · missing
+peer-sync-review-note = Only this identity can redeem the signed one-hour invite.
+peer-sync-selected-person = Selected person
+peer-sync-name-new-person = Name the new person
+peer-sync-name-placeholder = Their name
+peer-sync-recipient-hint = Choose a verified person or paste their Tilo identity.
+peer-sync-identity-remembered = Verified remembered identity · { $fingerprint }
+peer-sync-identity-new = New identity bound · { $fingerprint }
+peer-sync-invite-anyone = Anyone with this invite
+peer-sync-invite-received = Invite received
+peer-sync-paste-invite-hint = Paste the invite they sent you.
+peer-sync-token-characters = { $token } · { $count ->
+    [one] 1 character
+   *[other] { $count } characters
+}
+peer-sync-token-incomplete = Not a whole invite yet
+
+# Leftover shell notices: document opens, host app provenance, quiet status, collaboration
+doc-open-failed = Couldn't open { $name }
+doc-open-unnamed-file = File
+host-app-source-flatpak = Flatpak
+host-app-source-system = System
+new-document-unavailable = New document unavailable: { $error }
+collab-unavailable-title = Collaboration unavailable
+collab-unavailable-body = Apps in this session cannot share edits. { $reason }
+quiet-status-dnd = Do Not Disturb
+quiet-status-dnd-presenting = Do Not Disturb while presenting
+quiet-status-dnd-sharing = Do Not Disturb while sharing
+quiet-status-focus-until = Focus until { $time }
+
+# Saved workspaces that could not be opened at startup
+state-notice-newer-title = Your workspaces were not opened
+state-notice-unreadable-title = Your workspaces could not be read
+state-notice-newer-body = Saved by a newer version of Tilo. Nothing was changed.
+state-notice-unreadable-body = The file could not be read. Nothing was changed.
+state-notice-newer-detail = { $path } was written by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed, and nothing has been written over it — this session runs without saving, so it cannot be. Update again, or roll forward, to get back to your own workspaces.
+state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
+
+# Workspace overview: who is in a room and what it shares
+overview-access-shared-one = Shared with { $name }
+overview-access-shared-two = Shared with { $first } and { $second }
+overview-access-shared-many = { $count ->
+    [one] Shared with { $name } and 1 other
+   *[other] Shared with { $name } and { $count } others
+}
+overview-items-shared = { $count ->
+    [one] 1 item shared
+   *[other] { $count } items shared
+}
+
+# Windows and documents the shell hosts
+shell-window-restoring = Restoring this window…
+shell-document-unavailable = Document unavailable
+shell-named-document-unavailable = { $name } unavailable
+shell-path-open-failed = Cannot open { $path }: { $error }
+shell-path-read-failed = Cannot read { $path }: { $error }
+editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
+editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
+editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
+editor-hint-click = Click to edit
+notes-empty-title = This note is empty
+notes-empty-body = Jot anything here. Changes are saved as you type.
+notes-empty-action = Start writing
+window-move-unknown-tab = That window is no longer open.
+window-move-unknown-workspace = That workspace is gone.
+window-move-same-workspace = The window is already in that workspace.
+window-move-pinned = This window belongs to its workspace and cannot move.
+window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
+
+# Empty-workspace launchpad and the default command list
+global-search-create-workspace = Create Workspace
+global-search-rename-workspace = Rename Workspace
+global-search-switch-workspace = Switch Workspace…
+global-search-open-settings = Open Settings
+global-search-open-file = Open File
+
+# Shortcut steps that ask before they run, and keyboard capture
+shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
+shortcut-step-type-phrase = Type “{ $phrase }” to confirm.
+shortcut-step-confirm-title = { $action }?
+shortcut-step-confirm = Confirm
+shortcut-step-ask-detail = “{ $shortcut }” asks for { $param }.
+shortcut-step-continue = Continue
+shortcut-step-yes = Yes
+shortcut-step-no = No
+shortcut-trigger-failed = The shortcut didn't run
+osd-keys-captured = App receives all keys · { $chord } restores shortcuts
+osd-keys-released = Shortcuts restored
+osd-pad-mode = Tablet mode { $mode } of { $modes }
+pad-map-hint = Shown while the button is held
+pad-map-button = Button { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Strip { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Next mode (now { $mode } of { $modes })
+pad-map-shows-map = Shows this map
+pad-map-app-decides = Up to the app
+pad-map-nothing = Does nothing
+pad-map-dial-scroll = Scroll
+pad-map-dial-zoom = Zoom
+pad-map-dial-brush-size = Brush size
+pad-map-dial-volume = Volume
+pad-map-dial-brightness = Brightness
+
+# Peer views, opening documents, identity backup and invitations
+peer-view-surface-title = Peer surface #{ $id }
+peer-view-awaiting = Awaiting peer surface…
+doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
+doc-open-no-file-type = { $name } has no file type to open it by
+doc-open-no-workspace = there is no active workspace to open it in
+identity-backup-busy = Finish the current identity flow before creating another backup.
+identity-backup-locate-failed = Could not locate the active identity: { $error }
+invite-workspace-verified-identity = Workspace-verified identity
+palette-query-permission-roles = permission role
+
+# Accessibility tree: the hardware-key readout
+a11y-status-readout = Status readout
+
+# Compositor notices: lock screen status, X11 compatibility, collaboration, nearby drops, captures
+lock-screen-status = Lock status
+xwayland-unavailable-title = X11 compatibility unavailable
+xwayland-unavailable-body = Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.
+collab-unavailable-services-root = The service directory could not be created: { $error }
+collab-unavailable-socket-taken = Another session on this machine already owns the collaboration socket.
+collab-unavailable-broker = The broker could not start: { $error }
+fabric-focus-app-for-controller = Focus an app before forwarding a controller
+fabric-focus-app-for-remote-input = Focus an app before using a remote input
+launch-held-network-failed = the desktop's network could not start ({ $error })
+nearby-drop-your-device = your device
+nearby-drop-sending = Sending nearby
+nearby-drop-sending-body = { $file } to { $device }
+nearby-drop-sent = Sent nearby
+nearby-drop-sent-body = { $file } to { $device }
+nearby-drop-failed = Nearby drop failed
+nearby-drop-failed-body = { $file } · { $device }
+nearby-drop-received = Received nearby
+nearby-drop-received-body = { $file } from { $device }
+capture-screenshot-sent = Screenshot sent
+capture-screenshot-not-sent = Screenshot not sent
+capture-recording-audio-lost = Recording continues without audio
+capture-recording-audio-lost-body = { $path } · { $reason }
+capture-recent-audio-lost = Recent capture continues without audio
+capture-failed = Capture failed
+idle-inhibit-unnamed-app = An app
+
+# Sending a screenshot to a device or into the workspace files
+screenshot-send-offered = Offered to { $device }; accept it there to save
+screenshot-send-saved = Saved to workspace files as { $name }
+screenshot-send-gone = The screenshot { $path } is gone
+screenshot-send-device-offline = That device is no longer online
+screenshot-send-create-failed = Cannot create { $path }: { $error }
+screenshot-send-no-file-name = { $path } has no file name
+screenshot-send-read-failed = Cannot read { $path }: { $error }
+screenshot-send-save-failed = Cannot save to workspace files: { $error }
+screenshot-send-too-many = The workspace Screenshots folder has too many files with this name
+screenshot-send-sync-off = Device sync is not running
+screenshot-send-no-folder = { $path } has no folder
+
+# A window whose frames cannot be shown
+foreign-window-unshowable = This window can't be shown.
+foreign-window-not-responding = This app isn't responding.
+
+# Why a speaker-group request failed, as Settings shows it
+speaker-error-too-many-groups = too many speaker groups
+speaker-error-group-exists = that speaker group already exists
+speaker-error-group-gone = that speaker group no longer exists
+speaker-error-not-in-group = that speaker is not in the group
+speaker-error-calibration-range = those calibration values are out of range
+speaker-error-request-expired = that speaker group request expired
+speaker-error-group-changed = that speaker group changed; ask again from its device
+speaker-error-too-many-memberships = this device is already in too many speaker groups
+speaker-error-not-a-member = this device is not in that speaker group
+speaker-error-too-many-sessions = too many speaker group sessions are active
+speaker-error-group-unavailable = that speaker group is not available
+speaker-error-none-ready = no speaker in that group is ready
+speaker-error-session-gone = that speaker group session is no longer active
+speaker-error-name = give the speakers a name of up to 64 characters
+speaker-error-roles = each speaker needs its own output and its own role, and a stereo pair needs both sides
+speaker-error-unavailable = speaker groups are unavailable
+device-fabric-error-no-identity = this device has no certified personal identity
+speaker-error-speaker-unavailable = that speaker is not available right now
+speaker-error-output-disconnected = that output is no longer connected
+speaker-error-already-playing = a speaker is already playing its sound
+speaker-error-speaker-output-gone = that speaker's output is no longer connected
+speaker-error-play-failed = could not play the sound: { $error }
+speaker-error-device-invalid = that device id is not valid
+speaker-error-output-invalid = that output is not valid
+speaker-error-group-invalid = that speaker group is not valid
+speaker-error-media-off = Turn on Media in Devices & Sync to use speakers across your devices
+speaker-error-no-calibration = there is no finished calibration to apply
+speaker-error-no-applied-calibration = there is no applied calibration to revert
+speaker-error-calibration-unavailable = calibration is unavailable
+speaker-error-calibration-gone = that calibration is no longer available
+speaker-error-network-unavailable = the device network is unavailable
+speaker-error-microphone-invalid = that microphone is not valid
+speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
+speaker-error-microphone-unavailable = that microphone is not available
+speaker-error-not-all-ready = every speaker must be ready before calibrating
+speaker-error-request-failed = the speaker request failed
+speaker-error-app-stopped = that application stopped playing
+speaker-error-audio-unavailable = speaker group audio is unavailable
+speaker-error-other-session = another speaker group session is already playing from this device
+
+# Measuring speakers for calibration
+speaker-calibration-reason-remote-microphone = calibrate with a microphone on the device that set up the speakers
+speaker-calibration-reason-microphone-gone = that microphone is no longer connected
+speaker-calibration-reason-output-gone = that speaker's output is no longer connected
+speaker-calibration-reason-play-failed = could not play the sweep: { $error }
+speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-failed = Could not measure { $speaker }: { $reason }
+speaker-calibration-cancelled = Calibration was cancelled
+
+# Wireless display projection
+projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
+projection-service-exited = Projection service exited with { $status }
+projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
+projection-mode-unsupported = { $device } does not support { $mode } mode
+projection-service-unavailable = Projection service is unavailable
+projection-service-stopped = Projection service stopped
+
+# Why an action on your devices failed, as its notification says
+device-fabric-error-nearby-busy = Nearby Send staging is busy; retry when another transfer finishes
+device-fabric-error-bt-identity-invalid = that Bluetooth accessory identity is invalid
+device-fabric-error-bt-not-connected = only a paired accessory currently connected to this device can be handed off
+device-fabric-error-bt-name-invalid = the local Bluetooth accessory name is invalid
+device-fabric-error-bt-already-here = the Bluetooth accessory is already on this device
+device-fabric-error-target-not-enrolled = the target is not an enrolled device
+device-fabric-error-target-offline = the target device is offline
+device-fabric-error-bt-coordinator = Bluetooth handoff coordinator is unavailable
+device-fabric-error-bt-too-many = too many Bluetooth handoffs are already in progress
+device-fabric-error-bt-approval-gone = that Bluetooth handoff approval is no longer pending
+device-fabric-error-bt-inactive = that Bluetooth handoff is no longer active
+device-fabric-error-bt-no-retry = that Bluetooth handoff cannot be retried
+device-fabric-error-media-session-gone = that media session is no longer available
+device-fabric-error-no-route = target has no current authenticated personal route
+device-fabric-error-handoff-gone = that media handoff is no longer available
+device-fabric-error-handoff-not-pending = that media handoff is no longer pending
+device-fabric-error-handoff-no-retry = only a failed or cancelled media handoff can be retried
+device-fabric-error-name-not-portable = file name is not portable
+device-fabric-error-drop-one-item = nearby drop requires one regular file or folder
+device-fabric-error-drop-empty = nearby drop cannot send an empty file
+device-fabric-error-file-changed = file changed while being read
+device-fabric-error-transfer-inactive = nearby transfer is not active
+device-fabric-error-destination-unapproved = Nearby Send requires an approved destination
+device-fabric-error-consent-expired = nearby transfer consent expired
+device-fabric-error-destination-expired = Nearby Send destination expired
+device-fabric-error-transfer-unrecoverable = nearby transfer is no longer recoverable
+device-fabric-error-transfer-no-retry = nearby transfer is no longer retryable
+device-fabric-nearby-device = Nearby device
+device-fabric-error-output-gone = that audio output is no longer connected
+device-fabric-error-input-gone = that input is no longer connected
+device-fabric-error-spatial-unavailable = spatial calibration is unavailable
+device-fabric-error-proposal-stale = that calibration proposal is no longer current
+device-fabric-error-no-applied-calibration = there is no applied calibration to revert
+device-fabric-error-no-placement = this device has no published display placement
+device-fabric-error-target-not-display = the target is not an online controllable display
+device-fabric-error-target-no-display = the target has no published display
+device-fabric-error-side-taken = another enrolled display already occupies that side
+device-fabric-error-controller-not-enrolled = the controller is not an enrolled device
+device-fabric-error-controller-no-input = the controller has no online pointer or keyboard capability
+device-fabric-error-no-lease = that device does not have an active control lease
+device-fabric-error-control-not-granted = that device has not granted control
+device-fabric-error-lease-input = the active lease does not allow that input device
+device-fabric-error-display-local = this display is already local
+device-fabric-error-display-coordinator = personal display coordinator is unavailable
+device-fabric-error-display-busy = that device already has an active display stream
+device-fabric-error-no-video = the certified target cannot receive video
+device-fabric-error-mirror-coordinator = display mirror coordinator is unavailable
+device-fabric-error-mirror-too-many = too many display mirror sessions are active
+device-fabric-error-mirror-consent-gone = that display mirror consent is no longer pending
+device-fabric-error-display-receiving = this display is already receiving another stream
+device-fabric-error-mirror-inactive = that display mirror session is no longer active
+device-fabric-error-gamepad-capacity = typed-gamepad forwarding capacity is exhausted
+device-fabric-error-gamepad-decided = typed-gamepad authorization is unknown or already decided
+device-fabric-error-gamepad-no-lease = typed-gamepad target has not granted a lease
+device-fabric-error-inspect-failed = source cannot be inspected: { $error }
+device-fabric-error-transfer-start = nearby transfer could not start: { $error }
+device-fabric-error-open-failed = file cannot be opened: { $error }
+device-fabric-error-read-failed = file cannot be read: { $error }
+continuity-disabled-clipboard = clipboard continuity is disabled on this device
+continuity-disabled-notifications = notification continuity is disabled on this device
+continuity-disabled-wifi-settings = Wi-Fi/settings continuity is disabled on this device
+continuity-disabled-media = media continuity is disabled on this device
+continuity-disabled-display-input = display/input continuity is disabled on this device
+continuity-disabled-file-transfer = file-transfer continuity is disabled on this device
+continuity-disabled-realtime = realtime-session continuity is disabled on this device
+continuity-disabled-gamepad = typed-gamepad continuity is disabled on this device
+continuity-disabled-app-continuations = app-continuation continuity is disabled on this device
+remote-audio-all-system-audio = All system audio
+remote-audio-error-target-not-output = the target is not an online audio output
+remote-audio-error-unavailable = remote audio service is unavailable
+remote-audio-error-too-many = too many remote audio routes are active
+remote-audio-error-source-expired = that audio source picker entry expired
+remote-audio-error-request-expired = that remote audio request expired
+remote-audio-error-route-inactive = that remote audio route is no longer active
+remote-audio-speaker-group = Speaker group
+remote-audio-error-no-output = no local PipeWire output is available
+remote-audio-error-stream-ended = that application audio stream ended
+remote-capture-error-unavailable = remote capture service is unavailable
+remote-capture-error-busy = remote capture service is busy
+remote-capture-error-capacity = remote capture request capacity is exhausted
+remote-capture-error-receiver-busy = remote capture receiver is busy
+remote-capture-error-cannot-receive = this device cannot receive the requested remote input
+remote-capture-error-unknown-request = unknown remote capture request
+remote-capture-error-unknown-session = unknown remote capture session
+tethering-error-continuity-off = Wi-Fi Continuity is disabled on this device
+tethering-error-choose-phone = choose an online certified phone
+tethering-error-unavailable = tethering coordinator is unavailable
+tethering-error-too-many = too many tethering requests are already active
+tethering-error-history-full = tethering history is temporarily full
+tethering-error-session-inactive = that tethering session is no longer active
+tethering-error-request-gone = that tethering request is no longer pending
+gamepad-error-unavailable = physical gamepad manager is unavailable
+gamepad-error-no-identity = local certified-device identity is unavailable
+gamepad-error-target-unknown = target is not in the certified device fabric
+gamepad-error-target-offline = target device is not an online remote device
+gamepad-error-disconnected = that game controller is no longer connected
+gamepad-error-already-forwarded = that game controller is already being forwarded
+gamepad-error-busy = game controller input was busy while starting; try again
+gamepad-error-unknown = physical gamepad forwarding is unknown
+gamepad-error-open-failed = could not open game controller: { $error }
+gamepad-error-prime-failed = could not prime game controller: { $error }
+
+# Why a Wi-Fi network could not be shared with your devices
+wifi-share-error-enterprise = enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device
+wifi-share-error-no-passphrase = this Wi-Fi security mode has no portable passphrase
+wifi-share-error-unknown-security = unrecognized Wi-Fi security cannot be shared safely
+wifi-share-error-unvalidated = Wi-Fi security could not be validated for sharing
+wifi-share-error-no-presence = this device has not published fabric presence yet
+
+# Why installing an app from the catalogue failed
+catalogue-error-missing = this system has no app catalogue (app is missing)
+catalogue-error-spawn = could not start loading it
+catalogue-error-run = could not run the app catalogue: { $error }
+catalogue-error-exited = the app catalogue exited { $status }
+
+# Why sending to a nearby device failed
+nearby-error-destination-not-folder = Nearby Send destination is not a directory
+nearby-error-too-large = nearby transfer exceeds the size limit
+nearby-error-destination-name = Nearby Send destination name is unavailable
+nearby-error-outside-grant = Nearby Send source is outside this Files grant
+nearby-error-one-item = Nearby Send requires one regular file or folder
+nearby-error-queue-full = nearby transfer queue is full
+nearby-error-quota-full = nearby transfer quota is full
+nearby-error-too-many = too many nearby transfers
+nearby-error-not-regular = source is not a regular file
+nearby-error-folder-too-many = folder contains too many entries
+nearby-error-folder-special = folder contains a link or special file
+nearby-error-folder-too-large = folder exceeds the size limit
+nearby-error-source-changed = nearby transfer source changed while staging
+nearby-error-name-not-portable = source name is not portable
+
+# A document a tab could not restore
+hosted-document-unavailable = { $path } is unavailable: { $error }
+
+# A camera, microphone or scanner shared from another of your devices
+remote-capture-source-label = { $app } on certified device
+
+# Print jobs: the title a print queue shows when the app gave none
+print-untitled-document = Document

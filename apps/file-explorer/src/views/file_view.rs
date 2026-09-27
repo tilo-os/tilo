@@ -21,7 +21,7 @@
 //! cursor, so nothing is lost across a rebuild.
 
 #[cfg(all(test, unix))]
-use crate::filesystem_metadata as xattr;
+use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -2519,7 +2519,7 @@ mod tests {
 
         // Returns as soon as generation settles; the bound only catches a
         // service that never does, so a loaded runner cannot fail it.
-        service.block_until_idle(std::time::Duration::from_secs(60));
+        service.block_until_idle(tilo_test_env::hang_bound());
         assert!(
             matches!(
                 FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
@@ -2607,7 +2607,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(60));
+        service.block_until_idle(tilo_test_env::hang_bound());
         let state =
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state
@@ -2647,7 +2647,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(60));
+        service.block_until_idle(tilo_test_env::hang_bound());
         let state =
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state.ready().expect("the host's preview is adopted");
@@ -2674,7 +2674,7 @@ mod tests {
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
-        service.block_until_idle(std::time::Duration::from_secs(60));
+        service.block_until_idle(tilo_test_env::hang_bound());
         assert!(matches!(
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Badge(thumbnail::FileCategory::Image)

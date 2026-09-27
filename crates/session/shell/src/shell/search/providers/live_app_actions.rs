@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use ui::search::{FieldWeight, RankField};
 
 use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionHierarchy, ActionParam, ParamType};
 use crate::shell::search::{
@@ -220,6 +221,18 @@ fn job_state(update: &tilo_actions::InvocationUpdate) -> &'static str {
         tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
         tilo_actions::InvocationUpdate::Failed { .. } => "failed",
         tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
+    }
+}
+
+/// A [`job_state`] as the job's row reads it, in the desktop's language.
+fn job_state_label(state: &str) -> String {
+    match state {
+        "accepted" => t("search-app-job-accepted"),
+        "running" => t("search-app-job-running"),
+        "streaming" => t("search-app-job-streaming"),
+        "succeeded" => t("search-app-job-succeeded"),
+        "failed" => t("search-app-job-failed"),
+        _ => t("search-app-job-cancelled"),
     }
 }
 
@@ -977,6 +990,10 @@ impl LiveAppActionsProvider {
         });
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
+    )]
     fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
             let broker = self.broker.clone();
@@ -988,8 +1005,8 @@ impl LiveAppActionsProvider {
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),
                 id: job_cancel_id(id),
-                title: format!("Cancel action job {id}"),
-                subtitle: Some("Requests cooperative cancellation".into()),
+                title: t_args("search-app-job-cancel", &[("id", id.to_string().into())]),
+                subtitle: Some(t("search-app-job-cancel-detail")),
                 badge: None,
                 score: 5,
                 params: Vec::new(),
@@ -1025,8 +1042,8 @@ impl LiveAppActionsProvider {
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: PROVIDER_ID.into(),
             id: job_status_id(id),
-            title: format!("Action job {id}"),
-            subtitle: Some(state.into()),
+            title: t_args("search-app-job", &[("id", id.to_string().into())]),
+            subtitle: Some(job_state_label(state)),
             badge: None,
             score: -10,
             params: Vec::new(),
@@ -1579,7 +1596,12 @@ impl LiveAppActionsProvider {
                     .as_ref()
                     .and_then(|value| value.detail.as_deref())
                     .map_or_else(
-                        || format!("{} · contains resources", root.app_id),
+                        || {
+                            t_args(
+                                "search-app-resource-contains",
+                                &[("app", root.app_id.as_str().into())],
+                            )
+                        },
                         |detail| format!("{} · {detail}", root.app_id),
                     ),
             ),
@@ -1606,6 +1628,10 @@ impl SearchProvider for LiveAppActionsProvider {
 
     fn name(&self) -> &'static str {
         "Application resources and actions"
+    }
+
+    fn display_name(&self) -> String {
+        t("search-provider-app-actions")
     }
 
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -1701,6 +1727,10 @@ impl SearchProvider for LiveAppActionsProvider {
     #[allow(
         clippy::too_many_lines,
         reason = "the query constructs paired palette/headless callbacks from one captured action contract; splitting them would duplicate or desynchronise confirmation, launch, and job lifecycle state"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
     )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if self.projection.get() == QueryProjection::All {
@@ -1806,8 +1836,8 @@ impl SearchProvider for LiveAppActionsProvider {
                     operation_kind: tilo_actions::OperationKind::View,
                     provider_id: PROVIDER_ID.into(),
                     id: job_status_id(id),
-                    title: format!("Action job {id}"),
-                    subtitle: Some(state.into()),
+                    title: t_args("search-app-job", &[("id", id.to_string().into())]),
+                    subtitle: Some(job_state_label(state)),
                     badge: None,
                     score: -10,
                     params: Vec::new(),
@@ -1834,8 +1864,8 @@ impl SearchProvider for LiveAppActionsProvider {
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
                         id: job_cancel_id(id),
-                        title: format!("Cancel action job {id}"),
-                        subtitle: Some("Requests cooperative cancellation".into()),
+                        title: t_args("search-app-job-cancel", &[("id", id.to_string().into())]),
+                        subtitle: Some(t("search-app-job-cancel-detail")),
                         badge: None,
                         score: 5,
                         params: Vec::new(),
@@ -1922,9 +1952,12 @@ impl SearchProvider for LiveAppActionsProvider {
                             if surface_live {
                                 format!("{} · {}", action.resource_label, surface.app_id)
                             } else {
-                                format!(
-                                    "{} · {} · launches application",
-                                    action.resource_label, surface.app_id
+                                t_args(
+                                    "search-app-action-launches",
+                                    &[
+                                        ("resource", action.resource_label.as_str().into()),
+                                        ("app", surface.app_id.as_str().into()),
+                                    ],
                                 )
                             }
                         })
@@ -2372,15 +2405,19 @@ pub(crate) fn fixture_with_directory_page(
     actor: String,
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
-    let provider = LiveAppActionsProvider::new(broker);
+    let provider = Rc::new(LiveAppActionsProvider::new(broker));
     provider
         .directory_pages
         .borrow_mut()
         .insert((peer, actor, String::new(), Vec::new()), page);
-    Rc::new(provider)
+    provider
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2524,9 +2561,7 @@ mod tests {
     fn broker_for(
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-            chrome.borrow().tree_handle(),
-        )
+        crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
     }
 
     fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {

@@ -23,8 +23,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::Duration;
-
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -33,7 +31,7 @@ use crate::common::{TestUser, client_endpoint, spawn_relay};
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.
 async fn next_envelope(client: &RelayClient, what: &str) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| {
             panic!("timed out waiting for {what} — the session's endpoint went away")
@@ -47,7 +45,13 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
     let device = user.enrol("laptop", DeviceCapabilities::primary());
 
-    let relay = spawn_relay(&user, relay_dev, &[7], &[device.device_pubkey()]).await;
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_dev,
+        &[7],
+        &[device.device_pubkey()],
+    ))
+    .await;
 
     // The endpoint is constructed inside the call: the test keeps no
     // handle of its own, so only the returned client can hold it open.

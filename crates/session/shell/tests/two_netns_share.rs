@@ -642,9 +642,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
     let mut rx = SurfaceStreamReceiver::new();
     let mut buf = [0u8; 2048];
     let mut received_frame: Option<StreamFrame> = None;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(1))
-        .expect("1s from now must not overflow Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline && received_frame.is_none() {
         if let Ok((n, _)) = viewer_sock.recv_from(&mut buf) {
             let _ = rx.push_bytes(&buf[..n]);
@@ -658,7 +656,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
             }
         }
     }
-    let received = received_frame.expect("frame did not survive UDP");
+    let received = received_frame.expect("the loopback frame never arrived within the hang bound");
     assert_eq!(received.sequence, 0);
     assert_eq!(received.payload, frame.payload);
 

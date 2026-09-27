@@ -14,11 +14,7 @@ use runtime_fs::{
     DirectoryGrant, EntryName, FsError, FsOwner, FsRight, FsSession, GrantedEntry,
     NativeGrantAuthority,
 };
-use std::{
-    fs,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{fs, sync::Arc, time::Instant};
 use tempfile::TempDir;
 
 fn name(value: &str) -> EntryName {
@@ -57,7 +53,10 @@ impl Fixture {
     }
     fn with_rights(attach: bool, granted_rights: Vec<FsRight>) -> Self {
         let disk = tempfile::tempdir().unwrap();
-        let metadata = tempfile::tempdir().unwrap();
+        let metadata = tempfile::Builder::new()
+            .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         fs::create_dir(disk.path().join("source")).unwrap();
         fs::create_dir(disk.path().join("destination")).unwrap();
         let authority = NativeGrantAuthority::new();
@@ -151,7 +150,7 @@ impl Fixture {
     }
 }
 fn drain(job: &mut FsJob) -> Vec<FsUpdate> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut all = Vec::new();
     loop {
         all.extend(job.poll().unwrap());
@@ -447,7 +446,7 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         let id = job.operation_id();
         f.session.close();
         drop(job);
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while f.store.report(&id).unwrap().state == OperationState::Running {
             assert!(
                 Instant::now() < deadline,
@@ -484,7 +483,10 @@ fn operations_publish_exact_bytes_and_durable_reports() {
             workspace: "test-room".into(),
             app_id: "other".into(),
         };
-        let meta = tempfile::tempdir().unwrap();
+        let meta = tempfile::Builder::new()
+            .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let root = f
             .authority
             .admit_directory(fs::File::open(f.dst("")).unwrap(), other.clone(), rights())
@@ -510,7 +512,10 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         let store = OperationOwner::open(fs::File::open(meta.path()).unwrap(), other).unwrap();
         f.authority.attach_operations(store.clone()).unwrap();
         f.authority.attach_operations(store.clone()).unwrap();
-        let replacement_meta = tempfile::tempdir().unwrap();
+        let replacement_meta = tempfile::Builder::new()
+            .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let replacement =
             OperationOwner::open(fs::File::open(replacement_meta.path()).unwrap(), owner())
                 .unwrap();
@@ -556,7 +561,10 @@ fn real_cross_volume_move_copy_remove_stages() {
         fs::metadata(destination.path()).unwrap().dev(),
         "distinct device prerequisite"
     );
-    let meta = tempfile::tempdir().unwrap();
+    let meta = tempfile::Builder::new()
+        .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+        .tempdir()
+        .unwrap();
     let authority = NativeGrantAuthority::new();
     let src = authority
         .admit_directory(fs::File::open(source.path()).unwrap(), owner(), rights())
@@ -670,5 +678,117 @@ fn mutations_require_their_exact_rights() {
         ));
         assert_eq!(fs::read(f.src("a")).unwrap(), b"preserve");
         assert!(!f.src("sibling").exists());
+    }
+}
+
+#[test]
+fn receipt_publication_rejects_public_directory_before_any_effect() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let receipt = root.path().join("untouched.receipt");
+    fs::write(&receipt, b"invalid preexisting receipt must not be read").unwrap();
+    let before = fs::metadata(&receipt).unwrap().modified().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o770)).unwrap();
+    assert!(matches!(
+        OperationOwner::open(fs::File::open(root.path()).unwrap(), owner()),
+        Err(FsError::Denied)
+    ));
+    assert_eq!(
+        fs::read(&receipt).unwrap(),
+        b"invalid preexisting receipt must not be read"
+    );
+    assert_eq!(fs::metadata(&receipt).unwrap().modified().unwrap(), before);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    assert_eq!(
+        fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+        0o770
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn receipt_publication_rejects_directory_acl_before_any_effect() {
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("untouched.receipt"), b"unchanged").unwrap();
+    let before = fs::metadata(root.path().join("untouched.receipt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert!(
+        Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read,write,file_inherit,only_inherit"])
+            .arg(root.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(
+        OperationOwner::open(fs::File::open(root.path()).unwrap(), owner()),
+        Err(FsError::Denied)
+    ));
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    assert_eq!(
+        fs::read(root.path().join("untouched.receipt")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::metadata(root.path().join("untouched.receipt"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn receipt_publication_retains_renamed_directory_and_writer_exclusion() {
+    use std::os::unix::fs::PermissionsExt;
+    for rename_before_open in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("journal");
+        let moved = root.path().join("moved");
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let handle = fs::File::open(&path).unwrap();
+        let rename = || {
+            fs::rename(&path, &moved).unwrap();
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        if rename_before_open {
+            rename();
+        }
+        let store = OperationOwner::open(handle, owner()).unwrap();
+        if !rename_before_open {
+            rename();
+        }
+        assert!(matches!(
+            OperationOwner::open(fs::File::open(&moved).unwrap(), owner()),
+            Err(FsError::Busy)
+        ));
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+        let f = Fixture::new(false);
+        f.authority.attach_operations(Arc::clone(&store)).unwrap();
+        fs::write(f.src("a"), b"held authority").unwrap();
+        let mut job = f
+            .session
+            .start(FsOperation::Copy {
+                entries: vec![f.entry("a")],
+                into: f.destination.clone(),
+                conflict: ConflictPolicy::Fail,
+            })
+            .unwrap();
+        drain(&mut job);
+        assert!(fs::read_dir(&moved).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".receipt")
+        }));
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+        let _independent = OperationOwner::open(fs::File::open(&path).unwrap(), owner()).unwrap();
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
     }
 }

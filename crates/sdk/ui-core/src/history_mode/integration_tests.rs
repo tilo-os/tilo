@@ -316,6 +316,38 @@ fn review_driver() -> Driver {
         .unwrap();
     driver
 }
+
+#[test]
+fn managed_review_dialog_drains_and_returns_to_retained_preview() {
+    let mut driver = review_driver();
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "selected preview stayed dirty after draw"
+    );
+
+    driver.click_named("history-restore").unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Restore version")
+    );
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "review dialog stayed dirty after draw"
+    );
+    assert!(!driver.poll_frame().unwrap());
+
+    driver.key("Escape");
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(driver.inspection_json().unwrap().contains("Notebook: old"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "retained preview was not current after closing review"
+    );
+    assert!(!driver.poll_frame().unwrap());
+}
 fn grant(
     actor: &str,
     scope: crate::permissions::Scope,
@@ -961,21 +993,9 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
 }
 
 pub(crate) struct TileEditor<T: Widget = crate::widget::TextInput>(pub(crate) T);
-impl<T: Widget> crate::widget::AppWidget for TileEditor<T> {
-    fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &str {
-        "Tile editor"
-    }
-    fn app_icon(&self) -> crate::widget::IconDescriptor {
-        crate::widget::IconDescriptor::Glyph("T")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(impl [T: Widget] TileEditor<T>, "Tile editor");
 impl<T: Widget> Widget for TileEditor<T> {
+    crate::testing::delegate_widget_methods!(0: sync, draw, get_rect);
     fn name(&self) -> &str {
         "TileEditor"
     }
@@ -985,8 +1005,26 @@ impl<T: Widget> Widget for TileEditor<T> {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![&mut self.0]
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.0.sync(doc, path);
+    fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
+        self.0.update(doc, path)
+    }
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.0.record_intent()
+    }
+    fn has_separate_document_owner(&self) -> bool {
+        false
+    }
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.0
+            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
     fn build_layout(
         &mut self,
@@ -1022,19 +1060,6 @@ impl<T: Widget> Widget for TileEditor<T> {
                 origin.y + f64::from(layout.location.y),
             ),
         );
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.0.get_rect()
-    }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.0.draw(scene, transform, text, theme, presence);
     }
     fn handle_event(
         &mut self,
@@ -1549,12 +1574,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 .unwrap(),
             "old"
         );
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
-        while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-            && crate::time::now() < deadline
-        {
-            std::thread::sleep(crate::time::Duration::from_millis(10));
-        }
+        store.await_submitted(&first.id).unwrap();
         assert_eq!(
             store.save_status(&first.id).unwrap(),
             crate::record::RecordSaveStatus::Saved,
@@ -1857,3 +1877,1801 @@ fn check_automatic_media(mut driver: Driver, selected: automerge::ChangeHash) {
     driver.key("Shift");
     assert!(!format!("{:?}", driver.a11y_nodes()).contains("Loading historical media"));
 }
+
+const RETAINED_LIFECYCLE_OPERATION: &str = "fixture.retained-lifecycle";
+
+#[derive(Clone)]
+struct RetainedLifecycleHandles {
+    emitter: std::rc::Rc<std::cell::RefCell<crate::widget::ActionEmitter<()>>>,
+    queued: std::rc::Rc<std::cell::RefCell<Option<QueuedLifecycleResult>>>,
+    admitted: std::rc::Rc<std::cell::Cell<Option<tilo_actions::InvocationId>>>,
+    starts: std::rc::Rc<std::cell::Cell<usize>>,
+    accepts: std::rc::Rc<std::cell::Cell<usize>>,
+    completions: std::rc::Rc<std::cell::Cell<usize>>,
+    polls: std::rc::Rc<std::cell::Cell<usize>>,
+    syncs: std::rc::Rc<std::cell::Cell<usize>>,
+    updates: std::rc::Rc<std::cell::Cell<usize>>,
+    events: std::rc::Rc<std::cell::Cell<usize>>,
+    event_value: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    wrong_owner: std::rc::Rc<std::cell::Cell<usize>>,
+    intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::RecordCheckout>>>,
+    last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+}
+
+struct QueuedLifecycleResult {
+    invocation: tilo_actions::InvocationId,
+    value: String,
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the fixture tracks independent lifecycle and owner-policy states"
+)]
+struct RetainedLifecycleProbe {
+    id: &'static str,
+    expected_owner: &'static str,
+    enforce_result_owner: bool,
+    streaming: bool,
+    text: crate::widget::Text,
+    handles: RetainedLifecycleHandles,
+    ready: bool,
+    dirty: bool,
+    observed: String,
+}
+
+fn increment(counter: &std::cell::Cell<usize>) {
+    counter.set(counter.get().checked_add(1).unwrap());
+}
+
+/// A record store for `workspace` in a fresh directory. Keep all three alive.
+fn lifecycle_store(
+    workspace: &str,
+) -> (
+    tempfile::TempDir,
+    crate::record::RecordOwners,
+    crate::record::RecordStore,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
+    let store = owners.open(RESTORABLE.app_id, workspace).unwrap();
+    (directory, owners, store)
+}
+
+fn note(tab: u64) -> crate::record::RecordCheckout {
+    crate::record::RecordCheckout::new(
+        crate::RecordId::for_tab(tab),
+        crate::record::RecordKind::new("note"),
+    )
+}
+
+fn seed_note(
+    store: &crate::record::RecordStore,
+    checkout: &crate::record::RecordCheckout,
+    owner: &str,
+    body: &str,
+) {
+    store
+        .reserve_record(checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "owner", owner).unwrap();
+            doc.put(ROOT, "body", body).unwrap();
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn bound_tile(
+    root: impl crate::widget::AppWidget + 'static,
+    store: &crate::record::RecordStore,
+    checkout: &crate::record::RecordCheckout,
+) -> crate::widget::TileHost {
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(root)));
+    tile.bind_record(store.clone(), checkout.clone());
+    tile
+}
+
+fn stored_body(
+    store: &crate::record::RecordStore,
+    checkout: &crate::record::RecordCheckout,
+) -> String {
+    store
+        .read_checked(&checkout.id, crate::state::owned_restore_tests::value)
+        .unwrap()
+}
+
+fn stored_revision(
+    store: &crate::record::RecordStore,
+    checkout: &crate::record::RecordCheckout,
+) -> u64 {
+    store
+        .with_history(&checkout.id, |_, history| history.revision())
+        .unwrap()
+}
+
+/// Admits one retained-lifecycle operation and asserts the owner accepted it.
+fn admit(
+    tile: &mut crate::widget::TileHost,
+    invocation: tilo_actions::InvocationId,
+    doc: &mut automerge::AutoCommit,
+) {
+    assert!(matches!(
+        tile.start_resource_operation_with_document(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            RETAINED_LIFECYCLE_OPERATION,
+            &[],
+            doc,
+            &ROOT,
+        )
+        .unwrap(),
+        Some(crate::widget::ResourceOperationStart::Accepted)
+    ));
+}
+
+fn retained_lifecycle_resource(id: &str) -> tilo_actions::Resource {
+    tilo_actions::Resource::new(id, "fixture", "Retained lifecycle").with_action(
+        tilo_actions::ActionSpec::operation(
+            "receive",
+            "Receive queued result",
+            tilo_actions::OperationKind::Effect,
+            RETAINED_LIFECYCLE_OPERATION,
+            &(),
+        )
+        .unwrap()
+        .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+        .returns(tilo_actions::ResultSpec::Job),
+    )
+}
+
+fn retained_lifecycle_probe(
+    id: &'static str,
+    expected_owner: &'static str,
+) -> (RetainedLifecycleProbe, RetainedLifecycleHandles) {
+    retained_lifecycle_probe_with_owner_policy(id, expected_owner, true, false)
+}
+
+fn unfenced_retained_lifecycle_probe(
+    id: &'static str,
+    admission_owner: &'static str,
+) -> (RetainedLifecycleProbe, RetainedLifecycleHandles) {
+    retained_lifecycle_probe_with_owner_policy(id, admission_owner, false, false)
+}
+
+fn streaming_unfenced_retained_lifecycle_probe(
+    id: &'static str,
+    admission_owner: &'static str,
+) -> (RetainedLifecycleProbe, RetainedLifecycleHandles) {
+    retained_lifecycle_probe_with_owner_policy(id, admission_owner, false, true)
+}
+
+fn retained_lifecycle_probe_with_owner_policy(
+    id: &'static str,
+    expected_owner: &'static str,
+    enforce_result_owner: bool,
+    streaming: bool,
+) -> (RetainedLifecycleProbe, RetainedLifecycleHandles) {
+    let emitter = std::rc::Rc::new(std::cell::RefCell::new(crate::widget::ActionEmitter::new(
+        tilo_actions::ActionBinding::unit_for(&retained_lifecycle_resource(id), "receive").unwrap(),
+    )));
+    let handles = RetainedLifecycleHandles {
+        emitter,
+        queued: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        admitted: std::rc::Rc::new(std::cell::Cell::new(None)),
+        starts: std::rc::Rc::new(std::cell::Cell::new(0)),
+        accepts: std::rc::Rc::new(std::cell::Cell::new(0)),
+        completions: std::rc::Rc::new(std::cell::Cell::new(0)),
+        polls: std::rc::Rc::new(std::cell::Cell::new(0)),
+        syncs: std::rc::Rc::new(std::cell::Cell::new(0)),
+        updates: std::rc::Rc::new(std::cell::Cell::new(0)),
+        events: std::rc::Rc::new(std::cell::Cell::new(0)),
+        event_value: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        wrong_owner: std::rc::Rc::new(std::cell::Cell::new(0)),
+        intent: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        last_owner: std::rc::Rc::new(std::cell::RefCell::new(None)),
+    };
+    (
+        RetainedLifecycleProbe {
+            id,
+            expected_owner,
+            enforce_result_owner,
+            streaming,
+            text: crate::widget::Text::new("Retained lifecycle"),
+            handles: handles.clone(),
+            ready: false,
+            dirty: false,
+            observed: String::new(),
+        },
+        handles,
+    )
+}
+
+crate::testing::test_app_widget!(
+    RetainedLifecycleProbe,
+    "Retained lifecycle",
+    icon = crate::widget::IconDescriptor::Glyph("R")
+);
+
+impl Widget for RetainedLifecycleProbe {
+    crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
+    fn name(&self) -> &'static str {
+        "RetainedLifecycleProbe"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some(self.id)
+    }
+    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        use automerge::ReadDoc;
+        increment(&self.handles.syncs);
+        self.observed = doc
+            .get(path, "body")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let Some(result) = self.handles.queued.borrow_mut().take() else {
+            return;
+        };
+        let actual_owner = doc
+            .get(path, "owner")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        self.handles.last_owner.replace(actual_owner.clone());
+        if (self.enforce_result_owner && actual_owner.as_deref() != Some(self.expected_owner))
+            || self.handles.admitted.get() != Some(result.invocation)
+        {
+            increment(&self.handles.wrong_owner);
+            *self.handles.queued.borrow_mut() = Some(result);
+            return;
+        }
+        doc.put(path, "body", result.value.as_str()).unwrap();
+        doc.put(path, "accepted-owner", self.expected_owner)
+            .unwrap();
+        self.observed = result.value;
+        increment(&self.handles.accepts);
+        self.ready = true;
+        self.dirty = true;
+    }
+    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+        increment(&self.handles.updates);
+        false
+    }
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.handles.intent.borrow().clone()
+    }
+    fn has_separate_document_owner(&self) -> bool {
+        false
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &crate::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = self.text.build_layout(tree, theme, nodes);
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Document)
+                .with_name(self.id)
+                .with_value(self.observed.clone()),
+        )
+    }
+    fn handle_event(
+        &mut self,
+        _: &winit::event::WindowEvent,
+        _: f64,
+        _: &winit::event::Modifiers,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        _: &mut bool,
+        _: &mut Option<taffy::NodeId>,
+        _: taffy::NodeId,
+        _: &taffy::TaffyTree<()>,
+    ) {
+        increment(&self.handles.events);
+        if let Some(value) = self.handles.event_value.borrow().as_deref() {
+            doc.put(path, "body", value).unwrap();
+        }
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[RETAINED_LIFECYCLE_OPERATION]
+    }
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![retained_lifecycle_resource(self.id)]
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.handles.emitter.borrow_mut().take()
+    }
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _: tilo_actions::OperationKind,
+        type_id: &str,
+        _: &[u8],
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        use automerge::ReadDoc;
+        if type_id != RETAINED_LIFECYCLE_OPERATION {
+            return Ok(None);
+        }
+        let owner = doc
+            .get(path, "owner")
+            .map_err(|error| error.to_string())?
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        if owner.as_deref() != Some(self.expected_owner) {
+            return Err("operation admitted against the wrong document owner".into());
+        }
+        increment(&self.handles.starts);
+        self.handles.admitted.set(Some(invocation));
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _: bool,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !self.ready || self.handles.admitted.get() != Some(invocation) {
+            return None;
+        }
+        increment(&self.handles.polls);
+        if self.streaming {
+            return Some(tilo_actions::InvocationUpdate::Item {
+                invocation,
+                sequence: u64::try_from(self.handles.polls.get()).unwrap(),
+                value: serde_json::json!(self.handles.polls.get()),
+            });
+        }
+        self.ready = false;
+        self.handles.admitted.set(None);
+        increment(&self.handles.completions);
+        Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        })
+    }
+    fn needs_commit(&self) -> bool {
+        self.dirty
+    }
+    fn on_commit(&mut self) {
+        self.dirty = false;
+    }
+}
+
+#[derive(Clone)]
+struct ReleasableLifecycleHandles {
+    sender: std::rc::Rc<std::cell::RefCell<std::sync::mpsc::Sender<QueuedLifecycleResult>>>,
+    intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::RecordCheckout>>>,
+    admitted: std::rc::Rc<std::cell::Cell<Option<tilo_actions::InvocationId>>>,
+    starts: std::rc::Rc<std::cell::Cell<usize>>,
+    releases: std::rc::Rc<std::cell::Cell<usize>>,
+    refuse_release: std::rc::Rc<std::cell::Cell<bool>>,
+    accepts: std::rc::Rc<std::cell::Cell<usize>>,
+    completions: std::rc::Rc<std::cell::Cell<usize>>,
+    commits: std::rc::Rc<std::cell::Cell<usize>>,
+    last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    terminal_update: std::rc::Rc<std::cell::RefCell<Option<tilo_actions::InvocationUpdate>>>,
+}
+
+struct ReleasableLifecycleProbe {
+    text: crate::widget::Text,
+    receiver: Option<std::sync::mpsc::Receiver<QueuedLifecycleResult>>,
+    handles: ReleasableLifecycleHandles,
+    ready: bool,
+    dirty: bool,
+}
+
+fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycleHandles) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let handles = ReleasableLifecycleHandles {
+        sender: std::rc::Rc::new(std::cell::RefCell::new(sender)),
+        intent: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        admitted: std::rc::Rc::new(std::cell::Cell::new(None)),
+        starts: std::rc::Rc::new(std::cell::Cell::new(0)),
+        releases: std::rc::Rc::new(std::cell::Cell::new(0)),
+        refuse_release: std::rc::Rc::new(std::cell::Cell::new(false)),
+        accepts: std::rc::Rc::new(std::cell::Cell::new(0)),
+        completions: std::rc::Rc::new(std::cell::Cell::new(0)),
+        commits: std::rc::Rc::new(std::cell::Cell::new(0)),
+        last_owner: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        terminal_update: std::rc::Rc::new(std::cell::RefCell::new(None)),
+    };
+    (
+        ReleasableLifecycleProbe {
+            text: crate::widget::Text::new("Releasable lifecycle"),
+            receiver: Some(receiver),
+            handles: handles.clone(),
+            ready: false,
+            dirty: false,
+        },
+        handles,
+    )
+}
+
+crate::testing::test_app_widget!(
+    ReleasableLifecycleProbe,
+    "Releasable lifecycle",
+    icon = crate::widget::IconDescriptor::Glyph("R")
+);
+
+impl Widget for ReleasableLifecycleProbe {
+    crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
+    fn name(&self) -> &'static str {
+        "ReleasableLifecycleProbe"
+    }
+    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        use automerge::ReadDoc;
+        self.handles.last_owner.replace(
+            doc.get(path, "owner")
+                .unwrap()
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+        );
+        let result = self
+            .receiver
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok());
+        let Some(result) = result else { return };
+        if self.handles.admitted.get() != Some(result.invocation) {
+            return;
+        }
+        doc.put(path, "body", result.value).unwrap();
+        self.ready = true;
+        self.dirty = true;
+        increment(&self.handles.accepts);
+    }
+    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+        false
+    }
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.handles.intent.borrow().clone()
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.handles.refuse_release.get() {
+            return Err("draft release temporarily refused".into());
+        }
+        self.receiver = None;
+        self.handles.admitted.set(None);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.handles.sender.borrow_mut() = sender;
+        self.receiver = Some(receiver);
+        increment(&self.handles.releases);
+        Ok(())
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &crate::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = self.text.build_layout(tree, theme, nodes);
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _: tilo_actions::OperationKind,
+        type_id: &str,
+        _: &[u8],
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if type_id != RETAINED_LIFECYCLE_OPERATION {
+            return Ok(None);
+        }
+        self.handles.admitted.set(Some(invocation));
+        increment(&self.handles.starts);
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _: bool,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self.handles.admitted.get() != Some(invocation) {
+            return None;
+        }
+        if let Some(update) = self.handles.terminal_update.borrow_mut().take() {
+            if update.is_terminal() {
+                self.handles.admitted.set(None);
+                increment(&self.handles.completions);
+            }
+            return Some(update);
+        }
+        if !self.ready {
+            return None;
+        }
+        self.ready = false;
+        self.handles.admitted.set(None);
+        increment(&self.handles.completions);
+        Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        })
+    }
+    fn needs_commit(&self) -> bool {
+        self.dirty
+    }
+    fn on_commit(&mut self) {
+        self.dirty = false;
+        increment(&self.handles.commits);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The test observes hidden-owner lifecycle and exactly-once settlement across one retained session."
+)]
+fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
+    let (_directory, _owners, store) = lifecycle_store("retained-lifecycle");
+    let first = note(711);
+    let second = note(712);
+    seed_note(&store, &first, "first", "historical");
+    let selected = store
+        .read_checked(&first.id, |doc| doc.base_heads()[0])
+        .unwrap();
+    store
+        .with_history(&first.id, |doc, history| {
+            doc.put(ROOT, "body", "live before picker").unwrap();
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(crate::collaboration::local_user_id()),
+            );
+        })
+        .unwrap();
+    seed_note(&store, &second, "second", "sibling");
+
+    let (first_probe, first_handles) = retained_lifecycle_probe("first-lifecycle", "first");
+    let (second_probe, second_handles) = retained_lifecycle_probe("second-lifecycle", "second");
+    let mut first_tile = bound_tile(
+        TileEditor(crate::widget::Column::new().push(Box::new(first_probe))),
+        &store,
+        &first,
+    );
+    first_tile.register_document_history(&RESTORABLE).unwrap();
+    let second_tile = bound_tile(
+        TileEditor(crate::widget::Column::new().push(Box::new(second_probe))),
+        &store,
+        &second,
+    );
+    let root = crate::widget::Row::new()
+        .no_wrap()
+        .push(Box::new(first_tile))
+        .push(Box::new(second_tile));
+    let mut outer = State::new();
+    outer.doc.put(ROOT, "owner", "outer").unwrap();
+    outer.doc.put(ROOT, "body", "outer").unwrap();
+    outer.commit_action(None, None);
+    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+
+    first_handles.emitter.borrow_mut().emit(()).unwrap();
+    driver.key("x");
+    assert_eq!(first_handles.starts.get(), 1);
+    let invocation = first_handles
+        .admitted
+        .get()
+        .expect("the actual host door retains the admitted invocation identity");
+    driver.click_named("history-open").unwrap();
+    let target = format!(
+        "timeline-entry:{}",
+        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+            &selected.to_string()
+        ))
+    );
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: historical")
+    );
+    let first_syncs = first_handles.syncs.get();
+    let first_updates = first_handles.updates.get();
+    let sibling_syncs = second_handles.syncs.get();
+    let sibling_updates = second_handles.updates.get();
+    let hidden_events = first_handles.events.get();
+    let history_revision = stored_revision(&store, &first);
+    *first_handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation,
+        value: "picker result".into(),
+    });
+    first_handles.emitter.borrow_mut().emit(()).unwrap();
+
+    driver.key("x");
+    assert_eq!(first_handles.syncs.get(), first_syncs);
+    assert_eq!(first_handles.updates.get(), first_updates);
+    driver.relayout();
+    driver.relayout();
+    driver.key("Shift");
+    driver.relayout();
+
+    assert_eq!(
+        stored_body(&store, &first),
+        "picker result",
+        "the queued result must be accepted by the retained live root"
+    );
+    assert_eq!(first_handles.accepts.get(), 1);
+    assert_eq!(first_handles.completions.get(), 1);
+    assert!(first_handles.syncs.get() > first_syncs);
+    assert!(first_handles.updates.get() > first_updates);
+    assert!(second_handles.syncs.get() > sibling_syncs);
+    assert!(second_handles.updates.get() > sibling_updates);
+    assert_eq!(first_handles.starts.get(), 1);
+    assert_eq!(first_handles.wrong_owner.get(), 0);
+    assert!(first_handles.queued.borrow().is_none());
+    assert_eq!(first_handles.events.get(), hidden_events);
+    assert!(driver.click_named("first-lifecycle").is_err());
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: historical"),
+        "the selected immutable preview remains pinned while live lifecycle advances"
+    );
+    assert_eq!(stored_body(&store, &second), "sibling");
+    assert_eq!(
+        crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+        "outer"
+    );
+    assert_eq!(
+        stored_revision(&store, &first),
+        history_revision + 1,
+        "the legitimate result is one authored undo step on its actual owner"
+    );
+
+    let deadline = tilo_test_env::hang_deadline();
+    while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
+        && crate::time::now() < deadline
+    {
+        driver.relayout();
+        std::thread::sleep(crate::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        store.save_status(&first.id).unwrap(),
+        crate::record::RecordSaveStatus::Saved
+    );
+    driver.click_named("history-back-live").unwrap();
+    assert!(driver.inspection_json().unwrap().contains("picker result"));
+    driver.key("y");
+    assert_eq!(first_handles.starts.get(), 1);
+    assert_eq!(first_handles.accepts.get(), 1);
+    assert_eq!(first_handles.completions.get(), 1);
+    assert!(first_handles.events.get() > hidden_events);
+}
+
+#[test]
+fn nested_hidden_tile_and_component_sibling_keep_single_lifecycle_cadence() {
+    let component_host = ProbeHost::new();
+    let definition = runner_probe_definition();
+    let context = component_host
+        .prepare_with_permissions(definition, 715, &LaunchTarget::New, runner_permissions())
+        .unwrap();
+    let mut component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+
+    let (_directory, _owners, store) = lifecycle_store("nested-lifecycle");
+    let nested = note(716);
+    seed_note(&store, &nested, "nested", "nested");
+
+    let (nested_probe, nested_handles) = retained_lifecycle_probe("nested", "nested");
+    let mut nested_tile = bound_tile(nested_probe, &store, &nested);
+    nested_tile.register_document_history(&RESTORABLE).unwrap();
+    let enclosing_tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+        TileEditor(crate::widget::Column::new().push(Box::new(nested_tile))),
+    )));
+
+    let (component_probe, component_handles) = retained_lifecycle_probe("component", "component");
+    component.root = Some(Box::new(component_probe));
+    let component_tile = crate::widget::TileHost::from_component(component);
+    let root = crate::widget::Row::new()
+        .no_wrap()
+        .push(Box::new(enclosing_tile))
+        .push(Box::new(component_tile));
+    let mut outer = State::new();
+    outer.doc.put(ROOT, "body", "outer").unwrap();
+    outer.commit_action(None, None);
+    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+
+    let nested_live = (nested_handles.updates.get(), nested_handles.syncs.get());
+    let component_live = (
+        component_handles.updates.get(),
+        component_handles.syncs.get(),
+    );
+    driver.relayout();
+    let live_delta = (
+        nested_handles.updates.get() - nested_live.0,
+        nested_handles.syncs.get() - nested_live.1,
+    );
+    let component_live_delta = (
+        component_handles.updates.get() - component_live.0,
+        component_handles.syncs.get() - component_live.1,
+    );
+    assert_eq!(live_delta.0, 1);
+    assert!(live_delta.1 > 0);
+    assert_eq!(component_live_delta.0, 1);
+    assert!(component_live_delta.1 > 0);
+
+    driver.click_named("history-open").unwrap();
+    let nested_hidden = (nested_handles.updates.get(), nested_handles.syncs.get());
+    let component_hidden = (
+        component_handles.updates.get(),
+        component_handles.syncs.get(),
+    );
+    driver.relayout();
+    assert_eq!(
+        (
+            nested_handles.updates.get() - nested_hidden.0,
+            nested_handles.syncs.get() - nested_hidden.1,
+        ),
+        live_delta,
+        "the nested TileHost keeps its exact live cadence while its own History is open"
+    );
+    assert_eq!(
+        (
+            component_handles.updates.get() - component_hidden.0,
+            component_handles.syncs.get() - component_hidden.1,
+        ),
+        component_live_delta,
+        "the independent canonical component keeps its exact cadence"
+    );
+    assert_eq!(stored_body(&store, &nested), "nested");
+    assert_eq!(
+        crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+        "outer"
+    );
+}
+
+#[test]
+fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
+    let host = ProbeHost::new();
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(definition, 717, &LaunchTarget::New, runner_permissions())
+        .unwrap();
+    let mut component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let (probe, handles) = retained_lifecycle_probe("canonical-component", "component");
+    component.root = Some(Box::new(probe));
+    component.register_document_history(&BOUND).unwrap();
+    let root = crate::widget::TileHost::from_component(component);
+    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+
+    let live = (handles.updates.get(), handles.syncs.get());
+    driver.relayout();
+    let live_delta = (handles.updates.get() - live.0, handles.syncs.get() - live.1);
+    assert_eq!(live_delta.0, 1);
+    assert!(live_delta.1 > 0);
+
+    driver.click_named("history-open").unwrap();
+    let hidden = (handles.updates.get(), handles.syncs.get());
+    driver.relayout();
+    assert_eq!(handles.updates.get() - hidden.0, 1);
+    assert_eq!(handles.syncs.get() - hidden.1, live_delta.1);
+}
+
+#[test]
+fn framework_input_frame_still_suppresses_tile_lifecycle() {
+    let (_directory, _owners, store) = lifecycle_store("framework-input-frame");
+    let checkout = note(713);
+    seed_note(&store, &checkout, "guarded", "guarded");
+    let (probe, handles) = retained_lifecycle_probe("guarded-lifecycle", "guarded");
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+        TileEditor(crate::widget::Column::new().push(Box::new(probe))),
+    )));
+    tile.bind_record(store, checkout);
+    let mut outer = automerge::AutoCommit::new();
+    let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let _frame = crate::history_mode::frame::FrameworkInputFrame::new(&flag, true);
+        assert!(!tile.update(&mut outer, &ROOT));
+        tile.sync(&mut outer, &ROOT);
+    }
+    assert_eq!(handles.updates.get(), 0);
+    assert_eq!(handles.syncs.get(), 0);
+    assert!(!tile.update(&mut outer, &ROOT));
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(handles.updates.get(), 1);
+    assert_eq!(handles.syncs.get(), 1);
+}
+
+#[test]
+fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
+    let (_directory, _owners, store) = lifecycle_store("closed-hidden-lifecycle");
+    let checkout = note(718);
+    seed_note(&store, &checkout, "closed", "before close");
+    let (probe, handles) = retained_lifecycle_probe("closed-lifecycle", "closed");
+    let mut tile = Box::new(crate::widget::TileHost::new(
+        crate::widget::TileContent::App(Box::new(probe)),
+    ));
+    tile.bind_record(store.clone(), checkout.clone());
+    tile.register_document_history(&RESTORABLE).unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let mut outer = automerge::AutoCommit::new();
+    admit(&mut tile, invocation, &mut outer);
+    let tile_pointer = std::ptr::from_mut(tile.as_mut());
+    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    driver.click_named("history-open").unwrap();
+    *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation,
+        value: "must not land after close".into(),
+    });
+    let syncs = handles.syncs.get();
+    let updates = handles.updates.get();
+    let revision = stored_revision(&store, &checkout);
+
+    // SAFETY: the driver exclusively owns this retained box and no node/widget
+    // references are borrowed across the close or following lifecycle pass.
+    let _ = unsafe { (*tile_pointer).close_components() };
+    driver.relayout();
+
+    assert_eq!(
+        stored_body(&store, &checkout),
+        "before close",
+        "a closed retained root must never receive its former owner's document"
+    );
+    assert_eq!(handles.accepts.get(), 0);
+    assert_eq!(handles.syncs.get(), syncs);
+    assert_eq!(handles.updates.get(), updates);
+    assert!(handles.queued.borrow().is_some());
+    assert_eq!(stored_revision(&store, &checkout), revision);
+    let update = unsafe {
+        (*tile_pointer)
+            .poll_resource_operation(invocation, false, &automerge::AutoCommit::new(), &ROOT)
+            .unwrap()
+    };
+    assert!(matches!(
+        update,
+        tilo_actions::InvocationUpdate::Failed { invocation: failed, ref error }
+            if failed == invocation && error.code == "owner_unavailable"
+    ));
+}
+
+#[test]
+fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
+    let first_directory = tempfile::tempdir().unwrap();
+    let second_directory = tempfile::tempdir().unwrap();
+    let mut first_owners = crate::record::RecordOwners::new(first_directory.path().join("records"));
+    let mut second_owners =
+        crate::record::RecordOwners::new(second_directory.path().join("records"));
+    let first = first_owners
+        .open(RESTORABLE.app_id, "retained-rebind")
+        .unwrap();
+    let second = second_owners
+        .open(RESTORABLE.app_id, "retained-rebind")
+        .unwrap();
+    let checkout = note(714);
+    for (store, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(store, &checkout, owner, owner);
+    }
+    let (probe, handles) = unfenced_retained_lifecycle_probe("rebound-lifecycle", "first");
+    let mut tile = Box::new(crate::widget::TileHost::new(
+        crate::widget::TileContent::App(Box::new(probe)),
+    ));
+    tile.bind_record(first.clone(), checkout.clone());
+    tile.register_document_history(&RESTORABLE).unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let mut state = State::new();
+    state.doc.put(ROOT, "owner", "outer").unwrap();
+    state.doc.put(ROOT, "body", "outer").unwrap();
+    state.commit_action(None, None);
+    admit(&mut tile, invocation, &mut state.doc);
+    let tile_pointer = std::ptr::from_mut(tile.as_mut());
+    let mut driver = Driver::new(state, tile, (900, 650));
+    driver.click_named("history-open").unwrap();
+    *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation,
+        value: "must stay with first".into(),
+    });
+
+    // SAFETY: the driver exclusively owns this retained box and no node/widget
+    // references are borrowed across the rebind or following lifecycle pass.
+    unsafe { (*tile_pointer).bind_record(second.clone(), checkout.clone()) };
+    assert!(unsafe { (*tile_pointer).record_transition_error().is_some() });
+    driver.relayout();
+    assert!(
+        unsafe { (*tile_pointer).record_transition_error().is_some() },
+        "an unrelated lifecycle tick must not erase an explicit release refusal"
+    );
+
+    assert_eq!(
+        stored_body(&second, &checkout),
+        "second",
+        "the replacement owner must never be loaned to opaque work admitted by the old owner"
+    );
+    let update = unsafe {
+        (*tile_pointer)
+            .poll_resource_operation(invocation, false, &driver.state_mut().doc, &ROOT)
+            .expect("the retained operation can complete under the still-current old owner")
+    };
+
+    assert!(matches!(
+        update,
+        tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }
+            if completed == invocation
+    ));
+    assert_eq!(handles.accepts.get(), 1);
+    assert_eq!(handles.completions.get(), 1);
+    assert_eq!(handles.wrong_owner.get(), 0);
+    assert!(handles.queued.borrow().is_none());
+    assert_eq!(stored_body(&first, &checkout), "must stay with first");
+    assert_eq!(
+        crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+        "outer"
+    );
+}
+
+#[test]
+fn history_open_record_intent_cannot_loan_new_owner_to_unfenced_retained_result() {
+    let (_directory, _owners, store) = lifecycle_store("retained-record-intent");
+    let first = note(719);
+    let second = note(720);
+    for (checkout, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let (probe, handles) = unfenced_retained_lifecycle_probe("intent-lifecycle", "first");
+    let mut tile = bound_tile(probe, &store, &first);
+    tile.register_document_history(&RESTORABLE).unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let mut outer = automerge::AutoCommit::new();
+    admit(&mut tile, invocation, &mut outer);
+    let mut tile = Box::new(tile);
+    let tile_pointer = std::ptr::from_mut(tile.as_mut());
+    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    driver.click_named("history-open").unwrap();
+    *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation,
+        value: "must remain with first".into(),
+    });
+    handles.intent.replace(Some(second.clone()));
+
+    driver.relayout();
+
+    assert_eq!(
+        stored_body(&store, &second),
+        "second",
+        "an ordinary record intent must not expose its new owner to opaque old-owner work"
+    );
+    assert!(unsafe { (*tile_pointer).record_transition_error().is_some() });
+    assert_eq!(handles.accepts.get(), 0);
+    assert!(handles.queued.borrow().is_some());
+    assert_eq!(stored_body(&store, &first), "first");
+}
+
+#[test]
+fn live_record_intent_without_owner_bound_work_still_switches_normally() {
+    let (_directory, _owners, store) = lifecycle_store("ordinary-record-intent");
+    let first = note(721);
+    let second = note(722);
+    for (checkout, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let (probe, handles) = retained_lifecycle_probe("ordinary-intent", "first");
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+    tile.bind_record(store, first);
+    let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+
+    handles.intent.replace(Some(second));
+    *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation: tilo_actions::InvocationId::new(),
+        value: "observe owner only".into(),
+    });
+    driver.relayout();
+
+    assert_eq!(handles.last_owner.borrow().as_deref(), Some("second"));
+}
+
+#[test]
+fn refused_transition_does_not_repoll_an_undrained_stream_update() {
+    let (_directory, _owners, store) = lifecycle_store("bounded-release-poll");
+    let first = note(727);
+    let second = note(728);
+    for (checkout, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let (probe, handles) =
+        streaming_unfenced_retained_lifecycle_probe("streaming-release", "first");
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+    tile.bind_record(store, first);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
+        invocation,
+        value: "stream ready".into(),
+    });
+    tile.sync(&mut outer, &ROOT);
+    handles.intent.replace(Some(second));
+    for _ in 0..5 {
+        tile.sync(&mut outer, &ROOT);
+        tile.update(&mut outer, &ROOT);
+    }
+    assert_eq!(handles.polls.get(), 1);
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
+    ));
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(handles.polls.get(), 2);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The test keeps old-owner release and new-owner admission in one ordered lifecycle."
+)]
+fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_work() {
+    let (_directory, _owners, store) = lifecycle_store("release-direct");
+    let first = note(723);
+    let second = note(724);
+    for (checkout, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &store, &first);
+    let mut outer = automerge::AutoCommit::new();
+    tile.sync(&mut outer, &ROOT);
+    let old_invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, old_invocation, &mut outer);
+    let old_sender = handles.sender.borrow().clone();
+    let first_revision = stored_revision(&store, &first);
+    let second_revision = stored_revision(&store, &second);
+    old_sender
+        .send(QueuedLifecycleResult {
+            invocation: old_invocation,
+            value: "completed first result".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+    handles.intent.replace(Some(second.clone()));
+
+    let fresh_invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, fresh_invocation, &mut outer);
+    assert_eq!(handles.releases.get(), 1);
+    assert_eq!(handles.commits.get(), 1);
+    assert_eq!(stored_revision(&store, &first), first_revision + 1);
+    assert_eq!(stored_revision(&store, &second), second_revision);
+    assert!(
+        old_sender
+            .send(QueuedLifecycleResult {
+                invocation: old_invocation,
+                value: "stale old result".into(),
+            })
+            .is_err()
+    );
+    for _ in 0..3 {
+        tile.sync(&mut outer, &ROOT);
+        tile.update(&mut outer, &ROOT);
+    }
+    assert_eq!(stored_body(&store, &second), "second");
+    let old_update = tile
+        .poll_resource_operation(old_invocation, false, &outer, &ROOT)
+        .unwrap();
+    assert!(matches!(
+        old_update,
+        tilo_actions::InvocationUpdate::Succeeded { invocation, .. }
+            if invocation == old_invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(old_invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+    assert_eq!(stored_body(&store, &first), "completed first result");
+
+    handles
+        .sender
+        .borrow()
+        .send(QueuedLifecycleResult {
+            invocation: fresh_invocation,
+            value: "fresh second result".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(stored_body(&store, &second), "fresh second result");
+    assert!(matches!(
+        tile.poll_resource_operation(fresh_invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. })
+            if invocation == fresh_invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(fresh_invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+}
+
+#[test]
+fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal() {
+    let (_directory, _owners, store) = lifecycle_store("release-recovery");
+    let first = note(725);
+    let second = note(726);
+    seed_note(&store, &first, "first", "first");
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &store, &first);
+    let mut outer = automerge::AutoCommit::new();
+    tile.sync(&mut outer, &ROOT);
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    handles
+        .sender
+        .borrow()
+        .send(QueuedLifecycleResult {
+            invocation,
+            value: "completed on first".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+    ));
+    let late_sender = handles.sender.borrow().clone();
+
+    tile.bind_record(store.clone(), second.clone());
+    assert!(tile.record_transition_error().is_some());
+    assert!(tile.history_owner().is_some());
+    seed_note(&store, &second, "second", "second");
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(handles.releases.get(), 1);
+    assert!(tile.record_transition_error().is_none());
+    assert!(
+        late_sender
+            .send(QueuedLifecycleResult {
+                invocation,
+                value: "late after terminal poll".into(),
+            })
+            .is_err()
+    );
+    for _ in 0..3 {
+        tile.sync(&mut outer, &ROOT);
+    }
+    assert_eq!(stored_body(&store, &second), "second");
+    assert_eq!(stored_body(&store, &first), "completed on first");
+}
+
+#[test]
+fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
+    let (_directory, _owners, store) = lifecycle_store("release-busy-old");
+    let first = note(729);
+    let second = note(730);
+    for (checkout, owner) in [(&first, "first"), (&second, "second")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &store, &first);
+    let mut outer = automerge::AutoCommit::new();
+    tile.sync(&mut outer, &ROOT);
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    handles
+        .sender
+        .borrow()
+        .send(QueuedLifecycleResult {
+            invocation,
+            value: "pending old commit".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+
+    store
+        .with(&first.id, |_| {
+            tile.bind_record(store.clone(), second.clone());
+        })
+        .unwrap();
+    assert!(tile.record_transition_error().is_some());
+    assert_eq!(handles.commits.get(), 0);
+    assert_eq!(handles.releases.get(), 0);
+    assert_eq!(stored_body(&store, &second), "second");
+
+    tile.bind_record(store.clone(), second);
+    assert!(tile.record_transition_error().is_none());
+    assert_eq!(handles.commits.get(), 1);
+    assert_eq!(handles.releases.get(), 1);
+    assert_eq!(stored_body(&store, &first), "pending old commit");
+}
+
+#[test]
+fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
+    let (_directory, _owners, store) = lifecycle_store("same-id-custody");
+    let current = note(731);
+    seed_note(&store, &current, "current", "current");
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &store, &current);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    let stale_sender = handles.sender.borrow().clone();
+    stale_sender
+        .send(QueuedLifecycleResult {
+            invocation,
+            value: "must not resume after renewal".into(),
+        })
+        .unwrap();
+
+    handles
+        .intent
+        .replace(Some(crate::record::RecordCheckout::new(
+            current.id.clone(),
+            crate::record::RecordKind::new("wrong-kind"),
+        )));
+    tile.sync(&mut outer, &ROOT);
+    assert!(tile.record_transition_error().is_some() || tile.history_owner().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Failed { invocation: failed, .. })
+            if failed == invocation
+    ));
+
+    handles.intent.replace(Some(current.clone()));
+    let _ = tile.content_mut();
+    tile.sync(&mut outer, &ROOT);
+
+    assert_eq!(
+        stored_body(&store, &current),
+        "current",
+        "a renewed lifetime with the same record spelling must release the old queue first"
+    );
+    assert_eq!(handles.releases.get(), 1);
+    assert!(
+        stale_sender
+            .send(QueuedLifecycleResult {
+                invocation,
+                value: "late stale result".into(),
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
+    let (_directory, _owners, store) = lifecycle_store("renewed-event-custody");
+    let current = note(740);
+    seed_note(&store, &current, "current", "current");
+    let (probe, handles) = retained_lifecycle_probe("renewed-event", "current");
+    let mut tile = Box::new(crate::widget::TileHost::new(
+        crate::widget::TileContent::App(Box::new(probe)),
+    ));
+    tile.bind_record(store.clone(), current.clone());
+    let tile_pointer = std::ptr::from_mut(tile.as_mut());
+    let mut driver = Driver::new(State::new(), tile, (700, 480));
+    let invocation = tilo_actions::InvocationId::new();
+    assert!(matches!(
+        unsafe {
+            (*tile_pointer).start_resource_operation_with_document(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                RETAINED_LIFECYCLE_OPERATION,
+                &[],
+                &mut driver.state_mut().doc,
+                &ROOT,
+            )
+        }
+        .unwrap(),
+        Some(crate::widget::ResourceOperationStart::Accepted)
+    ));
+    handles
+        .event_value
+        .replace(Some("must not receive renewed event".into()));
+
+    unsafe {
+        (*tile_pointer).content_mut();
+    }
+    driver.key("x");
+
+    assert_eq!(
+        stored_body(&store, &current),
+        "current",
+        "renewing the lifetime must not let an event bypass admitted old custody"
+    );
+    assert_eq!(handles.events.get(), 0);
+    assert!(unsafe { (*tile_pointer).record_transition_error().is_some() });
+}
+
+#[test]
+fn explicit_current_bind_cancels_missing_target_without_later_replay() {
+    let (_directory, _owners, store) = lifecycle_store("cancel-pending-bind");
+    let current = note(732);
+    let abandoned = note(733);
+    seed_note(&store, &current, "current", "current");
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &store, &current);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+
+    tile.bind_record(store.clone(), abandoned.clone());
+    assert!(tile.record_transition_error().is_some());
+    tile.bind_record(store.clone(), current.clone());
+    assert!(tile.record_transition_error().is_none());
+    seed_note(&store, &abandoned, "abandoned", "abandoned");
+    handles
+        .sender
+        .borrow()
+        .send(QueuedLifecycleResult {
+            invocation,
+            value: "current owner result".into(),
+        })
+        .unwrap();
+    for _ in 0..3 {
+        tile.sync(&mut outer, &ROOT);
+        tile.update(&mut outer, &ROOT);
+    }
+
+    assert_eq!(stored_body(&store, &current), "current owner result");
+    assert_eq!(
+        stored_body(&store, &abandoned),
+        "abandoned",
+        "later target availability must not replay the superseded bind"
+    );
+    assert_eq!(handles.releases.get(), 0);
+    assert_eq!(handles.last_owner.borrow().as_deref(), Some("current"));
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
+            if completed == invocation
+    ));
+}
+
+#[test]
+fn refused_history_transition_is_accessible_and_back_to_live_remains_interactive() {
+    let (_directory, _owners, store) = lifecycle_store("visible-transition-refusal");
+    let current = note(734);
+    let candidate = note(735);
+    for (checkout, owner) in [(&current, "current"), (&candidate, "candidate")] {
+        seed_note(&store, checkout, owner, owner);
+    }
+    let selected = store
+        .read_checked(&current.id, |doc| doc.base_heads()[0])
+        .unwrap();
+    store
+        .with_history(&current.id, |doc, history| {
+            doc.put(ROOT, "body", "current with history").unwrap();
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(crate::collaboration::local_user_id()),
+            );
+        })
+        .unwrap();
+    let (probe, handles) = unfenced_retained_lifecycle_probe("visible-refusal", "current");
+    let mut tile = bound_tile(TileEditor(probe), &store, &current);
+    tile.register_document_history(&RESTORABLE).unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let mut outer = automerge::AutoCommit::new();
+    admit(&mut tile, invocation, &mut outer);
+    let mut tile = Box::new(tile);
+    let tile_pointer = std::ptr::from_mut(tile.as_mut());
+    let root = crate::widget::Row::new().push(tile);
+    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+    driver.click_named("history-open").unwrap();
+    let target = format!(
+        "timeline-entry:{}",
+        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+            &selected.to_string()
+        ))
+    );
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: current")
+    );
+    assert!(driver.targets().contains_key("history-back-live"));
+    let old_owner = unsafe {
+        (*tile_pointer)
+            .history_owner()
+            .expect("the selected revision retains the real live owner witness")
+    };
+    old_owner.validate().unwrap();
+    handles.intent.replace(Some(candidate.clone()));
+    driver.relayout();
+
+    assert!(unsafe { (*tile_pointer).record_transition_error().is_some() });
+    let accessible = format!("{:?}", driver.a11y_nodes());
+    assert!(
+        accessible.contains("Document switch blocked"),
+        "the refusal must be presented through the production accessibility tree: {accessible}"
+    );
+    driver.click_named("history-back-live").unwrap();
+    assert!(driver.targets().contains_key("history-open"));
+    assert_eq!(stored_body(&store, &candidate), "candidate");
+    old_owner.validate().unwrap();
+    let retained_owner = unsafe {
+        (*tile_pointer)
+            .history_owner()
+            .expect("the refusal must retain the live owner witness")
+    };
+    retained_owner.validate().unwrap();
+    assert!(retained_owner.same_owner(&old_owner));
+}
+
+#[test]
+fn busy_old_owner_preserves_completed_cancelled_result_until_retry() {
+    let (_directory, mut owners, old_store) = lifecycle_store("busy-result-old");
+    let candidate_store = owners
+        .open(RESTORABLE.app_id, "busy-result-candidate")
+        .unwrap();
+    let old = note(736);
+    let candidate = note(737);
+    seed_note(&old_store, &old, "old", "old");
+    seed_note(&candidate_store, &candidate, "candidate", "candidate");
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &old_store, &old);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        });
+
+    old_store
+        .with(&old.id, |_| {
+            tile.bind_record(candidate_store.clone(), candidate.clone());
+        })
+        .unwrap();
+    assert!(tile.record_transition_error().is_some());
+    assert_eq!(handles.releases.get(), 0);
+    assert_eq!(handles.completions.get(), 0);
+
+    tile.bind_record(candidate_store.clone(), candidate.clone());
+    assert!(tile.record_transition_error().is_none());
+    assert_eq!(handles.releases.get(), 1);
+    assert_eq!(handles.completions.get(), 1);
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Cancelled { invocation: completed, .. })
+            if completed == invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+    assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
+}
+
+#[test]
+fn cached_item_blocks_release_until_broker_drains_then_preserves_terminal_order() {
+    let (_directory, mut owners, old_store) = lifecycle_store("stream-old");
+    let candidate_store = owners.open(RESTORABLE.app_id, "stream-candidate").unwrap();
+    let old = note(738);
+    let candidate = note(739);
+    for (store, checkout, owner) in [
+        (&old_store, &old, "old"),
+        (&candidate_store, &candidate, "candidate"),
+    ] {
+        seed_note(store, checkout, owner, owner);
+    }
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+    tile.bind_record(old_store, old);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: serde_json::json!("first"),
+        });
+
+    tile.bind_record(candidate_store.clone(), candidate.clone());
+    assert!(tile.record_transition_error().is_some());
+    assert_eq!(handles.releases.get(), 0);
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: Some("after item".into()),
+        });
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
+    ));
+
+    tile.bind_record(candidate_store.clone(), candidate.clone());
+    assert!(tile.record_transition_error().is_none());
+    assert_eq!(handles.releases.get(), 1);
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation: completed,
+            message: Some(message),
+        }) if completed == invocation && message == "after item"
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+    assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
+}
+
+#[test]
+fn pending_missing_target_retries_after_cached_item_is_delivered() {
+    let (_directory, mut owners, old_store) = lifecycle_store("pending-item-old");
+    let candidate_store = owners
+        .open(RESTORABLE.app_id, "pending-item-candidate")
+        .unwrap();
+    let old = note(741);
+    let candidate = note(742);
+    seed_note(&old_store, &old, "old", "old");
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &old_store, &old);
+    let mut outer = automerge::AutoCommit::new();
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+
+    tile.bind_record(candidate_store.clone(), candidate.clone());
+    assert!(tile.record_transition_error().is_some());
+    seed_note(&candidate_store, &candidate, "candidate", "candidate");
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: serde_json::json!("first"),
+        });
+    tile.sync(&mut outer, &ROOT);
+    assert!(tile.record_transition_error().is_some());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Item {
+            sequence: 1,
+            value,
+            ..
+        }) if value == serde_json::json!("first")
+    ));
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: Some("after item".into()),
+        });
+
+    tile.sync(&mut outer, &ROOT);
+
+    assert_eq!(
+        handles.last_owner.borrow().as_deref(),
+        Some("candidate"),
+        "ordinary ticks must resume the unsuperseded pending target after Item delivery"
+    );
+    let owner = tile.history_owner().unwrap();
+    let (owner_store, owner_checkout) = owner.store_checkout();
+    assert!(owner_store.same_owner(&candidate_store));
+    assert_eq!(owner_checkout, &candidate);
+    assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
+    assert!(tile.record_transition_error().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation: completed,
+            message: Some(message),
+        }) if completed == invocation && message == "after item"
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+    assert_eq!(handles.releases.get(), 1);
+}
+
+#[test]
+fn newer_busy_commit_bind_supersedes_available_target_queued_by_item() {
+    assert_newer_refused_bind_supersedes_queued_target(false);
+}
+
+#[test]
+fn newer_root_release_refusal_supersedes_available_target_queued_by_item() {
+    assert_newer_refused_bind_supersedes_queued_target(true);
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "The assertion helper compares queued and refused bindings across one custody transition."
+)]
+fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
+    let (_directory, mut owners, old_store) = lifecycle_store("superseded-old");
+    let obsolete_store = owners
+        .open(RESTORABLE.app_id, "superseded-obsolete")
+        .unwrap();
+    let latest_store = owners.open(RESTORABLE.app_id, "superseded-latest").unwrap();
+    let old = note(743);
+    let obsolete = note(744);
+    let latest = note(745);
+    for (store, checkout, owner) in [
+        (&old_store, &old, "old"),
+        (&obsolete_store, &obsolete, "obsolete"),
+        (&latest_store, &latest, "latest"),
+    ] {
+        seed_note(store, checkout, owner, owner);
+    }
+    let (probe, handles) = releasable_lifecycle_probe();
+    let mut tile = bound_tile(probe, &old_store, &old);
+    let mut outer = automerge::AutoCommit::new();
+    tile.sync(&mut outer, &ROOT);
+    let invocation = tilo_actions::InvocationId::new();
+    admit(&mut tile, invocation, &mut outer);
+    let old_owner = tile.history_owner().unwrap();
+    old_owner.validate().unwrap();
+    let old_revision = stored_revision(&old_store, &old);
+    let old_sender = handles.sender.borrow().clone();
+    old_sender
+        .send(QueuedLifecycleResult {
+            invocation,
+            value: "old draft".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(handles.commits.get(), 0);
+
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: serde_json::json!("old item"),
+        });
+    tile.bind_record(obsolete_store.clone(), obsolete.clone());
+    assert!(tile.record_transition_error().is_some());
+    assert_eq!(handles.releases.get(), 0);
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Item {
+            invocation: observed, sequence: 1, value,
+        }) if observed == invocation && value == serde_json::json!("old item")
+    ));
+    handles
+        .terminal_update
+        .borrow_mut()
+        .replace(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!("old result")),
+                ..tilo_actions::ActionOutput::default()
+            },
+        });
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, output })
+            if observed == invocation && output.value == Some(serde_json::json!("old result"))
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
+            .is_none()
+    );
+    assert_eq!(handles.completions.get(), 1);
+
+    if refuse_release {
+        handles.refuse_release.set(true);
+        tile.bind_record(latest_store.clone(), latest.clone());
+        assert_eq!(
+            tile.record_transition_error(),
+            Some("draft release temporarily refused")
+        );
+        assert_eq!(handles.commits.get(), 1);
+        handles.refuse_release.set(false);
+    } else {
+        // Only A's store is borrowed: C admission and the empty retained-update
+        // collector succeed, then committing A encounters the real Busy error.
+        old_store
+            .with(&old.id, |_| {
+                tile.bind_record(latest_store.clone(), latest.clone());
+            })
+            .unwrap();
+        assert_eq!(
+            tile.record_transition_error(),
+            Some("record is reserved or already initialized")
+        );
+        assert_eq!(handles.commits.get(), 0);
+    }
+    assert_eq!(handles.releases.get(), 0);
+
+    for _ in 0..3 {
+        tile.sync(&mut outer, &ROOT);
+        tile.update(&mut outer, &ROOT);
+        assert_eq!(
+            handles.last_owner.borrow().as_deref(),
+            Some("old"),
+            "ordinary ticks must retain A, never replay obsolete B after newer C refused"
+        );
+        let retained_owner = tile.history_owner().unwrap();
+        retained_owner.validate().unwrap();
+        old_owner.validate().unwrap();
+        assert!(retained_owner.same_owner(&old_owner));
+        for (store, checkout, body) in [
+            (&old_store, &old, "old draft"),
+            (&obsolete_store, &obsolete, "obsolete"),
+            (&latest_store, &latest, "latest"),
+        ] {
+            assert_eq!(stored_body(store, checkout), body);
+        }
+        assert!(
+            tile.poll_resource_operation(invocation, false, &outer, &ROOT)
+                .is_none()
+        );
+    }
+    assert_eq!(handles.releases.get(), 0);
+    assert_eq!(handles.commits.get(), 1);
+
+    tile.bind_record(latest_store.clone(), latest.clone());
+    assert!(tile.record_transition_error().is_none());
+    tile.sync(&mut outer, &ROOT);
+    assert_eq!(handles.last_owner.borrow().as_deref(), Some("latest"));
+    let latest_owner = tile.history_owner().unwrap();
+    latest_owner.validate().unwrap();
+    let (owner_store, owner_checkout) = latest_owner.store_checkout();
+    assert!(owner_store.same_owner(&latest_store));
+    assert_eq!(owner_checkout, &latest);
+    assert_eq!(handles.releases.get(), 1);
+    assert_eq!(handles.commits.get(), 1);
+    assert_eq!(stored_revision(&old_store, &old), old_revision + 1);
+    assert!(
+        old_sender
+            .send(QueuedLifecycleResult {
+                invocation,
+                value: "stale old result".into(),
+            })
+            .is_err()
+    );
+
+    let fresh = tilo_actions::InvocationId::new();
+    admit(&mut tile, fresh, &mut outer);
+    handles
+        .sender
+        .borrow()
+        .send(QueuedLifecycleResult {
+            invocation: fresh,
+            value: "fresh latest result".into(),
+        })
+        .unwrap();
+    tile.sync(&mut outer, &ROOT);
+    assert!(matches!(
+        tile.poll_resource_operation(fresh, false, &outer, &ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }) if observed == fresh
+    ));
+    assert!(
+        tile.poll_resource_operation(fresh, false, &outer, &ROOT)
+            .is_none()
+    );
+    for (store, checkout, body) in [
+        (&old_store, &old, "old draft"),
+        (&obsolete_store, &obsolete, "obsolete"),
+        (&latest_store, &latest, "fresh latest result"),
+    ] {
+        assert_eq!(stored_body(store, checkout), body);
+    }
+}
+#[path = "readiness_tests.rs"]
+mod readiness_tests;

@@ -1500,7 +1500,7 @@ impl VelloDrmBridge {
     /// what is rendered, not how fast, opt in here; device loss still fails immediately.
     #[cfg(test)]
     pub(crate) fn wait_for_gpu_completion_for_test(&mut self) {
-        self.target.phase_wait_override = Some(Duration::from_secs(120));
+        self.target.phase_wait_override = Some(tilo_test_env::hang_bound());
     }
 
     /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
@@ -1523,9 +1523,7 @@ impl VelloDrmBridge {
             None,
             &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
         );
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(60))
-            .expect("warm-up deadline fits Instant");
+        let deadline = tilo_test_env::hang_deadline();
         self.target
             .render_until(
                 &scene,
@@ -3893,6 +3891,10 @@ mod subrect_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Renderer gates require an actual wgpu adapter on every selected host.
     use super::*;

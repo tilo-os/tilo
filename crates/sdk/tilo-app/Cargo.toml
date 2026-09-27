@@ -36,6 +36,10 @@ test-support = ["ui-core/test-support"]
 # compiler.
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
+# A web view; the SDK picks the engine (WPE WebKit on Linux).
+webview = ["webview-wpe"]
+# The session's priority contacts over the desktop bus.
+priority-contacts = ["ui-core/priority-contacts"]
 # Optional native presentation diagnostics shared by app entrypoints.
 presentation-feedback = ["ui-core/presentation-feedback"]
 
@@ -50,7 +54,6 @@ tilo-automerge.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
-workspace-hack = { version = "0.1" }
 
 [[test]]
 name = "it"
@@ -58,3 +61,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

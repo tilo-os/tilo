@@ -58,19 +58,33 @@ esac
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "TEST_HOST_ARCH": host, "TEST_IMAGE_ARCH": image,
             "TEST_CALLS": str(calls), "TMPDIR": str(self.root / "scratch"),
+            # Point xtrace at source:line so a TimeoutExpired names the blocked step.
+            "PS4": "+ ${BASH_SOURCE[0]}:${LINENO}: ",
         }
         if manifest is not None:
             environment["TEST_SNAPSHOT_PACKAGES"] = manifest.rstrip("\n")
         try:
             process = subprocess.run(
-                ["bash", str(self.script), "runtime", "example@sha256:fixture"],
+                ["bash", "-x", str(self.script), "runtime", "example@sha256:fixture"],
                 env=environment, text=True, capture_output=True, timeout=10,
             )
         except subprocess.TimeoutExpired as expired:
-            # Name the runtime calls that completed so a stall points at its step.
+            # Runtime call log + bash -x: which child finished, which command hung.
+            # communicate() may leave TimeoutExpired stdout/stderr as bytes even
+            # when text=True; decode so CI logs stay readable.
+            def captured(blob):
+                if blob is None:
+                    return ""
+                if isinstance(blob, bytes):
+                    return blob.decode("utf-8", "replace")
+                return blob
+
             reached = calls.read_text().splitlines() if calls.exists() else []
-            self.fail(f"snapshot check stalled after runtime calls {reached}; "
-                      f"stderr: {expired.stderr!r}")
+            self.fail(
+                "snapshot check stalled after runtime calls "
+                f"{reached}; stdout: {captured(expired.stdout)!r}; "
+                f"xtrace/stderr: {captured(expired.stderr)!r}"
+            )
         return process, calls.read_text().splitlines() if calls.exists() else []
 
     def test_native_architecture_checks(self):

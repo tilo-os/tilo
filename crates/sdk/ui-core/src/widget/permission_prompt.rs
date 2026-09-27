@@ -231,13 +231,13 @@ impl PermissionPrompt {
     }
 }
 
-fn button_label(choice: PromptChoice) -> &'static str {
-    match choice {
-        PromptChoice::Allow => "Allow",
-        PromptChoice::Session => "This session",
-        PromptChoice::Always => "Always allow",
-        PromptChoice::Deny => "Deny",
-    }
+fn button_label(choice: PromptChoice) -> String {
+    crate::i18n!(match choice {
+        PromptChoice::Allow => "permission-prompt-allow",
+        PromptChoice::Session => "permission-prompt-session",
+        PromptChoice::Always => "permission-prompt-always",
+        PromptChoice::Deny => "permission-prompt-deny",
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -481,7 +481,7 @@ impl Widget for PermissionPrompt {
                 text_renderer,
                 theme,
                 *rect,
-                button_label(*choice),
+                &button_label(*choice),
                 ButtonVisualState {
                     hover: is_hover,
                     disabled: is_disabled,
@@ -610,9 +610,10 @@ impl Widget for PermissionPrompt {
             .collect();
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(format!(
-                    "{} requested by {}",
-                    self.capability_label, self.app_id
+                .with_name(crate::i18n!(
+                    "permission-prompt-requested",
+                    "capability" => self.capability_label.as_str(),
+                    "app" => self.app_id.as_str()
                 ))
                 .with_state(AccessState {
                     modal: true,

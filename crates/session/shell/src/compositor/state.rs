@@ -3539,6 +3539,12 @@ fn popup_rect_from_parent(parent: Rect, geometry: Rectangle<i32, Logical>) -> Re
 }
 
 impl State {
+    /// Where surface `id` is on the desktop: its tab or floating placement,
+    /// or a popup's place beside the window that opened it.
+    pub(crate) fn surface_desktop_rect(&self, id: SurfaceId) -> Option<Rect> {
+        self.popup_parent_rect(id, 0)
+    }
+
     fn popup_parent_rect(&self, id: SurfaceId, depth: usize) -> Option<Rect> {
         if depth > 16 {
             // A client cannot legitimately form a cycle, but never let a
@@ -3630,9 +3636,32 @@ impl State {
             .collect()
     }
 
-    /// A popup is part of the window that opened it: while that window is
-    /// protected from capture, so are its menus and completions.
-    pub(crate) fn sync_popup_capture_protection(&self) {
+    /// Mark the transient surfaces a capture must withhold. A popup is part
+    /// of the window that opened it: while that window is protected, so are
+    /// its menus and completions. The on-screen keyboard and the input
+    /// method's candidate popups show what is being typed, so they are
+    /// protected while the focused field declares its content secret (a
+    /// password, a PIN or hidden text), and an input method's popup also
+    /// while the window it serves is protected.
+    pub fn sync_capture_protection(&self) {
+        let secret_field = self.active_field_content_type().is_sensitive();
+        let store = crate::compositor::foreign::store();
+        if let Some(keyboard) = self.osk_surface {
+            store.set_surface_capture_protected(keyboard, secret_field);
+        }
+        for popup in self
+            .input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+        {
+            let parent_protected = popup.get_parent().is_some_and(|parent| {
+                self.is_surface_capture_protected(surface_id(&parent.surface))
+            });
+            store.set_surface_capture_protected(
+                surface_id(popup.wl_surface()),
+                secret_field || parent_protected,
+            );
+        }
         for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
             let mut root = popup.parent;
             // Nested popups chain to their toplevel; a malformed graph is
@@ -3647,7 +3676,7 @@ impl State {
                     None => break,
                 }
             }
-            crate::compositor::foreign::store().set_surface_capture_protected(
+            store.set_surface_capture_protected(
                 surface_id(popup.surface.wl_surface()),
                 self.is_surface_capture_protected(root),
             );

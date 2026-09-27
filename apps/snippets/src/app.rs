@@ -457,7 +457,7 @@ impl SnippetsApp {
             doc,
             actions::SNIPPETS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Snippets", "Snippets", action),
+            tilo_actions::ActionContext::for_action("so.tilo.snippets", "Snippets", action),
         );
         self.refresh_from_doc(doc);
     }
@@ -3406,7 +3406,10 @@ mod tests {
                 .expect("body editing is available to automation and the palette");
             let encoded = match &edit.input {
                 tilo_actions::ActionInput::Prompted { build, .. } => build(body),
-                tilo_actions::ActionInput::Immediate(_) => panic!("body editing accepts text"),
+                tilo_actions::ActionInput::Immediate(_)
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("body editing accepts text")
+                }
             };
             assert_eq!(app.last_dispatched_for_test().unwrap(), encoded);
             let mut loaded = AutoCommit::load(&doc.save()).unwrap();
@@ -3785,7 +3788,10 @@ mod tests {
             let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
             let spec_encoded = match &spec.input {
                 tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("delete is immediate")
+                }
             };
 
             app.delete_for_test(id, &mut doc);
@@ -3830,7 +3836,8 @@ mod tests {
                 .unwrap();
             let spec_encoded = match &spec.input {
                 tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("toggle-favorite is immediate")
                 }
             };

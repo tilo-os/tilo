@@ -109,7 +109,7 @@ struct Layout {
     taffy: TaffyTree<()>,
     #[allow(
         dead_code,
-        reason = "the fixture retains the complete Taffy tree even when a test inspects only child geometry"
+        reason = "The fixture retains the root layout node even when a test inspects only its child."
     )]
     root_node: NodeId,
     child_node: NodeId,
@@ -179,7 +179,8 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
 
 fn laid_out_topbar_height(chrome: Chrome) -> f64 {
     let tree = chrome.borrow().tree().clone();
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    let mut bar = TopBarChrome::from_tree(&tree.desktop)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome));
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -665,7 +666,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
     // Dragging a tab pill to a new slot inside its own group must reorder
     // the persisted `tabs` list — the whole wire from `TabBar` release
     // through `pending_tab_reorder` to
-    // `WorkspaceTree::reorder_tab_within_group`.
+    // the desktop controller's committed tab reorder.
     {
         // Three tabs so there are gaps to drop into.
         let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
@@ -1433,6 +1434,63 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             "release must settle the live strip to its legal trailing rest",
         );
     }
+}
+
+#[test]
+fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
+    let (tree, strip, ids) = single_strip_tree(&[100, 200]);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let row = host.group_row_rect_for_tests(strip).unwrap();
+    let clipped = host.group_at_for_tests(strip, 1).unwrap().get_rect();
+    // The second card straddles the row's right edge: it starts inside the
+    // visible row and ends past it.
+    assert!(clipped.x0 < row.x1, "the card starts inside the row");
+    assert!(
+        clipped.x1 > row.x1,
+        "the card is clipped by the row's right edge"
+    );
+    let before = host.group_row_mut_for_tests(strip).unwrap().scroll_x();
+    cursor(
+        &mut host,
+        &layout,
+        Point::new(clipped.x0 + 20.0, clipped.center().y),
+    );
+    press(&mut host, &layout);
+    release(&mut host, &layout);
+    // Drive the actual native per-frame focus marker and intent harvest.
+    let mut doc = automerge::AutoCommit::new();
+    host.update(&mut doc, &automerge::ROOT);
+    host.tick_scroll_active_into_view_for_tests();
+    host.group_row_mut_for_tests(strip)
+        .unwrap()
+        .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip),
+        Some(ids[1])
+    );
+    assert_eq!(
+        host.group_row_mut_for_tests(strip).unwrap().scroll_x(),
+        before
+    );
+    assert!(host.group_at_for_tests(strip, 1).unwrap().focused());
+    chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .set_active_group(strip, ids[0]);
+    host.tick_scroll_active_into_view_for_tests();
+    chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .set_active_group(strip, ids[1]);
+    host.tick_scroll_active_into_view_for_tests();
+    host.group_row_mut_for_tests(strip)
+        .unwrap()
+        .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    let _layout = lay_out_host(&mut host);
+    assert!(host.group_at_for_tests(strip, 1).unwrap().get_rect().x1 <= row.x1 + 1.0);
 }
 
 // 3. Horizontal strip scroll

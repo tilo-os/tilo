@@ -35,6 +35,12 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
+/// The emoji catalogue in the desktop's language: names, group labels and
+/// search follow it, with English kept for anything it does not translate.
+pub fn emoji_catalogue() -> &'static emoji::Catalogue {
+    emoji::Catalogue::for_locale(&ui::i18n::I18nManager::current_locale())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +60,11 @@ mod tests {
             "chat-call-audio-only",
             "chat-call-collapse",
             "chat-call-leave",
+            "chat-emoji-insert",
+            "chat-emoji-choose",
+            "chat-emoji-group",
+            "chat-reaction-add",
+            "chat-reaction-remove",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");

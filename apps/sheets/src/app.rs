@@ -5817,9 +5817,9 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
-            // Pull the shared global defaults once at startup.
-            self.global = GlobalSettings::load();
             if !self.persistence_started {
+                // Pull the shared global defaults once at startup.
+                self.global = GlobalSettings::load();
                 self.persistence_started = true;
                 if self.run.persists() {
                     if let Err(error) = self.start_persistence_load(state.get_heads()) {
@@ -8184,15 +8184,56 @@ mod tests {
     }
 
     /// Background persistence deliberately never blocks a frame. Tests that
-    /// need its result drive the same frame pump a running app uses, with a
-    /// bounded deadline so a lost worker fails deterministically.
+    /// need its result drive the same frame pump a running app uses and,
+    /// between frames, block on the outstanding worker's reply: a loaded
+    /// runner can take many seconds to schedule a worker that writes and syncs
+    /// a file, so no short budget is safe. A lost worker disconnects its
+    /// channel and the app reports it; the hang bound only catches a hung one.
     fn sync_until(app: &mut SheetsApp, doc: &mut AutoCommit, done: impl Fn(&SheetsApp) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !done(app) && Instant::now() < deadline {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
             app.sync(doc, &automerge::ROOT);
-            std::thread::yield_now();
+            if done(app) {
+                return;
+            }
+            let within = deadline.saturating_duration_since(Instant::now());
+            let pending = app.status.clone();
+            if let Some(rx) = app.persistence_rx.take() {
+                app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
+            } else if let Some(rx) = app.interchange_rx.take() {
+                app.interchange_rx = Some(await_reply(rx, within, "interchange", &pending));
+            } else {
+                // No reply outstanding: a retry delay or a frame-driven step.
+                assert!(
+                    !within.is_zero(),
+                    "Sheets did not settle within {:?} with no worker outstanding (status: {pending})",
+                    tilo_test_env::hang_bound()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
-        assert!(done(app), "background Sheets worker did not settle in time");
+    }
+
+    /// Wait for a worker's one reply and hand it back as a ready channel, so
+    /// the app receives it through its own drain.
+    fn await_reply<T>(
+        rx: Receiver<T>,
+        within: Duration,
+        worker: &str,
+        status: &str,
+    ) -> Receiver<T> {
+        match rx.recv_timeout(within) {
+            Ok(reply) => {
+                let (tx, ready) = mpsc::sync_channel(1);
+                tx.send(reply)
+                    .expect("the ready channel has room for one reply");
+                ready
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => rx,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "background Sheets {worker} worker sent no reply before the hang bound (status: {status})"
+            ),
+        }
     }
 
     /// Unchanged syncs keep the search catalogue and reduced motion stops bubble frames.
@@ -8287,7 +8328,8 @@ mod tests {
                 let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
                 match &spec.input {
                     tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                    tilo_actions::ActionInput::Prompted { .. } => {
+                    tilo_actions::ActionInput::Prompted { .. }
+                    | tilo_actions::ActionInput::Deferred { .. } => {
                         panic!("delete is an immediate action")
                     }
                 }

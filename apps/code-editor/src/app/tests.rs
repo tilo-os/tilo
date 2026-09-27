@@ -1,6 +1,9 @@
 use super::*;
 use automerge::ReadDoc;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[test]
 fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
     // Each phase builds a fresh app and document.
@@ -436,7 +439,8 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     app.sync(&mut state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + HANG_BOUND;
+    while std::time::Instant::now() < deadline {
         app.sync(&mut state.doc, &state.root);
         if let Some(t) = app.shots_terminal_grid_text()
             && t.contains("IDE_TERM_OK")
@@ -734,7 +738,9 @@ fn new_file_command_dispatches_the_durable_create_file_action() {
         .unwrap();
     let from_spec = match &spec.input {
         tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("new-file is an immediate action")
+        }
     };
 
     app.apply_command(Command::NewFile, &mut doc);

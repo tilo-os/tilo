@@ -26,10 +26,14 @@ use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
 use crate::model::{Book, Chapter, LibraryEntry};
 use crate::xhtml::parse_xhtml;
 
-/// The bundled EPUB, parsed by the real container reader. Used only by the
-/// `--shots`/test sample library and as test-fixture epub bytes — never seeded
-/// onto the live shelf.
+/// The bundled EPUB, parsed by the real container reader. The `--shots`/test
+/// sample library and test fixtures use it; the native live shelf never gains
+/// it by itself, and only a host without files places it there
+/// ([`record_bundled_book`]).
 pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
+
+/// The shelf location of a bundled book: inside the app, never shared.
+const BUNDLED_PATH: &str = "sample.epub";
 
 /// Environment override (platform-separated absolute paths: `;` on Windows,
 /// `:` on Unix) for extra folders to
@@ -65,15 +69,11 @@ pub fn workspace_books_dir() -> PathBuf {
     workspace_root().join("Books")
 }
 
+/// The default mount root is an absolute path only where Tilo mounts the
+/// workspace there; elsewhere an absolute override must configure it.
 fn workspace_configured() -> bool {
-    #[cfg(windows)]
-    {
-        std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| PathBuf::from(root).is_absolute())
-    }
-    #[cfg(not(windows))]
-    {
-        true
-    }
+    Path::new(DEFAULT_WORKSPACE).is_absolute()
+        || std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| Path::new(&root).is_absolute())
 }
 
 /// Whether a path lives on the collaborative workspace (shared with peers).
@@ -328,18 +328,29 @@ pub fn load_library<S: BuildHasher>(
     for entry in BooksDoc::read_library_entries(doc) {
         let canonical_shared = workspace_book_path(&entry.id);
         let path = if workspace_configured() && canonical_shared.is_file() {
-            canonical_shared
+            Some(canonical_shared)
         } else if !entry.shared {
-            let Some(path) = local_books
+            local_books
                 .get(&entry.id)
                 .cloned()
                 .or_else(|| discovered.remove(&entry.id))
                 .filter(|path| path.is_file())
-            else {
-                continue;
-            };
-            path
         } else {
+            None
+        };
+        let Some(path) = path else {
+            // A row naming a book compiled into the app stays readable on a
+            // device that holds no copy, such as the browser.
+            if let Some(mut book) = bundled_book(&entry.id) {
+                book.cover_tint = tint_for(&book.id);
+                out.push(LoadedBook {
+                    book,
+                    path: PathBuf::from(BUNDLED_PATH),
+                });
+                if out.len() >= MAX_LIBRARY {
+                    break;
+                }
+            }
             continue;
         };
         let Some(mut book) = open_epub_path(&path) else {
@@ -465,6 +476,27 @@ pub fn bundled_sample() -> Option<Book> {
             None
         }
     }
+}
+
+/// The content id of the book compiled into the app.
+pub fn bundled_book_id() -> String {
+    content_id(SAMPLE_EPUB)
+}
+
+/// The book compiled into the app whose content id is `id`, if any.
+pub fn bundled_book(id: &str) -> Option<Book> {
+    if bundled_book_id() != id {
+        return None;
+    }
+    parse_epub(SAMPLE_EPUB, 0, "EPUB").ok()
+}
+
+/// Put the bundled book on the shelf and return its id. Only for a host with
+/// no files and no picker (the browser), where it is the one book there is to
+/// read; the native shelf starts empty.
+pub fn record_bundled_book(doc: &mut AutoCommit) -> Option<String> {
+    let book = bundled_book(&bundled_book_id())?;
+    Some(record_imported_book(doc, Path::new(BUNDLED_PATH), book).id)
 }
 
 // --- Sample library: hermetic `--shots` / test content only -----------------
@@ -895,5 +927,28 @@ mod tests {
                 "the shared content was written separately"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn a_bundled_book_on_the_shelf_hydrates_without_any_file() {
+        // A regular file cannot contain a `Books` directory: no workspace copy.
+        let workspace = tempfile::NamedTempFile::new().unwrap();
+        let _workspace = workspace_env(workspace.path());
+        let mut doc = AutoCommit::new();
+        let id = record_bundled_book(&mut doc).expect("the bundled book records");
+        assert_eq!(id, content_id(SAMPLE_EPUB));
+        let entries = BooksDoc::read_library_entries(&doc);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !entries[0].shared,
+            "the bundled copy is nobody's shared file"
+        );
+
+        let library = load_library(&mut doc, &[], &HashMap::new());
+        assert_eq!(library.len(), 1);
+        assert_eq!(library[0].book.id, id);
+        assert_eq!(library[0].book.title, "The Lantern-Keeper's Almanac");
+        assert!(bundled_book("book:0000").is_none());
     }
 }

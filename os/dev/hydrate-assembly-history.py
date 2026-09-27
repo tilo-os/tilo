@@ -52,8 +52,8 @@ def hydrate(repo, raw, digest, source, environment):
     revisions = {approval[key] for key in REVISION_FIELDS if key in approval} | extra_revisions
     if not revisions or any(not re.fullmatch('[0-9a-f]{40}', revision) for revision in revisions):
         raise ValueError('exact source revisions required')
-    def git(*args, env=environment):
-        return subprocess.check_output(['git', '-C', str(repo), *args], env=env,
+    def git(*args, env=environment, stdin=None):
+        return subprocess.check_output(['git', '-C', str(repo), *args], env=env, input=stdin,
                                        stderr=subprocess.DEVNULL, timeout=60)
     if git('rev-parse', 'HEAD').decode().strip() != source:
         raise ValueError('checkout source differs')
@@ -68,13 +68,35 @@ def hydrate(repo, raw, digest, source, environment):
             if kind != b'blob' or mode not in (b'100644', b'100755'):
                 raise ValueError('historical input must be a regular file')
             objects.add(oid.decode())
-    for oid in sorted(objects):
-        payload = git('cat-file', 'blob', oid)
-        if len(payload) > 2 * 1024 * 1024:
+    ordered = sorted(objects)
+    request = ''.join(oid + '\n' for oid in ordered).encode()
+    # Look up what is already local without letting git fetch lazily, then
+    # fetch every missing reviewed blob in one request rather than one
+    # round trip per object.
+    local = dict(environment, GIT_NO_LAZY_FETCH='1')
+    lines = git('cat-file', '--batch-check=%(objectname) present', env=local, stdin=request)
+    present = {line.split()[0].decode() for line in lines.splitlines() if line.endswith(b' present')}
+    missing = set(ordered) - present
+    if missing:
+        git('-c', 'fetch.negotiationAlgorithm=noop', 'fetch', 'origin', '--no-tags',
+            '--no-write-fetch-head', '--recurse-submodules=no', '--filter=blob:none', '--stdin',
+            stdin=''.join(oid + '\n' for oid in sorted(missing)).encode())
+    offline = dict(local, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='protocol.allow', GIT_CONFIG_VALUE_0='never')
+    # Read every blob back in one offline pass: each must now be local, a blob
+    # and within the size bound.
+    output = git('cat-file', '--batch', env=offline, stdin=request)
+    offset = 0
+    for oid in ordered:
+        end = output.index(b'\n', offset)
+        header = output[offset:end].split()
+        if len(header) != 3 or header[0].decode() != oid or header[1] != b'blob':
+            raise ValueError('historical source blob unavailable offline')
+        size = int(header[2])
+        if size > 2 * 1024 * 1024:
             raise ValueError('historical source file exceeds bound')
-    offline = dict(environment, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='protocol.allow', GIT_CONFIG_VALUE_0='never')
-    for oid in sorted(objects):
-        git('cat-file', 'blob', oid, env=offline)
+        offset = end + 1 + size + 1
+    if offset != len(output):
+        raise ValueError('historical source blob unavailable offline')
     return {'source_revision': source, 'blob_count': len(objects), 'offline_blobs_verified': True}
 
 def main():
