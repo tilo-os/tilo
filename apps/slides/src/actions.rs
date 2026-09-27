@@ -34,6 +34,16 @@
 //! External → never an action: `.odp` import / export (a whole-deck swap, not a
 //! stored mutation) and the per-peer image decode cache.
 //!
+//! ## Typed operations
+//!
+//! The deck is a [`ui::tilo_resource::Resource`] ([`SlidesDeck`]) whose action
+//! is [`SlidesAction`]. Its declarations — add, move/resize, restyle and
+//! delete an element, move a slide — take their targets and values as typed
+//! arguments, so an agent or a script can make any layout or styling edit a
+//! person makes on the canvas, by stable id, through the same permission,
+//! history and undo path. `apply` (any [`SlidesAction`] as JSON) and `group`
+//! (several operations as one undo step) are published beside them.
+//!
 //! ## Determinism contract
 //!
 //! Ids (slide + element uuids) are minted at **authoring** time and carried in
@@ -60,8 +70,9 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
 };
+use ui::tilo_resource::{ActionCx, ActionDecl};
 
 use crate::doc::SlidesDoc;
 use crate::model::{
@@ -375,6 +386,26 @@ pub struct StylePatch {
     pub italic: Option<bool>,
 }
 
+/// A new element described by what its author chooses: kind, rectangle,
+/// optional body text or image asset, and any style overrides. Everything
+/// else — its id, its place in the z-order, its kind's default style — is
+/// derived when the action applies, so an agent or a script never has to
+/// invent an id to add something.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewElement {
+    pub kind: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub src: String,
+    #[serde(default)]
+    pub style: StylePatch,
+}
+
 // ===========================================================================
 // The action enum
 // ===========================================================================
@@ -469,6 +500,16 @@ pub enum SlidesAction {
         slide_id: String,
         element_id: String,
         z: i64,
+    },
+    /// Add a new element on top of slide `slide_id`. Unlike
+    /// [`Self::AddElement`], the payload carries no id: the id is minted
+    /// from the action's deterministic context ([`ActionCx`]) — the pinned
+    /// actor, the heads it applies at and the payload — so the origin and
+    /// every replica create the same element, and the z is one above the
+    /// slide's top element in that same base document.
+    CreateElement {
+        slide_id: String,
+        element: NewElement,
     },
 }
 
@@ -634,6 +675,149 @@ fn live_slide(deck: &crate::model::Deck, index: usize, id: &str) -> Result<usize
         .ok_or_else(|| refused("the target slide no longer exists"))
 }
 
+/// Refuse a style patch any field of which is outside the vocabulary the
+/// inspector itself can produce.
+fn validate_patch(patch: &StylePatch) -> Result<(), ActionError> {
+    if patch
+        .fill
+        .as_deref()
+        .is_some_and(|value| !exact_paint(value, true))
+        || patch
+            .stroke
+            .as_deref()
+            .is_some_and(|value| !STROKE_ROLES.contains(&value) && !exact_paint(value, true))
+        || patch
+            .align
+            .as_deref()
+            .is_some_and(|value| !exact_align(value))
+        || patch
+            .font_size
+            .is_some_and(|value| !value.is_finite() || !(4.0..=256.0).contains(&value))
+        || patch
+            .stroke_width
+            .is_some_and(|value| !value.is_finite() || !(0.0..=64.0).contains(&value))
+        || patch
+            .radius
+            .is_some_and(|value| !value.is_finite() || !(0.0..=720.0).contains(&value))
+    {
+        return Err(refused("element style patch is invalid"));
+    }
+    Ok(())
+}
+
+/// Write `patch`'s fields onto an element that is not yet in the document.
+fn patched(mut element: Element, patch: &StylePatch) -> Element {
+    if let Some(v) = &patch.fill {
+        element.fill.clone_from(v);
+    }
+    if let Some(v) = &patch.stroke {
+        element.stroke.clone_from(v);
+    }
+    if let Some(v) = &patch.align {
+        element.align = TextAlign::from_str(v);
+    }
+    if let Some(v) = patch.font_size {
+        element.font_size = v;
+    }
+    if let Some(v) = patch.stroke_width {
+        element.stroke_width = v;
+    }
+    if let Some(v) = patch.radius {
+        element.radius = v;
+    }
+    if let Some(v) = patch.bold {
+        element.bold = v;
+    }
+    if let Some(v) = patch.italic {
+        element.italic = v;
+    }
+    element
+}
+
+/// Add `element` to slide `index` once it passes every check an insert must:
+/// room on the slide, a valid element, an id not already in the deck, and
+/// the deck's aggregate limits. Nothing is written when a check fails.
+fn add_element_checked(
+    doc: &mut Doc,
+    deck: crate::model::Deck,
+    index: usize,
+    element: &ElementData,
+) -> Result<(), ActionError> {
+    let target = deck
+        .slides
+        .get(index)
+        .ok_or_else(|| refused("the target slide no longer exists"))?;
+    if target.elements.len() >= MAX_ELEMENTS_PER_SLIDE {
+        return Err(refused("the target slide has too many elements"));
+    }
+    validate_element(element)?;
+    if deck
+        .slides
+        .iter()
+        .any(|existing| existing.elements.iter().any(|live| live.id == element.id))
+    {
+        return Err(refused("element id already exists"));
+    }
+    let mut projected = deck;
+    let target = projected
+        .slides
+        .get_mut(index)
+        .ok_or_else(|| refused("the target slide no longer exists"))?;
+    target.elements.push(element.to_element());
+    if !deck_within_aggregate_limits(&projected) {
+        return Err(refused("deck aggregate limit would be exceeded"));
+    }
+    SlidesDoc::add_element(doc, index, &element.to_element());
+    Ok(())
+}
+
+impl SlidesAction {
+    /// The element a [`Self::CreateElement`] adds to slide `index`: its
+    /// kind's defaults with the author's overrides, an id from the action's
+    /// deterministic context, and a z above the slide's top element.
+    fn created_element(
+        &self,
+        doc: &mut Doc,
+        deck: &crate::model::Deck,
+        index: usize,
+        element: &NewElement,
+    ) -> Result<ElementData, ActionError> {
+        if !exact_kind(&element.kind) {
+            return Err(refused("element kind is invalid"));
+        }
+        validate_patch(&element.style)?;
+        let slide = deck
+            .slides
+            .get(index)
+            .ok_or_else(|| refused("the target slide no longer exists"))?;
+        let z = slide
+            .elements
+            .iter()
+            .map(|existing| existing.z)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| refused("the slide has no room above its top element"))?;
+        let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
+        let mut cx = ActionCx::for_apply(doc, &payload, 0);
+        let mut built = patched(
+            Element::of_kind(
+                cx.id().as_str().to_owned(),
+                ElementKind::from_str(&element.kind),
+                element.x,
+                element.y,
+                element.w,
+                element.h,
+            ),
+            &element.style,
+        );
+        built.text.clone_from(&element.text);
+        built.src.clone_from(&element.src);
+        built.z = z;
+        Ok(ElementData::from_element(&built))
+    }
+}
+
 impl Action for SlidesAction {
     #[allow(
         clippy::too_many_lines,
@@ -754,31 +938,16 @@ impl Action for SlidesAction {
                 element,
             } => {
                 let index = live_slide(&deck, *slide, slide_id)?;
-                let target = deck
-                    .slides
-                    .get(index)
-                    .ok_or_else(|| refused("the target slide no longer exists"))?;
-                if target.elements.len() >= MAX_ELEMENTS_PER_SLIDE {
-                    return Err(refused("the target slide has too many elements"));
-                }
-                validate_element(element)?;
-                if deck
+                add_element_checked(doc, deck, index, element)?;
+            }
+            SlidesAction::CreateElement { slide_id, element } => {
+                let index = deck
                     .slides
                     .iter()
-                    .any(|existing| existing.elements.iter().any(|live| live.id == element.id))
-                {
-                    return Err(refused("element id already exists"));
-                }
-                let mut projected = deck;
-                let target = projected
-                    .slides
-                    .get_mut(index)
+                    .position(|slide| slide.id == *slide_id)
                     .ok_or_else(|| refused("the target slide no longer exists"))?;
-                target.elements.push(element.to_element());
-                if !deck_within_aggregate_limits(&projected) {
-                    return Err(refused("deck aggregate limit would be exceeded"));
-                }
-                SlidesDoc::add_element(doc, index, &element.to_element());
+                let data = self.created_element(doc, &deck, index, element)?;
+                add_element_checked(doc, deck, index, &data)?;
             }
             SlidesAction::DeleteElement { slide, id } => {
                 let (index, _) = live_element(&deck, *slide, id)?;
@@ -807,30 +976,10 @@ impl Action for SlidesAction {
             }
             SlidesAction::RestyleElement { slide, id, patch } => {
                 let (index, _) = live_element(&deck, *slide, id)?;
-                if patch == &StylePatch::default()
-                    || patch
-                        .fill
-                        .as_deref()
-                        .is_some_and(|value| !exact_paint(value, true))
-                    || patch.stroke.as_deref().is_some_and(|value| {
-                        !STROKE_ROLES.contains(&value) && !exact_paint(value, true)
-                    })
-                    || patch
-                        .align
-                        .as_deref()
-                        .is_some_and(|value| !exact_align(value))
-                    || patch
-                        .font_size
-                        .is_some_and(|value| !value.is_finite() || !(4.0..=256.0).contains(&value))
-                    || patch
-                        .stroke_width
-                        .is_some_and(|value| !value.is_finite() || !(0.0..=64.0).contains(&value))
-                    || patch
-                        .radius
-                        .is_some_and(|value| !value.is_finite() || !(0.0..=720.0).contains(&value))
-                {
+                if patch == &StylePatch::default() {
                     return Err(refused("element style patch is invalid"));
                 }
+                validate_patch(patch)?;
                 // Fixed field order so the emitted change is byte-identical on
                 // every replica.
                 if let Some(v) = &patch.fill {
@@ -893,6 +1042,18 @@ impl Action for SlidesAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Deleting a slide or an element is destructive, exactly as the
+    /// declared delete actions are, so the same value submitted through the
+    /// generic `apply` or inside a `group` asks for the same confirmation.
+    fn risk(&self) -> RiskLevel {
+        match self {
+            SlidesAction::DeleteSlide { .. } | SlidesAction::DeleteElement { .. } => {
+                RiskLevel::Destructive
+            }
+            _ => RiskLevel::Low,
+        }
+    }
 }
 
 /// The z one above (or below) every element on `slide`, read from the
@@ -937,9 +1098,10 @@ pub fn restack_z_for_author(
     }
 }
 
-/// Register Slides' action decoder for palette execution + remote replay.
+/// Register Slides' action decoders for palette execution + remote replay:
+/// every [`SlidesAction`], and a group of them applied as one step.
 pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<SlidesAction>(SLIDES_ACTION_TYPE);
+    ui::tilo_resource::group::register::<SlidesDeck>(registry);
 }
 
 /// Encode any [`SlidesAction`] into the wire form the palette and the on-screen
@@ -1178,6 +1340,17 @@ pub fn new_slide_template() -> Slide {
     s
 }
 
+/// The element the toolbar's insert tools add, before the user moves or
+/// styles it.
+pub fn inserted_element_template(kind: ElementKind) -> Element {
+    match kind {
+        ElementKind::Text => Element::text("Text", 440.0, 320.0, 400.0, 90.0, 40.0),
+        ElementKind::Line => Element::shape(ElementKind::Line, 440.0, 360.0, 360.0, 0.0),
+        ElementKind::Image => Element::shape(ElementKind::Image, 440.0, 220.0, 400.0, 280.0),
+        other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -1209,6 +1382,355 @@ pub struct SlideResource {
 pub struct SlidesResourceCtx {
     pub deck_title: String,
     pub slides: Vec<SlideResource>,
+}
+
+impl SlidesResourceCtx {
+    /// The context for `deck` as it stands: each slide in deck order, each
+    /// slide's elements back to front.
+    pub fn from_deck(deck: &crate::model::Deck) -> Self {
+        Self {
+            deck_title: deck.title.clone(),
+            slides: deck
+                .slides
+                .iter()
+                .enumerate()
+                .map(|(idx, slide)| SlideResource {
+                    idx,
+                    data: SlideData::from_slide(slide),
+                    elements: slide
+                        .z_sorted()
+                        .into_iter()
+                        .map(|element| ElementResource {
+                            id: element.id.clone(),
+                            kind: element.kind,
+                            text: element.text.clone(),
+                            z: element.z,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+// ===========================================================================
+// The deck as a resource
+// ===========================================================================
+
+/// The deck as a [`ui::tilo_resource::Resource`]: [`SlidesAction`] is its
+/// replayable vocabulary, and its declarations are the typed operations an
+/// agent, a script or the palette calls by name with arguments — add,
+/// move/resize, restyle and delete an element, and move a slide. Publishing
+/// it ([`provide_resources`]) also offers the generic
+/// [`APPLY`](ui::tilo_resource::APPLY) (any [`SlidesAction`] as JSON) and
+/// [`GROUP`](ui::tilo_resource::GROUP) (several declared operations as one
+/// undo step) every resource has.
+pub struct SlidesDeck;
+
+/// Declared operation ids, as published on the `slides.deck` resource.
+pub const ADD_ELEMENT: &str = "add-element";
+pub const MOVE_ELEMENT: &str = "move-element";
+pub const RESTYLE_ELEMENT: &str = "restyle-element";
+pub const DELETE_ELEMENT: &str = "delete-element";
+pub const MOVE_SLIDE: &str = "move-slide";
+
+impl ui::tilo_resource::Resource for SlidesDeck {
+    const KIND: &'static str = "slides.deck";
+    const LABEL: &'static str = "Deck";
+    const ACTION_TYPE: &'static str = SLIDES_ACTION_TYPE;
+
+    type State = SlidesResourceCtx;
+    type Action = SlidesAction;
+
+    fn read(doc: &Doc) -> Result<SlidesResourceCtx, ui::tilo_resource::ModelError> {
+        SlidesDoc::load(doc)
+            .map(|deck| SlidesResourceCtx::from_deck(&deck))
+            .ok_or_else(|| ui::tilo_resource::ModelError::invalid("the document holds no deck"))
+    }
+
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        let mut add_params = vec![
+            slide_param(),
+            ActionParam::required("kind", ParamType::Text, "What to add")
+                .with_choices(["text", "rect", "ellipse", "line", "image"]),
+        ];
+        add_params.extend(rect_params(true));
+        add_params.extend([
+            ActionParam::optional(
+                "text",
+                ParamType::Text,
+                "Body of a text element; lines are separated by \\n",
+            ),
+            ActionParam::optional(
+                "src",
+                ParamType::Text,
+                "Content id (`asset:blake3:<hash>`) of an image element's picture",
+            ),
+        ]);
+        add_params.extend(style_params());
+
+        let mut move_params = vec![element_param()];
+        move_params.extend(rect_params(false));
+
+        let mut restyle_params = vec![element_param()];
+        restyle_params.extend(style_params());
+
+        vec![
+            ActionDecl::new(ADD_ELEMENT, "Add element", add_params, |args, _| {
+                build_add_element(args)
+            })
+            .describe(
+                "Add a text box, shape, line or image to a slide, above everything on it. \
+                 The new element's id is chosen when the edit applies; read the deck again to \
+                 find it.",
+            ),
+            ActionDecl::new(
+                MOVE_ELEMENT,
+                "Move or resize element",
+                move_params,
+                |args, _| build_move_element(args),
+            )
+            .describe(
+                "Move an element so its top-left corner is at (x, y); give w and h as well to \
+                 resize it. Slide units: the slide is 1280 × 720.",
+            ),
+            ActionDecl::new(
+                RESTYLE_ELEMENT,
+                "Restyle element",
+                restyle_params,
+                |args, _| {
+                    let id = element_id_arg(args)?;
+                    let patch = style_patch(args)?;
+                    if patch == StylePatch::default() {
+                        return Err("name at least one style to change".into());
+                    }
+                    Ok(restyle_element_action(0, id, patch))
+                },
+            )
+            .describe(
+                "Change an element's colours (fill, text colour, outline), font size, \
+                 alignment, weight, slant or corner radius. Only the styles given change.",
+            ),
+            ActionDecl::new(
+                DELETE_ELEMENT,
+                "Delete element",
+                vec![element_param()],
+                |args, _| Ok(delete_element_action(0, element_id_arg(args)?)),
+            )
+            .describe("Delete an element from its slide.")
+            .destructive(),
+            ActionDecl::new(
+                MOVE_SLIDE,
+                "Move slide",
+                vec![
+                    slide_param(),
+                    ActionParam::required(
+                        "position",
+                        ParamType::Integer,
+                        "Where the slide ends up, counting from 0 for the first slide",
+                    ),
+                ],
+                |args, _| {
+                    let id = slide_id_arg(args)?;
+                    let position = args
+                        .integer("position")
+                        .and_then(|position| usize::try_from(position).ok())
+                        .ok_or("`position` must be 0 or more")?;
+                    Ok(move_slide_action(0, position, id))
+                },
+            )
+            .describe("Reorder the deck: move a slide to another position."),
+        ]
+    }
+
+    /// The slides, each with its elements, text and notes, as nested
+    /// resources exporting their actions with arguments already bound.
+    fn children(state: &SlidesResourceCtx) -> Vec<Resource> {
+        state
+            .slides
+            .iter()
+            .take(MAX_EAGER_SLIDES)
+            .map(|slide| slide_resource(slide, true, state))
+            .collect()
+    }
+}
+
+// The positional fields of the element and slide actions a declaration
+// builds are only a lookup hint (see `live_element` / `live_slide`): the
+// stable id is what the action targets, so a declaration passes slot 0 and
+// the id resolves wherever the target is when the action applies.
+
+fn slide_param() -> ActionParam {
+    ActionParam::required(
+        "slide",
+        ParamType::Text,
+        "Slide id (or its `slides.slide:<id>` resource id)",
+    )
+}
+
+fn element_param() -> ActionParam {
+    ActionParam::required(
+        "element",
+        ParamType::Text,
+        "Element id (or its `slides.element:<id>` resource id)",
+    )
+}
+
+fn rect_params(size_required: bool) -> Vec<ActionParam> {
+    let size = |name: &'static str, description: &'static str| {
+        if size_required {
+            ActionParam::required(name, ParamType::Number, description)
+        } else {
+            ActionParam::optional(name, ParamType::Number, description)
+        }
+    };
+    vec![
+        ActionParam::required(
+            "x",
+            ParamType::Number,
+            "Left edge, in slide units (the slide is 1280 wide)",
+        ),
+        ActionParam::required(
+            "y",
+            ParamType::Number,
+            "Top edge, in slide units (the slide is 720 high)",
+        ),
+        size("w", "Width, in slide units"),
+        size("h", "Height, in slide units"),
+    ]
+}
+
+fn style_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "fill",
+            ParamType::Text,
+            "Fill colour, and a text element's text colour: a palette role (accent, \
+             accent-soft, accent-deep, surface, surface-dim, deep, text, text-dim, on-accent, \
+             white, success, warning, danger, info), `#RRGGBB`, or `none`. `text` and \
+             `text-dim` follow the slide's background so they stay legible on it",
+        ),
+        ActionParam::optional(
+            "text_color",
+            ParamType::Text,
+            "Text colour of a text element — the same value as `fill`, by its text name",
+        ),
+        ActionParam::optional(
+            "stroke",
+            ParamType::Text,
+            "Outline colour: `none`, a palette role or `#RRGGBB`",
+        ),
+        ActionParam::optional(
+            "stroke_width",
+            ParamType::Number,
+            "Outline width in slide units, 0 to 64",
+        ),
+        ActionParam::optional(
+            "font_size",
+            ParamType::Number,
+            "Font size in slide units, 4 to 256",
+        ),
+        ActionParam::optional("align", ParamType::Text, "Text alignment")
+            .with_choices(TextAlign::ALL.map(TextAlign::as_str)),
+        ActionParam::optional("bold", ParamType::Boolean, "Bold text"),
+        ActionParam::optional("italic", ParamType::Boolean, "Italic text"),
+        ActionParam::optional(
+            "radius",
+            ParamType::Number,
+            "Corner radius of a rectangle, in slide units, 0 to 720",
+        ),
+    ]
+}
+
+/// A durable id from argument `name`, accepting the bare id or its resource
+/// id (`<prefix><id>`), since both are what a reader of the tree sees.
+fn id_arg(args: &ActionArgs, name: &str, prefixes: &[&str]) -> Result<String, String> {
+    let raw = args
+        .text(name)
+        .map(str::trim)
+        .ok_or_else(|| format!("`{name}` is required"))?;
+    let id = prefixes
+        .iter()
+        .find_map(|prefix| raw.strip_prefix(prefix))
+        .unwrap_or(raw);
+    if valid_id(id) {
+        Ok(id.to_owned())
+    } else {
+        Err(format!("`{name}` is not an id"))
+    }
+}
+
+fn slide_id_arg(args: &ActionArgs) -> Result<String, String> {
+    id_arg(args, "slide", &["slides.slide:"])
+}
+
+fn element_id_arg(args: &ActionArgs) -> Result<String, String> {
+    id_arg(args, "element", &["slides.element:", "slides.text:"])
+}
+
+fn style_patch(args: &ActionArgs) -> Result<StylePatch, String> {
+    let fill = match (args.text("fill"), args.text("text_color")) {
+        (Some(fill), Some(color)) if fill != color => {
+            return Err("give `fill` or `text_color`, not two different colours".into());
+        }
+        (fill, color) => fill.or(color).map(str::to_owned),
+    };
+    let patch = StylePatch {
+        fill,
+        stroke: args.text("stroke").map(str::to_owned),
+        align: args.text("align").map(str::to_owned),
+        font_size: args.number("font_size"),
+        stroke_width: args.number("stroke_width"),
+        radius: args.number("radius"),
+        bold: args.boolean("bold"),
+        italic: args.boolean("italic"),
+    };
+    validate_patch(&patch).map_err(|error| error.to_string())?;
+    Ok(patch)
+}
+
+fn required_number(args: &ActionArgs, name: &str) -> Result<f64, String> {
+    args.number(name)
+        .ok_or_else(|| format!("`{name}` is required"))
+}
+
+fn build_add_element(args: &ActionArgs) -> Result<SlidesAction, String> {
+    let kind = args.text("kind").ok_or("`kind` is required")?.to_owned();
+    let text = args.text("text").unwrap_or_default().to_owned();
+    let src = args.text("src").unwrap_or_default().to_owned();
+    if !text.is_empty() && kind != "text" {
+        return Err("only a text element takes `text`".into());
+    }
+    if kind == "image" && !crate::assets::is_asset_id(&src) {
+        return Err("an image needs `src`, the content id of its picture".into());
+    }
+    if kind != "image" && !src.is_empty() {
+        return Err("only an image element takes `src`".into());
+    }
+    Ok(SlidesAction::CreateElement {
+        slide_id: slide_id_arg(args)?,
+        element: NewElement {
+            kind,
+            x: required_number(args, "x")?,
+            y: required_number(args, "y")?,
+            w: required_number(args, "w")?,
+            h: required_number(args, "h")?,
+            text,
+            src,
+            style: style_patch(args)?,
+        },
+    })
+}
+
+fn build_move_element(args: &ActionArgs) -> Result<SlidesAction, String> {
+    let id = element_id_arg(args)?;
+    let x = required_number(args, "x")?;
+    let y = required_number(args, "y")?;
+    match (args.number("w"), args.number("h")) {
+        (None, None) => Ok(move_element_action(0, id, x, y)),
+        (Some(w), Some(h)) => Ok(resize_element_action(0, id, x, y, w, h)),
+        _ => Err("give both `w` and `h` to resize, or neither to only move".into()),
+    }
 }
 
 /// The palette receives a compact contextual tree on every frame.  The full
@@ -1269,7 +1791,8 @@ fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
 fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     let title = ctx.deck_title.trim();
     let deck_label = if title.is_empty() { "Deck" } else { title };
-    let mut deck = Resource::new("slides.deck", "slides.deck", deck_label);
+    // The declared operations, `apply`, `group` and the slides beneath.
+    let mut deck = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx);
 
     for (id, label, kind, value) in [
         (
@@ -1496,11 +2019,7 @@ fn notes_resource(sr: &SlideResource) -> Resource {
 /// agents resolve everything beyond this window by stable id through
 /// [`resolve_resource`], which always rebuilds from the current deck mirror.
 pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut deck = deck_resource(ctx);
-    for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
-        deck = deck.with_child(slide_resource(slide, true, ctx));
-    }
-    vec![deck]
+    vec![deck_resource(ctx)]
 }
 
 /// Resolve exactly one current durable deck resource without growing the
@@ -1509,11 +2028,7 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
 /// position.
 pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
     if id == "slides.deck" {
-        let mut deck = deck_resource(ctx);
-        for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
-            deck = deck.with_child(slide_resource(slide, true, ctx));
-        }
-        return Some(deck);
+        return Some(deck_resource(ctx));
     }
     if let Some(slide_id) = id.strip_prefix("slides.slide:") {
         return ctx
@@ -1598,6 +2113,60 @@ mod tests {
         SlidesDoc::load(doc).expect("seeded deck")
     }
 
+    /// What the door builds for a declared deck operation, from the tree the
+    /// app publishes for `doc`.
+    fn through_door(doc: &AutoCommit, action: &str, args: serde_json::Value) -> EncodedAction {
+        let resources = Widget::resources(&app_for(doc), doc);
+        tilo_actions::door::encode_json(
+            &resources,
+            &ActionAddress::new("slides.deck", action),
+            args.as_object().expect("arguments are an object"),
+        )
+        .unwrap_or_else(|error| panic!("`{action}` binds: {error:?}"))
+    }
+
+    fn add_text_args(doc: &AutoCommit) -> serde_json::Value {
+        serde_json::json!({
+            "slide": deck(doc).slides[1].id,
+            "kind": "text",
+            "x": 96, "y": 560, "w": 600, "h": 80,
+            "text": "Added by an agent",
+            "text_color": "text-dim",
+            "font_size": 28,
+            "bold": true,
+        })
+    }
+
+    fn restyle_args(doc: &AutoCommit) -> serde_json::Value {
+        serde_json::json!({
+            "element": deck(doc).slides[1].elements[0].id,
+            "fill": "on-accent",
+            "align": "center",
+            "font_size": 60,
+            "italic": true,
+        })
+    }
+
+    fn resize_args(doc: &AutoCommit) -> serde_json::Value {
+        serde_json::json!({
+            "element": element_resource_id(&deck(doc).slides[1].elements[0].id),
+            "x": 120, "y": 64, "w": 900, "h": 120,
+        })
+    }
+
+    fn move_slide_args(doc: &AutoCommit) -> serde_json::Value {
+        serde_json::json!({ "slide": deck(doc).slides[4].id, "position": 1 })
+    }
+
+    fn group_args(doc: &AutoCommit) -> serde_json::Value {
+        serde_json::json!({ "actions": [
+            { "action": ADD_ELEMENT, "args": add_text_args(doc) },
+            { "action": ADD_ELEMENT, "args": add_text_args(doc) },
+            { "action": RESTYLE_ELEMENT, "args": restyle_args(doc) },
+            { "action": MOVE_SLIDE, "args": move_slide_args(doc) },
+        ]})
+    }
+
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
@@ -1618,12 +2187,33 @@ mod tests {
                 deck(doc).slides[0].id.clone(),
                 &Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0),
             )),
+            door_add_element => |doc| through_door(doc, ADD_ELEMENT, add_text_args(doc)),
+            door_move_element => |doc| through_door(doc, MOVE_ELEMENT, serde_json::json!({
+                "element": deck(doc).slides[1].elements[0].id, "x": 10, "y": 20,
+            })),
+            door_resize_element => |doc| through_door(doc, MOVE_ELEMENT, resize_args(doc)),
+            door_restyle_element => |doc| through_door(doc, RESTYLE_ELEMENT, restyle_args(doc)),
+            door_delete_element => |doc| through_door(doc, DELETE_ELEMENT, serde_json::json!({
+                "element": deck(doc).slides[1].elements[0].id,
+            })),
+            door_move_slide => |doc| through_door(doc, MOVE_SLIDE, move_slide_args(doc)),
+            door_group => |doc| through_door(doc, ui::tilo_resource::GROUP, group_args(doc)),
+            door_apply => |doc| through_door(doc, ui::tilo_resource::APPLY, serde_json::json!({
+                "action": { "SetSlideBackground": {
+                    "slide": 1, "id": deck(doc).slides[1].id, "background": "deep",
+                }},
+            })),
         ],
         undo: [
             delete_element => |doc| encode(&delete_element_action(
                 0,
                 deck(doc).slides[0].elements[0].id.clone(),
             )),
+            door_add_element => |doc| through_door(doc, ADD_ELEMENT, add_text_args(doc)),
+            door_resize_element => |doc| through_door(doc, MOVE_ELEMENT, resize_args(doc)),
+            door_restyle_element => |doc| through_door(doc, RESTYLE_ELEMENT, restyle_args(doc)),
+            door_move_slide => |doc| through_door(doc, MOVE_SLIDE, move_slide_args(doc)),
+            door_group => |doc| through_door(doc, ui::tilo_resource::GROUP, group_args(doc)),
         ],
         encodes: [
             delete_slide => ("slides.slide", "delete", |doc, _| {
