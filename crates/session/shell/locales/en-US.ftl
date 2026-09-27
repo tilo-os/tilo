@@ -2376,6 +2376,7 @@ shortcut-step-no = No
 shortcut-trigger-failed = The shortcut didn't run
 osd-keys-captured = App receives all keys · { $chord } restores shortcuts
 osd-keys-released = Shortcuts restored
+osd-pad-mode = Tablet mode { $mode } of { $modes }
 workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
 
 # Peer views, opening documents, identity backup and invitations
