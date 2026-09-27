@@ -1148,11 +1148,6 @@ portal-capture-default-camera = Standardkamera
 portal-capture-primary-display = Hauptbildschirm
 portal-capture-system-audio = Systemaudio
 
-# Workspace wheel
-a11y-shell-wheel = Arbeitsbereichsrad
-a11y-shell-wheel-switch = Zu { $workspace } wechseln
-a11y-shell-wheel-add = Arbeitsbereich hinzufügen
-
 # Die Rolle eines Lautsprechers in einer Lautsprechergruppe, als $role eines Satzes („Wohnzimmer als rechter Lautsprecher beitreten“)
 speaker-role-left = linker Lautsprecher
 speaker-role-right = rechter Lautsprecher
