@@ -1,9 +1,9 @@
 //! The applications installed in this browser runtime. Standalone mounts and
 //! the canonical desktop resolve app ids through this one catalogue.
 //!
-//! Apps are either compiled in (`static-apps`) or installed at run time by a
-//! side module linked against the web core (`dylink`), which hands its
-//! `definition()` to [`install`].
+//! Apps are compiled in (natively always, in wasm32 with `static-apps`) or
+//! installed at run time by a side module linked against the web core
+//! (`dylink`), which hands its `definition()` to [`install`].
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 #[cfg(any(target_arch = "wasm32", test))]
 use ui::application::ApplicationCatalog;
@@ -22,7 +22,7 @@ pub(crate) enum RecordScope {
 
 /// Every component application compiled into the build. Registering an app
 /// here is all it takes to launch it by id, standalone or on the desktop.
-#[cfg(any(feature = "static-apps", test))]
+#[cfg(any(feature = "static-apps", not(target_arch = "wasm32")))]
 const COMPILED: [fn() -> &'static ApplicationDefinition; 5] = [
     word_processor::definition,
     chat::definition,
@@ -30,7 +30,7 @@ const COMPILED: [fn() -> &'static ApplicationDefinition; 5] = [
     calculator::definition,
     ebook::definition,
 ];
-#[cfg(not(any(feature = "static-apps", test)))]
+#[cfg(all(not(feature = "static-apps"), target_arch = "wasm32"))]
 const COMPILED: [fn() -> &'static ApplicationDefinition; 0] = [];
 
 /// Apps whose room holds one package-primary document; every other app is
