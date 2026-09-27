@@ -491,6 +491,11 @@ impl Resource for RichText {
         }
     }
 
+    /// Recording who wrote text is part of the edit that wrote it.
+    fn annotates(action: &RichTextAction) -> bool {
+        matches!(action, RichTextAction::SetMark { name, .. } if name == qdoc::schema::MARK_AUTHOR)
+    }
+
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
     }
