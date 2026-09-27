@@ -1055,6 +1055,23 @@ impl OnboardingView {
         self.tour_page.is_some()
     }
 
+    /// Where this view shows a secret, if it shows one now: the restore step
+    /// (the backup's passphrase and a nearby device's pairing code) and the
+    /// backup step (the new passphrase and its confirmation). A capture draws
+    /// this as the placeholder — see [`crate::shell::capture_protection`].
+    ///
+    /// The whole view, not just its card: the card slides as a step
+    /// reveals, and the view is an opaque surface outside the tour anyway.
+    pub fn secret_rect(&self) -> Option<Rect> {
+        let shows_secret = self.tour_page.is_none()
+            && match self.flow.screen() {
+                Screen::Connect => true,
+                Screen::Done => !self.identity_ready_page,
+                Screen::Intro | Screen::NoRecovery => false,
+            };
+        (shows_secret && self.rect.area() > 0.0).then_some(self.rect)
+    }
+
     /// Reset this trusted view to the existing-identity backup step. Kept in
     /// one place so Settings enters the exact same export, picker, and
     /// verification flow as first-login onboarding.
