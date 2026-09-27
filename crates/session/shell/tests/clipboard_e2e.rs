@@ -1357,17 +1357,29 @@ impl TestClient {
         String::from_utf8(bytes).expect("selection bytes were not UTF-8")
     }
 
+    /// A selection set just before this call may still be on its way, with
+    /// an earlier selection's offer already delivered, so wait for an offer
+    /// that advertises `mime` rather than taking the first one.
     fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
-        self.wait_until(
-            |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
-            "no clipboard offer ever arrived",
-        );
+        let advertised = |s: &ClientState| {
+            s.clipboard_selection_seen
+                && s.clipboard_offer.is_some()
+                && s.clipboard_offer_mimes
+                    .iter()
+                    .any(|offered| offered == mime)
+        };
+        let started = Instant::now();
+        while !advertised(&self.state) && started.elapsed() < DEADLINE {
+            dispatch_any(
+                &mut [&mut *self],
+                None,
+                DEADLINE.saturating_sub(started.elapsed()),
+            );
+        }
         assert!(
-            self.state
-                .clipboard_offer_mimes
-                .iter()
-                .any(|offered| offered == mime),
-            "clipboard offer did not advertise {mime}; got {:?}",
+            advertised(&self.state),
+            "no clipboard offer advertised {mime} (waited {DEADLINE:?}, app_id {}); last offer: {:?}",
+            self.app_id,
             self.state.clipboard_offer_mimes,
         );
         self.step("clipboard offer received, requesting the bytes");
