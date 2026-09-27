@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use moka::sync::Cache;
-use tilo_content::ContentStore;
+use tilo_content::{ContentStore, DirBackend};
 
 use crate::generate::ThumbSize;
 
@@ -139,7 +139,7 @@ impl ThumbCache {
         std::fs::create_dir_all(dir)?;
         forget_flat_layout(dir);
         Self::with_store(
-            ContentStore::in_dir(dir.join("content")),
+            ContentStore::new(DirBackend::new(dir.join("content")).regenerable()),
             dir.join("index"),
             mem_capacity,
             max_entries,
@@ -213,8 +213,10 @@ impl ThumbCache {
     }
 
     /// Store `png` for `key`: the bytes into the content store, then the index
-    /// entry naming them (durable temp-then-rename, so a crash never publishes
-    /// a half-written entry). Prunes back under the bound afterwards.
+    /// entry naming them (temp-then-rename, so a reader never sees a
+    /// half-written entry). Neither is synced: a preview can be regenerated,
+    /// and a torn entry or PNG left by a crash fails validation and reads as a
+    /// miss. Prunes back under the bound afterwards.
     pub fn put(&self, key: &ThumbKey, png: Vec<u8>) {
         let arc = Arc::new(png);
         self.mem.insert(*key, arc.clone());
@@ -224,7 +226,7 @@ impl ThumbCache {
         let Ok(address) = self.store.put(arc.as_slice()) else {
             return;
         };
-        if atomic_file::write(&entry, address.as_bytes()).is_ok() {
+        if atomic_file::write_regenerable(&entry, address.as_bytes()).is_ok() {
             self.prune();
         }
     }

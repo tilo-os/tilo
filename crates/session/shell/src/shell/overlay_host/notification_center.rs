@@ -11,6 +11,7 @@ use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
+use crate::shell::i18n::{t, t_args};
 use crate::shell::notification::Notification;
 use crate::shell::notification_history::{HistoryActivation, HistoryRow, RowIdentity};
 use crate::shell::quick_settings::drill_in as qs;
@@ -388,9 +389,12 @@ impl ShellOverlayHost {
                         AccessNode::new(Role::ListItem)
                             .with_semantic_key(format!("notification-group:{key}"))
                             .with_name(label.clone())
-                            .with_description(format!(
-                                "{count} notifications. Press Enter to {}, Delete to dismiss them all.",
-                                if *expanded { "collapse" } else { "expand" }
+                            .with_description(t_args(
+                                "notification-center-group-description",
+                                &[
+                                    ("count", (*count).into()),
+                                    ("expanded", if *expanded { "yes" } else { "no" }.into()),
+                                ],
                             ))
                             .with_level(1)
                             .with_state(
@@ -402,7 +406,10 @@ impl ShellOverlayHost {
                             )
                             .with_children(vec![
                                 AccessNode::new(Role::Button)
-                                    .with_name(format!("Dismiss all from {label}"))
+                                    .with_name(t_args(
+                                        "notification-center-dismiss-all",
+                                        &[("app", label.as_str().into())],
+                                    ))
                                     .with_bounds(dismiss)
                                     .with_state(AccessState::new().focusable(true).focused(
                                         is_selected
@@ -447,7 +454,7 @@ impl ShellOverlayHost {
             |control| is_selected && self.qs_notification_row_control == Some(control);
         let mut controls = vec![
             AccessNode::new(Role::Button)
-                .with_name("Dismiss")
+                .with_name(t("notification-center-dismiss"))
                 .with_bounds(dismiss)
                 .with_state(
                     AccessState::new()
@@ -458,8 +465,11 @@ impl ShellOverlayHost {
         if let (Some(agent), Some(agent_rect)) = (agent, agent_rect) {
             controls.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Hand to {}", agent.agent))
-                    .with_description("Give this notification to the workspace agent as a task.")
+                    .with_name(t_args(
+                        "notification-center-hand-to",
+                        &[("agent", agent.agent.as_str().into())],
+                    ))
+                    .with_description(t("notification-center-hand-to-description"))
                     .with_bounds(agent_rect)
                     .with_state(
                         AccessState::new()
@@ -523,7 +533,10 @@ impl ShellOverlayHost {
         let relative_time = notification_history_relative_time(newest, now);
         let (time_width, _) = text_renderer.measure(&relative_time, caption_size, None);
         let source_y = row.y0 + qs::CONTROL_PAD;
-        let count_label = format!("{count} notifications");
+        let count_label = t_args(
+            "notification-center-group-count",
+            &[("count", count.into())],
+        );
         text_renderer.draw_text(
             scene,
             &count_label,

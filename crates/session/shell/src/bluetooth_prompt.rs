@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::shell::i18n::{t, t_args};
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{PairingPrompt, PairingReply, PairingRequest};
@@ -58,47 +59,43 @@ impl PairingPromptView {
 
     /// Headline. Names the device, because "Pair with a device?" tells the user nothing they can check.
     fn title(&self) -> String {
+        let device = [(
+            "device",
+            ui::i18n::ArgValue::from(self.request.device_name.as_str()),
+        )];
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
-                format!("Does {} show this code?", self.request.device_name)
+                t_args("bluetooth-prompt-title-confirm-passkey", &device)
             }
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                format!("Type this on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-display", &device)
             }
             PairingPrompt::RequestPasskey => {
-                format!("Enter the code shown on {}", self.request.device_name)
+                t_args("bluetooth-prompt-title-request-passkey", &device)
             }
-            PairingPrompt::RequestPinCode => {
-                format!("Enter the PIN for {}", self.request.device_name)
+            PairingPrompt::RequestPinCode => t_args("bluetooth-prompt-title-request-pin", &device),
+            PairingPrompt::ConfirmPairing => {
+                t_args("bluetooth-prompt-title-confirm-pairing", &device)
             }
-            PairingPrompt::ConfirmPairing => format!("Pair with {}?", self.request.device_name),
             PairingPrompt::AuthorizeService { .. } => {
-                format!("Let {} connect?", self.request.device_name)
+                t_args("bluetooth-prompt-title-authorize-service", &device)
             }
         }
     }
 
     /// The sentence under the headline. Says what accepting actually grants, in terms of what the device will be able to do.
-    fn explanation(&self) -> &'static str {
+    fn explanation(&self) -> String {
         match &self.request.prompt {
-            PairingPrompt::ConfirmPasskey { .. } => {
-                "Compare it with the code on the other device. If they differ, something else \
-                 is trying to pair — say no."
-            }
+            PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-explain-confirm-passkey"),
             PairingPrompt::DisplayPasskey { .. } | PairingPrompt::DisplayPinCode { .. } => {
-                "Enter this code on the other device to finish pairing."
+                t("bluetooth-prompt-explain-display")
             }
             PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode => {
-                "The code is shown on the device you are pairing. Many keyboards ask you to \
-                 type it and press Enter."
+                t("bluetooth-prompt-explain-request")
             }
-            PairingPrompt::ConfirmPairing => {
-                "This device cannot show a code to compare, so there is nothing to check \
-                 against. Only continue if you started this pairing yourself."
-            }
+            PairingPrompt::ConfirmPairing => t("bluetooth-prompt-explain-confirm-pairing"),
             PairingPrompt::AuthorizeService { .. } => {
-                "A device you have already paired is asking to use a new service. Paired \
-                 devices can send input and audio to this machine."
+                t("bluetooth-prompt-explain-authorize-service")
             }
         }
     }
@@ -109,7 +106,7 @@ impl PairingPromptView {
             .with_gap(18.0)
             .push(Box::new(Text::new(&self.title()).with_size(20.0)))
             .push(Box::new(
-                Text::new(self.explanation())
+                Text::new(&self.explanation())
                     .with_size(13.0)
                     .with_color(theme.text_dim),
             ));
@@ -133,17 +130,23 @@ impl PairingPromptView {
             && *entered > 0
         {
             body = body.push(Box::new(
-                Text::new(&format!("{entered} of 6 digits entered"))
-                    .with_size(12.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-digits-entered",
+                    &[("entered", (*entered).into())],
+                ))
+                .with_size(12.0)
+                .with_color(theme.text_dim),
             ));
         }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
             body = body.push(Box::new(
-                Text::new(&format!("Service {uuid}"))
-                    .with_size(11.0)
-                    .with_color(theme.text_dim),
+                Text::new(&t_args(
+                    "bluetooth-prompt-service",
+                    &[("uuid", uuid.into())],
+                ))
+                .with_size(11.0)
+                .with_color(theme.text_dim),
             ));
         }
 
@@ -152,9 +155,9 @@ impl PairingPromptView {
                 TextInput::new(Vec::new())
                     .with_id("bluetooth.pair.entry.field")
                     .with_on_change_path(KEY_ENTRY)
-                    .with_placeholder(match self.request.prompt {
-                        PairingPrompt::RequestPinCode => "PIN",
-                        _ => "6-digit code",
+                    .with_placeholder(&match self.request.prompt {
+                        PairingPrompt::RequestPinCode => t("bluetooth-prompt-pin-placeholder"),
+                        _ => t("bluetooth-prompt-code-placeholder"),
                     })
                     .with_font_size(15.0),
             ));
@@ -166,13 +169,13 @@ impl PairingPromptView {
             vec![
                 Box::new(Button::new(
                     "bluetooth.pair.reject",
-                    "Don't pair",
+                    &t("bluetooth-prompt-reject"),
                     Some(KEY_REJECT),
                 )),
                 Box::new(
                     Button::new(
                         "bluetooth.pair.accept",
-                        accept_label(&self.request.prompt),
+                        &accept_label(&self.request.prompt),
                         Some(KEY_ACCEPT),
                     )
                     .with_style(ButtonStyle::Primary),
@@ -181,7 +184,7 @@ impl PairingPromptView {
         } else {
             vec![Box::new(Button::new(
                 "bluetooth.pair.reject",
-                "Cancel",
+                &t("bluetooth-prompt-cancel"),
                 Some(KEY_REJECT),
             ))]
         };
@@ -199,11 +202,11 @@ impl PairingPromptView {
     }
 }
 
-fn accept_label(prompt: &PairingPrompt) -> &'static str {
+fn accept_label(prompt: &PairingPrompt) -> String {
     match prompt {
-        PairingPrompt::ConfirmPasskey { .. } => "They match",
-        PairingPrompt::AuthorizeService { .. } => "Allow",
-        _ => "Pair",
+        PairingPrompt::ConfirmPasskey { .. } => t("bluetooth-prompt-accept-match"),
+        PairingPrompt::AuthorizeService { .. } => t("bluetooth-prompt-accept-allow"),
+        _ => t("bluetooth-prompt-accept-pair"),
     }
 }
 

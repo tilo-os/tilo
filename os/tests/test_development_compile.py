@@ -17,9 +17,9 @@ driver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(driver)
 WPE = 'registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + 'a' * 64
 REVISION = 'b' * 40
-CACHE_ENV = {'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
-             'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
-             'SCCACHE_REGION': 'eu-central-1', 'SCCACHE_S3_USE_SSL': 'true',
+CACHE_ENV = {'SCCACHE_ENDPOINT': 'https://s3.us-west-2.amazonaws.com',
+             'SCCACHE_BUCKET': 'tilo-ci-sccache-125650147312-us-west-2',
+             'SCCACHE_REGION': 'us-west-2', 'SCCACHE_S3_USE_SSL': 'true',
              'SCCACHE_S3_KEY_PREFIX': 'forgejo-runners/v1'}
 CACHE = driver.cache_configuration(CACHE_ENV)
 
@@ -464,7 +464,7 @@ class CompileBoundaries(unittest.TestCase):
                     driver.cache_configuration({**CACHE_ENV, field: value})
         with self.subTest(phase="remote_counter_receipt_rejects_local_cache_and_errors"):
             for payload in ({'cache_location': 'Local disk: /tmp', 'stats': {}},
-                            {'cache_location': 's3, name: podesta-agent-sccache-125650147312-eu-central-1, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                            {'cache_location': 's3, name: tilo-ci-sccache-125650147312-us-west-2, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
                              'stats': {'cache_write_errors': 1}}):
                 with self.assertRaises(ValueError):
                     driver.cache_counters(json.dumps(payload), CACHE['SCCACHE_S3_KEY_PREFIX'])
@@ -481,7 +481,7 @@ class CompileBoundaries(unittest.TestCase):
                             (Path(args[args.index('--out-dir') + 1]) / 'libtilo_cache_probe.rlib').write_bytes(
                                 b'1' if stale_epoch else env['TILO_CACHE_PROBE_VALUE'].encode())
                         if '--stats-format=json' in args:
-                            return json.dumps({'cache_location': 's3, name: podesta-agent-sccache-125650147312-eu-central-1, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                            return json.dumps({'cache_location': 's3, name: tilo-ci-sccache-125650147312-us-west-2, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
                                                'stats': {'cache_hits': {'counts': {'Rust': 1}}}})
                         return ''
                     with patch.object(driver, 'PRIVATE', directory), patch.object(driver, 'EVIDENCE', directory), \

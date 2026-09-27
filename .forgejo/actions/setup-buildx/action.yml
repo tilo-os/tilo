@@ -17,6 +17,15 @@ inputs:
     description: Additional buildkitd.toml tables for this builder.
     required: false
     default: ""
+  persistent:
+    description: >-
+      Keep this builder's BuildKit state (layers and RUN cache mounts) in the
+      runner slot's Docker store for the slot's next job of the same trust
+      class and configuration. Only a push to main is trusted, so a pull
+      request never writes state a main build reads. Publications build from
+      a fresh builder: leave this false for them.
+    required: false
+    default: "false"
 
 outputs:
   name:
@@ -30,6 +39,9 @@ runs:
       shell: bash
       env:
         EXTRA_CONFIG: ${{ inputs.buildkitd-config-inline }}
+        DRIVER_OPTS: ${{ inputs.driver-opts }}
+        PERSISTENT: ${{ inputs.persistent }}
+        TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
       run: |
         set -euo pipefail
         config="$(mktemp "${RUNNER_TEMP:-/tmp}/buildkitd.XXXXXX.toml")"
@@ -39,6 +51,21 @@ runs:
           : > "$config"
         fi
         printf '\n%s\n' "$EXTRA_CONFIG" >> "$config"
+        name=
+        if [[ $PERSISTENT == true ]]; then
+          if grep -q '^\[worker\.oci\]' "$config"; then
+            echo "::error::a persistent builder sets its own [worker.oci] garbage collection"; exit 1
+          fi
+          # Bound the state kept between jobs; the slot's store also holds
+          # images and a Rust target tree.
+          printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "30GB"\n  minFreeSpace = "30GB"\n' >> "$config"
+          # A builder's configuration is fixed when its container starts, so
+          # the name covers it; the slot's DinD maintenance keeps tilo-* state.
+          digest=$( { cat "$config"; printf '%s' "$DRIVER_OPTS"; } | sha256sum | cut -c1-12)
+          name="tilo-$TRUST-$digest"
+          echo "::notice::persistent BuildKit builder $name"
+        fi
+        echo "name=$name" >> "$GITHUB_OUTPUT"
         registry="${CI_LAYER_CACHE_REGISTRY:-registry.tilo.so}"
         [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
           echo "::error::invalid layer-cache registry: $registry"; exit 1;
@@ -52,3 +79,7 @@ runs:
         driver: docker-container
         driver-opts: ${{ inputs.driver-opts }}
         buildkitd-config: ${{ steps.config.outputs.path }}
+        name: ${{ steps.config.outputs.name }}
+        # Removes the builder container at the end of the job but keeps its
+        # state volume, which the next job's builder of this name mounts.
+        keep-state: ${{ inputs.persistent == 'true' }}

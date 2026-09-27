@@ -15,13 +15,13 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 
 use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
     EvictionRequirements, RecordAvailability, RecordKind, Residency,
 };
+use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
 
 /// Bound catalog I/O so opening Settings does not serialize one backend
@@ -133,7 +133,7 @@ impl EvictionCoordinator {
         expected_hash: Option<Hash>,
     ) -> anyhow::Result<(EvictionRequestId, EvictionPlan)> {
         let store = Arc::clone(&self.hydrator.store);
-        let runtime = self.hydrator.runtime_handle.clone();
+        let runtime = self.handoff_runtime();
         self.prepare_with_handoff(
             record_id,
             mode,
@@ -158,6 +158,18 @@ impl EvictionCoordinator {
         .await
     }
 
+    /// The runtime a handoff waits on the store through. The handoff holds
+    /// the availability lock, which the daemon's workers take too; a worker
+    /// blocked on it can leave the daemon's timers undriven, and the backend
+    /// sweep waits on timers. The store's own runtime never takes that lock.
+    #[must_use]
+    pub fn handoff_runtime(&self) -> tokio::runtime::Handle {
+        self.hydrator
+            .store
+            .runtime()
+            .unwrap_or_else(|| self.hydrator.runtime_handle.clone())
+    }
+
     /// As [`Self::prepare`], but makes the actual backend-GC handoff an
     /// explicit caller-supplied critical section. Storage uses this to retain
     /// its live namespace and dirty guards from validation through durable
@@ -166,8 +178,8 @@ impl EvictionCoordinator {
     /// The handoff deliberately runs while the availability and queue locks
     /// are held. It is not a preview-time hint. Those are synchronous guards,
     /// so the whole critical section runs on a blocking thread, where the
-    /// handoff may wait on async store work with the runtime handle's
-    /// `block_on` — once, never nested.
+    /// handoff may wait on async store work with
+    /// [`Self::handoff_runtime`]'s `block_on` — once, never nested.
     ///
     /// # Errors
     ///

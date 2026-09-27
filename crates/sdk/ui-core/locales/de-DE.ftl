@@ -62,4 +62,5 @@ now-playing-choose-player = Player wählen
 now-playing-choose-output = Wiedergabeort wählen
 now-playing-output-local = Auf diesem Computer
 now-playing-output-device = Eines deiner Geräte
+now-playing-output-speaker-group = Eine deiner Lautsprechergruppen
 now-playing-route-gone = Dieser Wiedergabeort ist nicht mehr verfügbar

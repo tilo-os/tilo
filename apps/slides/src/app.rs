@@ -6412,7 +6412,7 @@ impl Widget for SlidesApp {
                         ui::fullscreen::FullscreenTarget::Largest
                     }
                     crate::actions::PresentationOutput::PrimaryExternal => {
-                        ui::fullscreen::FullscreenTarget::Primary
+                        ui::fullscreen::FullscreenTarget::PrimaryExternal
                     }
                 };
                 self.enter_present();
@@ -9218,7 +9218,7 @@ mod tests {
             );
         }
 
-        // Case `presentation_output_resource_policy_is_local_and_selects_primary`.
+        // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
         {
             let mut app = SlidesApp::new();
             let doc = AutoCommit::new();
@@ -9241,7 +9241,8 @@ mod tests {
             assert_eq!(app.mode, Mode::Present);
             assert_eq!(
                 app.presentation_target,
-                ui::fullscreen::FullscreenTarget::Primary
+                ui::fullscreen::FullscreenTarget::PrimaryExternal,
+                "the external-display policy must not collapse to the first output, often the laptop"
             );
         }
 

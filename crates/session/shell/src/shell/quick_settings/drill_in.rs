@@ -411,7 +411,7 @@ impl DrillInList {
                 .ghost()
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
-                .accessible_name("Back"),
+                .accessible_name(&crate::shell::i18n::t("qs-back")),
         );
         let size = type_size(text, theme.tokens.typography.scale.sm);
         let (width, height) = text.measure_weighted(title, size, None, TextWeight::Semibold);

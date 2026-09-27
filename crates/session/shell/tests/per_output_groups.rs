@@ -6,8 +6,12 @@
 //! one display never reveals another's windows. New windows open on the
 //! display with focus, a chord moves a group to the neighbouring display,
 //! and unplugging a display hands its groups to the nearest remaining one
-//! until it comes back. The primary display carries the wheel disc and the
-//! full top bar; every other display a compact bar along its own top edge.
+//! until it comes back. Groups belong to the physical monitor, so outputs
+//! renumbered by a restart or a port swap bring each back to its own. Every
+//! display stacks all of the workspace's strips, and a group dragged onto
+//! another display moves there. The primary display carries the wheel disc
+//! and the full top bar; every other display a compact bar along its own
+//! top edge.
 //!
 //! Each case lays the production `FrameBuilder` out across a named headless
 //! fixture (`TILO_HEADLESS_OUTPUTS`) and drives it through the same entry
@@ -19,7 +23,9 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use shell::compositor::backend::headless::{output_fixture, parse_output_spec};
-use shell::compositor::backend::{Output, combined_geometry, output_geometry};
+use shell::compositor::backend::{
+    Output, OutputId, OutputIdentity, combined_geometry, output_geometry,
+};
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::state::{
     AppKind, GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
@@ -41,6 +47,35 @@ const ROOM: &str = "00000000-0000-4000-8000-0000000000a1";
 /// Three windows start on the primary display, three on the other.
 const ON_PRIMARY: [GroupId; 3] = [id(1001), id(1002), id(1003)];
 const ON_SECOND: [GroupId; 3] = [id(1004), id(1005), id(1006)];
+/// A second strip, two windows on each display.
+const STRIP_B: StripId = StripId(id(78));
+const B_ON_PRIMARY: [GroupId; 2] = [id(2001), id(2002)];
+const B_ON_SECOND: [GroupId; 2] = [id(2003), id(2004)];
+
+/// The fixture's first output is this laptop panel, its second this
+/// monitor, as their EDIDs name them; the partition keys groups by these.
+const PANEL: (&str, &str, &str, &str) = ("eDP-1", "Tilo", "Test Panel", "P-0001");
+const MONITOR: (&str, &str, &str, &str) = ("DP-1", "Tilo", "Test Monitor", "M-0001");
+const PANEL_KEY: &str = "edid:Tilo|Test Panel|P-0001";
+const MONITOR_KEY: &str = "edid:Tilo|Test Monitor|M-0001";
+
+fn identity((connector, make, model, serial): (&str, &str, &str, &str)) -> OutputIdentity {
+    OutputIdentity {
+        connector: connector.into(),
+        make: make.into(),
+        model: model.into(),
+        serial: serial.into(),
+        physical_mm: (0, 0),
+    }
+}
+
+/// The panel and monitor plugged into an arrangement's first two outputs.
+fn with_monitors(mut outputs: Vec<Output>) -> Vec<Output> {
+    for (output, monitor) in outputs.iter_mut().zip([PANEL, MONITOR]) {
+        output.identity = identity(monitor);
+    }
+    outputs
+}
 
 fn tab_of(group: GroupId) -> u64 {
     group.saturating_add(5000)
@@ -88,10 +123,31 @@ fn tree() -> WorkspaceTree {
     tree.desktop.active_strip.insert(ws_id, STRIP);
     tree.desktop.active_group.insert(STRIP, ON_PRIMARY[0]);
     for id in ON_PRIMARY {
-        tree.desktop.outputs.home.insert(id, 0);
+        tree.desktop.outputs.home.insert(id, PANEL_KEY.into());
     }
     for id in ON_SECOND {
-        tree.desktop.outputs.home.insert(id, 1);
+        tree.desktop.outputs.home.insert(id, MONITOR_KEY.into());
+    }
+    tree
+}
+
+/// [`tree`] with a second strip below the first.
+fn two_strip_tree() -> WorkspaceTree {
+    let mut tree = tree();
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: STRIP_B,
+        name: "Second".into(),
+        window_groups: B_ON_PRIMARY
+            .iter()
+            .chain(B_ON_SECOND.iter())
+            .map(|id| group(*id))
+            .collect(),
+    });
+    for id in B_ON_PRIMARY {
+        tree.desktop.outputs.home.insert(id, PANEL_KEY.into());
+    }
+    for id in B_ON_SECOND {
+        tree.desktop.outputs.home.insert(id, MONITOR_KEY.into());
     }
     tree
 }
@@ -103,7 +159,11 @@ struct Desk {
 
 impl Desk {
     fn across(outputs: Vec<Output>) -> Self {
-        let mut fb = FrameBuilder::with_tree(tree(), combined_geometry(&outputs));
+        Self::with_tree(tree(), with_monitors(outputs))
+    }
+
+    fn with_tree(tree: WorkspaceTree, outputs: Vec<Output>) -> Self {
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
         fb.set_output_geometry(output_geometry(&outputs));
         fb.host_mut()
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
@@ -156,10 +216,15 @@ impl Desk {
 
     /// Where each group is laid out, and on which display.
     fn layout(&mut self) -> Vec<(GroupId, Rect, Option<u32>)> {
+        self.layout_of(STRIP)
+    }
+
+    /// Where each group of `strip` is laid out, and on which display.
+    fn layout_of(&mut self, strip: StripId) -> Vec<(GroupId, Rect, Option<u32>)> {
         let row = self
             .fb
             .host_mut()
-            .group_row_mut_for_tests(STRIP)
+            .group_row_mut_for_tests(strip)
             .expect("the strip has a row");
         row.groups
             .iter()
@@ -267,6 +332,105 @@ impl Desk {
 
     fn replug(&mut self) {
         self.fb.set_output_geometry(output_geometry(&self.outputs));
+        self.settle();
+    }
+
+    /// The display the monitor named `key` is connected as.
+    fn output_of(&self, key: &str) -> u32 {
+        let (_, make, model, serial) = if key == PANEL_KEY { PANEL } else { MONITOR };
+        self.outputs
+            .iter()
+            .find(|o| {
+                o.identity.make == make && o.identity.model == model && o.identity.serial == serial
+            })
+            .map(|o| o.id.0)
+            .expect("the monitor is connected")
+    }
+
+    /// A point on `group`'s bar that lifts the whole group: past its last
+    /// tab, clear of the new-tab button and the resize grip.
+    fn grab_point(&mut self, strip: StripId, group: GroupId) -> Point {
+        let row = self
+            .fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .expect("the strip has a row");
+        let g = row
+            .groups
+            .iter()
+            .find(|g| g.id == group)
+            .expect("group laid out");
+        let bar = g.bar_rect();
+        let last = g.tab_rects().last().copied().unwrap_or(bar);
+        let p = Point::new(
+            f64::midpoint(last.x1, bar.x1),
+            f64::midpoint(bar.y0, bar.y1),
+        );
+        assert!(g.bar_grab_hit(p), "{p:?} lifts {group}");
+        p
+    }
+
+    fn button(&mut self, state: ElementState) {
+        self.dispatch(
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: winit::event::MouseButton::Left,
+            },
+            ModifiersState::empty(),
+        );
+        self.frame();
+    }
+
+    fn cursor_to(&mut self, p: Point) {
+        self.dispatch(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: PhysicalPosition::new(p.x, p.y),
+            },
+            ModifiersState::empty(),
+        );
+        self.frame();
+    }
+
+    fn finger(&mut self, phase: winit::event::TouchPhase, p: Point) {
+        self.dispatch(
+            &WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location: PhysicalPosition::new(p.x, p.y),
+                force: None,
+                id: 7,
+            }),
+            ModifiersState::empty(),
+        );
+        self.frame();
+    }
+
+    /// Drag from `from` to `to` in steps, with the pointer or one finger,
+    /// and let go.
+    fn drag(&mut self, from: Point, to: Point, touch: bool) {
+        use winit::event::TouchPhase;
+        if touch {
+            self.finger(TouchPhase::Started, from);
+        } else {
+            self.cursor_to(from);
+            self.button(ElementState::Pressed);
+        }
+        for step in 1..=8 {
+            let t = f64::from(step) / 8.0;
+            let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+            if touch {
+                self.finger(TouchPhase::Moved, p);
+            } else {
+                self.cursor_to(p);
+            }
+        }
+        if touch {
+            self.finger(TouchPhase::Ended, to);
+        } else {
+            self.button(ElementState::Released);
+        }
         self.settle();
     }
 }
@@ -513,7 +677,7 @@ fn unplugging_hands_groups_on_and_replugging_takes_them_back() {
         let dump = desk.state_dump();
         assert_eq!(
             dump["outputs"]["origin"][ON_SECOND[1].to_string()],
-            1,
+            MONITOR_KEY,
             "{fixture}: {dump:#}"
         );
         // One display left: one continuous row again, sized to the panel.
@@ -642,12 +806,13 @@ fn the_state_dump_carries_the_partition() {
     desk.press(NamedKey::ArrowRight, chord);
     let dump = desk.state_dump();
     let home = &dump["outputs"]["home"];
-    assert_eq!(home[ON_PRIMARY[0].to_string()], 1, "{dump:#}");
-    assert_eq!(home[ON_PRIMARY[1].to_string()], 0);
-    assert_eq!(home[ON_SECOND[2].to_string()], 1);
+    assert_eq!(home[ON_PRIMARY[0].to_string()], MONITOR_KEY, "{dump:#}");
+    assert_eq!(home[ON_PRIMARY[1].to_string()], PANEL_KEY);
+    assert_eq!(home[ON_SECOND[2].to_string()], MONITOR_KEY);
     let displays = dump["outputs"]["displays"].as_array().expect("displays");
     assert_eq!(displays.len(), 2);
     assert_eq!(displays[0]["id"], 0, "primary first");
+    assert_eq!(displays[0]["monitor"], PANEL_KEY);
 
     // What `state.json` holds loads back with the partition intact.
     let saved = serde_json::to_string(&*desk.fb.chrome().tree()).expect("the state saves");
@@ -727,6 +892,184 @@ fn the_partition_is_never_replicated() {
                 !found.contains(key),
                 "the {name} document carries `{key}`: {found:?}"
             );
+        }
+    }
+}
+
+/// Each group lies on the display its monitor is connected as, and is laid
+/// out within it.
+fn assert_groups_on_their_monitors(desk: &mut Desk, what: &str) {
+    for (ids, key) in [(ON_PRIMARY, PANEL_KEY), (ON_SECOND, MONITOR_KEY)] {
+        let display = desk.output_of(key);
+        let own = desk.display(display);
+        for id in ids {
+            assert_eq!(desk.display_of(id), Some(display), "{what}: {id} on {key}");
+            let (_, rect, lane) = desk
+                .layout()
+                .into_iter()
+                .find(|(g, _, _)| *g == id)
+                .expect("group laid out");
+            assert!(
+                lane == Some(display) && rect.y0 >= own.y0 - 0.5 && rect.y1 <= own.y1 + 0.5,
+                "{what}: {id} is laid out on {key}: {rect:?} in lane {lane:?} on {own:?}"
+            );
+        }
+    }
+}
+
+/// The same two monitors with their output numbers and connectors swapped,
+/// as a restart or moving the cables to other ports enumerates them.
+fn swapped(outputs: &[Output]) -> Vec<Output> {
+    let mut outputs = outputs.to_vec();
+    let (a, b) = (
+        outputs[0].identity.connector.clone(),
+        outputs[1].identity.connector.clone(),
+    );
+    outputs[0].id = OutputId(1);
+    outputs[0].identity.connector = b;
+    outputs[1].id = OutputId(0);
+    outputs[1].identity.connector = a;
+    outputs.sort_by_key(|o| o.id.0);
+    outputs
+}
+
+#[test]
+fn renumbered_outputs_return_every_group_to_its_monitor() {
+    for fixture in ["docked-laptop", "vertical-stack"] {
+        let mut desk = Desk::fixture(fixture);
+        assert_groups_on_their_monitors(&mut desk, fixture);
+        // What `state.json` holds.
+        let saved = serde_json::to_string(&*desk.fb.chrome().tree()).expect("the state saves");
+
+        // Replugged on each other's ports while running.
+        desk.outputs = swapped(&desk.outputs);
+        desk.replug();
+        assert_eq!(desk.output_of(MONITOR_KEY), 0, "{fixture}: renumbered");
+        assert_groups_on_their_monitors(&mut desk, &format!("{fixture}, port swap"));
+        assert_every_group_stays_on_its_display(&mut desk, fixture);
+
+        // Restarted from the saved state with the outputs renumbered.
+        let mut tree: WorkspaceTree = serde_json::from_str(&saved).expect("the saved state loads");
+        tree.set_salt_override(SALT);
+        let outputs = desk.outputs.clone();
+        let mut restarted = Desk::with_tree(tree, outputs);
+        assert_groups_on_their_monitors(&mut restarted, &format!("{fixture}, restart"));
+        let dump = restarted.state_dump();
+        assert!(
+            dump["outputs"]["origin"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "{fixture}: nothing was stranded: {dump:#}"
+        );
+    }
+}
+
+#[test]
+fn every_display_shows_every_strips_groups() {
+    for fixture in ["docked-laptop", "vertical-stack"] {
+        let outputs = with_monitors(output_fixture(fixture).expect("fixture"));
+        let mut desk = Desk::with_tree(two_strip_tree(), outputs);
+        for display in [0, 1] {
+            let own = desk.display(display);
+            let mut bands = Vec::new();
+            for strip in [STRIP, STRIP_B] {
+                let on: Vec<Rect> = desk
+                    .layout_of(strip)
+                    .into_iter()
+                    .filter(|(_, _, d)| *d == Some(display))
+                    .map(|(_, r, _)| r)
+                    .collect();
+                assert!(
+                    !on.is_empty(),
+                    "{fixture}: strip {strip:?} has windows on {display}"
+                );
+                for rect in &on {
+                    let shown = rect.intersect(own);
+                    assert!(
+                        shown.height() > 100.0
+                            && rect.y0 >= own.y0 - 0.5
+                            && rect.y1 <= own.y1 + 0.5,
+                        "{fixture}: a window of strip {strip:?} is shown on display {display}: {rect:?} on {own:?}"
+                    );
+                }
+                let first = on[0];
+                assert!(
+                    first.intersect(own).width() > 0.0,
+                    "{fixture}: the first window of strip {strip:?} is in view on {display}: {first:?}"
+                );
+                bands.push((
+                    on.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
+                    on.iter().map(|r| r.y1).fold(f64::NEG_INFINITY, f64::max),
+                ));
+            }
+            assert!(
+                bands[0].1 <= bands[1].0 + 0.5,
+                "{fixture}: the strips stack on display {display} without overlapping: {bands:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dragging_a_group_onto_another_display_moves_it_there() {
+    for touch in [false, true] {
+        let how = if touch { "touch" } else { "pointer" };
+        let mut desk = Desk::fixture("docked-laptop");
+        let moving = ON_PRIMARY[1];
+        let from = desk.grab_point(STRIP, moving);
+        // Between the monitor's first and second windows.
+        let a = desk.rect_of(ON_SECOND[0]);
+        let to = Point::new(a.x1 - 20.0, from.y);
+        assert!(
+            desk.display(1).contains(to),
+            "{how}: {to:?} is on the monitor"
+        );
+        desk.drag(from, to, touch);
+
+        assert_eq!(
+            desk.display_of(moving),
+            Some(1),
+            "{how}: it belongs to the monitor"
+        );
+        let dump = desk.state_dump();
+        assert_eq!(
+            dump["outputs"]["home"][moving.to_string()],
+            MONITOR_KEY,
+            "{how}: {dump:#}"
+        );
+        let on_second: Vec<GroupId> = desk
+            .fb
+            .host()
+            .display_partition_summary()
+            .into_iter()
+            .find(|(d, _)| *d == 1)
+            .map(|(_, groups)| groups)
+            .expect("second display");
+        assert_eq!(
+            on_second,
+            vec![ON_SECOND[0], moving, ON_SECOND[1], ON_SECOND[2]],
+            "{how}: dropped between the two"
+        );
+        assert_eq!(
+            desk.layout()
+                .iter()
+                .find(|g| g.0 == moving)
+                .and_then(|g| g.2),
+            Some(1),
+            "{how}: laid out on the monitor"
+        );
+        assert_takes_its_new_displays_height(&mut desk, how, moving);
+        assert_every_group_stays_on_its_display(&mut desk, how);
+        // Nothing overlaps on either display.
+        let layout = desk.layout();
+        for (i, (a, ra, da)) in layout.iter().enumerate() {
+            for (b, rb, db) in layout.iter().skip(i + 1) {
+                let overlap = ra.intersect(*rb);
+                assert!(
+                    da != db || overlap.width() <= 0.5 || overlap.height() <= 0.5,
+                    "{how}: {a} {ra:?} and {b} {rb:?} overlap"
+                );
+            }
         }
     }
 }

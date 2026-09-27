@@ -20,6 +20,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::state::WorkspaceTree;
 use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 use ui::color_compat::ColorCompat;
@@ -286,11 +287,11 @@ pub struct CenterDot {
 
 /// No calendar source is wired to the shell, so this paints what's
 /// actually knowable rather than a plausible fixed string.
-fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'static str) {
+fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, String) {
     (
         now.format("%a").to_string(),
         now.format("%-d %B").to_string(),
-        "No calendar connected",
+        t("topbar-calendar-none"),
     )
 }
 
@@ -327,6 +328,21 @@ fn clamp_clock_overlay(
 
 fn clock_overlay_width(viewport_width: f64) -> f64 {
     (viewport_width - 16.0).clamp(204.0, 252.0)
+}
+
+/// The floating clock's pause, add and close control labels.
+fn clock_overlay_labels(activity: &crate::shell::chrome_state::ClockActivity) -> [String; 3] {
+    let pause = if activity.paused {
+        "topbar-clock-resume"
+    } else {
+        "topbar-clock-pause"
+    };
+    let (add, close) = if activity.stopwatch {
+        ("topbar-clock-lap", "topbar-clock-close-stopwatch")
+    } else {
+        ("topbar-clock-add-minute", "topbar-clock-close-timer")
+    };
+    [t(pause), t(add), t(close)]
 }
 
 fn clock_overlay_controls(panel: Rect) -> [Rect; 3] {
@@ -1101,7 +1117,7 @@ impl TopBarChrome {
             .enumerate()
             .find(|(_, w)| w.id == tree.desktop.active)
             .map_or_else(
-                || (0, String::from("Workspace")),
+                || (0, t("topbar-workspace-fallback")),
                 |(i, w)| (i, w.name.clone()),
             );
         self.workspace_index = idx;
@@ -1501,14 +1517,25 @@ impl TopBarChrome {
         }
         let named = self.sharing_viewers();
         Some(match named.as_slice() {
-            [(_, name, Some(true), true)] => format!("AGENT CONTROLS · {name}"),
-            [(_, name, Some(true), false)] => format!("AGENT VIEWING · {name}"),
-            [(_, name, Some(false), true)] => format!("CONTROLS · {name}"),
-            [(_, name, Some(false), false)] => format!("VIEWING · {name}"),
-            [(_, name, None, true)] => format!("SESSION CONTROLS · {name}"),
-            [(_, name, None, false)] => format!("SESSION VIEWING · {name}"),
-            _ if controllers > 0 => format!("{controllers} CONTROL · {viewers} VIEWING"),
-            _ => format!("{viewers} VIEWING"),
+            [(_, name, is_agent, controls)] => {
+                let key = match (is_agent, controls) {
+                    (Some(true), true) => "topbar-sharing-agent-controls",
+                    (Some(true), false) => "topbar-sharing-agent-viewing",
+                    (Some(false), true) => "topbar-sharing-person-controls",
+                    (Some(false), false) => "topbar-sharing-person-viewing",
+                    (None, true) => "topbar-sharing-session-controls",
+                    (None, false) => "topbar-sharing-session-viewing",
+                };
+                t_args(key, &[("name", name.as_str().into())])
+            }
+            _ if controllers > 0 => t_args(
+                "topbar-sharing-count-controlling",
+                &[
+                    ("controllers", controllers.into()),
+                    ("viewers", viewers.into()),
+                ],
+            ),
+            _ => t_args("topbar-sharing-count", &[("viewers", viewers.into())]),
         })
     }
 
@@ -1538,7 +1565,12 @@ impl TopBarChrome {
                             .map(|tab| (workspace, tab))
                     })
                     .map_or_else(
-                        || format!("surface {surface}"),
+                        || {
+                            t_args(
+                                "topbar-sharing-surface",
+                                &[("surface", surface.to_string().into())],
+                            )
+                        },
                         |(workspace, tab)| {
                             if workspace.id == tree.desktop.active {
                                 tab.title.clone()
@@ -1660,20 +1692,21 @@ impl TopBarChrome {
 
     fn control_name(&self, target: &str) -> String {
         match target {
-            Self::CONTROL_OVERVIEW => "Open overview".into(),
-            Self::CONTROL_WORKSPACE_UP => "Previous workspace".into(),
-            Self::CONTROL_WORKSPACE_DOWN => "Next workspace".into(),
-            Self::CONTROL_WORKSPACE_SETTINGS => {
-                format!("Workspace settings for {}", self.workspace_name)
-            }
-            Self::CONTROL_CENTER_CLOCK => "Show clock".into(),
-            Self::CONTROL_CENTER_MONITOR => "Show system monitor".into(),
-            Self::CONTROL_CENTER_CALENDAR => "Show calendar".into(),
-            Self::CONTROL_QUICK_SETTINGS => "Open quick settings".into(),
+            Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
+            Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
+            Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
+            Self::CONTROL_WORKSPACE_SETTINGS => t_args(
+                "topbar-workspace-settings",
+                &[("workspace", self.workspace_name.as_str().into())],
+            ),
+            Self::CONTROL_CENTER_CLOCK => t("topbar-show-clock"),
+            Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
+            Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
+            Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
                 if named.is_empty() {
-                    "Show collaborators".into()
+                    t("topbar-show-collaborators")
                 } else {
                     let viewers = named
                         .iter()
@@ -1681,44 +1714,58 @@ impl TopBarChrome {
                             let kind = match is_agent {
                                 Some(true) => "agent",
                                 Some(false) => "person",
-                                None => "unidentified session",
+                                None => "session",
                             };
                             let (view_only, controlled) = self.sharing_targets_for_peer(*peer);
                             let mut access = Vec::new();
                             if !controlled.is_empty() {
-                                access.push(format!("can control {}", controlled.join(", ")));
+                                access.push(t_args(
+                                    "topbar-viewer-can-control",
+                                    &[("targets", controlled.join(", ").into())],
+                                ));
                             }
                             if !view_only.is_empty() {
-                                access.push(format!("view only {}", view_only.join(", ")));
+                                access.push(t_args(
+                                    "topbar-viewer-view-only",
+                                    &[("targets", view_only.join(", ").into())],
+                                ));
                             }
-                            format!("{name} ({kind}): {}", access.join("; "))
+                            t_args(
+                                "topbar-viewer-entry",
+                                &[
+                                    ("name", name.as_str().into()),
+                                    ("kind", kind.into()),
+                                    ("access", access.join("; ").into()),
+                                ],
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join("; ");
-                    format!("Screen visible to {viewers}. Show collaborators")
+                    t_args(
+                        "topbar-collaborators-visible",
+                        &[("viewers", viewers.into())],
+                    )
                 }
             }
-            Self::CONTROL_MEDIA => "Privacy settings for active capture".into(),
+            Self::CONTROL_MEDIA => t("topbar-capture-privacy"),
             Self::CONTROL_CONTINUITY => self
                 .continuity_label()
-                .unwrap_or_else(|| "Top bar control".into()),
-            Self::CONTROL_CONTINUITY_DISMISS => crate::shell::i18n::t("continuity-dismiss"),
+                .unwrap_or_else(|| t("topbar-control")),
+            Self::CONTROL_CONTINUITY_DISMISS => t("continuity-dismiss"),
             target if Self::editor_widget(target).is_some() => {
                 let Some((widget, present)) = Self::editor_widget(target) else {
-                    return "Top bar editor control".into();
+                    return t("topbar-editor-control");
                 };
-                let label = match widget {
-                    TopBarWidget::Clock => "clock",
-                    TopBarWidget::SystemMonitor => "system monitor",
-                    TopBarWidget::Calendar => "calendar",
-                };
-                if present {
-                    format!("Remove {label} from top bar")
-                } else {
-                    format!("Add {label} to top bar")
-                }
+                t(match (widget, present) {
+                    (TopBarWidget::Clock, true) => "topbar-editor-remove-clock",
+                    (TopBarWidget::SystemMonitor, true) => "topbar-editor-remove-system-monitor",
+                    (TopBarWidget::Calendar, true) => "topbar-editor-remove-calendar",
+                    (TopBarWidget::Clock, false) => "topbar-editor-add-clock",
+                    (TopBarWidget::SystemMonitor, false) => "topbar-editor-add-system-monitor",
+                    (TopBarWidget::Calendar, false) => "topbar-editor-add-calendar",
+                })
             }
-            _ => "Top bar control".into(),
+            _ => t("topbar-control"),
         }
     }
 
@@ -2387,7 +2434,7 @@ impl TopBarChrome {
         );
         text.draw_text_weighted(
             scene,
-            "Edit top bar",
+            &t("topbar-editor-title"),
             theme.tokens.typography.scale.base,
             theme.tokens.colors.text_primary,
             at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
@@ -2396,7 +2443,7 @@ impl TopBarChrome {
         );
         text.draw_text(
             scene,
-            "Drag to reorder · click Remove",
+            &t("topbar-editor-hint"),
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
@@ -2428,11 +2475,11 @@ impl TopBarChrome {
                 None,
                 &RoundedRect::from_rect(row, 10.0),
             );
-            let label = match widget {
-                TopBarWidget::Clock => "Clock",
-                TopBarWidget::SystemMonitor => "System monitor",
-                TopBarWidget::Calendar => "Calendar",
-            };
+            let label = t(match widget {
+                TopBarWidget::Clock => "topbar-widget-clock",
+                TopBarWidget::SystemMonitor => "topbar-widget-system-monitor",
+                TopBarWidget::Calendar => "topbar-widget-calendar",
+            });
             text.draw_text(
                 scene,
                 "⠿",
@@ -2443,7 +2490,7 @@ impl TopBarChrome {
             );
             text.draw_text(
                 scene,
-                label,
+                &label,
                 theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
@@ -2451,7 +2498,7 @@ impl TopBarChrome {
             );
             text.draw_text(
                 scene,
-                "Remove",
+                &t("topbar-editor-remove"),
                 theme.tokens.typography.scale.xs,
                 theme.tokens.colors.semantic.danger,
                 at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
@@ -2480,14 +2527,14 @@ impl TopBarChrome {
                 if self.widget_config.widgets.contains(&widget) {
                     continue;
                 }
-                let label = match widget {
-                    TopBarWidget::Clock => "+ Clock",
-                    TopBarWidget::SystemMonitor => "+ Monitor",
-                    TopBarWidget::Calendar => "+ Calendar",
-                };
+                let label = t(match widget {
+                    TopBarWidget::Clock => "topbar-editor-add-clock-chip",
+                    TopBarWidget::SystemMonitor => "topbar-editor-add-monitor-chip",
+                    TopBarWidget::Calendar => "topbar-editor-add-calendar-chip",
+                });
                 text.draw_text(
                     scene,
-                    label,
+                    &label,
                     theme.tokens.typography.scale.xs,
                     theme.tokens.colors.accent[5],
                     at(transform, (x, y)),
@@ -2749,7 +2796,7 @@ impl TopBarChrome {
         let (weekday, date, note) = calendar_strip_parts(Local::now());
         let prefix = weekday.as_str();
         let event = date.as_str();
-        let time = note;
+        let time = note.as_str();
         let size = tokens.typography.scale.sm;
         // prefix/time dim Medium, event a Semibold primary anchor.
         let prefix_weight = TextWeight::Medium;
@@ -3739,7 +3786,8 @@ impl TopBarChrome {
         // pretending a participant is already present.
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let label = "Invite";
+        let label = t("topbar-invite");
+        let label = label.as_str();
         let label_size = tokens.typography.scale.xs;
         let (label_w, label_h) =
             text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
@@ -3900,18 +3948,17 @@ impl TopBarChrome {
             if let Some(notification_id) = activity.notification_id.as_ref()
                 && self.clock_notified_id.as_ref() != Some(notification_id)
             {
-                state.push_notification(
-                    if activity.notification_title.is_empty() {
-                        "Clocks"
-                    } else {
-                        &activity.notification_title
-                    },
-                    if activity.notification_body.is_empty() {
-                        "Time is up"
-                    } else {
-                        &activity.notification_body
-                    },
-                );
+                let title = if activity.notification_title.is_empty() {
+                    t("topbar-clocks-notification-title")
+                } else {
+                    activity.notification_title.clone()
+                };
+                let body = if activity.notification_body.is_empty() {
+                    t("topbar-clocks-notification-body")
+                } else {
+                    activity.notification_body.clone()
+                };
+                state.push_notification(title, body);
                 self.clock_notified_id = Some(notification_id.clone());
             }
             if activity.active {
@@ -4087,7 +4134,13 @@ impl TopBarChrome {
         let full = if self.activity_unread == 0 {
             headline.to_string()
         } else {
-            format!("{}  ·  {} new", headline, self.activity_unread)
+            t_args(
+                "topbar-activity-unread",
+                &[
+                    ("headline", headline.into()),
+                    ("count", self.activity_unread.into()),
+                ],
+            )
         };
         let (full_width, _) = text_renderer.measure_weighted(&full, size, None, TextWeight::Medium);
         if full_width <= max_width {
@@ -4399,33 +4452,28 @@ impl TopBarChrome {
             self.clock_add_rect,
             self.clock_close_rect,
         ] = clock_overlay_controls(panel);
+        let [pause_label, add_label, close_label] = clock_overlay_labels(activity);
         ui::widget::Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
-            &ui::widget::ButtonFace::new(
-                self.clock_pause_rect,
-                if activity.paused { "Resume" } else { "Pause" },
-            )
-            .primary()
-            .icon(if activity.paused {
-                ui::icons::Icon::Play
-            } else {
-                ui::icons::Icon::Pause
-            })
-            .focused(self.clock_control_focus == Some(0)),
+            &ui::widget::ButtonFace::new(self.clock_pause_rect, &pause_label)
+                .primary()
+                .icon(if activity.paused {
+                    ui::icons::Icon::Play
+                } else {
+                    ui::icons::Icon::Pause
+                })
+                .focused(self.clock_control_focus == Some(0)),
         );
         ui::widget::Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
-            &ui::widget::ButtonFace::new(
-                self.clock_add_rect,
-                if activity.stopwatch { "Lap" } else { "+1 min" },
-            )
-            .focused(self.clock_control_focus == Some(1)),
+            &ui::widget::ButtonFace::new(self.clock_add_rect, &add_label)
+                .focused(self.clock_control_focus == Some(1)),
         );
         ui::widget::Button::paint(
             scene,
@@ -4435,11 +4483,7 @@ impl TopBarChrome {
             &ui::widget::ButtonFace::new(self.clock_close_rect, "")
                 .ghost()
                 .icon(ui::icons::Icon::X)
-                .accessible_name(if activity.stopwatch {
-                    "Close floating stopwatch"
-                } else {
-                    "Close floating timer"
-                })
+                .accessible_name(&close_label)
                 .focused(self.clock_control_focus == Some(2)),
         );
     }
@@ -4595,26 +4639,36 @@ impl TopBarChrome {
         let reading = format!("{minutes:02}:{seconds:02}");
         Some(
             AccessNode::new(Role::Group)
-                .with_name(if stopwatch {
-                    "Floating stopwatch"
+                .with_name(t(if stopwatch {
+                    "topbar-clock-floating-stopwatch"
                 } else {
-                    "Floating timer"
-                })
-                .with_description(
-                    "Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.",
-                )
+                    "topbar-clock-floating-timer"
+                }))
+                .with_description(t("topbar-clock-floating-description"))
                 .with_bounds(self.clock_overlay_rect)
                 .with_children(vec![
                     AccessNode::new(Role::StaticText)
                         .with_name(if activity.label.is_empty() {
-                            if stopwatch { "Stopwatch" } else { "Timer" }
+                            t(if stopwatch {
+                                "topbar-clock-stopwatch"
+                            } else {
+                                "topbar-clock-timer"
+                            })
                         } else {
-                            &activity.label
+                            activity.label.clone()
                         })
                         .with_value(&reading)
-                        .with_description(if paused { "Paused" } else { "Running" }),
+                        .with_description(t(if paused {
+                            "topbar-clock-paused"
+                        } else {
+                            "topbar-clock-running"
+                        })),
                     AccessNode::new(Role::Button)
-                        .with_name(if paused { "Resume" } else { "Pause" })
+                        .with_name(t(if paused {
+                            "topbar-clock-resume"
+                        } else {
+                            "topbar-clock-pause"
+                        }))
                         .with_action_target("clock.overlay.toggle")
                         .with_bounds(self.clock_pause_rect)
                         .with_state(
@@ -4623,11 +4677,11 @@ impl TopBarChrome {
                                 .focused(self.clock_control_focus == Some(0)),
                         ),
                     AccessNode::new(Role::Button)
-                        .with_name(if stopwatch {
-                            "Record lap"
+                        .with_name(t(if stopwatch {
+                            "topbar-clock-record-lap"
                         } else {
-                            "Add one minute"
-                        })
+                            "topbar-clock-add-one-minute"
+                        }))
                         .with_action_target("clock.overlay.add-minute")
                         .with_bounds(self.clock_add_rect)
                         .with_state(
@@ -4636,11 +4690,11 @@ impl TopBarChrome {
                                 .focused(self.clock_control_focus == Some(1)),
                         ),
                     AccessNode::new(Role::Button)
-                        .with_name(if stopwatch {
-                            "Close floating stopwatch"
+                        .with_name(t(if stopwatch {
+                            "topbar-clock-close-stopwatch"
                         } else {
-                            "Close floating timer"
-                        })
+                            "topbar-clock-close-timer"
+                        }))
                         .with_action_target("clock.overlay.close")
                         .with_bounds(self.clock_close_rect)
                         .with_state(
@@ -5214,10 +5268,12 @@ impl Widget for TopBarChrome {
                     target,
                     Self::CONTROL_WORKSPACE_UP | Self::CONTROL_WORKSPACE_DOWN
                 ) {
-                    node = node.with_description(format!(
-                        "Workspace {} of {}",
-                        self.workspace_index.saturating_add(1),
-                        self.workspace_total
+                    node = node.with_description(t_args(
+                        "topbar-workspace-position",
+                        &[
+                            ("position", self.workspace_index.saturating_add(1).into()),
+                            ("total", self.workspace_total.into()),
+                        ],
                     ));
                 }
                 node
@@ -5233,11 +5289,11 @@ impl Widget for TopBarChrome {
                 } else {
                     "topbar"
                 })
-                .with_name(if self.is_compact() {
-                    "Display navigation"
+                .with_name(t(if self.is_compact() {
+                    "topbar-display-navigation"
                 } else {
-                    "Desktop navigation"
-                })
+                    "topbar-desktop-navigation"
+                }))
                 .with_state(
                     AccessState::new()
                         .focusable(self.is_focusable())
