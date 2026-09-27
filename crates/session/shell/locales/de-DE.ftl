@@ -2578,8 +2578,8 @@ workspace-settings-agents-count = { $count ->
 }
 workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirkende. Die Zulassung gewährt keine allgemeinen Rechte im Arbeitsbereich.
 workspace-settings-add-agent = Agent hinzufügen
-workspace-settings-recording-allowed = Mitglieder dürfen aufzeichnen: an
-workspace-settings-recording-forbidden = Mitglieder dürfen aufzeichnen: aus
+workspace-settings-recording-toggle = Mitglieder dürfen aufzeichnen
+workspace-settings-agent-delegated = Zeichnet für ein Mitglied auf · gesteuert über „Mitglieder dürfen aufzeichnen“
 workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
 workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
 workspace-settings-agents-header = AGENTEN

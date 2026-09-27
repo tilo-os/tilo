@@ -18656,6 +18656,27 @@ impl Widget for ShellOverlayHost {
                     }
                     if let Some(chrome) = &self.chrome {
                         let state = chrome.borrow();
+                        let recording = self.workspace_settings_overlay.recording_delegates_rect();
+                        if matches!(state.ws_settings_tab, WsTab::Agents) && recording.area() > 0.0
+                        {
+                            let allowed = state
+                                .tree()
+                                .desktop
+                                .active_workspace()
+                                .is_some_and(|workspace| !workspace.recording_delegates_forbidden);
+                            let enabled = state.can_rename_active_workspace();
+                            settings.children.push(
+                                AccessNode::new(Role::Switch)
+                                    .with_name(t("workspace-settings-recording-toggle"))
+                                    .with_state(AccessState {
+                                        focusable: enabled,
+                                        disabled: !enabled,
+                                        checked: Some(allowed),
+                                        ..Default::default()
+                                    })
+                                    .with_bounds(recording),
+                            );
+                        }
                         if matches!(state.ws_settings_tab, WsTab::General) {
                             let body = self.workspace_settings_overlay.general_body_rect();
                             let summary = self.workspace_settings_overlay.general_summary_rect();

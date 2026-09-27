@@ -2189,10 +2189,16 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> CapEdit 
     if !ws.may_administer(actor) {
         return CapEdit::default();
     }
+    // A member's recording delegate is not the room's to take back one by
+    // one: it is announced from their device and re-listed while it stands.
+    // "Members may record" is what refuses it.
     let ids: Vec<String> = ws
         .capabilities
         .iter()
-        .filter(|cap| subject_is_agent(&cap.subject, agent))
+        .filter(|cap| {
+            subject_is_agent(&cap.subject, agent)
+                && !crate::shell::state::held_outside_governance(cap)
+        })
         .map(|cap| cap.id.clone())
         .collect();
     let mut edit = CapEdit::default();
@@ -2235,6 +2241,10 @@ pub struct AgentRow {
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
     pub service: Option<crate::shell::service_members::ServiceMember>,
+    /// Set when the agent is here only as members' recording delegates,
+    /// which the room controls with "Members may record", not per row:
+    /// such a row offers no Review or Remove.
+    pub delegated: bool,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2423,14 +2433,62 @@ pub fn recording_delegates_rect(pane_rect: Rect) -> Rect {
     Rect::new(add.x1 + 12.0, add.y0, add.x1 + 12.0 + 236.0, add.y1)
 }
 
-/// What the recording switch says: whether this room lets its members'
-/// session recorders act for them.
-pub fn recording_delegates_label(ws: &Workspace) -> String {
-    t(if ws.recording_delegates_forbidden {
-        "workspace-settings-recording-forbidden"
-    } else {
-        "workspace-settings-recording-allowed"
-    })
+/// The shared switch inside the recording row, at its trailing edge.
+pub fn recording_delegates_switch_rect(row: Rect) -> Rect {
+    let top = row.center().y - RECORDING_SWITCH_HEIGHT / 2.0;
+    Rect::new(
+        row.x1 - RECORDING_SWITCH_WIDTH,
+        top,
+        row.x1,
+        top + RECORDING_SWITCH_HEIGHT,
+    )
+}
+
+const RECORDING_SWITCH_WIDTH: f64 = 38.0;
+const RECORDING_SWITCH_HEIGHT: f64 = 22.0;
+
+/// Paint the "Members may record" row: its label and the shared switch,
+/// on while the room allows its members' recorders. The whole row is the
+/// hit target.
+fn draw_recording_delegates_switch(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    ws: &Workspace,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let size = tokens.typography.scale.sm;
+    let label = elide(
+        &t("workspace-settings-recording-toggle"),
+        size,
+        (row.width() - RECORDING_SWITCH_WIDTH - 10.0).max(0.0),
+        text_renderer,
+    );
+    text_renderer.draw_text(
+        scene,
+        &label,
+        size,
+        if is_owner {
+            tokens.colors.text_primary
+        } else {
+            tokens.colors.text_dim
+        },
+        at(transform, row.x0, row.center().y - f64::from(size) * 0.65),
+        None,
+    );
+    ui::widget::Toggle::paint(
+        scene,
+        transform,
+        theme,
+        &ui::widget::ToggleFace::new(
+            recording_delegates_switch_rect(row),
+            !ws.recording_delegates_forbidden,
+        )
+        .disabled(!is_owner),
+    );
 }
 
 /// Stable, policy-backed rows for the Agents pane.
@@ -2484,12 +2542,26 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
         let preset = agent_authority_preset(ws, &agent);
         let service =
             crate::shell::service_members::service_purpose(ws, &agent, tilo_clock::unix_now());
+        let delegated = ws
+            .capabilities
+            .iter()
+            .filter(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, &agent))
+            .all(|cap| {
+                cap.id
+                    .starts_with(crate::shell::state::DEVICE_DELEGATE_CAP_PREFIX)
+            });
+        let (review_rect, remove_rect) = if delegated {
+            (Rect::ZERO, Rect::ZERO)
+        } else {
+            (review_rect, remove_rect)
+        };
         rows.push(AgentRow {
             agent,
             role,
             grant_count,
             preset,
             service,
+            delegated,
             row_rect,
             role_rect,
             review_rect,
@@ -2991,17 +3063,14 @@ pub fn draw_agents_pane(
         text_renderer,
         theme,
     );
-    Button::paint(
+    draw_recording_delegates_switch(
         scene,
         transform,
+        recording_delegates_rect(pane_rect),
+        ws,
+        is_owner,
         text_renderer,
         theme,
-        &ButtonFace::new(
-            recording_delegates_rect(pane_rect),
-            &recording_delegates_label(ws),
-        )
-        .disabled(!is_owner)
-        .text_size(theme.tokens.typography.scale.sm),
     );
     if rows.is_empty() {
         draw_primary_button(
@@ -3157,19 +3226,7 @@ fn draw_agent_row(
         at(transform, text_x, row.row_rect.y0 + 12.0),
         None,
     );
-    let admission = agent_admission_label(row.role);
-    let detail = if let Some(service) = &row.service {
-        service_member_detail(service)
-    } else {
-        t_args(
-            "workspace-settings-agent-detail",
-            &[
-                ("admission", admission.into()),
-                ("profile", row.preset.label().into()),
-                ("count", row.grant_count.into()),
-            ],
-        )
-    };
+    let detail = agent_row_detail(row);
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);
     text_renderer.draw_text(
@@ -3192,6 +3249,9 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
+    if row.delegated {
+        return;
+    }
     Button::paint(
         scene,
         transform,
@@ -3210,6 +3270,25 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
+}
+
+/// The line under an agent row's name: what a service member is for, that a
+/// recording delegate is the room policy's, or what the agent may do.
+fn agent_row_detail(row: &AgentRow) -> String {
+    if let Some(service) = &row.service {
+        service_member_detail(service)
+    } else if row.delegated {
+        t("workspace-settings-agent-delegated")
+    } else {
+        t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        )
+    }
 }
 
 fn agent_admission_label(role: CapRole) -> String {
@@ -5151,6 +5230,46 @@ mod agents_pane_tests {
         )
         .expect("owner grants scoped access");
         ws
+    }
+
+    /// A member's recording delegate is controlled by "Members may record":
+    /// its row offers no Remove that the next re-apply would undo, and
+    /// removing the agent leaves the delegates alone.
+    #[test]
+    fn a_recording_delegate_row_offers_no_reverting_remove() {
+        let mut ws = Workspace::new(WorkspaceId::from(18), "recorded");
+        ws.set_owner(OWNER);
+        let delegate =
+            crate::shell::state::remote_device_delegate_id("viewer", &[7; 32], "recorder");
+        ws.grant_capability(
+            CapOverride::membership(Subject::agent("recorder"), ws.room.to_string(), Verb::Read)
+                .with_id(delegate.clone()),
+        );
+        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].delegated);
+        assert_eq!(rows[0].remove_rect, Rect::ZERO, "no Remove to offer");
+        assert_eq!(rows[0].review_rect, Rect::ZERO);
+
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), "recorder");
+        assert!(edit.revoked.is_empty());
+        assert!(ws.capabilities.iter().any(|cap| cap.id == delegate));
+
+        // The room's own grant to the same agent is still the room's.
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::membership(Subject::agent("recorder"), ws.room.to_string(), Verb::Read)
+                .with_id("agent-member:recorder:observer"),
+        )
+        .expect("owner admits the recorder");
+        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+        assert!(!rows[0].delegated);
+        assert!(rows[0].remove_rect.area() > 0.0);
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), "recorder");
+        assert_eq!(
+            edit.revoked,
+            vec!["agent-member:recorder:observer".to_string()]
+        );
     }
 
     #[test]

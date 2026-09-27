@@ -2571,8 +2571,8 @@ workspace-settings-agents-count = { $count ->
 }
 workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
 workspace-settings-add-agent = Add agent
-workspace-settings-recording-allowed = Members may record: on
-workspace-settings-recording-forbidden = Members may record: off
+workspace-settings-recording-toggle = Members may record
+workspace-settings-agent-delegated = Records for a member · controlled by “Members may record”
 workspace-settings-agents-empty-title = No agents have access
 workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
 workspace-settings-agents-header = AGENTS

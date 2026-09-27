@@ -408,6 +408,13 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect
     }
 
+    /// Bounds of the "Members may record" switch row in the Agents pane,
+    /// zero while another tab shows. Shared by pointer input and the
+    /// accessibility bridge.
+    pub fn recording_delegates_rect(&self) -> Rect {
+        self.recording_delegates_rect
+    }
+
     /// Button bounds from the currently focused role / confirmation sheet.
     /// Kept primarily for end-to-end pointer coverage; the bounds are still
     /// produced by the same draw pass as the visible controls.
