@@ -14,7 +14,10 @@ use std::{
     process::{Child, Command},
 };
 
-pub(super) fn private_directory(path: &Path) -> io::Result<()> {
+/// Create `path` as a directory only this user can enter.
+/// # Errors
+/// Rejects a symlink or a directory owned by someone else.
+pub fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -30,7 +33,9 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
 
 /// Native automatic startup rejects a pre-existing public profile before any
 /// legacy profile initialization can change its permissions.
-pub(super) fn check_private_profile(path: &Path) -> io::Result<()> {
+/// # Errors
+/// Rejects a profile readable by others, or any [`private_directory`] error.
+pub fn check_private_profile(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.permissions().mode() & 0o077 != 0 => {
             return Err(io::Error::new(
@@ -46,10 +51,10 @@ pub(super) fn check_private_profile(path: &Path) -> io::Result<()> {
 }
 
 /// The host's service sockets, as one app connects to them.
-pub(super) struct ServiceSockets<'a> {
-    pub(super) collab: &'a Path,
-    pub(super) identity: &'a Path,
-    pub(super) blobs: &'a Path,
+pub struct ServiceSockets<'a> {
+    pub collab: &'a Path,
+    pub identity: &'a Path,
+    pub blobs: &'a Path,
 }
 
 /// Connect the document-media socket with this app's scope fixed before the
@@ -70,13 +75,15 @@ fn connect_blobs(path: &Path, app_id: &str, room: &str) -> Option<UnixStream> {
 
 /// Own the connected sockets until spawn/exec finishes. Preparation is shared
 /// by the manifest launcher and independently attached native apps.
-pub(super) struct Connections {
+pub struct Connections {
     _collab: UnixStream,
     _identity: UnixStream,
     _blobs: Option<UnixStream>,
 }
 impl Connections {
-    pub(super) fn prepare(
+    /// # Errors
+    /// Rejects an empty identity and returns connect or handshake errors.
+    pub fn prepare(
         command: &mut Command,
         app_id: &str,
         room: &str,
@@ -136,7 +143,10 @@ impl Connections {
     }
 }
 
-pub(super) fn launch(
+/// Spawn `command` as `app_id` with its service connections inherited.
+/// # Errors
+/// Returns [`Connections::prepare`] or spawn errors.
+pub fn launch(
     mut command: Command,
     app_id: &str,
     room: &str,
@@ -146,7 +156,10 @@ pub(super) fn launch(
     command.spawn()
 }
 
-pub(super) fn private_file(path: &Path) -> io::Result<File> {
+/// Open or create a private file, refusing symlinks and shared files.
+/// # Errors
+/// Rejects a file that is linked, shared or owned by someone else.
+pub fn private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)

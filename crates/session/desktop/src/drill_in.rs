@@ -21,39 +21,39 @@ use ui::widget::{Button, ButtonFace};
 
 /// Panel padding: the root's grid, every list row and every header chip
 /// start this far inside the panel edge (`s4`, HIG §9.6).
-pub(crate) const PANEL_PAD: f64 = Spacing::BASE.s4 as f64;
+pub const PANEL_PAD: f64 = Spacing::BASE.s4 as f64;
 /// Gap between Panel sections — title band, tiles, sliders, cards, power
 /// row (`s4`, HIG §9.6).
-pub(crate) const SECTION_GAP: f64 = Spacing::BASE.s4 as f64;
+pub const SECTION_GAP: f64 = Spacing::BASE.s4 as f64;
 /// Gap between sibling controls of equal weight in a grid: tile ↔ tile,
 /// card ↔ card, chip ↔ chip (`s3`).
-pub(crate) const SIBLING_GAP: f64 = Spacing::BASE.s3 as f64;
+pub const SIBLING_GAP: f64 = Spacing::BASE.s3 as f64;
 /// Gap between related rows that read as one group: list rows, the two
 /// slider bands, a card's icon row and its label block (`s2`).
-pub(crate) const RELATED_GAP: f64 = Spacing::BASE.s2 as f64;
+pub const RELATED_GAP: f64 = Spacing::BASE.s2 as f64;
 /// Vertical padding inside a Control (`s2`).
-pub(crate) const CONTROL_PAD: f64 = Spacing::BASE.s2 as f64;
+pub const CONTROL_PAD: f64 = Spacing::BASE.s2 as f64;
 /// Leading / trailing inset of a glyph, toggle or chevron inside a Control
 /// (`s3`).
-pub(crate) const CONTROL_INSET: f64 = Spacing::BASE.s3 as f64;
+pub const CONTROL_INSET: f64 = Spacing::BASE.s3 as f64;
 /// A list row / Control height (HIG §9.6: 44).
-pub(crate) const ROW_HEIGHT: f64 = Metrics::BASE.panel_row_height as f64;
+pub const ROW_HEIGHT: f64 = Metrics::BASE.panel_row_height as f64;
 /// The standard row glyph (`icon_md`).
-pub(crate) const GLYPH: f64 = Metrics::BASE.icon_md as f64;
+pub const GLYPH: f64 = Metrics::BASE.icon_md as f64;
 /// The pointer floor: header chips, the edit-mode action button and the
 /// drill-in target on a card are this square (HIG §9.6).
-pub(crate) const TARGET: f64 = Metrics::BASE.min_pointer_target as f64;
+pub const TARGET: f64 = Metrics::BASE.min_pointer_target as f64;
 /// The drill-in title band: a pointer-floor back button on `s2` of air.
-pub(crate) const HEADER_HEIGHT: f64 = TARGET + 2.0 * RELATED_GAP;
+pub const HEADER_HEIGHT: f64 = TARGET + 2.0 * RELATED_GAP;
 /// Where a drill-in's first row starts: the title band plus one related
 /// step.
-pub(crate) const LIST_TOP: f64 = HEADER_HEIGHT + RELATED_GAP;
+pub const LIST_TOP: f64 = HEADER_HEIGHT + RELATED_GAP;
 /// The compact switch on a Quick Settings row: as tall as the row glyph and
 /// two knob positions wide less the `s1` they share.
-pub(crate) const TOGGLE_H: f64 = GLYPH;
-pub(crate) const TOGGLE_W: f64 = 2.0 * TOGGLE_H - Spacing::BASE.s1 as f64;
+pub const TOGGLE_H: f64 = GLYPH;
+pub const TOGGLE_W: f64 = 2.0 * TOGGLE_H - Spacing::BASE.s1 as f64;
 /// The "connected" dot on a row's trailing inset: half a glyph.
-pub(crate) const STATUS_DOT: f64 = GLYPH / 2.0;
+pub const STATUS_DOT: f64 = GLYPH / 2.0;
 /// Idle floor of a Control on the panel, on the `lift` ramp under the hover
 /// tier (the `power_menu` / drill-in reference floor). Reach it through
 /// [`control_fill`], the one definition every shell Control paints with.
@@ -70,7 +70,7 @@ fn usize_to_f64_lossy(value: usize) -> f64 {
 /// Theme typography tokens already carry the user's text scale, and the
 /// renderer scales every authored size again; divide once so the scale is
 /// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
-pub(crate) fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
+pub fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
     resolved / text.text_scale()
 }
 
@@ -80,7 +80,7 @@ pub(crate) fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
 /// floor on the same ramp so tiles and rows read as surfaces rather than as
 /// bare text on the panel. Both states sit on one ordered ramp, so hover is
 /// always the more prominent (asserted per theme in the tests).
-pub(crate) fn control_fill(theme: &Theme, hovered: bool) -> Color {
+pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     if hovered {
         selection_tier(theme, SelectionState::new(false, true, false)).fill
     } else {
@@ -89,7 +89,7 @@ pub(crate) fn control_fill(theme: &Theme, hovered: bool) -> Color {
 }
 
 /// The Control radius for `rect` (`radii.lg`, HIG §9.1).
-pub(crate) fn control_radius(theme: &Theme, rect: Rect) -> f64 {
+pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
     ChromeRole::Control.radius(theme, rect.height())
 }
 
@@ -98,7 +98,7 @@ pub(crate) fn control_radius(theme: &Theme, rect: Rect) -> f64 {
 /// toolkit `Button`'s 2 px focus ring on top when `focused`. One painter for
 /// every tile, card, slider block, power row, edit row and list row in the
 /// panel, so they cannot drift apart again.
-pub(crate) fn paint_control(
+pub fn paint_control(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
@@ -123,40 +123,40 @@ pub(crate) fn paint_control(
 
 /// A `glyph`-sized box on `row`'s leading `inset`, centred on its centre
 /// line.
-pub(crate) fn leading_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
+pub fn leading_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     let y = row.center().y - glyph / 2.0;
     Rect::new(row.x0 + inset, y, row.x0 + inset + glyph, y + glyph)
 }
 
 /// A `glyph`-sized box on `row`'s trailing `inset` (a chevron), centred on
 /// its centre line.
-pub(crate) fn trailing_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
+pub fn trailing_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     let y = row.center().y - glyph / 2.0;
     Rect::new(row.x1 - inset - glyph, y, row.x1 - inset, y + glyph)
 }
 
 /// A `w × h` toggle on `row`'s trailing `inset`, centred on its centre line.
-pub(crate) fn trailing_toggle(row: Rect, inset: f64, w: f64, h: f64) -> Rect {
+pub fn trailing_toggle(row: Rect, inset: f64, w: f64, h: f64) -> Rect {
     let y = row.center().y - h / 2.0;
     Rect::new(row.x1 - inset - w, y, row.x1 - inset, y + h)
 }
 
 /// Centre of the "connected" dot: a [`STATUS_DOT`] disc on the trailing
 /// `inset`.
-pub(crate) fn trailing_dot_center(row: Rect, inset: f64) -> Point {
+pub fn trailing_dot_center(row: Rect, inset: f64) -> Point {
     Point::new(row.x1 - inset - STATUS_DOT / 2.0, row.center().y)
 }
 
 /// The status glyph slot before the dot (a battery, signal bars): one related
 /// step inboard of it, centred on the row's centre line.
-pub(crate) fn trailing_status_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
+pub fn trailing_status_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     let x1 = row.x1 - inset - STATUS_DOT - RELATED_GAP;
     let y = row.center().y - glyph / 2.0;
     Rect::new(x1 - glyph, y, x1, y + glyph)
 }
 
 /// Top of a text block `h` tall centred on `row`'s centre line.
-pub(crate) fn centred_text_top(row: Rect, h: f64) -> f64 {
+pub fn centred_text_top(row: Rect, h: f64) -> f64 {
     row.center().y - h / 2.0
 }
 
@@ -382,7 +382,7 @@ impl DrillInList {
         &self.rows
     }
 
-    #[cfg(test)]
+    /// Centre of the Back button, where a press pops the drill-in.
     pub fn back_center(&self) -> Point {
         self.back.center()
     }
@@ -411,7 +411,7 @@ impl DrillInList {
                 .ghost()
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
-                .accessible_name(&crate::shell::i18n::t("qs-back")),
+                .accessible_name(&crate::i18n::t("drill-in-back")),
         );
         let size = type_size(text, theme.tokens.typography.scale.sm);
         let (width, height) = text.measure_weighted(title, size, None, TextWeight::Semibold);

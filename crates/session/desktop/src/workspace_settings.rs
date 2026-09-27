@@ -14,8 +14,8 @@
 //! [`Workspace::may_administer`]. Non-owners see the same information
 //! with controls painted disabled, not hidden.
 
-use crate::shell::i18n::{t, t_args};
-use crate::shell::state::WorkspaceAuthority as _;
+use crate::authority::WorkspaceAuthority as _;
+use crate::i18n::{t, t_args};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -27,10 +27,37 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
 
-use crate::shell::state::{
-    CapOverride, CapRole, Effect, Expiry, Principal, Scope, Subject, UserId, Verb, Workspace,
-    WorkspaceId,
-};
+use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
+use collab_types::role::Role as CapRole;
+use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
+use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
+
+pub mod overlay;
+
+/// The host's application catalogue, as workspace settings name apps and
+/// offer them as default openers.
+pub trait AppDirectory {
+    /// The name a person knows `app_id` by, when the host knows the app.
+    fn app_display_name(&self, app_id: &str) -> Option<String>;
+    /// Applications that can open a kind of resource, for the Apps tab.
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        Vec::new()
+    }
+}
+
+/// A host with no application catalogue: apps are named by their id.
+pub struct NoAppDirectory;
+
+impl AppDirectory for NoAppDirectory {
+    fn app_display_name(&self, _app_id: &str) -> Option<String> {
+        None
+    }
+}
+
+fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
+    apps.app_display_name(app_id)
+        .unwrap_or_else(|| app_id.to_string())
+}
 
 pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
 pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "tilo.workspace.permission-profile.v1";
@@ -76,117 +103,11 @@ pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 pub fn is_governance_action(action: &str) -> bool {
     matches!(
         action,
-        crate::shell::state::PROFILE_SAVE_ACTION_ID
-            | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
+        tilo_desktop_model::PROFILE_SAVE_ACTION_ID
+            | tilo_desktop_model::PROFILE_ASSIGN_ACTION_ID
             | APP_ACTION_GRANT_ACTION_ID
             | APP_ACTION_REVOKE_ACTION_ID
     )
-}
-
-/// The verb a typed app-action grant carries: enough for any action that
-/// asks at most to edit. An action that asks to govern is never granted to
-/// an application this way.
-const APP_ACTION_GRANT_VERB: Verb = Verb::Write;
-
-/// Grant or revoke an application another application's action in
-/// `workspace_id`, as `actor`, mirrored into the room document and to
-/// disk. `actor` must be allowed the governance action itself, exactly as
-/// for permission roles.
-///
-/// # Errors
-///
-/// A refusal worded for the person: no authority, a room governed
-/// elsewhere, or arguments that name nothing grantable.
-pub(crate) fn apply_app_action_operation(
-    tree: &mut crate::shell::state::WorkspaceTree,
-    workspace_id: WorkspaceId,
-    actor: &crate::shell::state::Actor,
-    operation: &PermissionProfileOperation,
-) -> Result<(), String> {
-    let (action_id, app, target_app, action) = match operation {
-        PermissionProfileOperation::GrantAppAction {
-            app,
-            target_app,
-            action,
-            ..
-        } => (APP_ACTION_GRANT_ACTION_ID, app, target_app, action),
-        PermissionProfileOperation::RevokeAppAction {
-            app,
-            target_app,
-            action,
-        } => (APP_ACTION_REVOKE_ACTION_ID, app, target_app, action),
-        _ => return Err("not an app action grant".into()),
-    };
-    let (app, target_app, action) = (app.trim(), target_app.trim(), action.trim());
-    if app.is_empty() || target_app.is_empty() || action.is_empty() {
-        return Err("name the application, the other application and its action".into());
-    }
-    let room = tree
-        .room_of(workspace_id)
-        .ok_or_else(|| "no such workspace".to_string())?;
-    if !room.is_nil() && !tree.governs_room(room) {
-        return Err("this device is not the workspace governance authority".into());
-    }
-    let workspace = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.id == workspace_id)
-        .ok_or_else(|| "no such workspace".to_string())?;
-    if !workspace.allows(
-        actor,
-        &crate::shell::state::ResourceRef::Action {
-            app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
-            action: action_id.into(),
-        },
-        Verb::Admin,
-    ) {
-        return Err("the caller is not allowed to change what apps may use".into());
-    }
-    let scope = Scope::Action {
-        app: target_app.to_string(),
-        action: action.to_string(),
-    };
-    let subject = Subject::app(app);
-    if let PermissionProfileOperation::GrantAppAction { lifetime, .. } = operation {
-        if target_app == crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID {
-            return Err("governing the workspace is assigned with a permission role".into());
-        }
-        let expiry = match lifetime.trim().to_ascii_lowercase().as_str() {
-            "session" => Expiry::EndOfSession,
-            "always" => Expiry::Never,
-            _ => return Err("lifetime must be session or always".into()),
-        };
-        let grantor = actor
-            .principals
-            .iter()
-            .find(|principal| !matches!(principal, Principal::Room(_)))
-            .cloned()
-            .ok_or_else(|| "the caller carries no identity to grant as".to_string())?;
-        let id = workspace.grant_capability(
-            CapOverride::grant(subject, scope, APP_ACTION_GRANT_VERB)
-                .expiring(expiry)
-                .granted_by(grantor),
-        );
-        let stored = workspace
-            .capabilities
-            .iter()
-            .find(|capability| capability.id == id)
-            .cloned();
-        if let Some(stored) = stored {
-            tree.doc_insert_capability(workspace_id, &stored);
-        }
-    } else {
-        let removed = workspace.revoke_matching(|capability| {
-            capability.effect == Effect::Grant
-                && capability.subject == subject
-                && capability.scope == scope
-        });
-        for id in removed {
-            tree.doc_revoke_capability(workspace_id, &id);
-        }
-    }
-    Ok(())
 }
 
 fn encoded_profile_operation(
@@ -214,7 +135,7 @@ pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> tilo_
     clippy::too_many_lines,
     reason = "a declarative resource description listing every governance action"
 )]
-pub(crate) fn permission_profile_resource_with_access(
+pub fn permission_profile_resource_with_access(
     ws: &Workspace,
     can_administer: bool,
 ) -> tilo_actions::Resource {
@@ -1589,18 +1510,18 @@ fn device_scope_key(device: &str) -> Option<&'static str> {
 }
 
 /// What a capability covers, on its own (a share row, a revoke toast).
-pub fn scope_label(scope: &Scope) -> String {
-    scope_phrase(scope, false)
+pub fn scope_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
+    scope_phrase(scope, false, apps)
 }
 
 /// What a capability covers, phrased as the object of the sentence saying
 /// what it allows; languages that inflect the object pick their own form
 /// through the `-object` messages.
-fn scope_object_label(scope: &Scope) -> String {
-    scope_phrase(scope, true)
+fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
+    scope_phrase(scope, true, apps)
 }
 
-fn scope_phrase(scope: &Scope, object: bool) -> String {
+fn scope_phrase(scope: &Scope, object: bool, apps: &dyn AppDirectory) -> String {
     let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
         Scope::Workspace | Scope::Room(_) => ("workspace-settings-scope-workspace", Vec::new()),
         Scope::App(app) => ("workspace-settings-scope-app", vec![("app", app.into())]),
@@ -1616,8 +1537,7 @@ fn scope_phrase(scope: &Scope, object: bool) -> String {
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
         Scope::Action { app, action } => {
-            let name = crate::shell::launcher::display_name_for_app_id(app)
-                .unwrap_or_else(|| crate::shell::launcher::display_name_for_package_id(app));
+            let name = app_display_name(apps, app);
             (
                 "workspace-settings-scope-action",
                 vec![("action", action.into()), ("app", name.into())],
@@ -1687,7 +1607,7 @@ pub fn short_id(id: &str) -> String {
 /// One line describing what a capability allows, built per scope kind
 /// rather than concatenated — "verb · scope" would read "View · the
 /// microphone" instead of "Use the microphone".
-pub fn capability_allows(cap: &CapOverride) -> String {
+pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
     let key = match (&cap.scope, cap.verb) {
         (Scope::Device(_), Verb::Write | Verb::Admin) => "workspace-settings-allows-control",
         (Scope::Device(_), _) => "workspace-settings-allows-use",
@@ -1700,12 +1620,15 @@ pub fn capability_allows(cap: &CapOverride) -> String {
         (_, Verb::Invite) => {
             return t_args(
                 "workspace-settings-allows-invite",
-                &[("what", scope_label(&cap.scope).into())],
+                &[("what", scope_label(&cap.scope, apps).into())],
             );
         }
         (_, Verb::Read) => "workspace-settings-allows-view",
     };
-    t_args(key, &[("what", scope_object_label(&cap.scope).into())])
+    t_args(
+        key,
+        &[("what", scope_object_label(&cap.scope, apps).into())],
+    )
 }
 
 pub fn expiry_label(expiry: Expiry) -> String {
@@ -1790,14 +1713,10 @@ impl GrantSubject {
         }
     }
 
-    pub fn display(&self) -> String {
+    pub fn display(&self, apps: &dyn AppDirectory) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
-            SubjectKind::App | SubjectKind::AppAction => {
-                crate::shell::launcher::display_name_for_app_id(&self.id).unwrap_or_else(|| {
-                    crate::shell::launcher::display_name_for_package_id(&self.id)
-                })
-            }
+            SubjectKind::App | SubjectKind::AppAction => app_display_name(apps, &self.id),
             _ => self.id.clone(),
         }
     }
@@ -1872,16 +1791,16 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
         label_key: "workspace-settings-grant-create-roles",
         target: GrantTarget::Action {
-            app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
-            action: crate::shell::state::PROFILE_SAVE_ACTION_ID,
+            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
+            action: tilo_desktop_model::PROFILE_SAVE_ACTION_ID,
         },
         verb: Verb::Admin,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-assign-roles",
         target: GrantTarget::Action {
-            app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
-            action: crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
+            action: tilo_desktop_model::PROFILE_ASSIGN_ACTION_ID,
         },
         verb: Verb::Admin,
     },
@@ -2237,7 +2156,7 @@ pub struct AgentRow {
     pub preset: AgentAuthorityPreset,
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
-    pub service: Option<crate::shell::service_members::ServiceMember>,
+    pub service: Option<ServiceMember>,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2468,8 +2387,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             })
             .count();
         let preset = agent_authority_preset(ws, &agent);
-        let service =
-            crate::shell::service_members::service_purpose(ws, &agent, tilo_clock::unix_now());
+        let service = service_purpose(ws, &agent, tilo_clock::unix_now());
         rows.push(AgentRow {
             agent,
             role,
@@ -3045,7 +2963,7 @@ pub fn draw_agents_pane(
 }
 
 /// One line on what a service member may do in the room and for how long.
-fn service_member_detail(service: &crate::shell::service_members::ServiceMember) -> String {
+fn service_member_detail(service: &ServiceMember) -> String {
     let access = match service.verb {
         Verb::Admin => "admin",
         Verb::Write | Verb::Invite => "write",
@@ -3582,6 +3500,8 @@ fn draw_authority_footnote(
 pub struct PermissionRow {
     pub cap_id: String,
     pub subject: GrantSubject,
+    /// Who the capability is held by, as a person reads it.
+    pub title: String,
     pub allows: String,
     pub expiry: String,
     pub granted_by: Option<String>,
@@ -3684,7 +3604,11 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
 
 /// Geometry does not depend on the draft, so the click router can
 /// resolve a point without knowing it.
-pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPaneLayout {
+pub fn permissions_pane_layout(
+    ws: &Workspace,
+    pane_rect: Rect,
+    apps: &dyn AppDirectory,
+) -> PermissionsPaneLayout {
     let mut layout = PermissionsPaneLayout::default();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return layout;
@@ -3693,7 +3617,7 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     // ---- Composer -------------------------------------------------
     let card = permission_composer_card(pane_rect);
     layout_composer_controls(&mut layout, ws, card, compact_pane(pane_rect));
-    layout_capability_rows(&mut layout, ws, pane_rect, card);
+    layout_capability_rows(&mut layout, ws, pane_rect, card, apps);
     layout
 }
 
@@ -3837,6 +3761,7 @@ fn layout_capability_rows(
     ws: &Workspace,
     pane_rect: Rect,
     card: Rect,
+    apps: &dyn AppDirectory,
 ) {
     let entries = listed_capabilities(ws);
     // Keep a dedicated footer band for overflow/authority copy. Rows must
@@ -3872,7 +3797,8 @@ fn layout_capability_rows(
         layout.rows.push(PermissionRow {
             cap_id: cap.id.clone(),
             subject: subject.clone(),
-            allows: capability_allows(cap),
+            title: subject.display(apps),
+            allows: capability_allows(cap, apps),
             expiry: expiry_label(cap.expiry),
             granted_by: granted_by_label(cap),
             row_rect,
@@ -3896,7 +3822,7 @@ pub fn draw_permissions_pane(
     scene: &mut Scene,
     transform: Affine,
     pane_rect: Rect,
-    ws: &Workspace,
+    (ws, apps): (&Workspace, &dyn AppDirectory),
     draft: &GrantDraft,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
@@ -3905,7 +3831,7 @@ pub fn draw_permissions_pane(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let layout = permissions_pane_layout(ws, pane_rect);
+    let layout = permissions_pane_layout(ws, pane_rect, apps);
     let active_grants = listed_capabilities(ws).len();
     draw_pane_intro(
         scene,
@@ -3926,7 +3852,7 @@ pub fn draw_permissions_pane(
         scene,
         transform,
         pane_rect,
-        (ws, draft),
+        (ws, draft, apps),
         is_owner,
         &layout,
         (&mut *text_renderer, theme),
@@ -4015,12 +3941,12 @@ fn draw_who_what_pickers(
     scene: &mut Scene,
     transform: Affine,
     card: Rect,
-    subject_draft: (&Workspace, &GrantDraft),
+    subject_draft: (&Workspace, &GrantDraft, &dyn AppDirectory),
     is_owner: bool,
     layout: &PermissionsPaneLayout,
     render: (&mut TextRenderer, &Theme),
 ) {
-    let (ws, draft) = subject_draft;
+    let (ws, draft, apps) = subject_draft;
     let (text_renderer, theme) = render;
     let caption_y = if compact_pane(card) {
         layout.subject_rect.y0 - 18.0
@@ -4047,7 +3973,7 @@ fn draw_who_what_pickers(
                 scene,
                 transform,
                 layout.subject_rect,
-                &entry.display(),
+                &entry.display(apps),
                 is_owner,
                 text_renderer,
                 theme,
@@ -4094,7 +4020,7 @@ fn draw_permission_composer(
     scene: &mut Scene,
     transform: Affine,
     pane_rect: Rect,
-    subject_draft: (&Workspace, &GrantDraft),
+    subject_draft: (&Workspace, &GrantDraft, &dyn AppDirectory),
     is_owner: bool,
     layout: &PermissionsPaneLayout,
     render: (&mut TextRenderer, &Theme),
@@ -4288,12 +4214,12 @@ fn draw_permission_row(
         row.row_rect.x0 + 12.0 + avatar_size,
         row.row_rect.center().y + avatar_size / 2.0,
     );
-    let title = row.subject.display();
+    let title = &row.title;
     draw_avatar(
         scene,
         transform,
         avatar,
-        &title,
+        title,
         matches!(row.subject.kind, SubjectKind::App | SubjectKind::Agent),
         text_renderer,
         theme,
@@ -4315,7 +4241,7 @@ fn draw_permission_row(
     let text_x = avatar.x1 + 12.0;
     let text_max = chip.x0 - 12.0 - text_x;
     let title_size = tokens.typography.scale.sm;
-    let title_text = elide(&title, title_size, text_max, text_renderer);
+    let title_text = elide(title, title_size, text_max, text_renderer);
     text_renderer.draw_text(
         scene,
         &title_text,
@@ -4433,7 +4359,7 @@ mod tab_tests {
                 assert!(!ws.has_app_grants());
                 assert!(WsTab::all().contains(&WsTab::Permissions));
                 let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-                let layout = permissions_pane_layout(&ws, pane);
+                let layout = permissions_pane_layout(&ws, pane, &NoAppDirectory);
                 assert!(
                     layout.choice_rect.area() > 0.0,
                     "the capability picker must be laid out even with zero grants"
@@ -4554,7 +4480,8 @@ mod members_pane_tests {
     //! rewrites the membership capability that `role_of` reads back.
 
     use super::*;
-    use crate::shell::state::{Verb, WorkspaceId};
+    use collab_types::caps::Verb;
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
@@ -4615,7 +4542,7 @@ mod members_pane_tests {
             );
             assert!(ws.allows(
                 &ws.actor_for_person(&PEER.to_string()),
-                &crate::shell::state::ResourceRef::Workspace,
+                &collab_types::caps::ResourceRef::Workspace,
                 Verb::Write
             ));
         }
@@ -4643,7 +4570,7 @@ mod members_pane_tests {
             assert!(
                 !ws.allows(
                     &ws.actor_for_person(&PEER.to_string()),
-                    &crate::shell::state::ResourceRef::Workspace,
+                    &collab_types::caps::ResourceRef::Workspace,
                     Verb::Write
                 ),
                 "a demoted member must stop being able to write, not merely stop reading as Editor"
@@ -4754,7 +4681,7 @@ mod members_pane_tests {
                 assert!(
                     !ws.allows(
                         &ws.actor_for_person(&PEER.to_string()),
-                        &crate::shell::state::ResourceRef::FsPath("/var/workspace/notes".into()),
+                        &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
                         Verb::Write
                     ),
                     "removing a member must revoke what they held, not just hide them"
@@ -4840,8 +4767,7 @@ mod members_pane_tests {
                 let owner = public_key_member_id(owner_public);
                 let recipient = public_key_member_id(recipient_public);
                 ws.collaborators.push(
-                    crate::shell::state::Collaborator::new(recipient.clone(), "Morgan")
-                        .as_invited(),
+                    tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited(),
                 );
                 ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
                     ws.room.to_string(),
@@ -5000,109 +4926,13 @@ mod members_pane_tests {
             assert!(scene.encoding().draw_tags.is_empty());
         }
     }
-
-    #[test]
-    fn app_action_grants_are_typed_admin_actions_that_only_governors_apply() {
-        let mut tree = crate::shell::state::WorkspaceTree::default();
-        let mut ws = Workspace::new(WorkspaceId(93), "Research");
-        let owner = "owner".to_string();
-        ws.set_owner(owner.clone());
-        let room = ws.room.to_string();
-        let resource = permission_profile_resource(&ws, &owner);
-        for id in [APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID] {
-            let action = resource
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .expect("offered to an administrator");
-            assert_eq!(
-                action.contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
-            assert_eq!(
-                action.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert!(is_governance_action(id));
-        }
-        let owner_actor = ws.actor_for_person(&owner);
-        let stranger = ws.actor_for_person(&"stranger".to_string());
-        tree.desktop.workspaces.push(ws);
-        let grant = |lifetime: &str, target_app: &str| PermissionProfileOperation::GrantAppAction {
-            app: "so.tilo.shortcuts".into(),
-            target_app: target_app.into(),
-            action: "freeform".into(),
-            lifetime: lifetime.into(),
-        };
-        let id = WorkspaceId(93);
-
-        assert!(
-            apply_app_action_operation(&mut tree, id, &stranger, &grant("always", "so.tilo.agent"))
-                .is_err(),
-            "someone who does not govern the workspace grants nothing"
-        );
-        assert!(
-            apply_app_action_operation(
-                &mut tree,
-                id,
-                &owner_actor,
-                &grant("always", crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID),
-            )
-            .is_err(),
-            "governing the workspace is not an app action to grant"
-        );
-        assert!(
-            apply_app_action_operation(
-                &mut tree,
-                id,
-                &owner_actor,
-                &grant("once", "so.tilo.agent")
-            )
-            .is_err(),
-            "a typed grant lasts a session or until revoked"
-        );
-        apply_app_action_operation(
-            &mut tree,
-            id,
-            &owner_actor,
-            &grant("session", "so.tilo.agent"),
-        )
-        .expect("the owner grants");
-        let as_app = crate::shell::state::Actor::app("so.tilo.shortcuts").in_room(room);
-        let freeform = crate::shell::state::ResourceRef::Action {
-            app: "so.tilo.agent".into(),
-            action: "freeform".into(),
-        };
-        let ws = &tree.desktop.workspaces[0];
-        assert!(ws.allows(&as_app, &freeform, Verb::Write));
-        assert!(!ws.allows(&as_app, &freeform, Verb::Admin));
-        let granted = ws
-            .capabilities
-            .iter()
-            .find(|capability| matches!(capability.scope, Scope::Action { .. }))
-            .expect("recorded");
-        assert_eq!(granted.expiry, Expiry::EndOfSession);
-        assert_eq!(granted.granted_by, Some(Principal::Person(owner)));
-
-        apply_app_action_operation(
-            &mut tree,
-            id,
-            &owner_actor,
-            &PermissionProfileOperation::RevokeAppAction {
-                app: "so.tilo.shortcuts".into(),
-                target_app: "so.tilo.agent".into(),
-                action: "freeform".into(),
-            },
-        )
-        .expect("the owner revokes");
-        assert!(!tree.desktop.workspaces[0].allows(&as_app, &freeform, Verb::Read));
-    }
 }
 
 #[cfg(test)]
 mod agents_pane_tests {
     use super::*;
-    use crate::shell::state::{ResourceRef, Verb, WorkspaceId};
+    use collab_types::caps::{ResourceRef, Verb};
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe-agent";
@@ -5285,7 +5115,11 @@ mod agents_pane_tests {
             // Phase `agent_membership_is_not_duplicated_in_permissions`.
             {
                 let ws = ws_with_agent();
-                let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
+                let layout = permissions_pane_layout(
+                    &ws,
+                    Rect::new(0.0, 0.0, 660.0, 620.0),
+                    &NoAppDirectory,
+                );
                 assert!(layout.rows.iter().all(|row| !row.cap_id.is_empty()));
                 assert_eq!(
                     layout
@@ -5307,7 +5141,8 @@ mod permissions_pane_tests {
     //! composer writes one through [`Workspace::grant_as`].
 
     use super::*;
-    use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, WorkspaceId};
+    use collab_types::caps::ResourceRef;
+    use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceId};
 
     const OWNER: &str = "owner-user";
 
@@ -5344,15 +5179,18 @@ mod permissions_pane_tests {
         {
             let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
             assert_eq!(
-                scope_label(&Scope::FsRecord(record.to_string())),
+                scope_label(&Scope::FsRecord(record.to_string()), &NoAppDirectory),
                 "one shared file (b0d4e23f-c…)"
             );
             assert_eq!(
-                capability_allows(&CapOverride::grant(
-                    Subject::Principal(Principal::App("files".to_string())),
-                    Scope::FsRecord(record.to_string()),
-                    Verb::Read,
-                )),
+                capability_allows(
+                    &CapOverride::grant(
+                        Subject::Principal(Principal::App("files".to_string())),
+                        Scope::FsRecord(record.to_string()),
+                        Verb::Read,
+                    ),
+                    &NoAppDirectory
+                ),
                 "View one shared file (b0d4e23f-c…)"
             );
         }
@@ -5360,7 +5198,7 @@ mod permissions_pane_tests {
         // Phase `rows_are_one_per_granted_capability`.
         {
             let ws = ws_with_grants();
-            let layout = permissions_pane_layout(&ws, pane());
+            let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
             assert_eq!(layout.rows.len(), 2);
             for row in &layout.rows {
                 assert_eq!(row.subject.kind, SubjectKind::App);
@@ -5376,7 +5214,7 @@ mod permissions_pane_tests {
         // Phase `membership_capabilities_are_not_listed_as_permissions`.
         {
             let ws = ws_with_grants();
-            let layout = permissions_pane_layout(&ws, pane());
+            let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
             assert!(
                 layout
                     .rows
@@ -5389,7 +5227,7 @@ mod permissions_pane_tests {
         // Phase `a_persons_membership_is_left_to_the_members_tab`.
         {
             let ws = ws_with_grants();
-            let layout = permissions_pane_layout(&ws, pane());
+            let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
             assert!(
                 layout
                     .rows
@@ -5427,7 +5265,8 @@ mod permissions_pane_tests {
             // This assertion is about grouping every subject kind, so give
             // the viewport room for every seeded row after the explanatory
             // header and composer.
-            let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
+            let layout =
+                permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0), &NoAppDirectory);
             let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
             assert!(kinds.contains(&SubjectKind::App));
             assert!(kinds.contains(&SubjectKind::Member));
@@ -5451,7 +5290,7 @@ mod permissions_pane_tests {
                 .expiring(Expiry::EndOfSession),
             )
             .expect("owner grants");
-            let layout = permissions_pane_layout(&ws, pane());
+            let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
             let row = &layout.rows[0];
             assert_eq!(row.allows, "Edit workspace files");
             assert_eq!(row.expiry, "Session");
@@ -5495,7 +5334,7 @@ mod permissions_pane_tests {
             for scope in &scopes {
                 for verb in verbs {
                     let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
-                    let line = capability_allows(&cap);
+                    let line = capability_allows(&cap, &NoAppDirectory);
                     assert!(
                         !line.contains(WORKSPACE_FILES_PATH),
                         "the permission line {line:?} names {WORKSPACE_FILES_PATH} \
@@ -5529,14 +5368,17 @@ mod permissions_pane_tests {
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
                 Verb::Write,
             );
-            assert_eq!(capability_allows(&root), "Edit workspace files");
             assert_eq!(
-                capability_allows(&sub),
+                capability_allows(&root, &NoAppDirectory),
+                "Edit workspace files"
+            );
+            assert_eq!(
+                capability_allows(&sub, &NoAppDirectory),
                 "Edit \u{201c}design\u{201d} in this workspace",
             );
             assert_ne!(
-                capability_allows(&root),
-                capability_allows(&sub),
+                capability_allows(&root, &NoAppDirectory),
+                capability_allows(&sub, &NoAppDirectory),
                 "granting every workspace file must not read the same as granting \
                  one folder in it",
             );
@@ -5663,7 +5505,7 @@ mod permissions_pane_tests {
                     Expiry::Never,
                     "the existing permanent grant is not demoted to once-only"
                 );
-                let layout = permissions_pane_layout(&ws, pane());
+                let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 let row = layout
                     .rows
                     .iter()
@@ -5739,7 +5581,7 @@ mod permissions_pane_tests {
                         CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
                     )
                     .expect("owner grants");
-                let layout = permissions_pane_layout(&ws, pane());
+                let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 let row = layout
                     .rows
                     .iter()
@@ -5763,7 +5605,7 @@ mod permissions_pane_tests {
             // Phase `revoking_a_row_stops_the_capability_working`.
             {
                 let mut ws = ws_with_grants();
-                let layout = permissions_pane_layout(&ws, pane());
+                let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 let camera_row = layout
                     .rows
                     .iter()
@@ -5779,18 +5621,23 @@ mod permissions_pane_tests {
                     ),
                     "the revoked capability must stop working, not merely stop rendering"
                 );
-                let after = permissions_pane_layout(&ws, pane());
+                let after = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 assert_eq!(after.rows.len(), 1);
             }
 
             // Phase `a_non_owner_cannot_revoke`.
             {
                 let mut ws = ws_with_grants();
-                let layout = permissions_pane_layout(&ws, pane());
+                let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 let target = layout.rows[0].cap_id.clone();
                 let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
                 assert!(edit.is_empty());
-                assert_eq!(permissions_pane_layout(&ws, pane()).rows.len(), 2);
+                assert_eq!(
+                    permissions_pane_layout(&ws, pane(), &NoAppDirectory)
+                        .rows
+                        .len(),
+                    2
+                );
             }
 
             // Phase `revoking_an_unknown_id_is_a_no_op`.
@@ -5821,7 +5668,7 @@ mod permissions_pane_tests {
                     &mut scene,
                     Affine::IDENTITY,
                     pane(),
-                    &ws,
+                    (&ws, &NoAppDirectory),
                     &GrantDraft::default(),
                     true,
                     &mut tr,
@@ -5844,7 +5691,10 @@ mod permissions_pane_tests {
                     &mut empty,
                     Affine::IDENTITY,
                     pane(),
-                    &Workspace::new(WorkspaceId::default(), "empty"),
+                    (
+                        &Workspace::new(WorkspaceId::default(), "empty"),
+                        &NoAppDirectory,
+                    ),
                     &draft,
                     true,
                     &mut tr,
@@ -5855,7 +5705,7 @@ mod permissions_pane_tests {
                     &mut full,
                     Affine::IDENTITY,
                     pane(),
-                    &ws_with_grants(),
+                    (&ws_with_grants(), &NoAppDirectory),
                     &draft,
                     true,
                     &mut tr,
@@ -5874,7 +5724,7 @@ mod permissions_pane_tests {
                     &mut scene,
                     Affine::IDENTITY,
                     Rect::new(100.0, 100.0, 100.0, 100.0),
-                    &ws,
+                    (&ws, &NoAppDirectory),
                     &GrantDraft::default(),
                     true,
                     &mut tr,
@@ -5902,7 +5752,7 @@ mod permissions_pane_tests {
                     .expect("owner grants");
                 }
                 let short_pane = Rect::new(0.0, 0.0, 660.0, 300.0);
-                let layout = permissions_pane_layout(&ws, short_pane);
+                let layout = permissions_pane_layout(&ws, short_pane, &NoAppDirectory);
                 assert!(layout.rows.len() < 12);
                 assert_eq!(layout.rows.len() + layout.overflow, 12);
                 for row in &layout.rows {
@@ -5916,7 +5766,7 @@ mod permissions_pane_tests {
             // Phase `expiry_segments_are_laid_out_in_picker_order_without_overlap`.
             {
                 let ws = ws_with_grants();
-                let layout = permissions_pane_layout(&ws, pane());
+                let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory);
                 for i in 1..3 {
                     assert!(
                         layout.expiry_rects[i].x0 >= layout.expiry_rects[i - 1].x1 - f64::EPSILON
@@ -5931,7 +5781,7 @@ mod permissions_pane_tests {
             {
                 let ws = ws_with_grants();
                 let pane = Rect::new(0.0, 0.0, 326.0, 620.0);
-                let layout = permissions_pane_layout(&ws, pane);
+                let layout = permissions_pane_layout(&ws, pane, &NoAppDirectory);
                 for rect in std::iter::once(layout.subject_rect)
                     .chain(std::iter::once(layout.choice_rect))
                     .chain(layout.expiry_rects)
@@ -5983,7 +5833,7 @@ mod roster_order_tests {
     //! The Members list must not reorder under the pointer.
 
     use super::*;
-    use crate::shell::state::WorkspaceId;
+    use tilo_desktop_model::WorkspaceId;
 
     #[test]
     fn changing_a_role_does_not_move_the_row() {
