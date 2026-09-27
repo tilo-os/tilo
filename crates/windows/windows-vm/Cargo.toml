@@ -7,6 +7,7 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
+quick-xml.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 base64.workspace = true

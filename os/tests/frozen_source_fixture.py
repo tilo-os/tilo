@@ -23,11 +23,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cargo clean --release \
     && cargo clean --profile thin-app \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
-         BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
+         BROWSER_PKG=""; \
        else \
          BROWSER_PKG="-p browser --features browser/wpe"; \
-         THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
+    && THIN_EXCLUDES="browser" \
     && RELEASE_ARGS="-p shell -p fs -p terminal -p tilo-crypto" \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && mkdir -p /out /out/optional /out/thin-apps \
     && build_phase rust-thin-apps \
     && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="${THIN_BROWSER_FEATURE}" \
+       APP_FEATURES="" \
          /build/os/scripts/build-thin-apps.sh \
     && build_phase rust-cleanup \
     && find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +

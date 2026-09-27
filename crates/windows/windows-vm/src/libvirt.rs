@@ -533,7 +533,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         }
         FirmwareConfig::Arm64Variables { .. } => "",
     };
-    let network = xml_escape(&config.host_only_network);
+    let network = quick_xml::escape::escape(&config.host_only_network);
     let cpu_attributes = match config.performance.cpu_mode {
         CpuMode::HostPassthrough => "mode='host-passthrough' check='none' migratable='off'",
         CpuMode::HostModel => "mode='host-model' check='partial'",
@@ -594,16 +594,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 
 fn xml_path(path: &Path) -> Result<String, VmBackendError> {
     let text = path.to_str().ok_or(VmBackendError::NonUtf8Path)?;
-    Ok(xml_escape(text))
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\'', "&apos;")
-        .replace('"', "&quot;")
+    Ok(quick_xml::escape::escape(text).into_owned())
 }
 
 #[derive(Debug, Error)]

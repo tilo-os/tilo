@@ -1,7 +1,7 @@
 use super::*;
 use crate::peer_cloud::owner::tests::{ACCOUNT, NOW, enrolled_owner_for};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::machine_mesh::verify_request;
+use tilo_user_identity::machine_mesh::{BROKER_ACTIONS_SCOPE, verify_request};
 
 const AT: u64 = NOW + 10;
 
@@ -57,7 +57,7 @@ fn link_is_signed_by_both_enrolled_roots_and_carries_no_private_material() {
         (request.kind.as_str(), request.link_id.as_str()),
         ("link", "link-1")
     );
-    assert_eq!(request.allowed_actions, ["model_complete"]);
+    assert_eq!(request.allowed_actions, [BROKER_ACTIONS_SCOPE]);
     verify_request(&request, AT).unwrap();
     assert!(!payload.contains("secret") && !payload.contains("material"));
 }

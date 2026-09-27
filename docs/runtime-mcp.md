@@ -12,8 +12,13 @@ Build the host on macOS or Linux:
 cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
-In an installed layout, app startup finds the sibling `tilo-runtime-mcp` binary,
-then falls back to `PATH`. In a source checkout, the first ordinary `cargo run`
+In an installed layout, app startup attaches to a runtime host beside the app,
+then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP=tilo`, which the
+Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
+never attaches to a second authority beside it. Elsewhere — stock macOS or a
+foreign Linux desktop — the standalone `tilo-runtime` comes first, then
+`tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
+`tilo-runtime`. In a source checkout, the first ordinary `cargo run`
 can bootstrap a missing host with a bounded, serialized Cargo build using the
 checkout's normal Cargo cache, network, target directory, and explicit offline
 settings. Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a

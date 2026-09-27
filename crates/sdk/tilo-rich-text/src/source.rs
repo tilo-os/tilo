@@ -36,6 +36,12 @@ pub trait RichTextSource {
     /// Increases whenever the state changes; `None` before there is one.
     fn revision(&self) -> Option<u64>;
 
+    /// Read the state from `doc` without writing to it, for a view shown
+    /// before its first sync; `false` when this source cannot.
+    fn read_from(&mut self, _doc: &Doc) -> bool {
+        false
+    }
+
     /// Read the state, once there is one.
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
 
@@ -142,7 +148,9 @@ struct FrameworkSink<A> {
 /// changes by re-reading what changed.
 pub(crate) struct FieldState {
     pub(crate) root: ObjId,
-    tracker: Tracker,
+    /// `None` for a state read without writing: the next sync reads again,
+    /// and tracks from there.
+    tracker: Option<Tracker>,
     pub(crate) state: RichTextState,
     revision: u64,
 }
@@ -151,16 +159,29 @@ impl FieldState {
     /// The rich text under `root`, every paragraph read, with changes
     /// tracked from here.
     pub(crate) fn read(doc: &mut Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
-        let mut state = RichText::read_under(doc, &root)?;
-        RichText::load(&mut state, doc, &all())?;
+        let mut field = Self::read_only(doc, root, revision)?;
         let mut tracker = Tracker::new();
         tracker.start(doc);
+        field.tracker = Some(tracker);
+        Ok(field)
+    }
+
+    /// The rich text under `root`, every paragraph read, without writing to
+    /// `doc`; nothing is tracked yet.
+    pub(crate) fn read_only(doc: &Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
+        let mut state = RichText::read_under(doc, &root)?;
+        RichText::load(&mut state, doc, &all())?;
         Ok(Self {
             root,
-            tracker,
+            tracker: None,
             state,
             revision,
         })
+    }
+
+    /// Increases whenever the state changes.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Re-read what changed since the last read; `true` when anything did.
@@ -170,9 +191,10 @@ impl FieldState {
     /// [`read`](Self::read) is then the way back.
     pub(crate) fn refresh(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
         let state = &self.state;
-        let delta = self
-            .tracker
-            .delta_located(doc, &|obj| RichText::locate(state, obj));
+        let Some(tracker) = self.tracker.as_mut() else {
+            return Err(ModelError::invalid("nothing tracked yet"));
+        };
+        let delta = tracker.delta_located(doc, &|obj| RichText::locate(state, obj));
         if delta.is_empty() {
             return Ok(false);
         }
@@ -320,10 +342,9 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
             self.field = None;
             return;
         };
-        let current = self
-            .field
-            .as_ref()
-            .is_some_and(|field| field.root == root && doc.pending_ops() == 0);
+        let current = self.field.as_ref().is_some_and(|field| {
+            field.root == root && field.tracker.is_some() && doc.pending_ops() == 0
+        });
         if !current {
             self.reread(doc, root);
             return;
@@ -338,6 +359,27 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
 
     fn revision(&self) -> Option<u64> {
         self.field.as_ref().map(|field| field.revision)
+    }
+
+    fn read_from(&mut self, doc: &Doc) -> bool {
+        let Some(root) = (self.locate)(doc) else {
+            self.field = None;
+            return false;
+        };
+        let revision = self
+            .field
+            .as_ref()
+            .map_or(0, |field| field.revision.wrapping_add(1));
+        match FieldState::read_only(doc, root, revision) {
+            Ok(field) => {
+                self.field = Some(field);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "rich-text field unreadable");
+                false
+            }
+        }
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
@@ -382,7 +424,14 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
     fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         let bracket = self.actions.take_committed();
         let continuing = std::mem::take(&mut self.step.continuing);
-        self.step.opened = bracket.is_some() && !continuing;
+        // Only typing continues into the next event; a split, a move or a
+        // format is a step of its own, closed now.
+        let continuable = self
+            .step
+            .last
+            .as_ref()
+            .is_some_and(|edit| matches!(edit, RichTextAction::SpliceText { .. }));
+        self.step.opened = bracket.is_some() && !continuing && continuable;
         self.step.applied = false;
         if continuing { None } else { bracket }
     }
@@ -407,6 +456,10 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
         self.borrow().revision()
     }
 
+    fn read_from(&mut self, doc: &Doc) -> bool {
+        self.borrow_mut().read_from(doc)
+    }
+
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
         self.borrow().with_state(read)
     }
@@ -425,5 +478,122 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
 
     fn keeps_step_open(&self) -> bool {
         self.borrow().keeps_step_open()
+    }
+}
+
+/// Rich text at a place in a shared document, edited by writing to it
+/// directly: shared working state that is not history, such as a draft two
+/// people type into before either sends it. Collaborators see every
+/// keystroke; nothing is recorded as an action or undone as one.
+pub struct DirectField {
+    locate: Locate,
+    field: Option<FieldState>,
+    read_only: bool,
+    presence: Option<PresenceKeyFn>,
+}
+
+impl DirectField {
+    /// The rich text `locate` finds (created by its owner with
+    /// [`RichText::initialize_under`]).
+    pub fn new(locate: impl Fn(&Doc) -> Option<ObjId> + 'static) -> Self {
+        Self {
+            locate: Box::new(locate),
+            field: None,
+            read_only: false,
+            presence: None,
+        }
+    }
+
+    /// Key collaborators' carets by paragraph with `key`.
+    #[must_use]
+    pub fn with_presence(mut self, key: impl Fn(&str) -> PresenceKey + 'static) -> Self {
+        self.presence = Some(Rc::new(key));
+        self
+    }
+
+    /// Whether the participant may only view: edits are refused while set.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    fn reread(&mut self, doc: &mut Doc, root: ObjId) {
+        let revision = self
+            .field
+            .as_ref()
+            .map_or(0, |field| field.revision.wrapping_add(1));
+        match FieldState::read(doc, root, revision) {
+            Ok(field) => self.field = Some(field),
+            Err(error) => {
+                tracing::warn!(%error, "rich text unreadable");
+                self.field = None;
+            }
+        }
+    }
+}
+
+impl RichTextSource for DirectField {
+    fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn sync(&mut self, doc: &mut Doc) {
+        let Some(root) = (self.locate)(doc) else {
+            self.field = None;
+            return;
+        };
+        if doc.pending_ops() > 0 {
+            // Typing in progress: read without committing it, so the writes
+            // stay one open transaction the host commits as it chooses.
+            let revision = self
+                .field
+                .as_ref()
+                .map_or(0, |field| field.revision.wrapping_add(1));
+            match FieldState::read_only(doc, root, revision) {
+                Ok(field) => self.field = Some(field),
+                Err(error) => {
+                    tracing::warn!(%error, "rich text unreadable");
+                    self.field = None;
+                }
+            }
+            return;
+        }
+        let current = self
+            .field
+            .as_ref()
+            .is_some_and(|field| field.root == root && field.tracker.is_some());
+        if !current {
+            self.reread(doc, root);
+            return;
+        }
+        let Some(field) = &mut self.field else {
+            return;
+        };
+        if field.refresh(doc).is_err() {
+            self.reread(doc, root);
+        }
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.as_ref().map(|field| field.revision)
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        self.field.as_ref().map(|field| read(&field.state))
+    }
+
+    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+        if self.read_only {
+            return Err(ActionError::Refused(
+                "this text is open to view only".into(),
+            ));
+        }
+        let Some(root) = (self.locate)(doc) else {
+            return Err(ActionError::Refused("the text is gone".into()));
+        };
+        edit.apply_under(doc, &root)
+    }
+
+    fn presence_keys(&self) -> Option<PresenceKeyFn> {
+        self.presence.clone()
     }
 }

@@ -33,6 +33,7 @@ const CHAT_KEYS: &[&str] = &[
     "channels",
     "messages",
     "drafts",
+    "rich_drafts",
     "users",
 ];
 const PROFILE_KEYS: &[&str] = &["name", "initials", "color_idx", "agent", "status"];
@@ -99,13 +100,14 @@ static CHAT_SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
         map_root("channels", true),
         map_root("messages", false),
         map_root("drafts", false),
+        map_root("rich_drafts", false),
     ],
     selectors: &[HistoryRootSelector {
         pattern: HistoryRootPattern::Exact("users"),
         required: true,
         node: HistoryRestoreNode::MapOverlay(&PROFILES),
     }],
-    preserved_roots: &["seeded", "voice", "read"],
+    preserved_roots: &["seeded", "voice", "read", "drafts_version"],
     preserved: &[],
     validate: validate_chat,
     validate_result: validate_chat,
@@ -128,7 +130,11 @@ fn validate_writer(doc: &AutoCommit) -> Result<(), String> {
     word_processor::WordProcessor::from_document(doc).map(|_| ())
 }
 fn validate_chat(doc: &AutoCommit) -> Result<(), String> {
-    allowed_roots(doc, CHAT_KEYS, &["seeded", "voice", "read"])?;
+    allowed_roots(
+        doc,
+        CHAT_KEYS,
+        &["seeded", "voice", "read", "drafts_version"],
+    )?;
     let users = doc
         .get(ROOT, "users")
         .map_err(|e| e.to_string())?

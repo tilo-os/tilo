@@ -8,6 +8,11 @@
 
 use super::*;
 
+#[cfg(not(target_os = "android"))]
+type PrimaryA11yAdapter = accesskit_winit::Adapter;
+#[cfg(target_os = "android")]
+type PrimaryA11yAdapter = crate::accesskit_android_adapter::Adapter;
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -25,6 +30,12 @@ struct AppHandler {
     /// `None` again in `exiting`, after the worker is joined, so its surface
     /// drops BEFORE the `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    /// Between `suspended` and the next `resumed` the window has no native
+    /// surface to render into, so a redraw must not try to create one.
+    surface_suspended: bool,
+    /// What `suspended` took back from the render worker, for the next
+    /// surface.
+    suspended_renderer: Option<PreparedRenderer>,
     /// A real, separate fullscreen output for a root widget's audience view.
     /// It is deliberately not modelled as a floating surface: it has no
     /// desktop-space proxy or compositor handoff and is always destroyed
@@ -34,11 +45,16 @@ struct AppHandler {
     /// `None` until `resumed` creates the window (must be built while
     /// hidden); lazy, so the hot path pays nothing with no screen reader
     /// running.
-    a11y_adapter: Option<accesskit_winit::Adapter>,
+    a11y_adapter: Option<PrimaryA11yAdapter>,
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    #[cfg(target_os = "android")]
+    text_input: super::android_text_input::TextInputSession,
+    /// The field with the keyboard was touched since the last IME sync.
+    #[cfg(target_os = "android")]
+    text_input_touched: bool,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
     last_primary_frame_presented: u64,
@@ -56,6 +72,9 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
+    /// Per-window state handed to the next in-place reload. Keyed by the
+    /// window id that stays for the life of the process.
+    dev_window_state: std::collections::HashMap<String, Vec<u8>>,
 }
 
 struct AudiencePresentationWindow {
@@ -202,11 +221,7 @@ fn create_window_render(
     create_window_render_prepared(window, transparent, None, proxy)
 }
 
-pub(crate) struct PreparedRenderer {
-    context: RenderContext,
-    device_id: usize,
-    renderer: Renderer,
-}
+pub(crate) use crate::render_thread::PreparedRenderer;
 
 #[cfg(windows)]
 pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
@@ -549,6 +564,24 @@ impl AppHandler {
     /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
+        if let Some(retained) = self.suspended_renderer.take()
+            && !retained.device_lost()
+        {
+            match create_window_render_prepared(
+                window,
+                false,
+                Some(retained),
+                self.a11y_proxy.clone(),
+            ) {
+                Ok(render) => {
+                    self.render = Some(render);
+                    return Ok(());
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not render with the renderer kept over suspend");
+                }
+            }
+        }
         #[cfg(windows)]
         if let Some(preparation) = self.app.startup_renderer.take() {
             match preparation.recv() {
@@ -801,9 +834,57 @@ impl AppHandler {
         true
     }
 
+    /// A touch on the field that has the keyboard, which Android answers by
+    /// settling the composition and bringing a dismissed keyboard back.
+    #[cfg(target_os = "android")]
+    fn touches_focused_field(&self, window_id: WindowId, location: PhysicalPosition<f64>) -> bool {
+        let Some(window) = self
+            .window
+            .as_ref()
+            .filter(|window| window.id() == window_id)
+        else {
+            return false;
+        };
+        let Some(field) = self.app.focused_node else {
+            return false;
+        };
+        let scale = window.scale_factor();
+        let point = Point::new(location.x / scale, location.y / scale);
+        self.app
+            .inspect_node(field, |widget| widget.get_rect().contains(point))
+            .unwrap_or(false)
+    }
+
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
         let next = self.app.ime_window_state();
+        #[cfg(target_os = "android")]
+        if super::android_text_input::bridge::installed() {
+            let field = next.and(self.app.focused_node);
+            let restart = self.text_input.refocus(field);
+            let touched = std::mem::take(&mut self.text_input_touched);
+            if next != self.ime_state || restart || touched {
+                let surrounding = field.and_then(|node| {
+                    self.app
+                        .inspect_node(node, crate::ime::ImeSurroundingText::from_widget)
+                        .ok()
+                        .flatten()
+                });
+                super::android_text_input::bridge::update(
+                    next.as_ref(),
+                    surrounding.as_ref(),
+                    window.scale_factor(),
+                    restart,
+                );
+                self.ime_state = next;
+            }
+            // After the update, so the fresh connection starts from the
+            // caret the touch just placed.
+            if touched {
+                super::android_text_input::bridge::touched();
+            }
+            return;
+        }
         if next == self.ime_state {
             return;
         }
@@ -1270,6 +1351,9 @@ impl AppHandler {
         };
         mark_first_frame("first-frame-redraw-start");
         let _entry = self.app.enter_wake_scope();
+        if self.surface_suspended {
+            return;
+        }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
@@ -1375,6 +1459,7 @@ impl AppHandler {
                 return;
             }
         }
+        sync_safe_area(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1738,7 +1823,7 @@ impl AppHandler {
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
         let send_cpu_frame_id = match &req {
             RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
-            RenderRequest::Shutdown => None,
+            RenderRequest::Shutdown { .. } => None,
         };
         let (send_result, send_bounds) = crate::render_thread::timing::around(
             self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
@@ -1821,12 +1906,13 @@ impl AppHandler {
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
+    /// Whether something consumed the event.
+    fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) -> bool {
         let _entry = self.app.enter_wake_scope();
         let event = other;
         if self.app.close_handle_event(&event, window.scale_factor()) {
             window.request_redraw();
-            return;
+            return true;
         }
         let app = &mut self.app;
         let history_input = app.history_controls_event(&event, window.scale_factor());
@@ -1861,7 +1947,7 @@ impl AppHandler {
         if history_input {
             app.dispatch_framework_history_event(&event, window.scale_factor());
             window.request_redraw();
-            return;
+            return true;
         }
         let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
         // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
@@ -2404,6 +2490,7 @@ impl AppHandler {
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
             p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
         }
+        handled
     }
 }
 
@@ -2421,6 +2508,88 @@ impl AppHandler {
             event,
             native_input_isolation::EventOrigin::Injected,
         );
+    }
+}
+
+impl AppHandler {
+    /// Rebuild into the windows this process already owns.
+    ///
+    /// The primary window, every live floating window, and an audience window
+    /// stay. Reload does not call `create_window`.
+    fn reload_open_windows_in_place(&mut self) {
+        let mut windows = Vec::new();
+        if let Some(window) = &self.window {
+            windows.push(("primary".to_owned(), window.clone()));
+        }
+        for surface in &self.floating_windows {
+            if !surface.suspended {
+                windows.push((surface.id.clone(), surface.window.clone()));
+            }
+        }
+        if self.audience_presentation.is_some() {
+            if let Some(audience) = &self.audience_presentation {
+                windows.push(("audience".to_owned(), audience.window.clone()));
+            }
+        }
+        let Some(session) = crate::host::environment().dev_session.clone() else {
+            return;
+        };
+        let library = std::fs::read_to_string(session.join("reload.path"))
+            .ok()
+            .map(|text| std::path::PathBuf::from(text.trim()))
+            .filter(|path| path.is_file());
+        let Some(library) = library else {
+            // A build that did not publish a library keeps the code already
+            // running. Catalogs on disk still replace the strings baked into
+            // this process.
+            super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
+            self.app.needs_sync = true;
+            for (_, window) in &windows {
+                window.request_redraw();
+            }
+            return;
+        };
+        let _ = super::write_dev_checkpoint(&self.app, &session);
+        let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
+        let slots = windows
+            .iter()
+            .map(|(id, _)| super::DevWindowSlot {
+                id: id.clone(),
+                state: self
+                    .dev_window_state
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| checkpoint.clone()),
+            })
+            .collect::<Vec<_>>();
+        let reloaded = match super::reload_from_library(&library, &slots) {
+            Ok(reloaded) => reloaded,
+            Err(error) => {
+                eprintln!("tilo: reload rejected; keeping the last good app\n{error}");
+                return;
+            }
+        };
+        if let Some(root) = reloaded.root {
+            if !self.app.install_reloaded_view(root) {
+                eprintln!(
+                    "tilo: the open windows could not take the new view; keeping the running one"
+                );
+                return;
+            }
+            self.app.init_layout();
+        }
+        self.dev_window_state = reloaded
+            .windows
+            .into_iter()
+            .map(|window| (window.id, window.state))
+            .collect();
+        super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
+        self.app.needs_sync = true;
+        let count = windows.len();
+        for (_, window) in &windows {
+            window.request_redraw();
+        }
+        eprintln!("tilo: reloaded {count} open window(s) in place");
     }
 }
 
@@ -2465,6 +2634,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::DevSessionStop => {
                 self.app.autosave_flush();
                 super::checkpoint_and_exit(&self.app, event_loop);
+                return;
+            }
+            UserEvent::DevSessionReload => {
+                self.reload_open_windows_in_place();
                 return;
             }
             other => other,
@@ -2576,10 +2749,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            #[cfg(target_os = "android")]
+            UserEvent::PlatformTextInput => {
+                for op in super::android_text_input::bridge::drain() {
+                    for event in self.text_input.events(op) {
+                        self.route_window_event(
+                            event_loop,
+                            window_id,
+                            event,
+                            native_input_isolation::EventOrigin::Platform,
+                        );
+                    }
+                }
+                window.request_redraw();
+            }
             UserEvent::Wake(_)
             | UserEvent::NativeScenarioInput(_)
             | UserEvent::RenderReady(_)
-            | UserEvent::DevSessionStop => {}
+            | UserEvent::DevSessionStop
+            | UserEvent::DevSessionReload => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -2642,8 +2830,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
-        // Can fire more than once (suspend/resume on mobile).
-        if self.window.is_some() {
+        // Fires again after `suspended` on mobile, where the window survives
+        // but its native surface was destroyed: the next redraw rebuilds the
+        // renderer against the new surface.
+        self.surface_suspended = false;
+        if let Some(window) = &self.window {
+            self.app.layout.layout_dirty = true;
+            window.request_redraw();
             return;
         }
         // Required, not incidental: the compositor only accepts
@@ -2736,11 +2929,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.set_window_icon(icon);
 
         // Must be created before the window is shown.
-        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
-            event_loop,
-            &window,
-            self.a11y_proxy.clone(),
-        ));
+        #[cfg(not(target_os = "android"))]
+        {
+            self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+                event_loop,
+                &window,
+                self.a11y_proxy.clone(),
+            ));
+        }
+        // One provider per view: the previous one must be withdrawn first.
+        #[cfg(target_os = "android")]
+        {
+            self.a11y_adapter = None;
+            match PrimaryA11yAdapter::new(event_loop, &window, self.a11y_proxy.clone()) {
+                Ok(adapter) => self.a11y_adapter = Some(adapter),
+                Err(error) => crate::diag!("tilo: no TalkBack access: {error}"),
+            }
+        }
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
@@ -2768,6 +2973,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         crate::dnd::set_drag_window(&window);
         self.window = Some(window);
         tilo_startup_metrics::mark("primary-window-resumed-done");
+    }
+
+    /// Android destroys the window's native surface when the activity leaves
+    /// the screen and may kill the process any time after. Save the app's
+    /// state and drop the surface while it is still valid; the renderer,
+    /// window, widget tree and document stay for the next `resumed`.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        let _entry = self.app.enter_wake_scope();
+        self.surface_suspended = true;
+        for error in self.app.checkpoint_before_close() {
+            tracing::error!(%error, "could not save state on suspend");
+        }
+        if let Some(mut render) = self.render.take() {
+            self.suspended_renderer = render.shutdown_keeping_renderer();
+        }
     }
 
     /// BEFORE the `Window` arc is dropped — the worker's
@@ -2805,6 +3025,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event
+            && touch.phase == winit::event::TouchPhase::Started
+            && self.ime_state.is_some()
+            && self.touches_focused_field(window_id, touch.location)
+        {
+            for settled in self.text_input.settle() {
+                self.route_window_event(
+                    event_loop,
+                    window_id,
+                    settled,
+                    native_input_isolation::EventOrigin::Platform,
+                );
+            }
+            self.text_input_touched = true;
+        }
         self.route_window_event(
             event_loop,
             window_id,
@@ -2823,6 +3059,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
         // Conservative shared-root fallback: hidden primary work may stay at
         // 60Hz while a visible auxiliary depends on its update/sync projection.
@@ -3237,20 +3474,7 @@ impl AppHandler {
         }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
-            WindowEvent::CloseRequested => match self.app.root_widget.on_window_close_requested() {
-                crate::widget::WindowCloseAdmission::Allow => {
-                    if self.app.admit_native_close_request() {
-                        event_loop.exit();
-                    } else {
-                        window.request_redraw();
-                    }
-                }
-                crate::widget::WindowCloseAdmission::Defer => {
-                    self.app.needs_sync = true;
-                    self.app.layout.layout_dirty = true;
-                    window.request_redraw();
-                }
-            },
+            WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
             WindowEvent::Resized(_) => {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -3265,8 +3489,62 @@ impl AppHandler {
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, window),
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-            other => self.handle_other_window_event(window, other),
+            other if self.app.input.platform.platform() == crate::platform::Platform::Android => {
+                if let Some(escape) = crate::interaction::back_key_as_escape(&other) {
+                    self.handle_back_key(event_loop, window, escape);
+                } else {
+                    self.handle_other_window_event(window, other);
+                }
+            }
+            other => {
+                self.handle_other_window_event(window, other);
+            }
         }
+    }
+
+    fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        match self.app.root_widget.on_window_close_requested() {
+            crate::widget::WindowCloseAdmission::Allow => {
+                if self.app.admit_native_close_request() {
+                    event_loop.exit();
+                } else {
+                    window.request_redraw();
+                }
+            }
+            crate::widget::WindowCloseAdmission::Defer => {
+                self.app.needs_sync = true;
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Back dismisses what Escape would, then navigates back, and at the root
+    /// closes the app; exiting the event loop lets Android finish the activity.
+    fn handle_back_key(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        escape: WindowEvent,
+    ) {
+        let pressed = matches!(
+            &escape,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
+        );
+        if self.handle_other_window_event(window, escape) || !pressed {
+            return;
+        }
+        let app = &mut self.app;
+        if app.root_widget.on_nav_gesture(
+            crate::gesture::NavDirection::Back,
+            &mut app.state.doc,
+            &app.state.root,
+        ) {
+            app.needs_sync = true;
+            window.request_redraw();
+            return;
+        }
+        self.close_primary_window(event_loop, window);
     }
 
     fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
@@ -3356,9 +3634,20 @@ impl App {
             // Keep normal launches unchanged; this is an opt-in profiling mode.
             event_loop_builder.with_activate_ignoring_other_apps(false);
         }
+        #[cfg(target_os = "android")]
+        {
+            use winit::platform::android::EventLoopBuilderExtAndroid;
+            event_loop_builder.with_android_app(
+                crate::launch::android::app()
+                    .expect("an Android app starts through ui::android_main!")
+                    .clone(),
+            );
+        }
         let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
+        #[cfg(target_os = "android")]
+        super::android_text_input::bridge::install(proxy.clone());
         let wake_proxy = proxy.clone();
         self.wake_scope
             .as_mut()
@@ -3390,11 +3679,17 @@ impl App {
             app: self,
             window: None,
             render: None,
+            surface_suspended: false,
+            suspended_renderer: None,
             audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            #[cfg(target_os = "android")]
+            text_input: super::android_text_input::TextInputSession::default(),
+            #[cfg(target_os = "android")]
+            text_input_touched: false,
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             last_primary_frame_presented: 0,
@@ -3409,6 +3704,7 @@ impl App {
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
+            dev_window_state: std::collections::HashMap::new(),
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3420,4 +3716,23 @@ impl App {
             }
         }
     }
+}
+
+/// Follow the system chrome drawn over the window. Android reports it
+/// from `TiloActivity`'s insets listener; elsewhere it stays zero.
+fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
+    #[cfg(target_os = "android")]
+    {
+        let area = crate::scale::SafeArea::from_physical(
+            crate::launch::android::safe_area_insets(),
+            window.scale_factor(),
+        );
+        if area != app.layout.safe_area {
+            app.layout.safe_area = area;
+            app.layout.layout_dirty = true;
+            window.request_redraw();
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, window);
 }

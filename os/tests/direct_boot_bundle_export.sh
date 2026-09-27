@@ -19,16 +19,17 @@ title Tilo
 version 1
 linux /EFI/Linux/abc/vmlinuz
 initrd /EFI/Linux/abc/initrd
-options composefs=deadbeef root=tilo-auto rw
+options composefs=deadbeef root=tilo-auto rw systemd.mount-extra=UUID=137A-C31F:/boot:auto:ro,nosuid,nodev,noexec systemd.mount-extra=UUID=other:/var:auto:ro
 EOF
 partuuid=0fc63daf-8483-4772-8e79-3d69d8477de4
 
 if bash "$export_bundle" --bls "$esp/loader/entries/tilo-1.conf" "$esp" "$partuuid" "$work/out" \
    && [[ $(cat "$work/out/Image") == kernel && $(cat "$work/out/initrd") == initrd ]] \
    && jq -e --arg p "$partuuid" '.kernel == "Image" and .initrd == "initrd"
-        and .cmdline == "composefs=deadbeef root=tilo-auto rw" and .loader_partuuid == $p' \
-        "$work/out/boot.json" >/dev/null; then
-  ok 'a BLS entry exports kernel, initrd and its options as the bundle'
+        and .cmdline == "composefs=deadbeef root=tilo-auto rw systemd.mount-extra=UUID=137A-C31F:/boot:auto:rw,nosuid,nodev,noexec systemd.mount-extra=UUID=other:/var:auto:ro"
+        and .loader_partuuid == $p' "$work/out/boot.json" >/dev/null \
+   && grep -Fq 'systemd.mount-extra=UUID=137A-C31F:/boot:auto:ro,nosuid,nodev,noexec' "$esp/loader/entries/tilo-1.conf"; then
+  ok 'a dev BLS bundle makes only its overlay ESP writable without changing the installed entry'
 else
   bad 'a BLS entry does not export as a direct boot bundle'
 fi

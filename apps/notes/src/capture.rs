@@ -219,11 +219,12 @@ fn prepare_fixture_owned(
                 let action = crate::actions::add_image_asset_action(
                     page,
                     bytes,
-                    ui::widget::BlockEditOp::TextSplice {
-                        block_id,
-                        start: 0,
-                        end: text.len(),
-                        text: replacement,
+                    qdoc_rich_text::RichTextAction::SpliceText {
+                        region: qdoc_rich_text::action::RegionKind::Body,
+                        block: block_id,
+                        at: 0,
+                        del: text.chars().count(),
+                        ins: replacement,
                     },
                 );
                 tilo_actions::apply_local(doc, &action, crate::actions::encode(&action))
@@ -1071,13 +1072,7 @@ fn validate_capture(
                 .find(|page| page.title == title)
                 .ok_or("capture note missing")?;
             let mut panel = crate::MainPanel::new();
-            panel.bind_canonical_page(
-                doc,
-                page.id,
-                title,
-                &crate::doc::NotesDoc::page_blocks_list(doc, page.id)
-                    .ok_or("capture blocks missing")?,
-            )?;
+            panel.bind_canonical_page(doc, page.id, title)?;
             Ok(Some(panel))
         })
         .ok_or_else(|| LaunchError::Operation("capture record missing".into()))?

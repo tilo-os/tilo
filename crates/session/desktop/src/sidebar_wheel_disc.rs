@@ -767,16 +767,13 @@ impl SidebarWheelDisc {
         let rotation_centi_deg =
             f64_round_to_i64_lossy(f64::from(self.visual_rotation_deg()) * 100.0);
         // FNV-1a over spoke labels, avoiding a Vec clone just to detect renames.
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hasher = fnv::FnvHasher::default();
         for spoke in &self.spokes {
-            for b in spoke.text.as_bytes() {
-                h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100_0000_01b3);
-            }
+            std::hash::Hasher::write(&mut hasher, spoke.text.as_bytes());
             // Separator byte so "ab"+"c" and "a"+"bc" hash differently.
-            h ^= 0xff;
-            h = h.wrapping_mul(0x100_0000_01b3);
+            std::hash::Hasher::write_u8(&mut hasher, 0xff);
         }
+        let h = std::hash::Hasher::finish(&hasher);
         WheelCacheFp {
             origin_px,
             size_px,

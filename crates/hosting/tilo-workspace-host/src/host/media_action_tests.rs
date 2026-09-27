@@ -139,7 +139,18 @@ impl Harness {
                     command = self.admin.recv() => {
                         let command = command.unwrap();
                         self.dispatched += 1;
-                        let response = handle_collaboration_admin(&mut self.owner, &self.committed, &self.host, &self.service, command.request).await;
+                        let mut session = None;
+                        let mut replaying = false;
+                        let response = handle_collaboration_admin(
+                            &mut self.owner,
+                            &self.committed,
+                            &self.host,
+                            &self.service,
+                            command.request,
+                            &mut session,
+                            &mut replaying,
+                        )
+                        .await;
                         self.runtime.committed(&self.owner).unwrap();
                         let _ = command.reply.send(response);
                     }

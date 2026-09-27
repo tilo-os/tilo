@@ -57,9 +57,9 @@ fn now_secs(now: SystemTime) -> u64 {
         .as_secs()
 }
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
-    key.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    })
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, key);
+    std::hash::Hasher::finish(&hasher)
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeedDocument {
@@ -953,7 +953,7 @@ impl StatePeer {
     ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
-        let caps = self
+        let mut caps = self
             .core
             .room_doc
             .as_ref()
@@ -962,6 +962,7 @@ impl StatePeer {
             .caps
             .clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, now);
         Ok((role, caps, person.id().to_owned()))
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
@@ -1175,10 +1176,11 @@ impl StatePeer {
     ) -> Result<Role, String> {
         let role = self.role(source, authorization_time)?;
         let cert = self.certificate(source, authorization_time)?;
-        let (_, _, caps) = room::extract_governed_fields(
+        let (_, _, mut caps) = room::extract_governed_fields(
             self.core.room_doc.as_deref().ok_or("missing governance")?,
         );
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, authorization_time);
         let actor = Actor::person(Some(role), person.id())
             .with_principal(Principal::App(app_id.to_owned()))
             .in_room(self.core.room.clone());
@@ -2787,7 +2789,9 @@ impl StatePeer {
         peer.core.room_doc = durable
             .room_bytes
             .map(|bytes| {
-                AutoCommit::load(&bytes)
+                // Isolated load leaves the document in a worker so the first
+                // inbound change does not pay a full rebuild.
+                tilo_automerge_isolate::load(&bytes)
                     .map(CachedDocument::from)
                     .map_err(err)
             })
@@ -2809,7 +2813,7 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: AutoCommit::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,

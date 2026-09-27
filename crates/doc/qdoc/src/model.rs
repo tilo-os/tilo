@@ -2781,6 +2781,48 @@ impl DocMut<'_> {
         }
     }
 
+    /// Set a scalar attribute (heading `level`, list `ordered`, …) of one
+    /// reply block.
+    pub fn set_comment_reply_block_attr(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+        block_id: &str,
+        key: &str,
+        value: impl Into<ScalarValue>,
+    ) {
+        let Some(container) = self.comment_reply_blocks_container(comment_id, reply_id) else {
+            return;
+        };
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
+        if let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) {
+            let _ = self.doc.put(&attrs, key, value);
+        }
+    }
+
+    /// Mark characters `[start, end)` of one reply block.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a reply block is addressed by comment, reply and block; a mark by range, name and value"
+    )]
+    pub fn add_comment_reply_mark(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<ScalarValue>,
+    ) {
+        if let Some(text) = self.comment_reply_text_obj(comment_id, reply_id, block_id) {
+            let mark = Mark::new(name.to_string(), value, start, end);
+            let _ = self.doc.mark(&text, mark, ExpandMark::After);
+        }
+    }
+
     /// Add a one-paragraph reply, the common authoring path. Multi-paragraph
     /// replies can use `insert_comment_reply` plus the block methods above.
     pub fn add_comment_reply(

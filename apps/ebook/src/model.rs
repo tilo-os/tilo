@@ -312,7 +312,13 @@ pub struct Annotation {
     pub start: usize,
     pub end: usize,
     pub excerpt: String,
+    /// The note or comment's plain text: what search, labels and the
+    /// palette read.
     pub note: String,
+    /// The note or comment as written, as the editor shows it. Read from
+    /// the document, never serialized with the annotation.
+    #[serde(skip)]
+    pub blocks: Vec<ui::widget::BlockContent>,
     pub color: HiColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
@@ -338,6 +344,7 @@ impl Annotation {
             end: 0,
             excerpt: String::new(),
             note: String::new(),
+            blocks: Vec::new(),
             color: HiColor::Yellow,
             created: unix_now_ms(),
             group: id,

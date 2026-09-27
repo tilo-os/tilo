@@ -51,10 +51,13 @@ suites = [
   "os/tests/disk_image_root_podman_store.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
+  "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
   "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
+  "os/tests/dnf_layer_repro.sh",
+  "os/tests/test_oci_archive_layer_report.py",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
@@ -137,7 +140,6 @@ suites = [
   "os/tests/test_restore_thin_cache.py",
   "os/tests/test_retain_development_rootfs.py",
   "os/tests/test_rootfs_layer_audit.py",
-  "os/tests/test_rpm_snapshot_inputs.py",
   "os/tests/test_secureboot_evidence.py",
   "os/tests/test_sign_development_rootfs.py",
   "os/tests/test_signing_recovery.py",
@@ -148,10 +150,12 @@ suites = [
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
+  "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
+  "os/tests/test_wpe_recipe_inputs.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
@@ -165,11 +169,11 @@ inputs = ["os/", ".forgejo/workflows/"]
 suites = [
   "os/containers/tilo-relay/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
+  "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
-  "os/tests/test_reconcile_snapshot_pins.py",
   "os/tests/wpe_runtime_check.sh",
   "os/tests/test_raw_layer_epoch.py",
 ]
@@ -416,11 +420,13 @@ readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
-# Scaffolding and the dev loop locate the SDK and the UI builder in the tree.
+# Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
+# standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
+  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs"]
+readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
@@ -809,7 +815,7 @@ reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fai
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"
-reason = "needs the built tilo-doubletake test receiver"
+reason = "needs the built tilo-doubletake binaries and OpenH264 from the opt-in codec pack on an assembled image"
 
 [[unrequired]]
 suite = "os/tests/boot_chain_invariants.sh"

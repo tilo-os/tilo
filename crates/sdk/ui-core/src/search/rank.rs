@@ -8,80 +8,10 @@
 //! the field's [`FieldWeight`]. [`fuzzy_score`] breaks ties between hits of
 //! the same tier and lets scattered subsequence matches surface at all.
 
-use std::ops::Range;
-
 use super::provider::SearchResult;
-use super::tokenizer::{SearchTokenizer, UnicodeTokenizer, fold_search_text};
+use tilo_search::fold as fold_search_text;
 
-/// Top of the [`field_rank`] scale: an exact match in a full-weight field.
-pub const MAX_FIELD_RANK: i32 = 100;
-
-/// How strongly a query matched one field; later variants are stronger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum MatchTier {
-    /// The query occurs inside the field, not at a word start.
-    Contains,
-    /// Some later word of the field starts with the query.
-    WordPrefix,
-    /// The field starts with the query.
-    Prefix,
-    /// The field is the query.
-    Exact,
-}
-
-impl MatchTier {
-    /// The tier's share of a full-weight field, in percent.
-    #[must_use]
-    pub const fn percent(self) -> i32 {
-        match self {
-            Self::Exact => 100,
-            Self::Prefix => 88,
-            Self::WordPrefix => 72,
-            Self::Contains => 60,
-        }
-    }
-
-    /// The rank this tier earns in a field of `weight`, on the
-    /// `0..=MAX_FIELD_RANK` scale.
-    #[must_use]
-    pub fn rank_in(self, weight: FieldWeight) -> i32 {
-        self.percent() * i32::from(weight.percent()) / 100
-    }
-}
-
-/// The share of [`MAX_FIELD_RANK`] a match in one field is worth, in percent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FieldWeight(u8);
-
-impl FieldWeight {
-    /// The name a person looks for: a title, a contact's name, a file name.
-    pub const TITLE: Self = Self(100);
-    /// A stable identity the person may type verbatim: an id, a path, a key.
-    pub const IDENTITY: Self = Self(50);
-    /// A secondary line shown with the hit: an author, a sender, a folder.
-    pub const SUBTITLE: Self = Self(40);
-    /// Other short fields: labels, tags, addresses.
-    pub const METADATA: Self = Self(30);
-    /// Long prose: a message body, a chapter, a note.
-    pub const BODY: Self = Self(20);
-    /// Searchable, but never reorders hits.
-    pub const UNRANKED: Self = Self(0);
-
-    /// A custom weight; values above 100 are clamped.
-    #[must_use]
-    pub const fn new(percent: u8) -> Self {
-        if percent > 100 {
-            Self(100)
-        } else {
-            Self(percent)
-        }
-    }
-
-    #[must_use]
-    pub const fn percent(self) -> u8 {
-        self.0
-    }
-}
+pub use tilo_search::{FieldWeight, MAX_FIELD_RANK, MatchTier, SPANNING_RANK};
 
 /// One weighted field of a hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,52 +52,6 @@ pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
     }
     found.then_some(MatchTier::Contains)
 }
-
-/// Find `query` in raw `text` under the default folding, returning the
-/// tier and the byte range of the best occurrence *in `text`* — the first
-/// one starting a word, else the first — so a caller can quote the match
-/// without keeping a folded copy of the text.
-#[must_use]
-pub fn locate(query: &str, text: &str) -> Option<(MatchTier, Range<usize>)> {
-    let query = fold_search_text(query.trim());
-    if query.is_empty() {
-        return None;
-    }
-    // Folded text alongside the raw byte offset each folded byte came from.
-    let tokenizer = UnicodeTokenizer;
-    let mut folded = String::with_capacity(text.len());
-    let mut origin = Vec::with_capacity(text.len());
-    for (offset, scalar) in text.char_indices() {
-        tokenizer.fold_char(scalar, &mut |part| {
-            folded.push(part);
-            origin.resize(folded.len(), offset);
-        });
-    }
-    let tier = match_tier(&query, &folded)?;
-    let at = match tier {
-        MatchTier::Exact | MatchTier::Prefix => 0,
-        MatchTier::WordPrefix => folded
-            .match_indices(query.as_str())
-            .map(|(at, _)| at)
-            .find(|&at| {
-                folded
-                    .get(..at)
-                    .and_then(|before| before.chars().next_back())
-                    .is_none_or(|previous| !previous.is_alphanumeric())
-            })?,
-        MatchTier::Contains => folded.find(query.as_str())?,
-    };
-    // The match covers every raw scalar that contributed a folded byte to it.
-    let start = *origin.get(at)?;
-    let last = *origin.get(at.saturating_add(query.len()).saturating_sub(1))?;
-    let last_len = text.get(last..)?.chars().next()?.len_utf8();
-    Some((tier, start..last.saturating_add(last_len)))
-}
-
-/// Rank of a multi-word query whose every word occurs in some field, though
-/// no field holds the whole query: below a substring match in any standard
-/// field (the lightest, [`FieldWeight::BODY`], ranks an infix at 12).
-pub const SPANNING_RANK: i32 = 11;
 
 /// Rank of a query that is only a subsequence of a full-weight field. A
 /// scattered subsequence only means something in a name the person
@@ -418,23 +302,6 @@ mod tests {
         // Only a full-weight field matches as a subsequence.
         assert_eq!(field_rank("sprdsht", &fields), None);
         assert_eq!(field_rank("calc zebra", &fields), None);
-    }
-
-    #[test]
-    fn locate_reports_the_raw_range_of_a_folded_match() {
-        let text = "Le Café Crème, déjà vu";
-        let (tier, range) = locate("creme", text).unwrap();
-        assert_eq!(tier, MatchTier::WordPrefix);
-        assert_eq!(&text[range], "Crème");
-        let (tier, range) = locate("afé", text).unwrap();
-        assert_eq!(tier, MatchTier::Contains);
-        assert_eq!(&text[range], "afé");
-        assert_eq!(
-            locate("le", text).map(|(tier, _)| tier),
-            Some(MatchTier::Prefix)
-        );
-        assert_eq!(locate("zzz", text), None);
-        assert_eq!(locate("", text), None);
     }
 
     #[test]

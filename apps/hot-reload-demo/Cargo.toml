@@ -1,0 +1,25 @@
+[package]
+name = "hot-reload-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "hot_reload_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hot-reload-demo"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

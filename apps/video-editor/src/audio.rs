@@ -951,15 +951,10 @@ impl MixMeters {
 /// recolouring a clip must not throw away a clipping report, and moving an
 /// audible clip must.
 pub fn mix_signature(project: &Project) -> u64 {
-    // FNV-1a: no dependency, stable across runs and machines, and this is a
-    // change detector rather than a security boundary.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x1000_0000_01b3);
-        }
-    };
+    // FNV-1a: stable across runs and machines, and this is a change detector
+    // rather than a security boundary.
+    let mut hasher = fnv::FnvHasher::default();
+    let mut eat = |bytes: &[u8]| std::hash::Hasher::write(&mut hasher, bytes);
     for t in &project.tracks {
         eat(t.id.as_bytes());
         eat(&t.gain_db.to_bits().to_le_bytes());
@@ -989,7 +984,7 @@ pub fn mix_signature(project: &Project) -> u64 {
             }
         }
     }
-    h
+    std::hash::Hasher::finish(&hasher)
 }
 
 // ---------------------------------------------------------------------------

@@ -676,21 +676,12 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
         };
-        let context = tilo_actions::ActionContext::for_resource(
-            format!(
-                "Allowed {} to use {}: {} {}",
-                label(&request.app_id),
-                label(&request.target_app),
-                request.action_label,
-                answer.lifetime(),
-            ),
-            format!("workspace.permissions:{}", request.room),
-            "workspace.permissions",
-            "App actions",
-        )
-        .with_app(
-            super::state::WORKSPACE_GOVERNANCE_APP_ID,
-            "Workspace permissions",
+        let context = tilo_desktop_model::grants::app_action_grant_context(
+            &request.room,
+            &label(&request.app_id),
+            &label(&request.target_app),
+            &request.action_label,
+            answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(
             workspace_id,
@@ -762,6 +753,15 @@ impl ContinuationServices for NativeContinuations {
             );
         Ok(())
     }
+    fn handoff(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: String,
+        instance: u64,
+        message: Vec<u8>,
+    ) -> Result<(), String> {
+        super::window_transfer::report_handoff(room, app, instance, &message)
+    }
 }
 
 /// The native identity selector and fleet remain native service dependencies.
@@ -772,39 +772,14 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if cert.user_public_key != profile.user_public_key
-            || fleet.is_revoked(&cert.device_public_key)
-        {
-            return Err("device revoked or identity mismatched".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize(&room.to_string(), cert)
     }
     fn authorize_join(
         &self,
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, cert)?;
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if !fleet
-            .certificates
-            .iter()
-            .any(|known| known.device_public_key == cert.device_public_key)
-        {
-            return Err("certified collaboration device is not enrolled".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
 pub fn native_services(

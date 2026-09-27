@@ -60,6 +60,15 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 # Keep every package and feature in resolution, but select only requested binary
 # targets. Cargo still builds their runtime dependency and gives it the same
 # unified dependency features as a full collection build.
+#
+# Release jobs raise CARGO_PROFILE_RELEASE_* for faster fat links. thin-app
+# inherits release, so those overrides would otherwise change every dependency
+# compiled into the thin graph (and the wrapper can only reset the final tapp
+# crate). Drop them for this invocation so image and CI thin apps share one
+# size-oriented profile.
+unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
+      CARGO_PROFILE_RELEASE_OPT_LEVEL CARGO_PROFILE_RELEASE_PANIC \
+      CARGO_PROFILE_RELEASE_STRIP CARGO_PROFILE_RELEASE_DEBUG
 cd "$REPO"
 TILO_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \

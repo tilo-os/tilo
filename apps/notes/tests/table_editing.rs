@@ -147,6 +147,129 @@ impl Fixture {
     }
 }
 
+/// A table page's body in the SDK editor, bound to its note.
+struct Bound {
+    panel: notes::MainPanel,
+    tree: TaffyTree<()>,
+    node: NodeId,
+    renderer: ui::TextRenderer,
+}
+
+impl Bound {
+    fn new(doc: &automerge::AutoCommit, page: notes::PageId) -> Self {
+        let mut panel = notes::MainPanel::new();
+        panel.bind_canonical_page(doc, page, "Bound table").unwrap();
+        let mut bound = Self {
+            panel,
+            tree: TaffyTree::new(),
+            node: NodeId::new(0),
+            renderer: crate::component_support::renderer(),
+        };
+        bound.paint();
+        bound
+    }
+
+    fn editor(&self) -> &BlockEditor {
+        self.panel.editor()
+    }
+
+    fn paint(&mut self) {
+        self.tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let surface = self.panel.body_editor_mut();
+        self.node = surface.build_layout(&mut self.tree, &Theme::dark(), &mut nodes);
+        let renderer = &mut self.renderer;
+        self.tree
+            .compute_layout_with_measure(
+                self.node,
+                Size {
+                    width: AvailableSpace::Definite(500.0),
+                    height: AvailableSpace::MaxContent,
+                },
+                |known, available, node, _, _| {
+                    nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, renderer)
+                    })
+                },
+            )
+            .unwrap();
+        let surface = self.panel.body_editor_mut();
+        surface.apply_layout(&self.tree, self.node, Point::ZERO);
+        surface.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut self.renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// Bring the editor up to date with `state`, recording what the editor
+    /// wrote as one undo step.
+    fn sync(&mut self, state: &mut ui::State) {
+        let surface = self.panel.body_editor_mut();
+        surface.sync(&mut state.doc, &automerge::ROOT);
+        if let Some(before) = surface.take_committed_action() {
+            state.record_committed_action(before, None, None);
+        }
+        self.paint();
+    }
+
+    fn target(&self, row: usize, column: usize) -> String {
+        format!(
+            "notes.table-cell:{}:{row}:{column}",
+            self.editor().blocks()[0].id
+        )
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper owns each semantic action for immediate dispatch"
+    )]
+    fn action(&mut self, state: &mut ui::State, target: &str, action: Action) -> bool {
+        let done = self.panel.editor_mut().perform_semantic_action(
+            target,
+            &action,
+            &mut state.doc,
+            &automerge::ROOT,
+        );
+        self.sync(state);
+        done
+    }
+
+    fn value(&mut self, row: usize, column: usize) -> String {
+        fn find<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
+            if node.action_target.as_deref() == Some(target) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        let target = self.target(row, column);
+        let node = self.panel.body_editor_mut().accessibility().unwrap();
+        find(&node, &target).unwrap().value.clone().unwrap()
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper owns each synthetic event for immediate dispatch"
+    )]
+    fn event(&mut self, state: &mut ui::State, event: WindowEvent) {
+        let node = self.node;
+        self.panel.body_editor_mut().handle_event(
+            &event,
+            1.0,
+            &Modifiers::default(),
+            &mut state.doc,
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            node,
+            &self.tree,
+        );
+        self.sync(state);
+    }
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn table_cell_editing_survives_echo_undo_and_reload() {
@@ -199,19 +322,21 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
                 order: 0,
             },
         );
-        NotesDoc::apply_block_ops(
+        NotesDoc::fill_page_body(
             &mut state.doc,
             page,
-            &[ui::widget::BlockEditOp::Insert {
-                block_id: f.editor.blocks()[0].id.clone(),
-                after: None,
-                kind: "table:1".into(),
-                text: source.into(),
+            &[ui::widget::BlockContent {
+                kind: ui::widget::BlockKind::Table { visual: true },
+                ..ui::widget::BlockContent::paragraph("", source)
             }],
         )
         .unwrap();
         state.commit_action(None, None);
-        NotesDoc::apply_block_ops(&mut state.doc, page, &ops).unwrap();
+        let id = NotesDoc::page_block_snapshots(&state.doc, page)[0]
+            .0
+            .clone();
+        let edited = f.editor.blocks()[0].text().to_owned();
+        crate::component_support::replace_block_text(&mut state.doc, page, &id, &edited);
         state.commit_action(None, None);
         let saved = NotesDoc::page_block_snapshots(&state.doc, page)[0]
             .1
@@ -318,11 +443,9 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
     {
         use notes::doc::NotesDoc;
         let source = "| A | B |\n| --- | --- |\n| first | second |";
-        let mut f = Fixture::new(source);
         let mut state = ui::State::new();
         notes::notebook::initialize_empty(&mut state.doc).unwrap();
         let page = uuid::Uuid::new_v4();
-        let block_id = f.editor.blocks()[0].id.clone();
         NotesDoc::upsert_page_meta(
             &mut state.doc,
             &notes::model::PageMeta {
@@ -332,95 +455,86 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
                 order: 0,
             },
         );
-        NotesDoc::apply_block_ops(
+        NotesDoc::fill_page_body(
             &mut state.doc,
             page,
-            &[ui::widget::BlockEditOp::Insert {
-                block_id: block_id.clone(),
-                after: None,
-                kind: "table:1".into(),
-                text: source.into(),
+            &[ui::widget::BlockContent {
+                kind: ui::widget::BlockKind::Table { visual: true },
+                ..ui::widget::BlockContent::paragraph("", source)
             }],
         )
         .unwrap();
         state.commit_action(None, None);
-        let list = NotesDoc::page_blocks_list(&state.doc, page).unwrap();
-        f.doc = state.doc.clone();
-        f.editor.bind_existing_blocks(&f.doc, list).unwrap();
-        f.paint();
-        assert!(f.action(&f.target(0, 1, 1), Action::Focus));
-        assert!(f.action("notes.editor:table-add-row", Action::Activate));
-        let ops = f.editor.take_pending_semantic_ops();
-        NotesDoc::apply_block_ops(&mut state.doc, page, &ops).unwrap();
-        state.commit_action(None, None);
-        f.doc = state.doc.clone();
-        f.editor.sync(&mut f.doc, &automerge::ROOT);
-        f.paint();
+        let mut b = Bound::new(&state.doc, page);
+        let block_id = b.editor().blocks()[0].id.clone();
+        assert!(b.action(&mut state, &b.target(1, 1), Action::Focus));
+        assert!(b.action(&mut state, "notes.editor:table-add-row", Action::Activate));
         assert_eq!(
-            f.editor.focused_table_cell(),
+            b.editor().focused_table_cell(),
             Some((block_id.clone(), 2, 1))
         );
 
         // Undo removes the active row in the actual canonical document. Sync must
         // clamp the cell coordinate and must never focus the hidden Markdown input.
         state.undo(None, None).unwrap();
-        f.doc = state.doc.clone();
-        f.editor.sync(&mut f.doc, &automerge::ROOT);
-        f.paint();
-        assert_eq!(f.editor.focused_table_cell(), Some((block_id, 1, 1)));
-        assert!(!f.editor.blocks()[0].line.is_focused());
-        assert!(
-            f.key(Key::Named(NamedKey::End), ModifiersState::empty())
-                .is_empty()
-        );
-        let ops = f.event(
+        b.sync(&mut state);
+        assert_eq!(b.editor().focused_table_cell(), Some((block_id, 1, 1)));
+        assert!(!b.editor().blocks()[0].line.is_focused());
+        b.event(
+            &mut state,
             WindowEvent::Ime(winit::event::Ime::Commit("!".into())),
-            ModifiersState::empty(),
         );
-        assert!(!ops.is_empty());
-        NotesDoc::apply_block_ops(&mut state.doc, page, &ops).unwrap();
-        f.doc = state.doc.clone();
-        f.editor.sync(&mut f.doc, &automerge::ROOT);
-        f.paint();
-        assert_eq!(f.value(0, 1, 0), "first");
-        assert_eq!(f.value(0, 1, 1), "second!");
+        assert_eq!(b.value(1, 0), "first");
+        assert_eq!(b.value(1, 1), "second!");
         assert_eq!(
             NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-            f.editor.blocks()[0].text()
+            b.editor().blocks()[0].text()
         );
 
         // A peer appending a row must retain the existing cell's caret and
         // selection; typing immediately replaces the selected final character.
-        assert!(
-            f.key(Key::Named(NamedKey::ArrowLeft), ModifiersState::SHIFT)
-                .is_empty()
+        let mut shift = unsafe { std::mem::zeroed::<KeyEvent>() };
+        shift.logical_key = Key::Named(NamedKey::ArrowLeft);
+        shift.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
         );
-        let current = f.editor.blocks()[0].text().to_owned();
-        NotesDoc::apply_block_ops(
+        shift.location = winit::keyboard::KeyLocation::Standard;
+        shift.state = ElementState::Pressed;
+        let node = b.node;
+        b.panel.body_editor_mut().handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: shift,
+                is_synthetic: false,
+            },
+            1.0,
+            &Modifiers::from(ModifiersState::SHIFT),
+            &mut state.doc,
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            node,
+            &b.tree,
+        );
+        b.sync(&mut state);
+        let current = b.editor().blocks()[0].text().to_owned();
+        crate::component_support::edit_body(
             &mut state.doc,
             page,
-            &[ui::widget::BlockEditOp::TextSplice {
-                block_id: f.editor.blocks()[0].id.clone(),
-                start: current.len(),
-                end: current.len(),
-                text: "\n| remote | row |".into(),
-            }],
-        )
-        .unwrap();
-        f.doc = state.doc.clone();
-        f.editor.sync(&mut f.doc, &automerge::ROOT);
-        f.paint();
-        let ops = f.event(
-            WindowEvent::Ime(winit::event::Ime::Commit("?".into())),
-            ModifiersState::empty(),
+            qdoc_rich_text::RichTextAction::SpliceText {
+                region: qdoc_rich_text::action::RegionKind::Body,
+                block: b.editor().blocks()[0].id.clone(),
+                at: current.chars().count(),
+                del: 0,
+                ins: "\n| remote | row |".into(),
+            },
         );
-        assert!(!ops.is_empty());
-        assert_eq!(f.value(0, 1, 1), "second?");
-        assert_eq!(f.value(0, 2, 0), "remote");
-        NotesDoc::apply_block_ops(&mut state.doc, page, &ops).unwrap();
-        f.doc = state.doc.clone();
-        f.editor.sync(&mut f.doc, &automerge::ROOT);
-        f.paint();
-        assert_eq!(f.value(0, 1, 1), "second?");
+        b.sync(&mut state);
+        b.event(
+            &mut state,
+            WindowEvent::Ime(winit::event::Ime::Commit("?".into())),
+        );
+        assert_eq!(b.value(1, 1), "second?");
+        assert_eq!(b.value(2, 0), "remote");
     }
 }

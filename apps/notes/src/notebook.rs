@@ -11,7 +11,9 @@ use automerge::{
 };
 use std::collections::{HashMap, HashSet};
 
-pub const NOTES_SCHEMA_VERSION: u32 = 2;
+/// 3: page bodies are rich text (`body`). Pages written in the first format
+/// (a `blocks` List) still validate, and upgrade in place when opened.
+pub const NOTES_SCHEMA_VERSION: u32 = 3;
 const OWNED_FIELDS: [&str; 6] = [
     "notes_schema_version",
     "pages",
@@ -171,7 +173,7 @@ fn keyed_uuid(value: &str) -> Result<uuid::Uuid, String> {
 }
 
 fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<Workspace, String> {
-    if !matches!(schema_version(doc).ok(), Some(1 | 2)) {
+    if !matches!(schema_version(doc).ok(), Some(1..=3)) {
         return Err("notebook schema version is missing or unsupported; migration required".into());
     }
     let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
@@ -200,7 +202,7 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
             parent,
             order,
         });
-        validate_blocks(doc, &page).map_err(|e| format!("page {id}: {e}"))?;
+        validate_body(doc, &page).map_err(|e| format!("page {id}: {e}"))?;
     }
     for key in doc.keys(&tags) {
         let id = keyed_uuid(&key)?;
@@ -621,6 +623,21 @@ pub(crate) fn assets_complete(
         .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
 }
 
+/// A page's body: rich text, or a block list in the first format.
+fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
+    if doc
+        .get_all(page, "body")
+        .map_err(|e| e.to_string())?
+        .is_empty()
+    {
+        return validate_blocks(doc, page);
+    }
+    let body = object(doc, page, "body", ObjType::Map)?;
+    qdoc::model::open(doc, &body)
+        .map(|_| ())
+        .map_err(|error| format!("body is not rich text: {error}"))
+}
+
 fn validate_blocks(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
     let blocks = object(doc, page, "blocks", ObjType::List)?;
     let mut ids = HashSet::new();
@@ -641,7 +658,7 @@ fn validate_blocks(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
                 return Err(format!("block {id} has invalid order metadata"));
             }
         }
-        if !crate::doc::valid_kind(&string(doc, block, "kind")?) {
+        if ui::widget::BlockKind::from_stored(&string(doc, block, "kind")?).is_none() {
             return Err(format!("block {id} has invalid kind"));
         }
         if !doc
@@ -757,7 +774,7 @@ mod tests {
     use crate::actions::{InlineMark, InlineMarkSpan, NotesAction};
     use automerge::marks::{ExpandMark, Mark};
 
-    fn linked_notebook(mark: InlineMark) -> (AutoCommit, PageId, ObjId) {
+    fn notebook_with(blocks: &[ui::widget::BlockContent]) -> (AutoCommit, PageId) {
         let mut doc = AutoCommit::new();
         initialize_empty(&mut doc).unwrap();
         let page = uuid::Uuid::new_v4();
@@ -770,60 +787,83 @@ mod tests {
                 order: 0,
             },
         );
-        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-        let text = NotesDoc::push_block(&mut doc, &list, "paragraph", "Read this");
-        let id = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-        NotesDoc::set_block_marks(
-            &mut doc,
-            page,
-            &id,
-            &[InlineMarkSpan {
-                start: 0,
-                end: 9,
-                mark,
-            }],
+        NotesDoc::fill_page_body(&mut doc, page, blocks).unwrap();
+        (doc, page)
+    }
+
+    fn linked_notebook(mark: InlineMark) -> (AutoCommit, PageId) {
+        let mut read = ui::widget::BlockContent::paragraph("", "Read this");
+        read.marks = InlineMarkSpan {
+            start: 0,
+            end: 9,
+            mark,
+        }
+        .to_ui()
+        .into_iter()
+        .collect();
+        notebook_with(&[read])
+    }
+
+    /// A page as the first format stored it, holding one paragraph; its text
+    /// object, for marks.
+    fn first_format_page(doc: &mut AutoCommit, text: &str) -> ObjId {
+        let pages = NotesDoc::pages_map(doc);
+        let id = uuid::Uuid::new_v4();
+        let page = doc
+            .put_object(&pages, id.to_string().as_str(), ObjType::Map)
+            .unwrap();
+        let title = doc.put_object(&page, "title", ObjType::Text).unwrap();
+        doc.splice_text(&title, 0, 0, "Old").unwrap();
+        doc.put(&page, "parent", "").unwrap();
+        doc.put(&page, "order", 1_i64).unwrap();
+        let list = doc.put_object(&page, "blocks", ObjType::List).unwrap();
+        let block = doc.insert_object(&list, 0, ObjType::Map).unwrap();
+        let block_id = uuid::Uuid::new_v4();
+        doc.put(&block, "id", block_id.to_string()).unwrap();
+        doc.put(&block, "kind", "paragraph").unwrap();
+        doc.put(
+            &block,
+            crate::block_order::BASE_FIELD,
+            crate::block_order::initial(0, block_id),
         )
         .unwrap();
-        (doc, page, text)
+        doc.put(&block, "notes_marks_version", 1_i64).unwrap();
+        let body = doc.put_object(&block, "text", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, text).unwrap();
+        body
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn canonical_notebook_reopens_quotes_tables_links_and_embeds_losslessly() {
-        eprintln!("phase quote_and_table_edits_survive_canonical_reopen");
+        eprintln!("phase quote_and_table_blocks_survive_canonical_reopen");
         {
-            let (mut doc, page, _) = linked_notebook(InlineMark::Bold);
-            let first = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-            for kind in ["quote", "table:0", "table:1"] {
-                NotesDoc::apply_block_ops(
-                    &mut doc,
-                    page,
-                    &[ui::widget::BlockEditOp::SetKind {
-                        block_id: first.clone(),
-                        kind: kind.into(),
-                    }],
-                )
-                .unwrap();
-                let mut reopened = AutoCommit::load(&doc.save()).unwrap();
-                project(&reopened, Some(page)).unwrap();
-                let list = NotesDoc::page_blocks_list(&reopened, page).unwrap();
-                assert_eq!(NotesDoc::block_kind(&reopened, &list, 0), kind);
-                NotesDoc::apply_block_ops(
-                    &mut reopened,
-                    page,
-                    &[ui::widget::BlockEditOp::Insert {
-                        block_id: uuid::Uuid::new_v4().to_string(),
-                        after: Some(first.clone()),
-                        kind: kind.into(),
-                        text: "new block".into(),
-                    }],
-                )
-                .unwrap();
-                validate(&reopened).unwrap();
-                assert_eq!(NotesDoc::block_kind(&reopened, &list, 1), kind);
-            }
+            use ui::widget::{BlockContent, BlockKind};
+            let kinds = [
+                BlockKind::Quote,
+                BlockKind::Table { visual: false },
+                BlockKind::Table { visual: true },
+            ];
+            let blocks = kinds
+                .iter()
+                .map(|kind| BlockContent {
+                    kind: kind.clone(),
+                    ..BlockContent::paragraph("", "| a |")
+                })
+                .collect::<Vec<_>>();
+            let (mut doc, page) = notebook_with(&blocks);
+            let reopened = AutoCommit::load(&doc.save()).unwrap();
+            project(&reopened, Some(page)).unwrap();
+            validate(&reopened).unwrap();
+            assert_eq!(
+                NotesDoc::page_blocks(&reopened, page)
+                    .into_iter()
+                    .map(|block| block.kind)
+                    .collect::<Vec<_>>(),
+                kinds
+            );
             for malformed in ["table:2", "table:true", "quote:1"] {
-                assert!(!crate::doc::valid_kind(malformed));
+                assert!(BlockKind::from_stored(malformed).is_none());
             }
         }
 
@@ -837,7 +877,7 @@ mod tests {
                     page: uuid::Uuid::new_v4().to_string(),
                 },
             ] {
-                let (mut doc, page, _) = linked_notebook(mark.clone());
+                let (mut doc, page) = linked_notebook(mark.clone());
                 let mut reopened = AutoCommit::load(&doc.save()).unwrap();
                 let workspace = project(&reopened, Some(page)).unwrap();
                 assert_eq!(workspace.selected(), Some(page));
@@ -864,13 +904,15 @@ mod tests {
             }
         }
 
-        eprintln!("phase external_link_validation_refuses_unsafe_urls_and_non_string_values");
+        eprintln!("phase first_format_link_validation_refuses_unsafe_urls_and_non_string_values");
         {
             for value in [
                 ScalarValue::Str("javascript:alert(1)".into()),
                 ScalarValue::Boolean(true),
             ] {
-                let (mut doc, _, text) = linked_notebook(InlineMark::Bold);
+                let (mut doc, _) = notebook_with(&[]);
+                let text = first_format_page(&mut doc, "Read this");
+                validate(&doc).unwrap();
                 doc.mark(
                     &text,
                     Mark::new("notes.inline.external-link".into(), value, 0, 9),
@@ -885,9 +927,10 @@ mod tests {
             }
         }
 
-        eprintln!("phase embed_validation_refuses_a_mismatched_target");
+        eprintln!("phase first_format_embed_validation_refuses_a_mismatched_target");
         {
-            let (mut doc, _, text) = linked_notebook(InlineMark::Bold);
+            let (mut doc, _) = notebook_with(&[]);
+            let text = first_format_page(&mut doc, "Read this");
             let target = uuid::Uuid::new_v4();
             doc.mark(
                 &text,
@@ -924,10 +967,7 @@ mod tests {
             let action = crate::actions::add_image_asset_action(
                 page,
                 bytes.clone(),
-                ui::widget::BlockEditOp::Insert {
-                    block_id: uuid::Uuid::new_v4().to_string(),
-                    after: None,
-                    kind: "paragraph".into(),
+                qdoc_rich_text::RichTextAction::AppendParagraph {
                     text: format!("![Scan](asset:{})", blake3::hash(&bytes).to_hex()),
                 },
             );
@@ -947,10 +987,7 @@ mod tests {
                 page: page.to_string(),
                 digest: "0".repeat(64),
                 bytes: b"not an image".to_vec(),
-                op: ui::widget::BlockEditOp::Insert {
-                    block_id: uuid::Uuid::new_v4().to_string(),
-                    after: None,
-                    kind: "paragraph".into(),
+                edit: qdoc_rich_text::RichTextAction::AppendParagraph {
                     text: "![Bad](asset:bad)".into(),
                 },
             };
@@ -966,59 +1003,50 @@ mod tests {
             use ui::Widget;
             let original = "![Scan](assets/original.png)";
             let edited = "![Updated scan](assets/revised.png)";
-            let (mut doc, page, _) = linked_notebook(InlineMark::Bold);
-            let id = NotesDoc::page_block_snapshots(&doc, page)[0].0.clone();
-            NotesDoc::apply_block_ops(
-                &mut doc,
-                page,
-                &[ui::widget::BlockEditOp::TextSplice {
-                    block_id: id.clone(),
-                    start: 0,
-                    end: 9,
-                    text: original.into(),
-                }],
-            )
-            .unwrap();
-            NotesDoc::set_block_marks(&mut doc, page, &id, &[]).unwrap();
-            doc.commit();
+            let (doc, page) = notebook_with(&[ui::widget::BlockContent::paragraph("", original)]);
             let mut state = ui::State::new();
             state.doc = doc;
-            let list = NotesDoc::page_blocks_list(&state.doc, page).unwrap();
-            let mut editor = ui::widget::BlockEditor::new();
-            editor.set_action_interception(true);
-            editor.bind_existing_blocks(&state.doc, list).unwrap();
-            editor.sync(&mut state.doc, &ROOT);
+            state.doc.commit();
+            let mut panel = crate::MainPanel::new();
+            panel
+                .bind_canonical_page(&state.doc, page, "Reference")
+                .unwrap();
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            let id = panel.editor().blocks()[0].id.clone();
             let initial_heads = state.doc.get_heads();
-            assert!(editor.perform_semantic_action(
+            assert!(panel.editor_mut().perform_semantic_action(
                 &format!("notes.image-edit:{id}"),
                 &ui::a11y::Action::Activate,
                 &mut state.doc,
                 &ROOT
             ));
-            assert!(editor.take_pending_semantic_ops().is_empty());
-            assert_eq!(state.doc.get_heads(), initial_heads);
-            assert!(editor.perform_semantic_action(
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            assert_eq!(
+                state.doc.get_heads(),
+                initial_heads,
+                "a view mode writes nothing"
+            );
+            assert!(panel.editor_mut().perform_semantic_action(
                 &format!("notes.image-source:{id}"),
                 &ui::a11y::Action::SetValue(edited.into()),
                 &mut state.doc,
                 &ROOT
             ));
-            let ops = editor.take_pending_semantic_ops();
-            assert!(
-                !ops.is_empty(),
-                "source edits must use canonical semantic block operations"
-            );
-            let action = crate::actions::apply_block_ops_action(page, ops);
-            tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action))
-                .unwrap();
-            state.record_committed_action(initial_heads, None, None);
-            assert!(editor.perform_semantic_action(
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            let before = panel
+                .body_editor_mut()
+                .take_committed_action()
+                .expect("a source edit is a Notes action");
+            state.record_committed_action(before, None, None);
+            let edited_heads = state.doc.get_heads();
+            assert!(panel.editor_mut().perform_semantic_action(
                 &format!("notes.image-done:{id}"),
                 &ui::a11y::Action::Activate,
                 &mut state.doc,
                 &ROOT
             ));
-            assert!(editor.take_pending_semantic_ops().is_empty());
+            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
+            assert_eq!(state.doc.get_heads(), edited_heads);
             let reopened = AutoCommit::load(&state.doc.save()).unwrap();
             validate(&reopened).unwrap();
             assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, edited);

@@ -22,7 +22,7 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content", "syntax-definitions"]
+native = ["tilo-host/native", "dep:accesskit_winit", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -80,6 +80,8 @@ portal = ["native", "tilo-host/portal"]
 notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
+mime_guess.workspace = true
+fnv.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
@@ -159,9 +161,6 @@ unic-langid.workspace = true
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
-# Compatibility decomposition behind search folding: `ｃａｆé` and `cafe`
-# find each other. Already in the toolkit's tree through `bip39`.
-unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
 # word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
 # Myanmar, CJK); natively only, see text_break.rs.
@@ -197,6 +196,9 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 qdoc = { path = "../../doc/qdoc" }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { path = "../tilo-resource" }
+# Every catalogue and text index is a tantivy index through the shared
+# search layer.
+tilo-search = { path = "../search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
@@ -322,6 +324,21 @@ path = "tests/held_memory.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+# The APK's asset manager, which holds the font catalog (`font_catalog::android`).
+ndk = { version = "0.9.0", default-features = false }
+# Soft-keyboard input reaches the runner through the activity's
+# `TiloTextInput` view (`app/android_text_input`).
+jni = { version = "0.21.1", optional = true }
+ndk-context = { version = "0.1.1", optional = true }
+# TalkBack reads the AccessKit tree through a node provider injected into the
+# NativeActivity's window (`accesskit_android_adapter.rs`). accesskit_winit's
+# own Android glue expects GameActivity's `mSurfaceView`, so the injecting
+# adapter is driven directly. `embedded-dex` carries its Java delegate inside
+# the library, so the APK needs no extra class.
+accesskit_android = { version = "0.8.0", optional = true, features = ["embedded-dex"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }

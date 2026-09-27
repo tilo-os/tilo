@@ -8,6 +8,9 @@ name: Snapshot / kernel
 # buildroot pinned in os/kernel-buildroot-snapshot.env
 # (snapshot-kernel-buildroot.yml). Kernel provenance binds that buildroot, not
 # the OS frozen RPM snapshot, so only kernel inputs trigger a rebuild here.
+# tilo-crypto is filtered to the signing sources the kernel Containerfile
+# copies; TLS fixture code stays behind the default tls-fixture feature and
+# is covered by check.yml / development-source.yml instead.
 
 on:
   push:
@@ -17,7 +20,9 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -33,7 +38,9 @@ on:
     paths:
       - "os/kernel/**"
       - "os/kernel-buildroot-snapshot.env"
-      - "crates/system/tilo-crypto/**"
+      - "crates/system/tilo-crypto/Cargo.toml"
+      - "crates/system/tilo-crypto/src/lib.rs"
+      - "crates/system/tilo-crypto/src/main.rs"
       - "os/tests/kernel_module_signing_test.sh"
       - "os/tests/kernel_runtime_probe.*"
       - "os/tests/secureboot_vm_*"
@@ -51,18 +58,6 @@ on:
 concurrency:
   group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) }}
-
-env:
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   applicability:
@@ -209,9 +204,8 @@ jobs:
             v4l2loopback-0.15.3-a7e4a4d.tar.gz
             sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz
 
-      # Every CI pool provides the same S3 compiler cache and a bucket-scoped
-      # credential. The kernel compile requires it, so a dead cache fails
-      # instead of silently compiling the whole tree again.
+      # The runner provides the S3 compiler cache. A runner without one
+      # compiles without it.
       #
       # Only pull requests use it. Every other run publishes a kernel that
       # signed OS images install, and every CI job and agent sandbox holds a
@@ -239,8 +233,17 @@ jobs:
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then
-              echo "::error::runner compiler cache setting $name is missing"
-              exit 1
+              {
+                echo 'KERNEL_COMPILER_CACHE=off'
+                echo 'KERNEL_REQUIRE_COMPILER_CACHE=0'
+                echo 'KERNEL_SCCACHE_BUCKET='
+                echo 'KERNEL_SCCACHE_ENDPOINT='
+                echo 'KERNEL_SCCACHE_REGION=auto'
+                echo 'KERNEL_SCCACHE_S3_USE_SSL=false'
+                echo 'KERNEL_COMPILER_CACHE_SECRETS='
+              } >> "$GITHUB_ENV"
+              echo "::notice::runner compiler cache is not configured; compiling the kernel without it"
+              exit 0
             fi
           done
           {
@@ -606,7 +609,9 @@ jobs:
       KERNEL_SNAPSHOT_INPUTS: |
         os/kernel
         os/kernel-buildroot-snapshot.env
-        crates/system/tilo-crypto
+        crates/system/tilo-crypto/Cargo.toml
+        crates/system/tilo-crypto/src/lib.rs
+        crates/system/tilo-crypto/src/main.rs
         os/external-assets/github-assets.tsv
         os/dev/assert-native-arch.sh
         os/dev/open-snapshot-pr.py

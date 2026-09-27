@@ -82,14 +82,9 @@ pub fn room_slug(workspace_id: Option<&str>) -> String {
 /// Short, stable, collision-resistant name for an id we refuse to use
 /// verbatim. Not a security boundary — just a filename.
 fn hex_digest(raw: &str) -> String {
-    // FNV-1a, 64-bit. Avoids pulling a hash crate into the launcher for
-    // a directory name.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in raw.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// The user's data home, as the *launcher's* own environment describes

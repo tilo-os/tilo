@@ -148,6 +148,12 @@ pub fn configured_font_system() -> FontSystem {
     {
         return font_system;
     }
+    #[cfg(all(target_os = "android", feature = "native"))]
+    if let Some(font_system) =
+        crate::font_catalog::android_font_system(crate::i18n::I18nManager::current_locale())
+    {
+        return font_system;
+    }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
     database.set_sans_serif_family(UI_SANS_FAMILY);

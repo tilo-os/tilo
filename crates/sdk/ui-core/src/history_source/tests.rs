@@ -338,7 +338,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(entries[0].summary, "+5 -0 chars");
         assert_eq!(entries[1].summary, "+6 -0 chars");
         assert_eq!(entries[1].op_class, OpClass::Splice);
-        assert_eq!(entries[2].summary, "1 field", "a map put is metadata");
+        assert_eq!(
+            entries[2].summary, "Edited title",
+            "a map put names the field it edited"
+        );
         assert_eq!(entries[2].op_class, OpClass::EditMeta);
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
@@ -710,4 +713,73 @@ fn entries_are_stamped_capped_and_stably_addressed() {
             assert!(!heads.is_empty(), "every version has at least one head");
         }
     }
+}
+
+#[test]
+fn unschematised_changes_are_named_by_what_they_edited() {
+    fn summaries(edit: impl FnOnce(&mut AutoCommit)) -> Vec<String> {
+        let mut doc = AutoCommit::new();
+        let settings = doc.put_object(ROOT, "settings", ObjType::Map).unwrap();
+        doc.put(&settings, "theme", "dark").unwrap();
+        doc.put(ROOT, "title", "draft").unwrap();
+        doc.commit();
+        edit(&mut doc);
+        doc.commit();
+        HistorySource::new()
+            .entries(&mut doc)
+            .into_iter()
+            .map(|entry| entry.summary)
+            .collect()
+    }
+    let lookup = |key: &str, path: &str, more: usize| {
+        crate::i18n::I18nManager::format(key, &[("path", path.into()), ("more", more.into())])
+    };
+
+    let one = summaries(|doc| doc.put(ROOT, "title", "final").unwrap());
+    assert_eq!(
+        one.last(),
+        Some(&lookup("history-edited-field", "title", 0))
+    );
+    assert_eq!(one.last().map(String::as_str), Some("Edited title"));
+
+    let nested = summaries(|doc| {
+        let (_, settings) = doc.get(ROOT, "settings").unwrap().unwrap();
+        doc.put(&settings, "theme", "light").unwrap();
+    });
+    assert_eq!(
+        nested.last(),
+        Some(&lookup("history-edited-field", "settings.theme", 0))
+    );
+
+    let several = summaries(|doc| {
+        doc.put(ROOT, "title", "final").unwrap();
+        doc.put(ROOT, "subtitle", "new").unwrap();
+    });
+    let last = several.last().unwrap();
+    assert!(
+        *last == lookup("history-edited-field", "title", 1)
+            || *last == lookup("history-edited-field", "subtitle", 1),
+        "{last}"
+    );
+    assert!(last.ends_with("and 1 more"), "{last}");
+
+    let removed = summaries(|doc| doc.delete(ROOT, "title").unwrap());
+    assert_eq!(
+        removed.last(),
+        Some(&lookup("history-removed-field", "title", 0))
+    );
+}
+
+#[test]
+fn an_action_context_names_its_change_before_any_field_fallback() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "draft").unwrap();
+    doc.commit();
+    doc.put(ROOT, "title", "final").unwrap();
+    let context = tilo_actions::ActionContext::for_resource("Rename report", "r", "doc", "Report");
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    let entries = HistorySource::new().entries(&mut doc);
+    let last = entries.last().unwrap();
+    assert_eq!(Some(last.summary.clone()), context.summary());
+    assert!(!last.summary.contains("title"), "{}", last.summary);
 }

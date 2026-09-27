@@ -132,18 +132,7 @@ fn file_uri(path: &Path) -> Option<url::Url> {
 /// URI list, rather than claiming
 /// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => return None,
-    })
+    mime_guess::from_path(path).first_raw()
 }
 
 /// Start a drag carrying `paths`, out of this app and into whatever

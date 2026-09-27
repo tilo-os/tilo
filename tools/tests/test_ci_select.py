@@ -73,25 +73,24 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='a pin only pull request takes the pins path'):
             self.setUp()
             (self.root / "os").mkdir(exist_ok=True)
-            for pin in ("os/rpms-snapshot.env", "os/kernel-snapshot.env"):
-                (self.root / pin).write_text("PIN=x\n")
+            (self.root / "os/kernel-snapshot.env").write_text("PIN=x\n")
             manifest = ci_select.path_suites.parse(
                 '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n')
             def plan(changes, **options):
                 return ci_select.make_plan(self.metadata, self.root, changes, 2,
                                            suite_manifest=manifest, **options)
-            pins = plan(["os/rpms-snapshot.env", "os/kernel-snapshot.env"], allow_security_skip=True)
+            pins = plan(["os/kernel-snapshot.env"], allow_security_skip=True)
             self.assertTrue(pins["pins_required"])
-            self.assertEqual(pins["pins"], ["os/kernel-snapshot.env", "os/rpms-snapshot.env"])
+            self.assertEqual(pins["pins"], ["os/kernel-snapshot.env"])
             self.assertFalse(pins["rust_required"])
             self.assertFalse(pins["security_required"])
             self.assertFalse(pins["suites_required"])
             self.assertEqual(pins["matrix"], {"include": []})
             # Pushes, full runs and mixed changes keep every check.
             for changes, options in (
-                (["os/rpms-snapshot.env"], {}),
-                (["os/rpms-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
-                (["os/rpms-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
+                (["os/kernel-snapshot.env"], {}),
+                (["os/kernel-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
+                (["os/kernel-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
                 (["os/deleted-pin.env"], {"allow_security_skip": True}),
             ):
                 with self.subTest(changes=changes, options=options):
@@ -104,7 +103,7 @@ class SelectorTests(unittest.TestCase):
                 ci_select.emit_github(pins, output)
                 lines = output.read_text().splitlines()
             self.assertIn("pins_required=true", lines)
-            self.assertIn("pins=os/kernel-snapshot.env os/rpms-snapshot.env", lines)
+            self.assertIn("pins=os/kernel-snapshot.env", lines)
         with self.subTest(phase='cross package readers are checked and tested when their inputs change'):
             self.setUp()
             # "base" reads leaf's sources and a shipped OS file from outside itself,
@@ -188,6 +187,43 @@ class SelectorTests(unittest.TestCase):
                                                allow_security_skip=True)
                     self.assertFalse(plan["rust_required"])
                     self.assertFalse(plan["security_required"])
+
+    def test_android_lane_follows_selected_apps_with_an_android_example(self):
+        self.setUp()
+        for package in self.metadata["packages"]:
+            if package["name"] == "leaf":
+                package["targets"] = [
+                    {"name": "leaf", "kind": ["bin"]},
+                    {"name": "leaf-android", "kind": ["example"]},
+                ]
+            if package["name"] == "middle":
+                # Only an example named for its own package opts an app in.
+                package["targets"] = [
+                    {"name": "middle", "kind": ["lib"]},
+                    {"name": "leaf-android", "kind": ["example"]},
+                    {"name": "middle-android", "kind": ["bin"]},
+                ]
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
+        for changes, options in ((["base/src/lib.rs"], {}), (["leaf/src/android.rs"], {}),
+                                 (["qdoc/src/lib.rs"], {"force_full": True})):
+            with self.subTest(changes=changes, options=options):
+                reached = plan(changes, **options)
+                self.assertTrue(reached["android_required"])
+                self.assertEqual(reached["android"], ["leaf"])
+        unrelated = plan(["qdoc/src/lib.rs"])
+        self.assertFalse(unrelated["android_required"])
+        self.assertEqual(unrelated["android"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(plan(["base/src/lib.rs"]), output)
+            ci_select.emit_github(unrelated, output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("android_")],
+            ["android_required=true", "android_packages=-p leaf",
+             "android_required=false", "android_packages="],
+        )
 
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):
@@ -392,7 +428,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='recorded test time splits test jobs, not type-check shards'):
             self.setUp()
             changes = ["base/src/lib.rs"]
-            seconds = {"base": 900, "middle": 800, "qdoc": 150, "pkg": 10}
+            seconds = {"base": 400, "middle": 350, "qdoc": 150, "pkg": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
             self.assertEqual(plan["shard_count"], 1)
             self.assertEqual(len(plan["clippy_matrix"]["include"]), 1)
@@ -410,6 +446,42 @@ class SelectorTests(unittest.TestCase):
             finally:
                 ci_select.MAX_TEST_SHARDS = original
             self.assertEqual(capped["test_shard_count"], 1)
+        with self.subTest(phase='a package too heavy for one job runs partitioned on its own shards'):
+            self.setUp()
+            changes = ["base/src/lib.rs"]
+            packages, _ = ci_select.package_maps(self.metadata, self.root)
+            heavy = ci_select.TEST_PARTITION_WEIGHT  # seconds, so twice the target weight
+            seconds = {"base": heavy, "middle": 100, "qdoc": 150, "pkg": 10}
+            plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
+            self.assertEqual(plan["shard_count"], 1)
+            rows = plan["matrix"]["include"]
+            room = ci_select.TEST_PARTITION_WEIGHT - ci_select.package_cost(packages["base"])
+            count = min(ci_select.MAX_TEST_PARTITIONS,
+                        -(-ci_select.TEST_SECOND_WEIGHT * heavy // room))
+            self.assertGreater(count, 1)
+            # Partitions come first, one dedicated shard each, then the rest.
+            self.assertEqual([row["partition"] for row in rows[:count]],
+                             [f"count:{index}/{count}" for index in range(1, count + 1)])
+            self.assertEqual({row["test_packages"] for row in rows[:count]}, {"-p base"})
+            self.assertEqual({row["partition"] for row in rows[count:]}, {""})
+            self.assertEqual([row["shard"] for row in rows], list(range(1, len(rows) + 1)))
+            whole = [name for row in rows[count:] for name in row["test_packages"].split()[1::2]]
+            self.assertEqual(sorted(whole + ["base"]), plan["tested"])
+            self.assertEqual(plan["test_shard_count"], len(rows))
+            # Type-check shards are unaffected.
+            self.assertNotIn("partition", plan["clippy_matrix"]["include"][0])
+            # A package whose build alone exceeds the target gains nothing from
+            # partitions, and packages without recorded time are never split.
+            self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {"base": count})
+            original = ci_select.TEST_PARTITION_WEIGHT
+            try:
+                ci_select.TEST_PARTITION_WEIGHT = ci_select.package_cost(packages["base"])
+                self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {})
+            finally:
+                ci_select.TEST_PARTITION_WEIGHT = original
+            self.assertEqual(ci_select.test_partitions(set(packages), packages, {}), {})
+            unsplit = ci_select.make_plan(self.metadata, self.root, changes, 2)
+            self.assertEqual({row["partition"] for row in unsplit["matrix"]["include"]}, {""})
         with self.subTest(phase='recorded test time never changes selection or budgets'):
             self.setUp()
             changes = ["leaf/src/lib.rs"]
@@ -808,7 +880,7 @@ class SelectorTests(unittest.TestCase):
             changes = [
                 ".forgejo/workflows/check.yml",
                 ".forgejo/workflows/legacy-app-e2e.yml",
-                ".forgejo/workflows/tilo-relay.yaml",
+                ".forgejo/workflows/release-relay.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/affected_packages.py",
@@ -918,20 +990,20 @@ class SelectorTests(unittest.TestCase):
                         plan = ci_select.make_plan(
                             self.metadata, self.root, [mapped_source], 2)
                         self.assertTrue(plan["rust_required"])
-        with self.subTest(phase='rpm pin only runs mandatory policy and security checks'):
+        with self.subTest(phase='rpm fingerprint helpers run mandatory policy and security checks'):
             self.setUp()
             self.install_control_inputs()
-            pin = "os/rpms-snapshot.env"
-            observer = "tools/tests/test_rpm_pin_contract.py"
-            plan = ci_select.make_plan(self.metadata, self.root, [pin], 2)
+            source = "os/dev/rpm-snapshot-fingerprint.py"
+            observer = "os/tests/test_rpm_snapshot_fingerprint.py"
+            plan = ci_select.make_plan(self.metadata, self.root, [source], 2)
             self.assertFalse(plan["rust_required"])
             self.assertEqual(plan["selected"], [])
             self.assertTrue(plan["security_required"])
             (self.root / observer).unlink()
-            self.assertTrue(ci_select.make_plan(self.metadata, self.root, [pin], 2)["rust_required"])
+            self.assertTrue(ci_select.make_plan(self.metadata, self.root, [source], 2)["rust_required"])
             self.install_control_inputs()
             self.assertTrue(ci_select.make_plan(
-                self.metadata, self.root, [pin, "leaf/src/lib.rs"], 2)["rust_required"])
+                self.metadata, self.root, [source, "leaf/src/lib.rs"], 2)["rust_required"])
 
     def install_quality_helpers(self) -> None:
         for source, test in ci_select.QUALITY_ONLY_HELPERS.items():

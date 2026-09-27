@@ -524,10 +524,21 @@ impl Table {
             && !rows.is_empty()
             && columns > 0
         {
-            let row = row.min(rows.len().saturating_sub(1));
-            let column = column.min(columns.saturating_sub(1));
-            self.focus_projected_cell(row, column);
-            if let Some(caret) = caret {
+            let clamped = (
+                row.min(rows.len().saturating_sub(1)),
+                column.min(columns.saturating_sub(1)),
+            );
+            self.focus_projected_cell(clamped.0, clamped.1);
+            if clamped != (row, column) {
+                // The cell is gone: the caret ends the one that took its place.
+                if let Some(input) = self
+                    .projected_index(clamped.0, clamped.1)
+                    .and_then(|index| self.cells.get_mut(index))
+                {
+                    let end = input.value().len();
+                    input.set_cursor_pos(end);
+                }
+            } else if let Some(caret) = caret {
                 self.restore_projected_caret(&caret);
             }
         }

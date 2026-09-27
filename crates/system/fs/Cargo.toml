@@ -33,7 +33,6 @@ filesystem = [
     "dep:toml",
     "dep:uuid",
     "dep:thiserror",
-    "dep:hex",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
@@ -148,7 +147,7 @@ tempfile.workspace = true
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
-hex = { workspace = true, optional = true }
+hex.workspace = true
 blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true

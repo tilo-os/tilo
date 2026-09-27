@@ -108,6 +108,8 @@
 
 pub mod a11y;
 pub mod a11y_tree;
+#[cfg(all(feature = "native", target_os = "android"))]
+mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;

@@ -408,7 +408,6 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         app.editing
             .as_mut()
             .unwrap()
-            .input
             .set_text("Überprüfen — 検討してください");
         app.commit_edit(doc);
         let stored = PdfDoc::list_annotations(doc);

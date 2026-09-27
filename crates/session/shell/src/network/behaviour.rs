@@ -21,14 +21,9 @@ pub fn peer_liveness_handle(peer: &iroh::EndpointId) -> u64 {
 }
 
 fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    h
+    let mut hasher = fnv::FnvHasher::default();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// Machine-wide device key used by the compositor, filesystem and host.

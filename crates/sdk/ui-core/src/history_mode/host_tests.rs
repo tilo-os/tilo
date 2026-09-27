@@ -1431,3 +1431,101 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
         "wide CheckedFiles activity keeps the live surface beside its controls"
     );
 }
+
+const TOOLKIT_EN: &str = include_str!("../../locales/en-US.ftl");
+const TOOLKIT_DE: &str = include_str!("../../locales/de-DE.ftl");
+
+#[test]
+fn history_chrome_follows_the_desktop_language() {
+    crate::i18n::I18nManager::install(
+        "en-US",
+        "de-DE",
+        &[("en-US", TOOLKIT_EN), ("de-DE", TOOLKIT_DE)],
+    )
+    .unwrap();
+    let (mut driver, _, _) = versioned_driver((900, 650));
+    let open = driver.a11y_node_named("Verlauf").unwrap();
+    driver
+        .perform_a11y_action(open, &crate::a11y::Action::Activate)
+        .unwrap();
+    let row = driver
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+        .unwrap()
+        .0;
+    driver
+        .perform_a11y_action(row, &crate::a11y::Action::Activate)
+        .unwrap();
+    assert!(driver.targets().contains_key("history-preview"));
+    for german in [
+        "Vorher",
+        "Nachher",
+        "Frühere Version: Nachher",
+        "Wiederherstellen…",
+    ] {
+        assert!(
+            driver.a11y_node_named(german).is_some(),
+            "{german}: {}",
+            driver.inspection_json().unwrap()
+        );
+    }
+    for english in ["Back to live", "Before", "After", "Restore…"] {
+        assert!(driver.a11y_node_named(english).is_none(), "{english}");
+    }
+    let back = driver
+        .a11y_node_named("Zurück zur aktuellen Version")
+        .unwrap();
+    driver
+        .perform_a11y_action(back, &crate::a11y::Action::Activate)
+        .unwrap();
+    assert!(driver.targets().contains_key("live-effect"));
+}
+
+/// Every History host message is translated and formats with the variables
+/// the host passes, so no German desktop falls back to English copy.
+#[test]
+fn history_host_messages_exist_in_every_shipped_language() {
+    let keys: Vec<&str> = TOOLKIT_EN
+        .lines()
+        .filter_map(|line| line.split_once(" = ").map(|(key, _)| key))
+        .filter(|key| {
+            [
+                "history-mode-",
+                "history-files-",
+                "history-media-",
+                "history-sync-",
+            ]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        })
+        .collect();
+    assert!(keys.len() > 80, "{keys:?}");
+    let args: &[(&str, crate::i18n::ArgValue)] = &[
+        ("id", 7.into()),
+        ("owner", "owner".into()),
+        ("action", "app/action".into()),
+        ("arguments", "{}".into()),
+        ("phrase", "CONFIRM".into()),
+        ("file", "brief.md".into()),
+        ("revision", "r1".into()),
+        ("identity", "abcdef".into()),
+        ("count", 2.into()),
+        ("intent", "i1".into()),
+        ("mapping", "m".into()),
+    ];
+    for (locale, catalog) in [("en-US", TOOLKIT_EN), ("de-DE", TOOLKIT_DE)] {
+        crate::i18n::I18nManager::install(locale, locale, &[(locale, catalog)]).unwrap();
+        for key in &keys {
+            assert!(
+                crate::i18n::I18nManager::has_message(key),
+                "{locale} lacks {key}"
+            );
+            let value = crate::i18n::I18nManager::format(key, args);
+            assert!(
+                !value.contains('{') || *key == "history-mode-pending",
+                "{locale} {key} left a placeable unresolved: {value}"
+            );
+        }
+    }
+}

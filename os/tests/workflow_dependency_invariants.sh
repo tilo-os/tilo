@@ -27,7 +27,7 @@ cosign_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/tilo-relay.yaml"
+  "$workflows/release-relay.yml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
@@ -40,7 +40,7 @@ release_signed_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/tilo-relay.yaml"
+  "$workflows/release-relay.yml"
   "$workflows/snapshot-rpms.yml"
 )
 
@@ -69,10 +69,9 @@ fi
 
 if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
-     "$rpm_snapshot_workflow" \
-   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' "$rpm_snapshot_workflow" \
-   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow" \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-fingerprint.py' "$rpm_snapshot_workflow" \
+   && grep -Fq './os/dev/resolve-rpm-snapshot.sh' "$rpm_snapshot_workflow" \
+   && ! grep -Fq 'workflow_call:' "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
@@ -80,10 +79,18 @@ else
   fail=1
 fi
 
-if [ "$(grep -Fc '"crates/system/tilo-crypto/**"' "$kernel_workflow")" -eq 2 ]; then
-  printf 'ok    kernel CI retriggers when its Rust signer changes\n'
+if [ "$(grep -Fc '"crates/system/tilo-crypto/Cargo.toml"' "$kernel_workflow")" -eq 2 ] \
+   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/lib.rs"' "$kernel_workflow")" -eq 2 ] \
+   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/main.rs"' "$kernel_workflow")" -eq 2 ] \
+   && ! grep -Fq '"crates/system/tilo-crypto/**"' "$kernel_workflow" \
+   && ! grep -Fq 'tls_fixture' "$kernel_workflow" \
+   && grep -Fq 'COPY crates/system/tilo-crypto/src/lib.rs' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'COPY crates/system/tilo-crypto/src/main.rs' "$repo/os/kernel/Containerfile" \
+   && ! grep -Fq 'COPY crates/system/tilo-crypto/src /work/tilo-crypto/src' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'cargo build --release --frozen --no-default-features' "$repo/os/kernel/Containerfile"; then
+  printf 'ok    kernel CI retriggers for signer sources, not TLS fixtures\n'
 else
-  printf 'kernel CI does not retrigger for Rust signer changes\n' >&2
+  printf 'kernel CI does not isolate signer sources from TLS fixture inputs\n' >&2
   fail=1
 fi
 
@@ -107,9 +114,9 @@ else
   fail=1
 fi
 
-relay_workflow="$workflows/tilo-relay.yaml"
+relay_workflow="$workflows/release-relay.yml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability, ensure-rpms]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2

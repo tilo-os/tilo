@@ -2,21 +2,22 @@
 //! [`crate::host::MediaSessionFactory`]. See [`crate::mpris`] for the
 //! portable player-state and command core.
 //!
-//! Real D-Bus serving requires Unix and the `mpris` feature (via zbus).
-//! Other platforms start no session. The service runs on its own worker
+//! Real D-Bus serving requires a freedesktop host (Unix with a session bus;
+//! not Android) and the `mpris` feature (via zbus). Other platforms start no
+//! session. The service runs on its own worker
 //! thread with a private Tokio runtime so the UI thread is never blocked.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the D-Bus MPRIS service runs on its own thread"
 )]
 
-#[cfg(all(feature = "mpris", not(unix)))]
+#[cfg(all(feature = "mpris", not(freedesktop)))]
 use std::sync::mpsc::Receiver;
 
 #[cfg(feature = "mpris")]
 use crate::mpris::MprisCommand;
 use crate::mpris::{MprisConfig, PlayerSnapshot};
-#[cfg(all(feature = "mpris", unix))]
+#[cfg(all(feature = "mpris", freedesktop))]
 use crate::mpris::{OBJECT_PATH, track_object_path};
 
 /// The native [`crate::host::MediaSessionFactory`]: MPRIS on the session bus.
@@ -51,7 +52,7 @@ pub fn start_desktop_session(
     }
 }
 
-#[cfg(all(feature = "mpris", not(unix)))]
+#[cfg(all(feature = "mpris", not(freedesktop)))]
 mod imp {
     use super::{MprisCommand, MprisConfig, PlayerSnapshot, Receiver};
     use tokio::sync::mpsc::UnboundedSender;
@@ -66,7 +67,7 @@ mod imp {
     }
 }
 
-#[cfg(all(feature = "mpris", unix))]
+#[cfg(all(feature = "mpris", freedesktop))]
 mod imp {
     #![allow(
         clippy::used_underscore_binding,
@@ -428,10 +429,10 @@ mod imp {
 #[cfg(all(test, feature = "mpris"))]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(freedesktop)]
     use crate::mpris::PlaybackStatus;
 
-    #[cfg(all(feature = "mpris", not(unix)))]
+    #[cfg(all(feature = "mpris", not(freedesktop)))]
     #[test]
     fn unsupported_platform_starts_no_session() {
         assert!(
@@ -446,7 +447,7 @@ mod tests {
     /// Hermetic round-trip over an in-process p2p socket pair (no session
     /// bus): proves the served MPRIS interfaces *respond* and *reflect* the
     /// player state a `VideoPlayer` publishes.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     #[tokio::test]
     async fn mpris_interface_responds_and_reflects_state() {
         use std::sync::mpsc::channel;
@@ -540,7 +541,7 @@ mod tests {
 
     /// The properties zbus serves for the snapshot [`spawn`] published match
     /// what was published.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_served_state_matches(player_proxy: &zbus::Proxy<'_>) {
         let status: String = player_proxy
             .get_property("PlaybackStatus")
@@ -566,7 +567,7 @@ mod tests {
 
     /// A client calling `Pause`/`Next`/`Play` over the proxy is forwarded to
     /// the widget as [`MprisCommand`]s, in order.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_commands_forwarded(
         player_proxy: &zbus::Proxy<'_>,
         cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
@@ -602,7 +603,7 @@ mod tests {
 
     /// Publishing an update through [`imp::apply_update`] is reflected back
     /// over the served property.
-    #[cfg(all(feature = "mpris", unix))]
+    #[cfg(all(feature = "mpris", freedesktop))]
     async fn assert_update_reflected(
         server_conn: &zbus::Connection,
         player_proxy: &zbus::Proxy<'_>,

@@ -46,8 +46,15 @@ fn mark_scalar(value: MarkVal) -> ScalarValue {
 ///
 /// # Errors
 /// Returns [`ModelError`] when `root` holds no rich text.
-pub fn blocks_under(doc: &mut Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
-    FieldState::read(doc, root.clone(), 0).map(|field| shown(&field.state))
+pub fn blocks_under(doc: &Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
+    let containers =
+        qdoc::model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))?;
+    Ok(
+        qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+            .iter()
+            .map(content_of)
+            .collect(),
+    )
 }
 
 /// Write `blocks` into the rich text under `root`, which holds no text yet
@@ -65,25 +72,10 @@ pub fn blocks_under(doc: &mut Doc, root: &ObjId) -> Result<Vec<BlockContent>, Mo
 /// # Errors
 /// Refuses rich text that already holds text.
 pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Result<(), ActionError> {
-    let field = FieldState::read(doc, root.clone(), 0)
-        .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
-    let presented = shown(&field.state);
-    let [empty] = presented.as_slice() else {
-        return Err(refused("the rich text already holds paragraphs"));
-    };
-    if !empty.text.is_empty() {
-        return Err(refused("the rich text already holds text"));
-    }
-    if blocks.is_empty() {
+    let texts: Vec<&str> = blocks.iter().map(|block| block.text.as_str()).collect();
+    let Some((containers, empty, mut ids)) = prepare_fill(doc, root, &texts)? else {
         return Ok(());
-    }
-    let containers = qdoc::model::open(doc, root)
-        .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
-    // Clear of every id the field already holds, the empty paragraph's too.
-    let actor = doc.get_actor().to_hex_string();
-    let next = qdoc::model::next_counter_for(doc, &containers, &actor)
-        .map_err(|error| refused(error.to_string()))?;
-    let mut ids = qdoc::model::IdGen::with_counter(actor, next);
+    };
     let mut dm = qdoc::model::DocMut {
         doc,
         c: &containers,
@@ -123,8 +115,172 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
         previous = Some(id);
     }
     // The paragraph the new blocks were written after the start of.
-    dm.remove_block(&empty.id);
+    dm.remove_block(&empty);
     Ok(())
+}
+
+/// What a fill writes with: the field's containers, the id of the empty
+/// paragraph the new blocks replace, and ids unique to this field and this
+/// content at this version of the document (the same on a replica replaying
+/// the write, clear of every id elsewhere). `None` when there is nothing to
+/// write.
+fn prepare_fill(
+    doc: &Doc,
+    root: &ObjId,
+    texts: &[&str],
+) -> Result<Option<(qdoc::model::Containers, String, qdoc::model::IdGen)>, ActionError> {
+    let field = FieldState::read_only(doc, root.clone(), 0)
+        .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
+    let presented = shown(&field.state);
+    let [empty] = presented.as_slice() else {
+        return Err(refused("the rich text already holds paragraphs"));
+    };
+    if !empty.text.is_empty() {
+        return Err(refused("the rich text already holds text"));
+    }
+    if texts.is_empty() {
+        return Ok(None);
+    }
+    let containers = qdoc::model::open(doc, root)
+        .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
+    let mut seed = root.to_string().into_bytes();
+    for text in texts {
+        seed.extend_from_slice(text.as_bytes());
+        seed.push(0);
+    }
+    let cx = ui::tilo_resource::ActionCx::for_write(doc, &seed);
+    Ok(Some((
+        containers,
+        empty.id.clone(),
+        qdoc::model::IdGen::for_action(cx),
+    )))
+}
+
+/// Write `clips` (paragraphs as an action carries them: kind, text,
+/// attributes and marks) into the rich text under `root`, which holds no
+/// text yet: how an action stores a comment or a message written in a
+/// [`Draft`](crate::Draft).
+///
+/// # Errors
+/// Refuses rich text that already holds text.
+pub fn fill_clips_under(
+    doc: &mut Doc,
+    root: &ObjId,
+    clips: &[qdoc_rich_text::ClipBlock],
+) -> Result<(), ActionError> {
+    let texts: Vec<&str> = clips.iter().map(|clip| clip.text.as_str()).collect();
+    let Some((containers, empty, mut ids)) = prepare_fill(doc, root, &texts)? else {
+        return Ok(());
+    };
+    let mut dm = qdoc::model::DocMut {
+        doc,
+        c: &containers,
+        ids: &mut ids,
+    };
+    let mut previous: Option<String> = None;
+    for clip in clips {
+        let id = dm.insert_block(previous.as_deref(), &clip.kind);
+        if let Some(level) = clip.level {
+            dm.set_attr(&id, "level", level);
+        }
+        if let Some(ordered) = clip.ordered {
+            dm.set_attr(&id, "ordered", ordered);
+        }
+        if let Some(align) = &clip.align {
+            dm.set_attr(&id, "align", align.as_str());
+        }
+        for (key, value) in &clip.attrs {
+            let value = match value {
+                qdoc_rich_text::ClipAttr::Bool(value) => ScalarValue::Boolean(*value),
+                qdoc_rich_text::ClipAttr::Int(value) => ScalarValue::Int(*value),
+                qdoc_rich_text::ClipAttr::Str(value) => ScalarValue::Str(value.as_str().into()),
+            };
+            dm.set_attr(&id, key, value);
+        }
+        dm.splice_text(&id, 0, 0, &clip.text);
+        for mark in &clip.marks {
+            if mark.start < mark.end {
+                let value = match &mark.value {
+                    qdoc::document::MarkValue::Bool(value) => ScalarValue::Boolean(*value),
+                    qdoc::document::MarkValue::Int(value) => ScalarValue::Int(*value),
+                    qdoc::document::MarkValue::Str(value) => {
+                        ScalarValue::Str(value.as_str().into())
+                    }
+                };
+                dm.add_mark(&id, mark.start, mark.end, &mark.name, value);
+            }
+        }
+        previous = Some(id);
+    }
+    dm.remove_block(&empty);
+    Ok(())
+}
+
+/// Put fresh rich text holding `clips` at `key` of the map `parent`,
+/// replacing what was there: a record's rich-text field (a comment body, a
+/// note) written whole by the record's action.
+///
+/// # Errors
+/// Returns the document's refusal.
+pub fn put_rich_text(
+    doc: &mut Doc,
+    parent: &ObjId,
+    key: &str,
+    clips: &[qdoc_rich_text::ClipBlock],
+) -> Result<ObjId, ActionError> {
+    use ui::automerge::ObjType;
+    use ui::automerge::transaction::Transactable;
+    let root = doc
+        .put_object(parent, key, ObjType::Map)
+        .map_err(|error| refused(error.to_string()))?;
+    qdoc_rich_text::RichText::initialize_under(doc, &root)
+        .map_err(|error| refused(error.to_string()))?;
+    fill_clips_under(doc, &root, clips)?;
+    Ok(root)
+}
+
+/// The rich text at `key` of the map `parent`, when there is some.
+#[must_use]
+pub fn rich_text_at(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
+    use ui::automerge::{ObjType, ReadDoc, Value};
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(ObjType::Map), root))) => {
+            qdoc::model::open(doc, &root).is_ok().then_some(root)
+        }
+        _ => None,
+    }
+}
+
+/// Plain text as the paragraphs it reads as, a paragraph per line: how text
+/// stored as a plain string comes across to rich text. Empty text is no
+/// paragraphs.
+#[must_use]
+pub fn plain_blocks(text: &str) -> Vec<BlockContent> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.split('\n')
+        .map(|line| BlockContent::paragraph("", line))
+        .collect()
+}
+
+/// Plain text as the paragraphs an action carries, a paragraph per line.
+#[must_use]
+pub fn plain_clips(text: &str) -> Vec<qdoc_rich_text::ClipBlock> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.split('\n')
+        .map(|line| qdoc_rich_text::ClipBlock {
+            kind: "paragraph".to_owned(),
+            text: line.to_owned(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -197,7 +353,7 @@ mod tests {
             },
         ];
         fill_under(&mut doc, &root, &blocks).unwrap();
-        let shown = blocks_under(&mut doc, &root).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
         let strip = |blocks: &[BlockContent]| -> Vec<BlockContent> {
             blocks
                 .iter()
@@ -215,6 +371,97 @@ mod tests {
     }
 
     #[test]
+    fn clipped_paragraphs_are_written_as_they_were() {
+        use qdoc_rich_text::{ClipAttr, ClipBlock};
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        let clips = [
+            ClipBlock {
+                kind: "paragraph".into(),
+                text: "hi @Ada".into(),
+                marks: vec![qdoc::document::MarkSpan {
+                    start: 3,
+                    end: 7,
+                    name: "mention".into(),
+                    value: qdoc::document::MarkValue::Str("u-ada".into()),
+                }],
+                level: None,
+                ordered: None,
+                align: None,
+                attrs: std::collections::BTreeMap::new(),
+            },
+            ClipBlock {
+                kind: "list_item".into(),
+                text: "done".into(),
+                marks: Vec::new(),
+                level: Some(0),
+                ordered: Some(false),
+                align: None,
+                attrs: [("checked".to_owned(), ClipAttr::Bool(true))].into(),
+            },
+        ];
+        fill_clips_under(&mut doc, &root, &clips).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].text, "hi @Ada");
+        assert_eq!(
+            shown[0].marks,
+            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+        );
+        assert_eq!(
+            shown[1].kind,
+            BlockKind::Checklist {
+                indent: 0,
+                done: true
+            }
+        );
+        assert!(fill_clips_under(&mut doc, &root, &clips).is_err());
+    }
+
+    #[test]
+    fn a_direct_field_writes_its_edits_straight_into_the_document() {
+        use crate::RichTextSource;
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        doc.commit();
+        let located = root.clone();
+        let mut source = crate::DirectField::new(move |_| Some(located.clone()));
+        source.sync(&mut doc);
+        let block = source
+            .with_state(|state| state.body().id_at(0).unwrap().to_owned())
+            .unwrap();
+        let heads = doc.base_heads();
+        source
+            .apply(
+                &mut doc,
+                &qdoc_rich_text::RichTextAction::SpliceText {
+                    region: qdoc_rich_text::action::RegionKind::Body,
+                    block,
+                    at: 0,
+                    del: 0,
+                    ins: "typed".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            doc.pending_ops() > 0,
+            "an open write, not a committed action"
+        );
+        assert_eq!(doc.base_heads(), heads);
+        source.sync(&mut doc);
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "typed");
+        source.set_read_only(true);
+        assert!(
+            source
+                .apply(
+                    &mut doc,
+                    &qdoc_rich_text::RichTextAction::AppendParagraph { text: "x".into() }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn text_already_there_is_never_overwritten() {
         let mut doc = AutoCommit::new();
         let root = field(&mut doc);
@@ -228,9 +475,44 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = field(&mut doc);
         fill_under(&mut doc, &root, &[]).unwrap();
-        assert_eq!(blocks_under(&mut doc, &root).unwrap().len(), 1);
+        assert_eq!(blocks_under(&doc, &root).unwrap().len(), 1);
         let missing = doc.put_object(ROOT, "other", ObjType::Map).unwrap();
         assert!(fill_under(&mut doc, &missing, &[]).is_err());
-        assert!(blocks_under(&mut doc, &missing).is_err());
+        assert!(blocks_under(&doc, &missing).is_err());
+    }
+
+    #[test]
+    fn a_record_field_is_written_whole_from_clips_and_read_back() {
+        let mut doc = AutoCommit::new();
+        let record = doc.put_object(ROOT, "comment", ObjType::Map).unwrap();
+        assert!(rich_text_at(&doc, &record, "text").is_none());
+        let mut bold = block(BlockKind::Paragraph, "plain bold");
+        bold.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        let done = block(
+            BlockKind::Checklist {
+                indent: 0,
+                done: true,
+            },
+            "shipped",
+        );
+        let clips = crate::Draft::with_blocks(&[bold.clone(), done.clone()]).clip_blocks();
+        let root = put_rich_text(&mut doc, &record, "text", &clips).unwrap();
+        assert_eq!(rich_text_at(&doc, &record, "text"), Some(root.clone()));
+        let strip = |blocks: Vec<BlockContent>| -> Vec<BlockContent> {
+            blocks
+                .into_iter()
+                .map(|block| BlockContent {
+                    id: String::new(),
+                    ..block
+                })
+                .collect()
+        };
+        assert_eq!(strip(blocks_under(&doc, &root).unwrap()), [bold, done]);
+        // Written again, the field is replaced, not appended to.
+        let root = put_rich_text(&mut doc, &record, "text", &plain_clips("one\ntwo")).unwrap();
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "one\ntwo");
+        assert_eq!(plain_blocks("one\ntwo").len(), 2);
+        assert!(plain_blocks("").is_empty());
+        assert!(plain_clips("").is_empty());
     }
 }

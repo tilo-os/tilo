@@ -1,5 +1,5 @@
 use crate::component_support::*;
-use automerge::{ReadDoc, transaction::Transactable};
+use automerge::transaction::Transactable;
 use notes::{
     actions::{self, NotesAction},
     doc::NotesDoc,
@@ -15,18 +15,7 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
     {
         let f = LegacyFixture::rich();
         let checkout = imported(&f);
-        let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-        let list = NotesDoc::page_blocks_list(&doc, f.child).unwrap();
-        let text = NotesDoc::block_text_obj(&doc, &list, 0).unwrap();
-        for (name, value) in [("foreign.review", "approved"), ("author", "fixture-author")] {
-            doc.mark(
-                &text,
-                automerge::marks::Mark::new(name.into(), value, 0, 2),
-                automerge::marks::ExpandMark::After,
-            )
-            .unwrap();
-        }
-        doc.commit();
+        let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
         let encoded = actions::encode(&action);
         let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
@@ -86,28 +75,11 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
                 src.iter().map(|(_, t)| t).collect::<Vec<_>>(),
                 dst.iter().map(|(_, t)| t).collect::<Vec<_>>()
             );
-            let sl = NotesDoc::page_blocks_list(&doc, source).unwrap();
-            let dl = NotesDoc::page_blocks_list(&a, destination).unwrap();
-            assert_eq!(
-                (0..doc.length(&sl))
-                    .map(|i| NotesDoc::block_kind(&doc, &sl, i))
-                    .collect::<Vec<_>>(),
-                (0..a.length(&dl))
-                    .map(|i| NotesDoc::block_kind(&a, &dl, i))
-                    .collect::<Vec<_>>()
+            assert_remapped_blocks(
+                NotesDoc::page_blocks(&doc, source),
+                NotesDoc::page_blocks(&a, destination),
+                pages,
             );
-            for ((old, _), (new, _)) in src.iter().zip(&dst) {
-                assert_ne!(old, new);
-            }
-            for index in 0..doc.length(&sl) {
-                let source_text = NotesDoc::block_text_obj(&doc, &sl, index).unwrap();
-                let destination_text = NotesDoc::block_text_obj(&a, &dl, index).unwrap();
-                assert_remapped_marks(
-                    doc.marks(&source_text).unwrap(),
-                    a.marks(&destination_text).unwrap(),
-                    pages,
-                );
-            }
         }
     }
 
@@ -138,7 +110,7 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
         let f = LegacyFixture::rich();
         let checkout = imported(&f);
         let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-        for field in ["page", "block", "existing", "nil", "missing-block"] {
+        for field in ["page", "existing", "nil", "missing-page"] {
             let NotesAction::DuplicateSubtree { source, mut pages } =
                 actions::duplicate_subtree_action(&doc, f.root).unwrap()
             else {
@@ -146,11 +118,10 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
             };
             match field {
                 "page" => pages[1].destination = pages[0].destination.clone(),
-                "block" => pages[1].blocks[0].1 = pages[0].blocks[0].1.clone(),
                 "existing" => pages[0].destination = f.empty.to_string(),
                 "nil" => pages[0].destination = uuid::Uuid::nil().to_string(),
-                "missing-block" => {
-                    pages[0].blocks.pop();
+                "missing-page" => {
+                    pages.pop();
                 }
                 _ => unreachable!(),
             }
@@ -171,24 +142,40 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
     }
 }
 
-fn assert_remapped_marks(
-    source: Vec<automerge::marks::Mark>,
-    destination: Vec<automerge::marks::Mark>,
+/// The copy's blocks are the source's, with links into the copied subtree
+/// following the copy, under ids of its own.
+fn assert_remapped_blocks(
+    source: Vec<ui::widget::BlockContent>,
+    destination: Vec<ui::widget::BlockContent>,
     pages: &[actions::DuplicatePage],
 ) {
-    let mut expected = source;
-    for mark in &mut expected {
-        for page in pages {
-            if mark.name.as_str() == format!("notes.inline.link:{}", page.source) {
-                mark.name = format!("notes.inline.link:{}", page.destination).into();
-                mark.value = automerge::ScalarValue::Str(page.destination.clone().into());
-            }
+    use ui::widget::marks::Mark;
+    let follow = |page: uuid::Uuid| {
+        pages
+            .iter()
+            .find(|copy| copy.source == page.to_string())
+            .map_or(page, |copy| copy.destination.parse().unwrap())
+    };
+    assert_eq!(source.len(), destination.len());
+    for (old, new) in source.into_iter().zip(destination) {
+        assert_ne!(old.id, new.id, "a copy has ids of its own");
+        let mut expected = old;
+        for span in &mut expected.marks {
+            span.mark = match &span.mark {
+                Mark::Link(page) => Mark::Link(follow(*page)),
+                Mark::Transclusion(page) => Mark::Transclusion(follow(*page)),
+                other => other.clone(),
+            };
         }
+        expected.id.clone_from(&new.id);
+        // A copied fence is a fence of its own.
+        assert_eq!(new.code_group.is_some(), expected.code_group.is_some());
+        if new.code_group.is_some() {
+            assert_ne!(new.code_group, expected.code_group);
+        }
+        expected.code_group.clone_from(&new.code_group);
+        assert_eq!(new, expected);
     }
-    let mut actual = destination;
-    expected.sort_by_key(|mark| (mark.start, mark.end, mark.name.clone()));
-    actual.sort_by_key(|mark| (mark.start, mark.end, mark.name.clone()));
-    assert_eq!(actual, expected);
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -243,11 +230,16 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 );
             })
             .unwrap();
-        assert_eq!(revision(&f, &checkout), before + 1);
+        // Typing a word is one history entry, recorded once the word ends.
+        assert_eq!(revision(&f, &checkout), before);
         driver.key("Enter");
-        assert_eq!(revision(&f, &checkout), before + 2);
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 2,
+            "the word, then the split"
+        );
         driver.type_text("b");
-        assert_eq!(revision(&f, &checkout), before + 3);
+        assert_eq!(revision(&f, &checkout), before + 2);
         let blocks = f
             .records
             .read(&checkout.id, |doc| {
@@ -268,7 +260,11 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 &ui::a11y::Action::Activate,
             )
             .unwrap();
-        assert_eq!(revision(&f, &checkout), before + 4);
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 4,
+            "the word, then the move"
+        );
         f.records
             .read(&checkout.id, |doc| {
                 notes::notebook::validate(doc).unwrap();
@@ -335,7 +331,11 @@ fn bound_edits_are_one_owned_history_entry_each() {
         a.set_modifiers(&["ctrl".into()]);
         a.key("b");
         a.set_modifiers(&[]);
-        assert_eq!(revision(&f, &checkout), before + 1);
+        assert_eq!(
+            revision(&f, &checkout),
+            before + 2,
+            "the typed word closes, then the format"
+        );
         f.records
             .read(&checkout.id, |doc| {
                 assert_eq!(
@@ -445,9 +445,9 @@ fn bound_edits_are_one_owned_history_entry_each() {
         let (block, index) = f
             .records
             .read(&checkout.id, |doc| {
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                let index = (0..doc.length(&list))
-                    .find(|&index| NotesDoc::block_kind(doc, &list, index) == "checklist:0:0")
+                let index = NotesDoc::page_blocks(doc, f.child)
+                    .iter()
+                    .position(|block| block.kind.stored() == "checklist:0:0")
                     .unwrap();
                 (
                     NotesDoc::page_block_snapshots(doc, f.child)[index]
@@ -474,8 +474,10 @@ fn bound_edits_are_one_owned_history_entry_each() {
         assert_eq!(revision(&f, &checkout), 3);
         f.records
             .read(&checkout.id, |doc| {
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                assert_eq!(NotesDoc::block_kind(doc, &list, index), "checklist:0:1");
+                assert_eq!(
+                    NotesDoc::page_blocks(doc, f.child)[index].kind.stored(),
+                    "checklist:0:1"
+                );
                 notes::notebook::validate(doc).unwrap();
             })
             .unwrap();
@@ -535,12 +537,14 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 NotesDoc::page_block_snapshots(&a, page),
                 NotesDoc::page_block_snapshots(&doc, page)
             );
-            let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-            assert_eq!(NotesDoc::page_blocks_list(&a, page), Some(list.clone()));
-            for index in 0..doc.length(&list) {
-                let text = NotesDoc::block_text_obj(&doc, &list, index).unwrap();
-                assert_eq!(a.marks(&text).unwrap(), doc.marks(&text).unwrap());
-            }
+            assert_eq!(
+                NotesDoc::page_blocks(&a, page),
+                NotesDoc::page_blocks(&doc, page)
+            );
+            assert_eq!(
+                NotesDoc::page_body(&a, page),
+                NotesDoc::page_body(&doc, page)
+            );
         }
         assert_eq!(
             NotesDoc::list_tag_assignments(&a),
@@ -713,11 +717,17 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         a.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
         a.type_text("a");
-        assert_eq!(revision(&f, &checkout), 2);
+        a.set_modifiers(&["ctrl".into()]);
+        a.key("z");
+        a.set_modifiers(&[]);
+
         f.records
-            .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
-                assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
+            .read(&checkout.id, |doc| {
+                assert!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .all(|(_, text)| text.is_empty())
+                );
             })
             .unwrap();
         assert_empty_retypes_once(&f, &checkout, page, &mut a);
@@ -739,12 +749,18 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         a.perform_named("block_editor", &ui::a11y::Action::Focus)
             .unwrap();
         a.type_text("a");
-        // B binds a nonempty list; A's actual insertion undo removes its sole block.
+        // B binds a nonempty page; A's undo of its typing empties it again.
         let mut b = driver(&f, 12, &checkout);
+        a.set_modifiers(&["ctrl".into()]);
+        a.key("z");
+        a.set_modifiers(&[]);
         f.records
-            .with_history(&checkout.id, |doc, history| {
-                history.undo_in(doc, &f.author, 11, None, None).unwrap();
-                assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
+            .read(&checkout.id, |doc| {
+                assert!(
+                    NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .all(|(_, text)| text.is_empty())
+                );
             })
             .unwrap();
         assert_empty_retypes_once(&f, &checkout, page, &mut b);
@@ -982,6 +998,23 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
     }
 }
 
+/// Type `text` at the start of `page`'s first paragraph.
+fn prepend(doc: &mut automerge::AutoCommit, page: notes::PageId, text: &str) {
+    let block = NotesDoc::page_block_snapshots(doc, page)[0].0.clone();
+    NotesDoc::edit_page_body(
+        doc,
+        page,
+        &qdoc_rich_text::RichTextAction::SpliceText {
+            region: qdoc_rich_text::action::RegionKind::Body,
+            block,
+            at: 0,
+            del: 0,
+            ins: text.into(),
+        },
+    )
+    .unwrap();
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
@@ -998,12 +1031,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 NotesDoc::page_block_snapshots(doc, f.root)[0].1.clone()
             })
             .unwrap();
-        a.pending_edit(|doc| {
-            let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
-            let text = NotesDoc::block_text_obj(doc, &list, 0).unwrap();
-            doc.splice_text(&text, 0, 0, "A pending ").unwrap();
-        })
-        .unwrap();
+        a.pending_edit(|doc| prepend(doc, f.root, "A pending "))
+            .unwrap();
         let before = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -1034,12 +1063,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 .unwrap(),
             format!("A pending {original}")
         );
-        a.pending_edit(|doc| {
-            let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
-            let text = NotesDoc::block_text_obj(doc, &list, 0).unwrap();
-            doc.splice_text(&text, 0, 0, "A continued ").unwrap();
-        })
-        .unwrap();
+        a.pending_edit(|doc| prepend(doc, f.root, "A continued "))
+            .unwrap();
         assert_eq!(revision(&f, &checkout), 0);
         invoke(
             &mut b,
@@ -1302,7 +1327,8 @@ fn assert_empty_retypes_once(
         .unwrap();
     assert_eq!(
         revision(f, checkout),
-        revision_before.checked_add(1).unwrap()
+        revision_before,
+        "the typed word is one step, still open"
     );
     assert!(driver.state_mut().doc.base_heads().is_empty());
     assert_eq!(driver.state_mut().doc.pending_ops(), 0);

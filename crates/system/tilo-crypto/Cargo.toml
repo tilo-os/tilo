@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "tilo-crypto"
 path = "src/main.rs"
 
+[features]
+default = ["tls-fixture"]
+tls-fixture = []
+
 [dependencies]
 authenticode = { version = "0.6", features = ["object", "std"] }
 # authenticode 0.6 hashes PE images through digest 0.10's `Update` trait and

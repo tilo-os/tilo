@@ -117,6 +117,63 @@ impl PreparedIngress {
             channels: Some(channels),
         })
     }
+
+    /// Like [`Self::load`], but use already-bound TCP and UDP sockets whose
+    /// local addresses match the configured origin. Production keeps binding
+    /// from the origin; this entry point is for tests and socket activation.
+    async fn load_bound(
+        path: &Path,
+        tcp: std::net::TcpListener,
+        udp: std::net::UdpSocket,
+    ) -> Result<Self> {
+        ensure!(path.is_absolute(), "absolute operator config path required");
+        let config = OperatorConfig::decode(&read_trusted(path, 16 * 1024, false)?)?;
+        let channels = https::try_ingress_channel()?;
+        let certificates = vec![CertificateDer::from(read_trusted(
+            &config.certificate_der,
+            64 * 1024,
+            false,
+        )?)];
+        let key = PrivateKeyDer::try_from(read_trusted(&config.key_der, 16 * 1024, true)?)
+            .map_err(anyhow::Error::msg)?;
+        let assets_path = config.assets.canonicalize()?;
+        let assets = AssetRoot::open(&assets_path)?;
+        let uri: hyper::Uri = config.origin.parse()?;
+        let authority = uri.authority().context("origin authority missing")?;
+        let host = authority
+            .host()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let address = tokio::net::lookup_host((host, authority.port_u16().unwrap_or(443)))
+            .await?
+            .find(|v| v.ip().is_loopback())
+            .context("loopback address missing")?;
+        let tcp_addr = tcp.local_addr()?;
+        let udp_addr = udp.local_addr()?;
+        ensure!(
+            tcp_addr == address && udp_addr == address,
+            "bound sockets must match the configured origin"
+        );
+        tcp.set_nonblocking(true)?;
+        let listener = TcpListener::from_std(tcp)?;
+        let endpoint = super::endpoint_from_socket(udp, certificates.clone(), key.clone_key())?;
+        Ok(Self {
+            listener,
+            endpoint,
+            config: IngressConfig {
+                origin: config.origin,
+                assets,
+                certificates,
+                key,
+                local_enrollment: None,
+            },
+            activate_delivery: config.activate_delivery,
+            local_owner_enrollment: config.local_owner_enrollment,
+            assets_path,
+            channels: Some(channels),
+        })
+    }
+
     pub(crate) fn activate_owner(&self, owner: &mut SessionOwner) -> Result<()> {
         let root = owner.root().canonicalize()?;
         ensure!(
@@ -348,6 +405,22 @@ impl PreparedTransport {
         );
         Ok(Self(prepared))
     }
+
+    /// Prepare from config using already-bound TCP and UDP sockets for the
+    /// configured origin. Used by tests and available for socket activation;
+    /// production keeps binding via [`Self::load_explicit`].
+    pub async fn load_explicit_bound(
+        path: &Path,
+        tcp: std::net::TcpListener,
+        udp: std::net::UdpSocket,
+    ) -> Result<Self> {
+        let prepared = PreparedIngress::load_bound(path, tcp, udp).await?;
+        ensure!(
+            !prepared.local_owner_enrollment,
+            "native local-owner cookie gateway is not a reusable owner adapter"
+        );
+        Ok(Self(prepared))
+    }
     pub fn host_bytes(&self) -> Result<crate::host_bytes::HostBytes> {
         self.0.host_bytes()
     }
@@ -436,6 +509,67 @@ mod reusable_tests {
         while running.tasks.join_next().await.is_some() {}
         assert!(!running.is_live());
         assert!(running.recv().await.is_none());
+        running.shutdown().await.unwrap();
+    }
+
+    /// Holding the origin proves load-from-config cannot bind it; the bound
+    /// entry point must accept those sockets instead of retrying another port.
+    #[tokio::test]
+    async fn reusable_transport_accepts_prebound_sockets_when_origin_is_held() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .unwrap();
+        let cert_path = dir.path().join("cert.der");
+        let key_path = dir.path().join("key.der");
+        let assets = dir.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(&cert_path, cert.cert.der()).unwrap();
+        std::fs::write(&key_path, cert.signing_key.serialize_der()).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut refused = Vec::new();
+        let (udp, address, tcp) = loop {
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let address = udp.local_addr().unwrap();
+            match std::net::TcpListener::bind(address) {
+                Ok(tcp) => break (udp, address, tcp),
+                Err(error) => {
+                    assert!(refused.len() < 64, "no free TCP/UDP loopback pair: {error}");
+                    refused.push(udp);
+                }
+            }
+        };
+        drop(refused);
+        let config = dir.path().join("operator.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&serde_json::json!({
+                "delivery_version": 3,
+                "origin": format!("https://{address}"),
+                "certificate_der": cert_path,
+                "key_der": key_path,
+                "assets": assets,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // While the reservation is held, binding from the config alone fails.
+        let error = match PreparedTransport::load_explicit(&config).await {
+            Ok(_) => panic!("expected bind failure while sockets are held"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("Address already in use"),
+            "expected bind failure while sockets are held, got {error}"
+        );
+        // Handoff must use those sockets — never release and retry another port.
+        let prepared = PreparedTransport::load_explicit_bound(&config, tcp, udp)
+            .await
+            .unwrap();
+        assert_eq!(prepared.origin(), &format!("https://{address}"));
+        let running = prepared.start(Arc::new(Deny)).await.unwrap();
+        assert!(running.is_live());
+        assert_eq!(running.origin(), &format!("https://{address}"));
         running.shutdown().await.unwrap();
     }
 }

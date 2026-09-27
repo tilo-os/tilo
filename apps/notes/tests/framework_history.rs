@@ -53,15 +53,8 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
                     page.parent = None;
                     page.order = 2;
                     NotesDoc::upsert_page_meta(doc, &page);
-                    let blocks = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                    let text = NotesDoc::block_text_obj(doc, &blocks, 0).unwrap();
-                    doc.splice_text(
-                        &text,
-                        0,
-                        isize::try_from(doc.text(&text).unwrap().chars().count()).unwrap(),
-                        "changed marked block",
-                    )
-                    .unwrap();
+                    let block = NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone();
+                    replace_block_text(doc, f.child, &block, "changed marked block");
                     NotesDoc::upsert_tag(
                         doc,
                         &notes::model::TagMeta {

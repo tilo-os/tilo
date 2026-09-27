@@ -151,6 +151,7 @@ pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;
+pub mod window_transfer;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;

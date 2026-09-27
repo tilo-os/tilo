@@ -173,35 +173,17 @@ class SlotCacheTests(unittest.TestCase):
             self.assertEqual(sorted(d.name for d in (root / "target").iterdir()), ["k3"])
             self.assertFalse((root / "target/k3/debug").exists())
 
-    def test_only_check_rust_jobs_use_slot_caches_split_by_trust(self) -> None:
+    def test_workflows_do_not_mount_a_runner_slot_cache(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        trust = ("${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
-                 "&& 'trusted' || 'untrusted' }}")
-        volume = f"- tilo-slot-cache-{trust}:/ci-slot-cache"
         workflows = root / ".forgejo/workflows"
-        with self.subTest(phase="the three Rust jobs mount, prepare and seal"):
-            check = (workflows / "check.yml").read_text(encoding="utf-8")
-            for job, following in (("test", "check"), ("check", "clippy"), ("clippy", "pins")):
-                body = check.split(f"\n  {job}:\n", 1)[1].split(f"\n  {following}:\n", 1)[0]
-                self.assertEqual(body.count(volume), 1, job)
-                self.assertEqual(body.count("slot-cache: true"), 1, job)
-                seal = body.split("- name: Seal the runner slot's target\n", 1)[1]
-                self.assertTrue(seal.startswith("        if: always()\n"
-                                                "        run: python3 tools/ci/slot_cache.py seal\n"), job)
-        with self.subTest(phase="the mount step derives the same trust class as the volume"):
-            action = (root / ".forgejo/actions/prepare-rust-build/action.yml").read_text(encoding="utf-8")
-            self.assertIn(f"SLOT_CACHE_TRUST: {trust}", action)
-            self.assertIn("if: inputs.slot-cache == 'true'", action)
-            self.assertIn('default: "false"', action)
-            self.assertLess(action.index("slot_cache.py mount"),
-                            action.index("uses: ./.forgejo/actions/restore-cargo-downloads"))
-        with self.subTest(phase="no other workflow, publications included, reaches a slot cache"):
-            for path in sorted(workflows.glob("*.y*ml")):
-                if path.name == "check.yml":
-                    continue
-                source = path.read_text(encoding="utf-8")
-                self.assertNotIn("tilo-slot-cache", source, path.name)
-                self.assertNotIn("slot-cache: true", source, path.name)
+        for path in sorted(workflows.glob("*.y*ml")):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("tilo-slot-cache", source, path.name)
+            self.assertNotIn("slot-cache:", source, path.name)
+            self.assertNotIn("slot_cache.py", source, path.name)
+        action = (root / ".forgejo/actions/prepare-rust-build/action.yml").read_text(encoding="utf-8")
+        self.assertNotIn("slot_cache.py", action)
+        self.assertNotIn("slot-cache", action)
 
     def test_cache_problems_build_cold_instead_of_failing(self) -> None:
         output = self.tmp / "output"

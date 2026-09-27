@@ -318,7 +318,6 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `fuse3` | `fuse3-devel` | `fs` |
 | `dbus-1` | `dbus-devel` | portals |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps, and the shell's video (sharing, projection, recording) |
-| `capnp` (binary) | `capnproto` | runtime-collab schema |
 | `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `tilo-ntfs-helper` bootstraps its pinned NTFS reader |
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
@@ -336,10 +335,7 @@ container.
 Install the pinned Rust toolchain, a Windows SDK, and the Visual Studio C++
 tools for the target architecture. Windows ARM64 needs the Build Tools
 component `Microsoft.VisualStudio.Component.VC.Tools.ARM64`; installing only
-the x64 C++ tools does not provide ARM64 target libraries. Put a working
-`capnp` schema compiler on PATH. For a fully native ARM64 toolchain, build it
-from the [Cap'n Proto source](https://capnproto.org/install.html) with CMake's
-Visual Studio generator and `-A ARM64`.
+the x64 C++ tools does not provide ARM64 target libraries.
 
 From an ARM64 host, run:
 
@@ -372,10 +368,37 @@ that Cargo can discover the libraries with:
 pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 ```
 
+### Android app host
+
+[`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
+cross-compiled with Android NDK r29. `rcargo`'s builder and the Fedora 44
+development image (`dist/dev/Containerfile.fedora44`) carry it, with the
+`CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
+that point Cargo at its clang. Elsewhere, install the same release and set
+those variables as the image does, plus:
+
+```bash
+rustup target add aarch64-linux-android x86_64-linux-android
+```
+
+`tools/ci/install-android-ndk.sh` does both in a CI or image build.
+
+The Java side and the packaging use the Android SDK at `$ANDROID_HOME`
+(default `~/Android/Sdk`), a JDK 17 or newer for `javac` and `keytool`, and
+`zip`:
+
+```bash
+sdkmanager 'build-tools;36.1.0' 'platforms;android-36'
+```
+
+An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
+`llvm-strip` that drops DWARF from the packaged library. Testing needs `adb`
+(`platform-tools`) and an `x86_64` emulator image or a device.
+
 ### Native Windows development
 
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
-architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
+architecture. The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
 Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
@@ -387,7 +410,6 @@ application build command.
 From PowerShell at the workspace root:
 
 ```powershell
-capnp --version
 cargo check --locked -p ui --tests --features portal
 cargo run --locked -p calculator
 cargo run --locked -p notes

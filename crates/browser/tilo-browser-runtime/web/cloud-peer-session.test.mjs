@@ -16,7 +16,7 @@ function fixture({phase='inspect',createDelivery}={}){
   async cloud_reconnect(_attempt,_material,peer){assert.equal(peer,7);calls.push('reconnect');},
   cloud_cancel(){calls.push('cancel');},peer_bind_storage_epoch(){calls.push('bind-storage');},
   peer_media_bootstrap(){},cloud_refresh_media(_attempt,_material,peer){assert.equal(peer,7);calls.push('refresh-media');},
-  refresh_storage_lease(){},peer_pending_writes:()=> '[]',peer_committed(){},
+  refresh_storage_lease(){},peer_pending_batch_bytes:()=>({id:'0',writes:[],records:[]}),acknowledge_peer_storage_batch(){},peer_committed(){},
   async close_peer(){calls.push('close-peer');},async disconnect_peer(){calls.push('disconnect-peer');},
  };
  const enrollment={inspect:async()=>{calls.push('inspect');return '{"c":1}';},apply:async(payload,{operationKey})=>{calls.push(['apply',payload,operationKey]);return '{"r":1}';}};

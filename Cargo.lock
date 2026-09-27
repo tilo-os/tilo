@@ -3,33 +3,29 @@
 version = 4
 
 [[package]]
-name = "ab_glyph"
-version = "0.2.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01c0457472c38ea5bd1c3b5ada5e368271cb550be7a4ca4a0b4634e9913f6cc2"
-dependencies = [
- "ab_glyph_rasterizer",
- "owned_ttf_parser",
-]
-
-[[package]]
-name = "ab_glyph_rasterizer"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
-
-[[package]]
 name = "accesskit"
 version = "0.25.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
+name = "accesskit_android"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "929aff36b0d3dd22ddb59191989d5293ed958294d7728bd6c2ec9778f73414aa"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer",
+ "jni 0.21.1",
+ "log",
+]
+
+[[package]]
 name = "accesskit_atspi_common"
 version = "0.20.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -42,7 +38,7 @@ dependencies = [
 [[package]]
 name = "accesskit_consumer"
 version = "0.39.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -79,7 +75,7 @@ dependencies = [
 [[package]]
 name = "accesskit_unix"
 version = "0.23.0"
-source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
+source = "git+https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -155,6 +151,7 @@ dependencies = [
  "bounded-command",
  "cloud-source",
  "getrandom 0.4.3",
+ "hex",
  "private-fs",
  "secret-vault",
  "serde",
@@ -567,7 +564,6 @@ dependencies = [
  "bounded-command",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "clap",
  "ed25519-dalek 3.0.0",
  "futures-util",
@@ -939,7 +935,7 @@ checksum = "41e67cd8309bbd06cd603a9e693a784ac2e5d1e955f11286e355089fcab3047c"
 [[package]]
 name = "atspi"
 version = "0.29.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "atspi-proxies",
@@ -948,7 +944,7 @@ dependencies = [
 [[package]]
 name = "atspi-common"
 version = "0.13.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "enumflags2",
  "serde",
@@ -963,7 +959,7 @@ dependencies = [
 [[package]]
 name = "atspi-proxies"
 version = "0.13.0"
-source = "git+ssh://git@code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
+source = "git+https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d2e18e7c7cd76a1436f7fedc3ada015c2"
 dependencies = [
  "atspi-common",
  "serde",
@@ -1429,6 +1425,7 @@ dependencies = [
  "base64",
  "blake3",
  "bounded-zip",
+ "fnv",
  "host-info",
  "pollster",
  "private-fs",
@@ -1558,6 +1555,7 @@ dependencies = [
  "automerge",
  "chrono",
  "chrono-tz",
+ "fnv",
  "mail",
  "pim-lines",
  "qdoc-rich-text",
@@ -1721,15 +1719,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "capnpc"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13aea06b902f885cb0313b11e900e96cd57fef775e9e601a96e14e1d655f3cd3"
-dependencies = [
- "capnp",
-]
-
-[[package]]
 name = "cbc"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1887,11 +1876,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "emoji",
+ "fnv",
  "hex",
  "image",
  "iroh",
  "media",
  "qdoc",
+ "qdoc-rich-text",
  "runtime-dylib",
  "runtime-identity",
  "serde",
@@ -1904,6 +1895,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-reference",
+ "tilo-rich-text",
  "tilo-test-env",
  "tokio",
  "uuid",
@@ -2148,6 +2140,8 @@ dependencies = [
 name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-dav",
  "percent-encoding",
@@ -2165,6 +2159,7 @@ dependencies = [
 name = "cloud-source-dropbox"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
@@ -2183,8 +2178,10 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cloud-source",
  "cloud-source-gdrive",
+ "hex",
  "md-5",
  "reqwest",
  "serde",
@@ -2203,10 +2200,12 @@ name = "cloud-source-icloud"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-icloud",
  "getrandom 0.4.3",
  "hex",
+ "mime_guess",
  "num-bigint 0.5.1",
  "pbkdf2",
  "reqwest",
@@ -2228,6 +2227,7 @@ name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "cloud-source",
  "cloud-source-onedrive",
  "percent-encoding",
@@ -3223,6 +3223,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3262,9 +3263,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
+ "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3419,6 +3442,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "image",
+ "qdoc-rich-text",
  "roxmltree 0.20.0",
  "runtime-dylib",
  "serde",
@@ -3433,6 +3457,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "unicode-bidi",
@@ -3612,6 +3637,8 @@ dependencies = [
  "miniz_oxide",
  "serde",
  "serde_json",
+ "tilo-search",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -3922,7 +3949,9 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
+ "fnv",
  "hex",
+ "quick-xml 0.41.0",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -4276,7 +4305,6 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "format-provider-abi",
  "futures",
  "getrandom 0.4.3",
@@ -4446,6 +4474,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fs-content",
+ "hex",
  "libc",
  "workspace-hack",
 ]
@@ -5781,6 +5810,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6446,12 +6484,14 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "automerge",
+ "base64",
  "blake3",
  "block-devices",
  "bounded-command",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "crc32fast",
  "hex",
  "libc",
  "reqwest",
@@ -6467,6 +6507,7 @@ dependencies = [
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-test-env",
+ "uuid",
  "vello",
  "windows-sys 0.61.2",
  "winit",
@@ -6583,6 +6624,7 @@ dependencies = [
  "app-registry",
  "clap",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "getrandom 0.4.3",
  "hex",
  "package-store",
@@ -7289,16 +7331,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
@@ -7413,6 +7445,7 @@ dependencies = [
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fnv",
  "hex",
  "landlock",
  "libc",
@@ -8032,11 +8065,14 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "futures-util",
  "hex",
  "lettre",
  "mail-builder",
  "mail-parser",
+ "md-5",
+ "mime_guess",
  "pim-lines",
  "qdoc-codecs",
  "qdoc-rich-text",
@@ -8089,6 +8125,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "fnv",
  "hex",
  "reqwest",
  "runtime-dylib",
@@ -8361,7 +8398,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.0",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand 0.10.1",
@@ -8411,6 +8448,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
+ "fnv",
  "gstreamer",
  "hex",
  "host-info",
@@ -8875,6 +8913,8 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
+ "qdoc",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8884,6 +8924,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "url",
@@ -9563,6 +9604,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "option-operations"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9647,15 +9694,6 @@ dependencies = [
  "winit",
  "workspace-hack",
  "xkbcommon",
-]
-
-[[package]]
-name = "owned_ttf_parser"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
-dependencies = [
- "ttf-parser",
 ]
 
 [[package]]
@@ -9911,7 +9949,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "fnv",
  "image",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9923,6 +9963,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-pdf",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "uuid",
@@ -11326,6 +11367,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
+dependencies = [
+ "getrandom 0.2.17",
+ "libredox",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11870,7 +11922,6 @@ dependencies = [
  "cap-std",
  "capnp",
  "capnp-rpc",
- "capnpc",
  "postcard",
  "runtime-portal",
  "rustix 1.1.4",
@@ -12291,7 +12342,7 @@ dependencies = [
 [[package]]
 name = "rustypipe"
 version = "0.11.4"
-source = "git+ssh://git@code.tilo.so/tilo/rustypipe.git?rev=aeb292fb23856c335ee3423745ed98ae0e683760#aeb292fb23856c335ee3423745ed98ae0e683760"
+source = "git+https://code.tilo.so/tilo/rustypipe.git?rev=aeb292fb23856c335ee3423745ed98ae0e683760#aeb292fb23856c335ee3423745ed98ae0e683760"
 dependencies = [
  "data-encoding",
  "fancy-regex",
@@ -12412,9 +12463,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2a4360b9abcdcee43809e6fc11d6d61ca5d25734026a8fc46c2883eea3f13f"
 dependencies = [
- "ab_glyph",
  "log",
- "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -13012,7 +13061,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fluent",
- "fs",
+ "fnv",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
@@ -13042,6 +13091,7 @@ dependencies = [
  "qcms",
  "qdoc",
  "qdoc-codecs",
+ "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13073,7 +13123,6 @@ dependencies = [
  "thumbnail",
  "tilo-action-broker",
  "tilo-actions",
- "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-isolate",
@@ -13086,6 +13135,8 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -13099,6 +13150,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -13630,6 +13682,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssip-client"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5349534527378e1e24486a9b361127c0a044b0311857f778ec1ec2953c5ffbbf"
+dependencies = [
+ "dirs",
+ "log",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13746,6 +13811,12 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+
+[[package]]
+name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
@@ -13760,6 +13831,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros 0.28.0",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -14407,6 +14491,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "hex",
  "postcard",
  "regex",
  "serde",
@@ -14449,6 +14534,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-resource",
+ "tilo-search",
  "tilo-ui",
  "tracing",
  "workspace-hack",
@@ -14591,6 +14677,7 @@ dependencies = [
  "ebook",
  "ed25519-dalek 3.0.0",
  "futures",
+ "hex",
  "iroh",
  "iroh-base",
  "js-sys",
@@ -14808,6 +14895,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "reqwest",
  "roxmltree 0.20.0",
  "test-http",
@@ -14859,6 +14947,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "fluent",
+ "fnv",
  "hex",
  "notes",
  "serde",
@@ -14984,8 +15073,10 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "jni 0.21.1",
  "libc",
  "mime_guess",
+ "ndk-context",
  "open",
  "smithay-client-toolkit",
  "smithay-clipboard",
@@ -15004,6 +15095,47 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-installed-apps"
+version = "0.1.0"
+dependencies = [
+ "desktop-policy",
+ "launcher",
+ "package-store",
+ "tempfile",
+ "tilo-app-package",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15188,6 +15320,7 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
+ "fnv",
  "hex",
  "neighbour-wire",
  "postcard",
@@ -15399,6 +15532,7 @@ dependencies = [
  "base64",
  "bounded-command",
  "clap",
+ "getrandom 0.4.3",
  "hex",
  "serde",
  "serde_json",
@@ -15426,18 +15560,34 @@ name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "fs",
+ "launcher",
+ "launcher-macos",
  "libc",
+ "package-store",
  "runtime-fs",
  "runtime-identity",
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-action-broker",
  "tilo-actions",
+ "tilo-app-package",
+ "tilo-automerge-isolate",
+ "tilo-desktop-model",
+ "tilo-identity-host",
+ "tilo-installed-apps",
  "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "workspace-hack",
 ]
@@ -15460,6 +15610,17 @@ dependencies = [
  "thiserror 2.0.18",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-search"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "tantivy",
+ "tracing",
+ "unicode-normalization",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15486,6 +15647,7 @@ name = "tilo-ui"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "accesskit_android",
  "accesskit_winit",
  "adblock",
  "advisory-lock",
@@ -15505,6 +15667,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
+ "fnv",
  "form_urlencoded",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -15513,8 +15676,12 @@ dependencies = [
  "hypher",
  "icu_segmenter",
  "image",
+ "jni 0.21.1",
  "libc",
  "media",
+ "mime_guess",
+ "ndk",
+ "ndk-context",
  "percent-encoding",
  "pkg-config",
  "pollster",
@@ -15552,6 +15719,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-search",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui-graph",
@@ -15563,7 +15731,6 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
- "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -15659,6 +15826,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -16348,6 +16516,8 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "rustix 1.1.4",
+ "ssip-client",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "workspace-hack",
@@ -16364,6 +16534,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "flate2",
+ "fnv",
  "hex",
  "media",
  "private-fs",
@@ -17050,6 +17221,7 @@ dependencies = [
  "atomic-file",
  "bounded-command",
  "collab-types",
+ "fnv",
  "landlock",
  "libc",
  "runtime-portal",
@@ -17253,6 +17425,7 @@ dependencies = [
  "advisory-lock",
  "anyhow",
  "automerge",
+ "fnv",
  "gstreamer",
  "gstreamer-app",
  "media",
@@ -17280,6 +17453,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "collab-types",
+ "fnv",
  "media",
  "runtime-dylib",
  "serde",
@@ -17818,7 +17992,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
@@ -18425,6 +18599,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest",
  "serde",
@@ -18753,6 +18928,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "fnv",
  "qdoc",
  "qdoc-codecs",
  "qdoc-pdf",
@@ -18768,6 +18944,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-resource",
+ "tilo-rich-text",
  "tilo-test-env",
  "vello",
  "winit",
@@ -18855,7 +19032,6 @@ dependencies = [
  "guillotiere",
  "half",
  "harfrust",
- "hashbrown 0.15.5",
  "hashbrown 0.16.1",
  "hashbrown 0.17.1",
  "hayro-syntax",
@@ -18894,7 +19070,6 @@ dependencies = [
  "naga",
  "nix 0.31.3",
  "nom 7.1.3",
- "notify",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-integer",
@@ -18966,6 +19141,7 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syntect",
+ "tantivy",
  "thiserror 2.0.18",
  "time",
  "time-macros",

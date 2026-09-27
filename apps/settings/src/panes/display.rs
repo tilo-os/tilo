@@ -206,14 +206,67 @@ pub struct DisplayOutput {
     pub current_mode: Option<OutputMode>,
     pub hdr: bool,
     pub sink_hdr: bool,
-    pub hdr_unavailable_reason: Option<String>,
+    pub hdr_unavailable_reason: Option<settings_store::hardware::HdrUnavailable>,
     pub vrr: bool,
     pub sink_vrr: bool,
-    pub vrr_unavailable_reason: Option<String>,
+    pub vrr_unavailable_reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
     pub color_profiles: Vec<String>,
     pub color_profile_labels: BTreeMap<String, String>,
     /// EDID identity; decides which saved arrangement applies.
     pub monitor: Option<MonitorIdentity>,
+}
+
+/// The Fluent key explaining why HDR cannot be used.
+fn hdr_unavailable_key(
+    sink_hdr: bool,
+    reason: Option<settings_store::hardware::HdrUnavailable>,
+) -> &'static str {
+    use settings_store::hardware::HdrUnavailable;
+    match reason {
+        Some(HdrUnavailable::DriverUnsupported) => "display-hdr-driver-unsupported",
+        Some(HdrUnavailable::FormatUnsupported) => "display-hdr-format-unsupported",
+        Some(HdrUnavailable::DriverRejected) => "display-hdr-driver-rejected",
+        None if sink_hdr => "display-hdr-driver-unsupported",
+        None => "display-hdr-unsupported",
+    }
+}
+
+/// SDR brightness in cd/m² as the slider's `0.0..=1.0` position.
+fn sdr_brightness_fraction(nits: u16) -> f64 {
+    let range = settings_store::hardware::SDR_BRIGHTNESS_NITS_RANGE;
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    ((f64::from(nits) - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+/// The slider's `0.0..=1.0` position as SDR brightness in whole cd/m².
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped into the u16 brightness range before the cast"
+)]
+fn sdr_brightness_nits(fraction: f64) -> u16 {
+    let range = settings_store::hardware::SDR_BRIGHTNESS_NITS_RANGE;
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    fraction.mul_add(high - low, low).round().clamp(low, high) as u16
+}
+
+/// The Fluent key explaining why variable refresh rate cannot be used.
+fn adaptive_sync_unavailable_key(
+    sink_vrr: bool,
+    reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
+) -> &'static str {
+    use settings_store::hardware::AdaptiveSyncUnavailable;
+    match reason {
+        Some(AdaptiveSyncUnavailable::DriverUnsupported) => "display-vrr-driver-unsupported",
+        Some(AdaptiveSyncUnavailable::DriverRejected) => "display-vrr-driver-rejected",
+        None if sink_vrr => "display-vrr-driver-unsupported",
+        None => "display-vrr-unsupported",
+    }
 }
 
 /// Map a raw DRM connector directory name + its `status` file contents to a
@@ -715,6 +768,9 @@ impl DisplayPane {
             }
             Op::SetHdr { connector, enabled } => {
                 let _ = state.put(root, output_key(connector, "hdr"), *enabled);
+            }
+            Op::SetSdrBrightness { connector, value } => {
+                let _ = state.put(root, output_key(connector, "sdr_brightness"), *value);
             }
             Op::SetVrr { connector, enabled } => {
                 let _ = state.put(root, output_key(connector, "vrr"), *enabled);
@@ -1239,8 +1295,9 @@ impl DisplayPane {
         let mut out_rows = Vec::new();
 
         if output.hdr {
-            out_rows.push(setting_row(
-                "HDR",
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-hdr"),
+                &crate::i18n::t("display-hdr-description"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.hdr", output.connector),
@@ -1256,22 +1313,37 @@ impl DisplayPane {
                     ),
                 ),
             ));
+            let sdr_key = output_key(&output.connector, "sdr_brightness");
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-hdr-sdr-brightness"),
+                &crate::i18n::t("display-hdr-sdr-brightness-description"),
+                Box::new(
+                    Slider::new(
+                        &format!("settings.display.{}.sdr_brightness", output.connector),
+                        &sdr_key,
+                    )
+                    .with_id(&sdr_key)
+                    .on_action(
+                        crate::actions::display_output_sdr_brightness_binding(
+                            output.connector.clone(),
+                        )
+                        .expect("SDR brightness is part of the resource contract"),
+                    ),
+                ),
+            ));
         } else {
             out_rows.push(value_row(
-                "HDR",
-                output
-                    .hdr_unavailable_reason
-                    .as_deref()
-                    .unwrap_or(if output.sink_hdr {
-                        "Display support detected; compositor output support unavailable"
-                    } else {
-                        "Not supported by this display"
-                    }),
+                &crate::i18n::t("display-hdr"),
+                &crate::i18n::t(hdr_unavailable_key(
+                    output.sink_hdr,
+                    output.hdr_unavailable_reason,
+                )),
             ));
         }
         if output.vrr {
-            out_rows.push(setting_row(
-                "Variable refresh rate",
+            out_rows.push(setting_row_described(
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t("display-vrr-description"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.vrr", output.connector),
@@ -1289,15 +1361,11 @@ impl DisplayPane {
             ));
         } else {
             out_rows.push(value_row(
-                "Variable refresh rate",
-                output
-                    .vrr_unavailable_reason
-                    .as_deref()
-                    .unwrap_or(if output.sink_vrr {
-                        "Display support detected; compositor output support unavailable"
-                    } else {
-                        "Not supported by this display"
-                    }),
+                &crate::i18n::t("display-vrr"),
+                &crate::i18n::t(adaptive_sync_unavailable_key(
+                    output.sink_vrr,
+                    output.vrr_unavailable_reason,
+                )),
             ));
         }
         if output.color_profiles.is_empty() {
@@ -1508,6 +1576,11 @@ impl DisplayPane {
                 transform_label(cfg.transform),
             );
             let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
+            let _ = state.put(
+                root,
+                output_key(&output.connector, "sdr_brightness"),
+                sdr_brightness_fraction(cfg.sdr_brightness_nits),
+            );
             let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
             let profile = cfg
                 .color_profile
@@ -2175,6 +2248,14 @@ impl DisplayPane {
             cfg.hdr = enabled;
             changed = true;
         }
+        if output.hdr
+            && let Some(fraction) =
+                ui::doc::read_f64(state, root, output_key(&output.connector, "sdr_brightness"))
+            && sdr_brightness_nits(fraction) != cfg.sdr_brightness_nits
+        {
+            cfg.sdr_brightness_nits = sdr_brightness_nits(fraction);
+            changed = true;
+        }
         if output.vrr
             && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "vrr"))
             && enabled != cfg.vrr
@@ -2511,6 +2592,36 @@ impl DisplayPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+
+    #[test]
+    fn sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy() {
+        use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
+        for nits in [80, 203, 300, 480] {
+            assert_eq!(sdr_brightness_nits(sdr_brightness_fraction(nits)), nits);
+        }
+        assert!((sdr_brightness_fraction(80) - 0.0).abs() < f64::EPSILON);
+        assert!((sdr_brightness_fraction(480) - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            sdr_brightness_nits(f64::NAN),
+            80,
+            "garbage lands on the dim end"
+        );
+        assert_eq!(sdr_brightness_nits(7.0), 480);
+        let keys = [
+            hdr_unavailable_key(false, None),
+            hdr_unavailable_key(true, None),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::FormatUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverRejected)),
+            adaptive_sync_unavailable_key(false, None),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverUnsupported)),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverRejected)),
+        ];
+        for key in keys {
+            let copy = crate::i18n::t(key);
+            assert_ne!(copy, key, "{key} has no en-US copy");
+        }
+    }
 
     #[test]
     fn relative_positions_use_the_neighbour_s_logical_extent() {

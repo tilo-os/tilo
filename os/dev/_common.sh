@@ -200,7 +200,10 @@ inenv() {
 qemu_accel_args() {
   case "$TILO_ACCEL" in
     auto)
-      if inenv "test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm"; then
+      # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
+      local probe
+      printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
+      if inenv "$probe"; then
         echo "-enable-kvm -cpu host"
       else
         echo "-accel tcg,thread=multi -cpu max"

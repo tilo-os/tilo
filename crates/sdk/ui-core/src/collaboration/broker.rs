@@ -741,6 +741,10 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             serialized_bytes(command, &mut meter);
         }
         CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
+        CollabRequest::ReportHandoff { app_id, message } => {
+            meter.string_capacity(app_id);
+            meter.bytes(message);
+        }
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
         CollabRequest::CompleteInvocation { code, message, .. } => {
             meter.string_capacity(code);
@@ -1071,6 +1075,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
+            }
+        }
+        CollabEvent::Handoff { request } => {
+            meter.add_product(1, std::mem::size_of_val(request));
+            if let super::handoff::HandoffRequest::Retire { successor, .. } = request {
+                meter.string_capacity(&successor.room);
+                meter.string_capacity(&successor.record);
+                meter.string_capacity(&successor.by);
             }
         }
         CollabEvent::DocumentSnapshotRequested { route }
@@ -3392,6 +3404,16 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
+                if let Some(message) = context.handoff {
+                    if let Some(request) = super::handoff::HandoffRequest::decode(&message) {
+                        if !tx.send_durable(CollabEvent::Handoff { request }) {
+                            break;
+                        }
+                    } else {
+                        tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
                 let collaborators = context
                     .collaborators
                     .into_iter()
@@ -4804,6 +4826,11 @@ async fn dispatch_sdk_request(
         CollabRequest::ClearContinuation { app_id } => {
             if let Err(error) = route.channel.clear_continuation(&app_id).await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
+            }
+        }
+        CollabRequest::ReportHandoff { app_id, message } => {
+            if let Err(error) = route.channel.handoff(&app_id, &message).await {
+                tracing::warn!(%error, "collab: reporting a handoff step failed");
             }
         }
         CollabRequest::ReportPlayback {
