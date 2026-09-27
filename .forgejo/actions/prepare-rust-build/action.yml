@@ -1,5 +1,5 @@
 name: Prepare Rust build
-description: Ensure native build tools, restore Cargo downloads, and use the runner's compiler cache when it provides one.
+description: Ensure native build tools, restore Cargo downloads, and select the runner compiler cache or this repository's cache.
 
 outputs:
   cargo-cache-hit:
@@ -23,6 +23,13 @@ runs:
     - name: Restore Cargo downloads
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads
+
+    - name: Select the compiler cache
+      shell: bash
+      env:
+        FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+        FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+      run: bash tools/ci/compiler_cache_env.sh
 
     - name: Configure optional compiler cache
       shell: bash
