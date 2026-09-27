@@ -529,6 +529,7 @@ fn the_shells_secret_prompts_are_never_captured() {
         });
         fb.host_mut().force_quick_settings_settled();
         assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
+        drop(fb);
     }
 
     // Phase `identity_restore_and_backup`: the steps that take a backup's
@@ -560,10 +561,15 @@ fn the_shells_secret_prompts_are_never_captured() {
                 );
             }
         }
+        drop(fb);
     }
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness and frame builder drive every phase of the one keyboard session"
+)]
 fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     use super::emoji_picker_commit::Harness;
     use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
