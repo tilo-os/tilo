@@ -4959,6 +4959,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
     }
     let _signals = DevSignalGuard::install()?;
     provide_runtime_host(&app_dir);
+    let _runtime = DevRuntimeGuard;
     eprintln!(
         "[tilo-app] watching {}",
         roots
@@ -5774,13 +5775,66 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
         return;
     }
     command.env("TILO_DEV_SESSION", dir);
-    if let Some(host) = DEV_RUNTIME_HOST.get().and_then(Option::as_ref) {
-        command.env("TILO_RUNTIME_BINARY", host);
+    if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+        command
+            .env("TILO_RUNTIME_BINARY", &runtime.host)
+            .env("TILO_RUNTIME_PROFILE", &runtime.profile);
     }
 }
 
-/// The runtime host [`provide_runtime_host`] built for this dev session.
-static DEV_RUNTIME_HOST: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+/// The runtime [`provide_runtime_host`] built for this dev session.
+static DEV_RUNTIME: std::sync::OnceLock<Option<DevRuntime>> = std::sync::OnceLock::new();
+
+/// A runtime host and the private profile its daemon serves. The profile is
+/// the session's own: the user's runtime daemon may be any other version, and
+/// an app cannot attach to a daemon that speaks another protocol.
+struct DevRuntime {
+    host: PathBuf,
+    profile: PathBuf,
+}
+
+/// Stops the session's runtime daemon when the dev loop ends, so the next
+/// session's daemon is started from the host that session builds.
+struct DevRuntimeGuard;
+
+impl Drop for DevRuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
+            stop_runtime_daemon(&runtime.profile);
+        }
+    }
+}
+
+/// The pid the runtime daemon serving `profile` reports, if one answers.
+fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
+    use std::io::Read as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(profile.join("native.sock")).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
+    stream.write_all(b"{\"native\":\"status\"}\n").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .take(16_385)
+        .read_line(&mut line)
+        .ok()?;
+    let status: serde_json::Value = serde_json::from_str(&line).ok()?;
+    i32::try_from(status.get("pid")?.as_u64()?)
+        .ok()
+        .filter(|pid| *pid > 0)
+}
+
+fn stop_runtime_daemon(profile: &Path) {
+    let Some(pid) = runtime_daemon_pid(profile) else {
+        return;
+    };
+    // SAFETY: `pid` is the daemon serving this dev session's private profile,
+    // which only runtime hosts this loop started can have created.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        eprintln!("[tilo-app] stopped the dev runtime (pid {pid})");
+    }
+}
 
 /// Whether the dev loop has to supply a runtime host. A workspace member finds
 /// the one the workspace builds beside it, a Tilo session serves its own, and
@@ -5830,7 +5884,13 @@ fn provide_runtime_host(app_dir: &Path) {
             })
             .ok()
     });
-    let _ = DEV_RUNTIME_HOST.set(host);
+    let runtime = host.map(|host| {
+        let profile = dev_session_dir(app_dir).join("runtime");
+        // A daemon left by a session that did not stop cleanly runs an older host.
+        stop_runtime_daemon(&profile);
+        DevRuntime { host, profile }
+    });
+    let _ = DEV_RUNTIME.set(runtime);
 }
 
 fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
