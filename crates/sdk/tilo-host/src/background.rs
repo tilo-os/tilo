@@ -568,6 +568,9 @@ impl Executor for NoBackground {
 mod tests {
     use super::*;
     use crate::wake::WakeScope;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
@@ -601,7 +604,7 @@ mod tests {
                 .unwrap();
             }
             for _ in 0..4 {
-                let name = rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+                let name = rx.recv_timeout(HANG_BOUND).unwrap().unwrap();
                 assert!(name.starts_with("ui-background-"), "{name}");
             }
             assert!(lock(&pool.shared.state).threads <= 2);
@@ -615,7 +618,7 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             pool.spawn("after", Box::new(move || tx.send(()).unwrap()))
                 .unwrap();
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            rx.recv_timeout(HANG_BOUND).unwrap();
         }
 
         // Case `thread_pool_timers_wake_in_deadline_order`.
@@ -637,8 +640,8 @@ mod tests {
             let start = crate::time::now();
             pool.wake_at(start + Duration::from_millis(60), late.handle());
             pool.wake_at(start + Duration::from_millis(10), early.handle());
-            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "early");
-            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "late");
+            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "early");
+            assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), "late");
         }
 
         // Case `thread_pool_park_returns_when_a_job_finishes`.

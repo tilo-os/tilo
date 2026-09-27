@@ -9976,7 +9976,7 @@ pub(super) fn spawn_configured(
 /// # Errors
 ///
 /// Returns an error if the socket at `path` does not appear and accept a
-/// connection within about 2 seconds — the accept loop in [`spawn`] may
+/// connection within 30 seconds — the accept loop in [`spawn`] may
 /// not have bound yet, or the broker never started.
 pub async fn dial_capnp_for_test(
     path: PathBuf,
@@ -9987,11 +9987,13 @@ pub async fn dial_capnp_for_test(
     ),
     std::io::Error,
 > {
-    // Retry-with-backoff ~2s: the accept loop may not have bound yet.
+    // Retry until the accept loop has bound; the bound only catches a broker
+    // that never starts, since a loaded machine can delay the bind for seconds.
     let stream = {
         let mut last_err: Option<std::io::Error> = None;
         let mut stream = None;
-        for _ in 0..50 {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(30) {
             match tokio::net::UnixStream::connect(&path).await {
                 Ok(s) => {
                     stream = Some(s);
@@ -10009,7 +10011,7 @@ pub async fn dial_capnp_for_test(
                 return Err(last_err.unwrap_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        "capnp socket did not appear within 2s",
+                        "capnp socket did not appear within 30s",
                     )
                 }));
             }
@@ -10283,6 +10285,8 @@ pub mod tests {
     use std::time::SystemTime;
 
     #[cfg(test)]
+    use crate::HANG_BOUND;
+    #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
@@ -10545,7 +10549,7 @@ pub mod tests {
             })
         });
         effect_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_BOUND)
             .expect("operation reached its admitted effect");
         state.request_stop();
         release_tx.send(()).expect("release operation");
@@ -10613,11 +10617,11 @@ pub mod tests {
             );
         }));
         sink_finished
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_BOUND)
             .expect("broker-thread public sink completed without self-join");
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while socket.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -10694,12 +10698,12 @@ pub mod tests {
             );
         });
         sink_finished
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_BOUND)
             .expect("off-thread sink drop joined broker without deadlock");
         caller.join().expect("off-thread fanout caller");
         drop(subscription);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while socket.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -10768,14 +10772,14 @@ pub mod tests {
                 .expect("send facade result");
         });
         let result = result_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_BOUND)
             .expect("owner health callback returned without join deadlock");
         assert!(
             result.is_err(),
             "shutdown requested by the health callback fences its facade result"
         );
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while socket.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -10911,7 +10915,7 @@ pub mod tests {
             .expect("attached broker state")
             .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while socket.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }

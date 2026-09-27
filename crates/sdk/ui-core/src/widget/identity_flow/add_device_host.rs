@@ -628,6 +628,7 @@ impl Widget for AddDeviceHostScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use threshold_identity::ThresholdIdentity;
 
     fn fixture_host() -> (AddDeviceHostScreen, [u8; 16]) {
@@ -726,7 +727,8 @@ mod tests {
                 screen.perform_pairing(&payload, &pairer_channel).unwrap()
             });
             let mut completed = false;
-            for _ in 0..500 {
+            let deadline = crate::time::now() + HANG_BOUND;
+            while crate::time::now() < deadline {
                 if host.poll_handshake(&channel).unwrap() {
                     completed = true;
                     break;

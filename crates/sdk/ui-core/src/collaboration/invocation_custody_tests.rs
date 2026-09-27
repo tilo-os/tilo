@@ -115,7 +115,7 @@ fn causal_scope_sdk_queue_retains_original_custody_through_host_await_and_termin
             mutation,
             authorization: Some(authorization)
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         assert!(host.received.lock().unwrap().is_some());
         assert!(manager.send(CollabRequest::UpdateInvocation {
             id: 91,

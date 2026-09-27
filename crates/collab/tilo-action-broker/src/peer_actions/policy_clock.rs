@@ -229,7 +229,9 @@ impl PolicyTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use std::time::Duration;
+
     #[test]
     fn owner_policy_clock_retained_sampling_uses_same_controlled_clock() {
         let (clock, control) = OwnerPolicyClock::for_test(200);
@@ -314,7 +316,7 @@ mod tests {
         let time = origin.capture().unwrap();
         let held = clock.0.state.lock().unwrap();
         let reader = std::thread::spawn(move || time.now_ns());
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + HANG_BOUND;
         while Arc::strong_count(&origin.0) != 2 {
             assert!(Instant::now() < deadline, "sampler did not retain origin");
             std::thread::yield_now();

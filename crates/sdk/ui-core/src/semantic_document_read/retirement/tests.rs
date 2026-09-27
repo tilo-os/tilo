@@ -1,4 +1,5 @@
 use super::*;
+use crate::HANG_BOUND;
 use std::sync::{MutexGuard, TryLockError, mpsc};
 use std::time::Duration;
 
@@ -74,7 +75,7 @@ fn retirement_waits_for_entered_probe_before_finishing() {
         owner.finish_retirement();
         finished_tx.send(()).unwrap();
     });
-    requested_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    requested_rx.recv_timeout(HANG_BOUND).unwrap();
     assert!(observer.value.marker.requested.load(Ordering::Acquire));
     assert!(!observer.value.marker.retired.load(Ordering::Acquire));
     assert!(matches!(
@@ -82,7 +83,7 @@ fn retirement_waits_for_entered_probe_before_finishing() {
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     drop(entered);
-    finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    finished_rx.recv_timeout(HANG_BOUND).unwrap();
     retiring.join().unwrap();
     assert!(matches!(probe(&observer), Err(RetirementError::Retired)));
 }

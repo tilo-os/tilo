@@ -5221,6 +5221,7 @@ mod tests {
         keys
     }
 
+    use crate::HANG_BOUND;
     use crate::time::{Duration, Instant};
     use std::cell::RefCell;
     #[cfg(unix)]
@@ -6605,7 +6606,7 @@ mod tests {
             },
         });
         assert!(
-            wait_until(|| !manager.is_connected(), Duration::from_secs(2)),
+            wait_until(|| !manager.is_connected(), HANG_BOUND),
             "SDK stayed healthy after owner document RPC failed"
         );
         assert_eq!(
@@ -6643,10 +6644,7 @@ mod tests {
                 },
             });
         }
-        assert!(wait_until(
-            || !manager.is_connected(),
-            Duration::from_secs(2)
-        ));
+        assert!(wait_until(|| !manager.is_connected(), HANG_BOUND));
         assert_eq!(
             captures.lock().unwrap().terminal_updates,
             2,
@@ -6695,7 +6693,7 @@ mod tests {
             || broker_state(&manager)
                 .document_reads
                 .publishable(&secondary.channel_id()),
-            Duration::from_secs(2)
+            HANG_BOUND
         ));
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
         let first = manager.begin_document_publication_barrier().unwrap();
@@ -6710,20 +6708,17 @@ mod tests {
         let second = manager.begin_document_publication_barrier().unwrap();
         let mut gates = gates.into_iter();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        entered.recv_timeout(HANG_BOUND).unwrap();
         assert_eq!(first.try_complete(), Ok(None));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
         let (entered, release) = gates.next().unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        entered.recv_timeout(HANG_BOUND).unwrap();
         // The second RPC can only begin after the first marker has resolved.
         assert_eq!(first.wait(Some(Instant::now())), Ok(()));
         assert_eq!(second.try_complete(), Ok(None));
         release.send(Ok(())).unwrap();
-        assert_eq!(
-            second.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(second.wait(Some(Instant::now() + HANG_BOUND)), Ok(()));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
         assert!(manager.is_connected());
         drop(manager);
@@ -6918,9 +6913,7 @@ mod tests {
         assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
         // Signing may fail before the marker enqueue; either path must carry the cause.
         let error = match manager.begin_document_publication_barrier() {
-            Ok(receipt) => receipt
-                .wait(Some(Instant::now() + Duration::from_secs(2)))
-                .unwrap_err(),
+            Ok(receipt) => receipt.wait(Some(Instant::now() + HANG_BOUND)).unwrap_err(),
             Err(error) => error,
         };
         assert!(
@@ -6957,7 +6950,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         assert!(manager.send(CollabRequest::document_incremental(
             b"retained original".to_vec()
         )));
@@ -6968,7 +6961,7 @@ mod tests {
         release.send(Ok(())).unwrap();
         assert!(wait_until(
             || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
+            HANG_BOUND
         ));
         std::thread::sleep(Duration::from_millis(60));
         assert_eq!(
@@ -6978,10 +6971,7 @@ mod tests {
         );
         assert!(state.command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
         ready.store(true, Ordering::Release);
-        assert_eq!(
-            receipt.wait(Some(Instant::now() + Duration::from_secs(2))),
-            Ok(())
-        );
+        assert_eq!(receipt.wait(Some(Instant::now() + HANG_BOUND)), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(captured.len(), 2);
         let envelope: SignedOp = postcard::from_bytes(&captured[1]).unwrap();
@@ -7028,7 +7018,7 @@ mod tests {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
         let state = broker_state(&manager);
         let ready = state
@@ -7038,14 +7028,12 @@ mod tests {
         release.send(Ok(())).unwrap();
         assert!(wait_until(
             || captures.lock().unwrap().signed_ops.len() == 1,
-            Duration::from_secs(2)
+            HANG_BOUND
         ));
         if invalidate {
             state.fail_closed("actual test worker invalidation");
         }
-        let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(5)))
-            .unwrap_err();
+        let error = receipt.wait(Some(Instant::now() + HANG_BOUND)).unwrap_err();
         assert!(
             matches!(error, DocumentPublicationError::Failed(_)),
             "{error}"
@@ -7057,7 +7045,7 @@ mod tests {
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 1);
         assert!(wait_until(
             || state.command_bytes.0.load(Ordering::Acquire) == 0,
-            Duration::from_secs(2)
+            HANG_BOUND
         ));
         drop(manager);
         thread.join().unwrap();
@@ -7087,12 +7075,10 @@ mod tests {
         let (fd, _, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         let receipt = manager.begin_document_publication_barrier().unwrap();
         release.send(Err("document RPC refused".into())).unwrap();
-        let error = receipt
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
-            .unwrap_err();
+        let error = receipt.wait(Some(Instant::now() + HANG_BOUND)).unwrap_err();
         assert!(
             error.to_string().contains("document RPC refused"),
             "{error}"
@@ -7188,7 +7174,7 @@ mod tests {
             manager
                 .begin_document_publication_barrier()
                 .unwrap()
-                .wait(Some(Instant::now() + Duration::from_secs(2))),
+                .wait(Some(Instant::now() + HANG_BOUND)),
             Ok(())
         );
         assert!(manager.is_connected());
@@ -7223,14 +7209,14 @@ mod tests {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 1,
             command: Request::new(Command::SetMuted { muted: false })
         }));
         assert!(wait_until(
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
+            HANG_BOUND
         ));
         let start = Instant::now();
         assert!(manager.send(CollabRequest::NativeMediaCommand {
@@ -7304,13 +7290,13 @@ mod tests {
         }));
         assert!(wait_until(
             || captures.lock().unwrap().media_commands.len() == 1,
-            Duration::from_secs(1)
+            HANG_BOUND
         ));
         assert!(manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
         }));
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(HANG_BOUND).unwrap();
         drop(manager);
         assert!(
             wait_until(
@@ -7321,7 +7307,7 @@ mod tests {
                     .iter()
                     .any(|request| request.intent == u64::MAX
                         && matches!(request.command, Command::Leave)),
-                Duration::from_secs(1)
+                HANG_BOUND
             ),
             "manager drop must use reserved teardown before document completion"
         );
@@ -7362,7 +7348,7 @@ mod tests {
         manager
             .begin_document_publication_barrier()
             .unwrap()
-            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .wait(Some(Instant::now() + HANG_BOUND))
             .unwrap();
         for (index, route) in routes.into_iter().enumerate() {
             assert!(
@@ -7379,7 +7365,7 @@ mod tests {
         }
         assert!(wait_until(
             || captures.lock().unwrap().media_commands.len() == 8,
-            Duration::from_secs(1)
+            HANG_BOUND
         ));
         assert!(
             !manager.send(CollabRequest::NativeMediaCommand {
@@ -7462,7 +7448,7 @@ mod tests {
                             Command::SetMuted { muted: false }
                         })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tokio::time::timeout(HANG_BOUND, async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
@@ -7532,7 +7518,7 @@ mod tests {
                         1,
                         Request::new(Command::SetMuted { muted: true })
                     ));
-                    tokio::time::timeout(Duration::from_secs(1), async {
+                    tokio::time::timeout(HANG_BOUND, async {
                         while captures.lock().unwrap().media_commands.is_empty() {
                             tokio::task::yield_now().await;
                         }
@@ -7558,7 +7544,7 @@ mod tests {
                     } else {
                         drop(release);
                     }
-                    let later = tokio::time::timeout(Duration::from_secs(1), async {
+                    let later = tokio::time::timeout(HANG_BOUND, async {
                         loop {
                             if let CollabEvent::NativeMediaCommandResult {
                                 request_id: 2,
@@ -9259,7 +9245,7 @@ mod tests {
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {
         let error = manager
             .begin_document_publication_barrier()
-            .and_then(|receipt| receipt.wait(Some(Instant::now() + Duration::from_secs(2))))
+            .and_then(|receipt| receipt.wait(Some(Instant::now() + HANG_BOUND)))
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
@@ -9365,7 +9351,7 @@ mod tests {
                 initial = manager.prepare_native_record(&want.id);
                 initial.is_some()
             },
-            Duration::from_secs(3)
+            HANG_BOUND
         ));
         let read = initial.unwrap();
         let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());

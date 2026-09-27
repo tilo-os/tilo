@@ -28,7 +28,7 @@ fn connected_app() -> (App, Box<dyn Fn() -> Vec<collab_types::SignedOp>>) {
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
     app.collaboration.manager = manager;
     let started = Instant::now();
-    while !app.collaboration.manager.is_connected() && started.elapsed() < Duration::from_secs(5) {
+    while !app.collaboration.manager.is_connected() && started.elapsed() < crate::HANG_BOUND {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(app.collaboration.manager.is_connected());

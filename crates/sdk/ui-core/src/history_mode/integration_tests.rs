@@ -1574,7 +1574,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 .unwrap(),
             "old"
         );
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+        let deadline = crate::time::now() + crate::HANG_BOUND;
         while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
             && crate::time::now() < deadline
         {

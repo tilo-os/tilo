@@ -274,6 +274,9 @@ pub type RpcPromise<T> = Promise<T, capnp::Error>;
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[tokio::test(flavor = "current_thread")]
     async fn connected_io_reports_peer_close() {
         tokio::task::LocalSet::new()
@@ -287,12 +290,11 @@ mod tests {
                 // failure path, including a call queued before the driver polls.
                 let request = client
                     .new_call::<capnp::any_pointer::Owned, capnp::any_pointer::Owned>(0, 0, None);
-                let error =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), request.send().promise)
-                        .await
-                        .expect("closed peer must resolve the outstanding RPC")
-                        .err()
-                        .expect("closed transport cannot complete a service call");
+                let error = tokio::time::timeout(HANG_BOUND, request.send().promise)
+                    .await
+                    .expect("closed peer must resolve the outstanding RPC")
+                    .err()
+                    .expect("closed transport cannot complete a service call");
                 assert_eq!(error.kind, capnp::ErrorKind::Disconnected);
             })
             .await;

@@ -311,6 +311,7 @@ mod tests {
         PublishedInput,
     };
     use super::*;
+    use crate::HANG_BOUND;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
     const APP: &str = "so.tilo.files";
@@ -428,7 +429,7 @@ mod tests {
                     ..CatalogueQuery::default()
                 },
             )
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(HANG_BOUND)
             .ok()
             .flatten()?
             .ok()?;

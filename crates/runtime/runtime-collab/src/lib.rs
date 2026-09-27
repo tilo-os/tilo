@@ -3925,6 +3925,9 @@ impl ChannelHandle {
 #[cfg(all(test, feature = "client"))]
 mod resolved_invocation_tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
@@ -4016,7 +4019,7 @@ mod resolved_invocation_tests {
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
                 };
-                tokio::time::timeout(std::time::Duration::from_secs(5), action(channel))
+                tokio::time::timeout(HANG_BOUND, action(channel))
                     .await
                     .expect("bounded RPC test");
                 task.abort();
@@ -4545,6 +4548,9 @@ impl ChannelHandle {
 #[cfg(all(test, feature = "client"))]
 mod reliable_invocation_tests {
     use super::*;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
@@ -4775,7 +4781,7 @@ mod reliable_invocation_tests {
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
                 };
-                tokio::time::timeout(std::time::Duration::from_secs(5), action(channel))
+                tokio::time::timeout(HANG_BOUND, action(channel))
                     .await
                     .expect("bounded RPC");
                 task.abort();

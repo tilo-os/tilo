@@ -1,5 +1,6 @@
 //! Actual kernel peer-process observation; this does not fabricate launcher admission.
 use super::*;
+use crate::HANG_BOUND;
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -27,11 +28,10 @@ os._exit(0)
         .expect(
             "Linux kernel qualification requires python3 for the real socket descendant fixture",
         );
-    let (mut stream, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
-            .await
-            .unwrap()
-            .unwrap();
+    let (mut stream, _) = tokio::time::timeout(HANG_BOUND, listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         u32::try_from(stream.peer_cred().unwrap().pid().unwrap()).unwrap(),
         child.id()
@@ -51,7 +51,7 @@ os._exit(0)
     )
     .unwrap();
     stream.write_all(b"G").await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), watcher)
+    tokio::time::timeout(HANG_BOUND, watcher)
         .await
         .unwrap()
         .unwrap();

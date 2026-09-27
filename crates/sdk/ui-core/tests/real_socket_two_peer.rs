@@ -14,6 +14,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support::{document_mutation, typed_collab::TypedBroker};
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 use tilo_ui::collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, PresencePayload, RouteSpec,
 };
@@ -85,7 +88,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
 
         // A route refuses documents until it is joined and its document mode is
         // resolved; the refused attempt starts that join.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
         while sender
             .try_send_to_route(
                 RouteSpec::app("photos", Uuid::nil()),

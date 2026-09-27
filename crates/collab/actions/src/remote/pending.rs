@@ -299,6 +299,9 @@ impl<T> Future for Pending<T> {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     /// A pending answer is polled, awaited or continued; dropping a mapped answer abandons the
     /// original; waiting across threads sees the answer or times out; a ready answer resolves as a
     /// future without a runtime.
@@ -357,10 +360,7 @@ mod tests {
             .wait_timeout(Duration::from_millis(10))
             .expect_err("nothing has answered yet");
         let producer = std::thread::spawn(move || completer.complete("done"));
-        assert_eq!(
-            answer.wait_timeout(Duration::from_secs(5)).ok(),
-            Some(Some("done"))
-        );
+        assert_eq!(answer.wait_timeout(HANG_BOUND).ok(), Some(Some("done")));
         producer.join().expect("producer thread");
     }
 
