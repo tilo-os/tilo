@@ -30,6 +30,10 @@ pub trait WorkspaceMembership: Send + Sync + 'static {
     fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace));
 }
 
+/// A route's access, generation and content keys, as [`ChannelKeySource`]
+/// answers; the keys are empty unless newly ready.
+pub type ChannelKeys = (runtime_identity::wire::ChannelAccess, u64, Vec<u8>);
+
 /// The channel service that hands apps their routes' content keys.
 pub trait ChannelKeySource: Send + Sync + 'static {
     /// The access this device has to `channel` in `room`, its generation, and
@@ -44,7 +48,7 @@ pub trait ChannelKeySource: Send + Sync + 'static {
         room: RoomId,
         channel: collab_types::ChannelId,
         known_generation: u64,
-    ) -> Option<Result<(runtime_identity::wire::ChannelAccess, u64, Vec<u8>), String>>;
+    ) -> Option<Result<ChannelKeys, String>>;
 }
 
 /// A host without a channel service: every route is unavailable.
@@ -54,7 +58,7 @@ impl ChannelKeySource for () {
         _room: RoomId,
         _channel: collab_types::ChannelId,
         _known_generation: u64,
-    ) -> Option<Result<(runtime_identity::wire::ChannelAccess, u64, Vec<u8>), String>> {
+    ) -> Option<Result<ChannelKeys, String>> {
         None
     }
 }
@@ -364,11 +368,7 @@ fn sign_collaboration_op(
             .id()
             .to_string();
     let decided = read_workspace(tree, bound_room, |workspace| {
-        let Some(role) = workspace.role_of_at(&principal_id, unix_now()) else {
-            return Err(Response::Denied(
-                "identity is not a workspace member".into(),
-            ));
-        };
+        let role = workspace.role_of_at(&principal_id, unix_now())?;
         let actor = Actor::person(Some(role), &principal_id)
             .with_principal(Principal::App(app_id.to_string()))
             .in_room(workspace_id.to_string());
@@ -386,12 +386,12 @@ fn sign_collaboration_op(
             Some(unix_now()),
         );
         let role_allows = role_permits(role, ArtifactKind::Note, op.op_class);
-        Ok(decision == CapDecision::Allow && role_allows)
+        Some(decision == CapDecision::Allow && role_allows)
     });
     let allowed = match decided {
         None => return Response::Denied("workspace is not available".into()),
-        Some(Err(denied)) => return denied,
-        Some(Ok(allowed)) => allowed,
+        Some(None) => return Response::Denied("identity is not a workspace member".into()),
+        Some(Some(allowed)) => allowed,
     };
     if !allowed {
         return Response::Denied("workspace role or capability denies this document action".into());
