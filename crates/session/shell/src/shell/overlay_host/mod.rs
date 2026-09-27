@@ -17322,6 +17322,29 @@ impl Widget for ShellOverlayHost {
         // Retained search indexes are maintained on the compositor tick,
         // before palette input is routed.  Providers may do a source refresh
         // here, but the keystroke/query path below only reads ready indexes.
+        // The applications' indexes are kept while the palette is closed
+        // too: an action invoked by its address, or the first search after
+        // the shell starts, then finds them built rather than an empty
+        // index that begins building only once somebody asked.
+        if !self.palette_visible
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let state = chrome.borrow();
+            let _ = self
+                .search_registry
+                .refresh_indexes(&crate::shell::search::QueryArgs {
+                    needle: "",
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[
+                        crate::shell::search::ResourceKind::Application,
+                        crate::shell::search::ResourceKind::HostApplication,
+                    ],
+                    chrome: &state,
+                    doc,
+                    doc_root: path,
+                });
+        }
         if self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {
