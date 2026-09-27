@@ -1,0 +1,238 @@
+use super::*;
+use crate::mcp::McpServer;
+use serde_json::json;
+use std::{
+    process::Stdio,
+    time::{Duration, Instant},
+};
+
+/// The test whose phase runs in a fresh process; libtest selects it by this
+/// exact path.
+const PROCESS_TEST: &str =
+    "standalone::tests::sdk_apps_join_a_standalone_session_and_publish_to_mcp";
+const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
+const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
+
+/// In the parent, runs this test again in a child process whose profile
+/// environment is private, and returns `None`; in that child, returns the
+/// profile to serve.
+fn isolated_root() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os(PROCESS_ROOT) {
+        return Some(PathBuf::from(root));
+    }
+    let temp = tempfile::tempdir().unwrap();
+    // Identity storage refuses symlinked paths, and a platform temp dir may
+    // sit behind one (macOS `/var`).
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let environment = root.join("environment");
+    let log = root.join("child.stdout");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", PROCESS_TEST, "--nocapture"])
+        .env(PROCESS_ROOT, root.join("profile"))
+        .env("HOME", environment.join("home"))
+        .env("XDG_CONFIG_HOME", environment.join("config"))
+        .env("XDG_DATA_HOME", environment.join("data"))
+        .env("XDG_CACHE_HOME", environment.join("cache"))
+        .env("XDG_STATE_HOME", environment.join("state"))
+        .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD")
+        .stdout(std::fs::File::create(&log).unwrap())
+        .status()
+        .unwrap();
+    let stdout = std::fs::read_to_string(&log).unwrap();
+    assert!(status.success(), "{stdout}");
+    // libtest exits 0 when `--exact` selects nothing; require the phase ran.
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the isolated child ran no test: {stdout}"
+    );
+    None
+}
+
+/// An SDK app's collaboration manager once it has joined the broker.
+fn connected_manager() -> ui::collaboration::CollaborationManager {
+    let mut manager = ui::collaboration::CollaborationManager::new();
+    let started = Instant::now();
+    while manager.state() == ui::collaboration::CollaborationState::Connecting
+        && started.elapsed() < tilo_test_env::hang_bound()
+    {
+        let _ = manager.poll();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(manager.is_connected(), "{:?}", manager.state());
+    manager
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session holds the profile and brokers for the whole scenario on purpose"
+)]
+fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
+    // Helper role: an ordinary SDK app launched by the session publishes its
+    // action directory and keeps its connection until it is killed.
+    if std::env::var_os(PUBLICATION_HELPER).is_some() {
+        let mut manager = connected_manager();
+        manager.publish_action_directory(ui::collaboration::local_app_id());
+        loop {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let Some(root) = isolated_root() else {
+        return;
+    };
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    assert!(
+        Standalone::start_reporting(&root, &mut |_| {}).is_err(),
+        "a second host must not serve a held profile"
+    );
+    let executable = std::env::current_exe().unwrap();
+    let mut children = Vec::new();
+    for index in 0..2 {
+        let log = std::fs::File::create(root.join(format!("helper-{index}.log"))).unwrap();
+        let mut command = std::process::Command::new(&executable);
+        command
+            .args(["--exact", PROCESS_TEST, "--nocapture"])
+            .env(PUBLICATION_HELPER, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log));
+        children.push(session.launch("dev.tilo.same", command).unwrap());
+    }
+    let deadline = tilo_test_env::hang_deadline();
+    let roots = loop {
+        let roots = session
+            .app_action_broker()
+            .unwrap()
+            .state()
+            .action_directory_root_page(None, 8)
+            .roots;
+        if roots.len() == 2 || Instant::now() >= deadline {
+            break roots;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let listed = tilo_rt::try_app()
+        .unwrap()
+        .block_on(async {
+            let mut server = McpServer::new(
+                session.action_host().unwrap(),
+                session.room().to_owned(),
+                session.actor().to_owned(),
+            );
+            server
+                .handle(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "tilo_list_apps", "arguments": {}}
+                }))
+                .await
+                .unwrap()
+        })
+        .unwrap();
+    for child in &mut children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let logs = (0..2)
+        .map(|index| std::fs::read_to_string(root.join(format!("helper-{index}.log"))))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n");
+    assert_eq!(roots.len(), 2, "both apps publish: {logs}");
+    assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
+    assert_ne!(roots[0].peer_id, roots[1].peer_id);
+    let apps = listed["result"]["structuredContent"]["apps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(apps.len(), 2, "{listed}");
+    assert!(
+        apps.iter().all(|app| app["app_id"] == "dev.tilo.same"),
+        "{listed}"
+    );
+    drop(session);
+    // The profile is released and served again with the same workspace.
+    let reopened = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    assert_eq!(reopened.room(), listed_room(&root));
+}
+
+fn listed_room(root: &Path) -> String {
+    let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
+    tree.workspaces[0].room.to_string()
+}
+
+#[test]
+fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+    let room = workspace.room();
+    assert!(!room.is_empty());
+    workspace.adopt("person-1").unwrap();
+    let path = temp.path().join(STANDALONE_WORKSPACE);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    let reopened = ProfileWorkspace::open(temp.path()).unwrap();
+    assert_eq!(reopened.room(), room);
+    let tree = reopened.snapshot().unwrap();
+    assert_eq!(tree.workspaces.len(), 1);
+    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(tree.workspaces[0].strips.len(), 1);
+    // An owner is kept, not replaced by the next actor.
+    reopened.adopt("person-2").unwrap();
+    let tree = ProfileWorkspace::open(temp.path())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    let mut seen = None;
+    reopened.with_workspace(&tree.workspaces[0].room, &mut |workspace| {
+        seen = Some(workspace.name.clone());
+    });
+    assert_eq!(seen.as_deref(), Some("Home"));
+    reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
+}
+
+#[test]
+fn the_desktop_sessions_workspace_is_served_read_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut tree = bootstrap();
+    tree.workspaces[0].set_owner("desktop-owner".to_owned());
+    let mut value = serde_json::to_value(&tree).unwrap();
+    // The desktop session's file carries its native layout and fields.
+    value["schema_version"] = json!(3);
+    value["native_authority"] = json!({"kept": true});
+    let bytes = serde_json::to_vec_pretty(&value).unwrap();
+    let desktop = temp.path().join(DESKTOP_WORKSPACE);
+    std::fs::write(&desktop, &bytes).unwrap();
+    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+    assert_eq!(workspace.room(), tree.workspaces[0].room.to_string());
+    workspace.adopt("someone-else").unwrap();
+    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+    assert_eq!(
+        workspace.snapshot().unwrap().workspaces[0].owner.as_deref(),
+        Some("desktop-owner")
+    );
+
+    // Without an owner there is nobody this host could act as.
+    value["workspaces"][0]["owner"] = serde_json::Value::Null;
+    std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(
+        ProfileWorkspace::open(temp.path())
+            .unwrap()
+            .adopt("someone-else")
+            .is_err()
+    );
+    // A file that is not a workspace tree fails closed.
+    std::fs::write(&desktop, b"not json").unwrap();
+    assert_eq!(
+        ProfileWorkspace::open(temp.path()).err().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
