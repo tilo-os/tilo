@@ -150,10 +150,8 @@ ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "s
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quick-xml = { version = "0.41", features = ["encoding"] }
 quote = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = false, features = ["std"] }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -172,12 +170,10 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["even
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
-rustypipe = { git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760", default-features = false, features = ["rustls-no-provider"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-serde_with = { version = "3", default-features = false, features = ["alloc", "macros"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
@@ -199,7 +195,7 @@ syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "vis
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tempfile = { version = "3" }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["local-offset", "macros", "serde-human-readable", "serde-well-known"] }
+time = { version = "0.3", features = ["macros", "serde-well-known"] }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
@@ -207,7 +203,6 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io-util", "rt"] }
 toml_parser = { version = "1" }
-tracing = { version = "0.1", features = ["log"] }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -377,10 +372,8 @@ ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "s
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quick-xml = { version = "0.41", features = ["encoding"] }
 quote = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = false, features = ["std"] }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -399,12 +392,10 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["even
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
-rustypipe = { git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760", default-features = false, features = ["rustls-no-provider"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-serde_with = { version = "3", default-features = false, features = ["alloc", "macros"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
@@ -426,7 +417,7 @@ syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "vis
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tempfile = { version = "3" }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["local-offset", "macros", "serde-human-readable", "serde-well-known"] }
+time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
@@ -435,7 +426,6 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io-util", "rt"] }
 toml_parser = { version = "1" }
-tracing = { version = "0.1", features = ["log"] }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -484,6 +474,8 @@ nom = { version = "7" }
 noq-udp = { version = "1" }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -496,6 +488,7 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
+tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -519,6 +512,8 @@ nom = { version = "7" }
 noq-udp = { version = "1" }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -531,6 +526,7 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
+tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -554,6 +550,8 @@ nom = { version = "7" }
 noq-udp = { version = "1" }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -566,6 +564,7 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
+tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -589,6 +588,8 @@ nom = { version = "7" }
 noq-udp = { version = "1" }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
 scopeguard = { version = "1" }
@@ -601,6 +602,7 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
+tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
