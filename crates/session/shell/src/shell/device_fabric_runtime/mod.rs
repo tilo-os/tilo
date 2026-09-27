@@ -11,7 +11,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use getrandom::{
     SysRng,
@@ -1441,9 +1441,13 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_store_stamp: Option<SystemTime>,
+    last_policy_store_check: Option<Instant>,
 }
 
 impl DeviceFabricRuntime {
+    const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
         let counter = network.device_fabric().max_counter();
         Self {
@@ -1471,7 +1475,29 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_store_stamp: None,
+            last_policy_store_check: None,
         }
+    }
+
+    fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
+        if self.policy.is_some() && self.policy_cache_fresh(now) {
+            return self.policy.unwrap_or_default();
+        }
+        self.last_policy_store_check = Some(now);
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if self.policy.is_none() || stamp != self.policy_store_stamp {
+            self.policy = Some(ContinuityPolicySnapshot::load());
+            self.policy_store_stamp = stamp;
+        }
+        self.policy.unwrap_or_default()
+    }
+
+    fn policy_cache_fresh(&self, now: Instant) -> bool {
+        self.last_policy_store_check.is_some_and(|checked| {
+            now.saturating_duration_since(checked) < Self::POLICY_STORE_POLL_INTERVAL
+        })
     }
 
     pub fn set_realtime_adapter(
@@ -1510,7 +1536,7 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
-        let policy = ContinuityPolicySnapshot::load();
+        let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
         // transaction authority immediately, but an already-running BlueZ
@@ -1521,7 +1547,17 @@ impl DeviceFabricRuntime {
             pump_media_handoff_statuses(network);
             self.expire_incoming_media(network);
         }
-        self.maintain_gamepad_forwarding(network, policy);
+        if policy.permits(ContinuityCapability::TypedGamepad)
+            || !self.inbound_gamepads.is_empty()
+            || outbound_gamepad_state()
+                .lock()
+                .is_ok_and(|state| !state.sessions.is_empty())
+            || gamepad_authorization_state()
+                .lock()
+                .is_ok_and(|state| !state.pending.is_empty() || !state.decisions.is_empty())
+        {
+            self.maintain_gamepad_forwarding(network, policy);
+        }
         self.handle_fabric_actions(network, policy);
         self.tethering.pump(
             network,
@@ -1529,7 +1565,9 @@ impl DeviceFabricRuntime {
             unix_now_ms(),
         );
         pump_device_health(network, policy);
-        self.remote_capture.pump(network, policy);
+        if policy.permits(ContinuityCapability::Media) {
+            self.remote_capture.pump(network, policy);
+        }
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
@@ -2815,6 +2853,30 @@ impl DeviceFabricRuntime {
         let expired =
             self.take_incoming_media(|pending| pending.received.elapsed() >= INCOMING_MEDIA_WAIT);
         Self::terminate_incoming_media(network, expired, Some(MediaHandoffFailure::TimedOut));
+    }
+}
+
+#[cfg(test)]
+mod policy_cache_tests {
+    use super::*;
+
+    fn policy_cache_fresh(last_check: Option<Instant>, now: Instant) -> bool {
+        last_check.is_some_and(|checked| {
+            now.saturating_duration_since(checked) < DeviceFabricRuntime::POLICY_STORE_POLL_INTERVAL
+        })
+    }
+
+    #[test]
+    fn cached_policy_avoids_reloading_within_the_frame_loop_window() {
+        let now = Instant::now();
+        assert!(policy_cache_fresh(
+            Some(now),
+            now + Duration::from_millis(749)
+        ));
+        assert!(!policy_cache_fresh(
+            Some(now),
+            now + Duration::from_millis(750)
+        ));
     }
 }
 
