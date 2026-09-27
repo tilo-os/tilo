@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-resource"
 version = "0.1.0"
 edition = "2024"
@@ -7,8 +8,8 @@ license.workspace = true
 
 # The resource layer: typed resource state stored in a CRDT, typed replayable
 # actions over it, deterministic ids and order, history and replay. It knows
-# nothing about rendering, widgets or windows; the UI toolkit knows nothing
-# about it. `tilo-app` binds the two.
+# nothing about rendering, widgets or windows. The UI toolkit uses its
+# document-generic history; `tilo-app` binds resources to views.
 
 [dependencies]
 automerge.workspace = true
@@ -20,6 +21,10 @@ tilo-automerge.workspace = true
 uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource-macros = { path = "../tilo-resource-macros" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

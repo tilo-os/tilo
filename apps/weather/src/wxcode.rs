@@ -103,25 +103,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_codes_map_to_expected_families() {
-        assert_eq!(Sky::from_code(0), Sky::Clear);
-        assert_eq!(Sky::from_code(3), Sky::Overcast);
-        assert_eq!(Sky::from_code(63), Sky::Rain);
-        assert_eq!(Sky::from_code(75), Sky::Snow);
-        assert_eq!(Sky::from_code(95), Sky::Thunder);
-        assert_eq!(Sky::from_code(96), Sky::ThunderHail);
-    }
-
-    #[test]
-    fn unknown_code_is_safe_default() {
-        assert_eq!(Sky::from_code(12345), Sky::PartlyCloudy);
-        assert_eq!(Sky::label(12345), "Unknown");
-    }
-
-    #[test]
-    fn wet_classification() {
-        assert!(Sky::from_code(65).is_wet());
-        assert!(!Sky::from_code(0).is_wet());
-        assert!(!Sky::from_code(2).is_wet());
+    fn weather_codes_map_to_families_and_wetness() {
+        // Case `known_codes_map_to_expected_families`.
+        {
+            assert_eq!(Sky::from_code(0), Sky::Clear);
+            assert_eq!(Sky::from_code(3), Sky::Overcast);
+            assert_eq!(Sky::from_code(63), Sky::Rain);
+            assert_eq!(Sky::from_code(75), Sky::Snow);
+            assert_eq!(Sky::from_code(95), Sky::Thunder);
+            assert_eq!(Sky::from_code(96), Sky::ThunderHail);
+        }
+        // Case `unknown_code_is_safe_default`.
+        {
+            assert_eq!(Sky::from_code(12345), Sky::PartlyCloudy);
+            assert_eq!(Sky::label(12345), "Unknown");
+        }
+        // Case `wet_classification`.
+        {
+            assert!(Sky::from_code(65).is_wet());
+            assert!(!Sky::from_code(0).is_wet());
+            assert!(!Sky::from_code(2).is_wet());
+        }
     }
 }

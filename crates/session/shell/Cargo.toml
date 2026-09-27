@@ -47,7 +47,15 @@ private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+notify.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
+# The emoji picker's catalogue, search, skin tones and recents.
+emoji = { path = "../../text/emoji" }
+# Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
+# written to settings.
+secret-vault = { path = "../../system/secret-vault" }
+# The speech backend the toolkit screen reader uses, for narrating chrome.
+tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
@@ -106,6 +114,7 @@ word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
 tilo-content = { path = "../../system/content" }
 qdoc-codecs = { path = "../../doc/qdoc-codecs", default-features = false }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 mime_guess = "2.0.5"
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Kept outside `shell::shell::quick_settings::actions` so the
@@ -151,6 +160,8 @@ tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The shared preview decoder behind drag previews.
 thumbnail = { path = "../../media/thumbnail" }
+# Host applications ship SVG icons; rasterised at the size chrome paints them.
+resvg = { version = "0.47", default-features = false }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
@@ -196,6 +207,7 @@ tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, 
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
 
 # The host's own applications: `.desktop` entries the compositor reads
@@ -241,6 +253,12 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+# Pairing-broker tests talk to a local broker on a loaded runner; the
+# toolkit's test support bounds that exchange only against a hang.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+# Parses the locale catalogues the way the runtime does, so a German entry
+# that would silently fall back to English fails a test.
+fluent.workspace = true
 # Network actor tests run an in-process relay to talk to.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
@@ -262,6 +280,13 @@ tilo-test-env = { path = "../../dev/test-env" }
 # GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
 # collapses to one copy in the workspace lock.
 naga = { version = "29", features = ["wgsl-in"] }
+# Client side of the wlr output-management protocols, to drive the
+# compositor the way wlr-randr and kanshi do.
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+# Client side of input-method-v2 and text-input-v3, to drive the compositor
+# the way a composing input method and a text field do.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]
@@ -283,6 +308,9 @@ pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"
+# The compositor's own input method connection, which commits text the
+# shell inserts (a picked emoji) while no trusted input method owns the seat.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",

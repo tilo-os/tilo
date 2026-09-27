@@ -15,6 +15,12 @@
 //! ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 //! ```
 //!
+//! That one line is the whole manifest an app needs. Every OS affordance is on
+//! by default — history, undo, permissions, collaboration and device sync,
+//! the host file chooser, media controls, notifications and GPU video — so an
+//! app never picks features to get them. A headless tool that wants only the
+//! toolkit sets `default-features = false`.
+//!
 //! Shell and framework internals may depend on the lower `tilo-ui` package directly;
 //! ordinary applications should use this facade.
 
@@ -68,12 +74,18 @@ macro_rules! dev_reload_entry {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// JSON values for action arguments, component props and native-input
+/// snapshots, re-exported so an app needs no dependency of its own.
+pub use serde_json;
+
 /// The usual imports for application code.
 pub mod prelude {
+    #[cfg(feature = "native")]
+    pub use crate::framework::run;
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
-        ResourceSurface, SurfaceCx, ViewCx, run,
+        ResourceSurface, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
         self, ActionCx, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model, Refusal, Replica,
@@ -86,7 +98,7 @@ pub mod prelude {
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;
-    pub use ui_core::record::{RecordCheckout, RecordId, RecordKind};
+    pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
     pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionRegistry, ExecutionLocus};

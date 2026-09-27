@@ -63,46 +63,53 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
                 env=environment, capture_output=True, text=True,
             )
 
-    def test_accepts_a_kernel_built_on_the_signed_buildroot(self):
-        result = self.run_verify((BUILDROOT,), (BUILDROOT,))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
+    def test_accepted_provenance(self):
+        with self.subTest(phase="accepts_a_kernel_built_on_the_signed_buildroot"):
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+        with self.subTest(phase="takes_only_the_kernel_reference"):
+            for arguments in ((), (KERNEL, BASE), ("registry.tilo.so/tilo/tilo-kernel:latest",)):
+                with self.subTest(arguments=arguments):
+                    self.assertNotEqual(self.run_verify((BUILDROOT,), (BUILDROOT,),
+                                                        arguments=arguments).returncode, 0)
+        with self.subTest(phase="verifies_a_pinned_other_architecture"):
+            other = "aarch64" if ARCH == "x86_64" else "x86_64"
+            registry = "arm64" if other == "aarch64" else "amd64"
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other,
+                                     registry_arch=registry,
+                                     arguments=(KERNEL, "--architecture", other))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other,
+                                     registry_arch=registry)
+            self.assertNotEqual(result.returncode, 0)
+        with self.subTest(phase="requires_the_kernel_identity_and_one_environment"):
+            for bound in ((), (BUILDROOT, "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)):
+                with self.subTest(bound=bound):
+                    result = self.run_verify(bound, bound)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("does not bind", result.stderr)
+            other = "aarch64" if ARCH == "x86_64" else "x86_64"
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other)
+            self.assertNotEqual(result.returncode, 0)
 
-    def test_rejects_a_kernel_built_from_a_signed_rpm_snapshot(self):
-        result = self.run_verify((EARLIER_RPMS,), (EARLIER_RPMS,))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not bind", result.stderr)
-
-    def test_rejects_an_unsigned_buildroot(self):
-        result = self.run_verify((BUILDROOT,), ())
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("is not signed", result.stderr)
-
-    def test_rejects_an_unsigned_kernel(self):
-        result = self.run_verify((BUILDROOT,), (BUILDROOT,), kernel_signed=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("signature verification failed", result.stderr)
-
-    def test_requires_the_kernel_identity_and_one_environment(self):
-        for bound in ((), (BUILDROOT, "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)):
-            with self.subTest(bound=bound):
-                result = self.run_verify(bound, bound)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("does not bind", result.stderr)
-        other = "aarch64" if ARCH == "x86_64" else "x86_64"
-        result = self.run_verify((BUILDROOT,), (BUILDROOT,), architecture=other)
-        self.assertNotEqual(result.returncode, 0)
-
-    def test_rejects_a_foreign_registry_architecture(self):
-        result = self.run_verify((BUILDROOT,), (BUILDROOT,), registry_arch="s390x")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("expected", result.stderr)
-
-    def test_takes_only_the_kernel_reference(self):
-        for arguments in ((), (KERNEL, BASE), ("registry.tilo.so/tilo/tilo-kernel:latest",)):
-            with self.subTest(arguments=arguments):
-                self.assertNotEqual(self.run_verify((BUILDROOT,), (BUILDROOT,),
-                                                    arguments=arguments).returncode, 0)
+    def test_rejected_provenance(self):
+        with self.subTest(phase="rejects_a_kernel_built_from_a_signed_rpm_snapshot"):
+            result = self.run_verify((EARLIER_RPMS,), (EARLIER_RPMS,))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not bind", result.stderr)
+        with self.subTest(phase="rejects_an_unsigned_buildroot"):
+            result = self.run_verify((BUILDROOT,), ())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is not signed", result.stderr)
+        with self.subTest(phase="rejects_an_unsigned_kernel"):
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), kernel_signed=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("signature verification failed", result.stderr)
+        with self.subTest(phase="rejects_a_foreign_registry_architecture"):
+            result = self.run_verify((BUILDROOT,), (BUILDROOT,), registry_arch="s390x")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("expected", result.stderr)
 
 
 if __name__ == "__main__":

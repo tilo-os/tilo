@@ -45,6 +45,8 @@ on:
       - "crates/dev/test-env/**"
       - "crates/sdk/rt/**"
       - "crates/sdk/font-catalog/**"
+      - "crates/sdk/tilo-resource/**"
+      - "crates/sdk/tilo-resource-macros/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/advisory-lock/**"
       - "crates/system/atomic-file/**"
@@ -62,6 +64,17 @@ on:
       - "crates/media/core/**"
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
+      - "crates/dev/test-http/**"
+      - "crates/system/accounts/**"
+      - "crates/system/cloud-source/**"
+      - "crates/system/cloud-source-dav/**"
+      - "crates/system/cloud-source-dropbox/**"
+      - "crates/system/cloud-source-gdrive/**"
+      - "crates/system/cloud-source-icloud/**"
+      - "crates/system/cloud-source-onedrive/**"
+      - "crates/system/secret-vault/**"
+      - "crates/system/tilo-dav/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -106,6 +119,8 @@ on:
       - "crates/dev/test-env/**"
       - "crates/sdk/rt/**"
       - "crates/sdk/font-catalog/**"
+      - "crates/sdk/tilo-resource/**"
+      - "crates/sdk/tilo-resource-macros/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/advisory-lock/**"
       - "crates/system/atomic-file/**"
@@ -123,6 +138,17 @@ on:
       - "crates/media/core/**"
       - "crates/system/fs/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-content/**"
+      - "crates/dev/test-http/**"
+      - "crates/system/accounts/**"
+      - "crates/system/cloud-source/**"
+      - "crates/system/cloud-source-dav/**"
+      - "crates/system/cloud-source-dropbox/**"
+      - "crates/system/cloud-source-gdrive/**"
+      - "crates/system/cloud-source-icloud/**"
+      - "crates/system/cloud-source-onedrive/**"
+      - "crates/system/secret-vault/**"
+      - "crates/system/tilo-dav/**"
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
@@ -143,13 +169,25 @@ concurrency:
   group: tilo-relay-image-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
+env:
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -252,7 +290,7 @@ jobs:
             case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
           done
           case "${SCCACHE_ENDPOINT:-}" in https://s3.*.amazonaws.com) ;; *) available=0 ;; esac
-          case "${SCCACHE_BUCKET:-}" in podesta-agent-sccache-*) ;; *) available=0 ;; esac
+          case "${SCCACHE_BUCKET:-}" in tilo-ci-sccache-*) ;; *) available=0 ;; esac
           case "${SCCACHE_S3_KEY_PREFIX:-}" in forgejo-runners/v[0-9]*) ;; *) available=0 ;; esac
           test "${SCCACHE_S3_USE_SSL:-}" = true || available=0
           printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
@@ -318,6 +356,10 @@ jobs:
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
+          # Pull requests and main builds keep their layers and the compile
+          # step's target/ cache mount on the runner slot, each trust class in
+          # its own builder; publications start from a fresh one.
+          persistent: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
       - name: Verify the frozen RPM package set
         env:

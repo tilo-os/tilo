@@ -66,28 +66,22 @@ type MergePreflightResult = Arc<
         )>,
     >,
 >;
-enum RemoteDavResult {
-    Browse(Vec<crate::remote_dav::RemoteEntry>),
-    Downloaded(PathBuf),
-    Mutated(String),
-}
-type RemoteBrowseResult =
-    Arc<std::sync::Mutex<Option<(String, Result<RemoteDavResult, crate::remote_dav::DavError>)>>>;
-
-/// The account projection is deliberately conservative only for an account
-/// Settings has explicitly disabled. `Offline` is last-observed reachability,
-/// not a live probe, so blocking a request on it would prevent the request
-/// that discovers a recovered server. Authentication and transport failures
-/// are likewise returned by the narrowly scoped DAV handoff as a useful,
-/// current outcome rather than guessed from stale metadata here.
-fn remote_dav_availability(health: crate::remote_accounts::RemoteAccountHealth) -> Availability {
-    match health {
-        crate::remote_accounts::RemoteAccountHealth::Disabled => Availability::Unavailable {
+/// A remote account's folder opens while the cloud service has it mounted.
+/// A disabled or not-yet-mounted account says why instead.
+fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -> Availability {
+    if account.health == crate::remote_accounts::RemoteAccountHealth::Disabled {
+        return Availability::Unavailable {
             code: "account_disabled".into(),
-            reason: health.unavailable_reason().into(),
-        },
-        _ => Availability::Available,
+            reason: account.health.unavailable_reason().into(),
+        };
     }
+    if !account.mount.as_deref().is_some_and(Path::is_dir) {
+        return Availability::Unavailable {
+            code: "account_not_mounted".into(),
+            reason: "This account's folder is not mounted yet".into(),
+        };
+    }
+    Availability::Available
 }
 
 /// Build the file manager's thumbnail service. The content-addressed cache
@@ -326,6 +320,9 @@ pub struct StartupInputs {
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
     pub document_opener: Option<Rc<RefCell<DocumentOpener>>>,
+    /// Lists and launches "Open With" applications; absent means the
+    /// submenu offers nothing rather than guessing.
+    pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
 }
 
 enum FileServices {
@@ -505,6 +502,7 @@ pub struct FileExplorerWidget {
     drag_hover: Option<PathBuf>,
     nearby_send: crate::nearby_send::NearbySendState,
     nearby_send_path: Option<PathBuf>,
+    shortcut_menu: crate::shortcut_menu::ShortcutMenuState,
     /// Read-only sharing/history sheet sourced entirely from bounded FUSE
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
@@ -528,11 +526,11 @@ pub struct FileExplorerWidget {
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
-    /// One bounded remote DAV browse at a time. The worker owns the network
-    /// request; the UI thread only adopts the resulting metadata projection.
-    remote_browse_result: RemoteBrowseResult,
-    remote_browse_pending: Option<String>,
-    remote_entries: HashMap<String, Vec<crate::remote_dav::RemoteEntry>>,
+    /// Settings' config root remote accounts are read from; `None` reads
+    /// none (embedded and test views), so no ambient store is touched.
+    accounts_root: Option<PathBuf>,
+    /// The accounts as last read from `accounts_root`.
+    accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
@@ -554,6 +552,15 @@ pub struct FileExplorerWidget {
     thumbs: Option<Arc<ThumbnailService>>,
     /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
     /// a scrolling grid never rebuilds the GPU blob per frame.
+    /// Recently opened or changed files, newest first.
+    recent: crate::recent::RecentFiles,
+    /// "Open With" candidates per file type, asked of the host once per
+    /// listing rather than once per row.
+    open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
+    /// The shared searchable picker behind "Other Application…"; its rows are
+    /// the published open-with actions of [`Self::app_chooser_target`].
+    app_chooser: ui::widget::command_palette::CommandPalette,
+    app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
@@ -575,7 +582,10 @@ impl FileExplorerWidget {
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
         // renders as an absolute trail from the filesystem root.
-        Self::with_persistence(config::config_dir(), crate::model::user_home())
+        let mut widget = Self::with_persistence(config::config_dir(), crate::model::user_home());
+        widget.accounts_root = accounts::config_root();
+        widget.refresh_external_search_catalogs();
+        widget
     }
 
     /// Surface a bounded result from startup portals such as received-file
@@ -613,6 +623,9 @@ impl FileExplorerWidget {
             format!("Status: {}", account.health.label()),
             account.health.unavailable_reason().to_string(),
         ];
+        if let Some(mount) = &account.mount {
+            lines.push(format!("Folder: {}", mount.display()));
+        }
         if reauthenticate {
             lines.push(
                 "Open Settings → External Accounts and choose Sign in again. Credentials stay in the system vault and are never shown to Files."
@@ -697,7 +710,7 @@ impl FileExplorerWidget {
             initial_dir: initial_path(),
             workspace_roots: crate::model::workspace_roots(),
             record_roots: crate::model::workspace_record_authority_roots(),
-            remote_accounts: crate::remote_accounts::load(),
+            remote_accounts: Vec::new(),
             trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
                 .unwrap_or_default(),
         });
@@ -743,6 +756,10 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
+        let config_dir_recent = config_dir
+            .as_deref()
+            .map(crate::recent::RecentFiles::load)
+            .unwrap_or_default();
         Self {
             services,
             startup_accounts,
@@ -829,6 +846,7 @@ impl FileExplorerWidget {
             drag_hover: None,
             nearby_send: crate::nearby_send::NearbySendState::default(),
             nearby_send_path: None,
+            shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
             collab_panel: None,
             collab_panel_focused: false,
             share_result: ui::LatestRequest::new(),
@@ -845,13 +863,16 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             resource_invocation: None,
             resource_result: None,
-            remote_browse_result: Arc::new(std::sync::Mutex::new(None)),
-            remote_browse_pending: None,
-            remote_entries: HashMap::new(),
+            accounts_root: None,
+            accounts_cache: Vec::new(),
             host_intent: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
+            recent: config_dir_recent,
+            open_with_cache: RefCell::new(HashMap::new()),
+            app_chooser: ui::widget::command_palette::CommandPalette::commands(),
+            app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
@@ -911,13 +932,22 @@ impl FileExplorerWidget {
     fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
         self.startup_accounts
             .clone()
-            .unwrap_or_else(crate::remote_accounts::load)
+            .unwrap_or_else(|| self.accounts_cache.clone())
+    }
+
+    fn remote_account(&self, id: &str) -> Option<crate::remote_accounts::RemoteAccount> {
+        self.remote_account_snapshot()
+            .into_iter()
+            .find(|account| account.id.as_str() == id)
     }
 
     fn refresh_external_search_catalogs(&mut self) {
         let page = self.advance_collaborative_search_page();
         if page.truncated {
             self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+        }
+        if let Some(root) = self.accounts_root.as_deref() {
+            self.accounts_cache = crate::remote_accounts::load_in(root, self.home_path.as_deref());
         }
         self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
         let accounts = self.remote_account_snapshot();
@@ -943,6 +973,34 @@ impl FileExplorerWidget {
         )
     }
 
+    /// The resource identities (kind and id) of the single selected entry,
+    /// most specific first: its collaborative record, then its path.
+    fn selected_entry_identities(&self) -> Vec<(String, String)> {
+        if self.selection.selected().len() != 1 {
+            return Vec::new();
+        }
+        let displayed = self.displayed_entries();
+        let Some(entry) = self
+            .selection
+            .primary()
+            .and_then(|index| displayed.get(index))
+        else {
+            return Vec::new();
+        };
+        let mut identities = Vec::with_capacity(2);
+        if let Some(record) = entry.record_id {
+            identities.push((
+                "files.record".to_string(),
+                crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(record)),
+            ));
+        }
+        identities.push((
+            "files.entry".to_string(),
+            crate::search_provider::entry_resource_id(&entry.path),
+        ));
+        identities
+    }
+
     fn visible_entry_path(&self, resource_id: &str) -> Option<PathBuf> {
         self.entries
             .iter()
@@ -951,16 +1009,26 @@ impl FileExplorerWidget {
     }
 
     fn visible_open_path(&self, resource_id: &str) -> Option<PathBuf> {
-        self.visible_entry_path(resource_id).or_else(|| {
-            self.favs
-                .borrow()
-                .favorites
-                .iter()
-                .find(|favorite| {
-                    crate::search_provider::place_resource_id(&favorite.path) == resource_id
-                })
-                .map(|favorite| favorite.path.clone())
-        })
+        self.visible_entry_path(resource_id)
+            .or_else(|| {
+                self.favs
+                    .borrow()
+                    .favorites
+                    .iter()
+                    .find(|favorite| {
+                        crate::search_provider::place_resource_id(&favorite.path) == resource_id
+                    })
+                    .map(|favorite| favorite.path.clone())
+            })
+            .or_else(|| {
+                self.remote_account_snapshot()
+                    .into_iter()
+                    .filter(|account| {
+                        matches!(remote_folder_availability(account), Availability::Available)
+                    })
+                    .filter_map(|account| account.mount)
+                    .find(|mount| crate::search_provider::place_resource_id(mount) == resource_id)
+            })
     }
 
     /// Block until every in-flight thumbnail generation has settled (or the
@@ -979,7 +1047,7 @@ impl FileExplorerWidget {
     fn update_toolbar(&mut self) {
         let can_back = !self.history.is_empty();
         let can_forward = !self.forward.is_empty();
-        let can_up = self.current_path.parent().is_some();
+        let can_up = self.current_path.parent().is_some() && !self.is_recent_view();
         self.toolbar.set_context(
             self.current_path.clone(),
             self.home_path.clone(),
@@ -1004,7 +1072,19 @@ impl FileExplorerWidget {
                 self.cmds.clone(),
             )
             .with_cursor(self.last_cursor)
-            .with_workspaces(self.workspace_roots.clone()),
+            .with_workspaces(self.workspace_roots.clone())
+            .with_remote_accounts(
+                self.remote_account_snapshot()
+                    .into_iter()
+                    .filter(|account| {
+                        matches!(remote_folder_availability(account), Availability::Available)
+                    })
+                    .filter_map(|account| {
+                        let badge = account.health.badge().map(str::to_owned);
+                        account.mount.map(|mount| (account.label, mount, badge))
+                    })
+                    .collect(),
+            ),
         )
     }
 
@@ -1108,7 +1188,9 @@ impl FileExplorerWidget {
     }
 
     fn empty_state_message(&self) -> String {
-        if self.is_trash_view() {
+        if self.is_recent_view() {
+            t("files-empty-recent")
+        } else if self.is_trash_view() {
             t("files-empty-trash")
         } else {
             t("files-empty-folder")
@@ -1555,6 +1637,9 @@ impl FileExplorerWidget {
     }
 
     fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        if crate::recent::is_location(path) {
+            return Ok(self.recent_entries());
+        }
         if self.startup_accounts.is_some() {
             crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
         } else {
@@ -1573,11 +1658,14 @@ impl FileExplorerWidget {
         // A new directory starts at the top; the persisted scroll offset only
         // survives *structural* rebuilds within the same directory.
         self.scroll_offset.set((0.0, 0.0));
+        self.invalidate_open_with();
+        self.close_app_chooser();
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
         if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
+        let recent = crate::recent::is_location(&path);
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -1624,7 +1712,10 @@ impl FileExplorerWidget {
                 if !self.show_hidden {
                     entries.retain(|e| !e.name.starts_with('.'));
                 }
-                sort_entries(self.sort_by, self.sort_order, &mut entries);
+                // Recent is ordered by when you last used each item.
+                if !recent {
+                    sort_entries(self.sort_by, self.sort_order, &mut entries);
+                }
                 self.entries = entries;
             }
             Err(e) => {
@@ -1647,6 +1738,9 @@ impl FileExplorerWidget {
 
     /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
+        if self.is_recent_view() {
+            return;
+        }
         if let Some(parent) = self.current_path.parent() {
             self.navigate(parent.to_path_buf());
         }
@@ -1748,7 +1842,9 @@ impl FileExplorerWidget {
         if !self.show_hidden {
             entries.retain(|entry| !entry.name.starts_with('.'));
         }
-        sort_entries(self.sort_by, self.sort_order, &mut entries);
+        if !self.is_recent_view() {
+            sort_entries(self.sort_by, self.sort_order, &mut entries);
+        }
         if entries == self.entries {
             return false;
         }
@@ -1866,6 +1962,22 @@ impl FileExplorerWidget {
             )
         {
             self.status = Some(t("files-archive-read-only"));
+            return true;
+        }
+        // Recent is not a folder: nothing can be created in, pasted into or
+        // run from it. Items keep working (open, copy, rename, drag).
+        if self.is_recent_view()
+            && matches!(
+                &cmd,
+                FileCommand::NewFolder
+                    | FileCommand::NewFromTemplate(_)
+                    | FileCommand::Paste
+                    | FileCommand::OpenTerminal
+                    | FileCommand::ExtractHere
+                    | FileCommand::CompressSelection
+            )
+        {
+            self.status = Some(t("files-recent-not-a-folder"));
             return true;
         }
         match cmd {
@@ -2822,6 +2934,33 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
+            FileCommand::OpenShortcutsMenu => {
+                self.open_shortcuts_submenu(self.last_cursor);
+                true
+            }
+            FileCommand::RunShortcut { shortcut } => {
+                let identities = self.selected_entry_identities();
+                self.status = Some(match self.shortcut_menu.run(&shortcut, &identities) {
+                    Ok(label) => t_args("files-shortcut-running", &[arg("shortcut", label)]),
+                    Err(reason) => reason,
+                });
+                true
+            }
+            FileCommand::OpenWithMenu => {
+                self.open_open_with_submenu(self.last_cursor);
+                true
+            }
+            FileCommand::OpenWith {
+                path,
+                app_id,
+                always,
+            } => self.apply_open_with(&path, &app_id, always),
+            FileCommand::OpenWithOther => {
+                self.open_app_chooser();
+                true
+            }
+            FileCommand::RevealInFolder(path) => self.apply_reveal_in_folder(&path),
+            FileCommand::ForgetRecent(path) => self.apply_forget_recent(&path),
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -3085,6 +3224,7 @@ impl FileExplorerWidget {
     fn apply_new_from_template(&mut self, template: &Path) -> bool {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
+                self.note_recent(&path, crate::recent::RecentUse::Changed);
                 self.refresh();
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
@@ -3860,9 +4000,12 @@ impl FileExplorerWidget {
             )),
         };
         match result {
-            Some(Ok(())) => {}
+            Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
             Some(Err(reason)) => self.status = Some(reason),
-            None => runner.open_default(&path)?,
+            None => {
+                runner.open_default(&path)?;
+                self.note_recent(&path, crate::recent::RecentUse::Opened);
+            }
         }
         Ok(true)
     }
@@ -3976,7 +4119,9 @@ impl FileExplorerWidget {
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        let (icon, msg) = if self.is_trash_view() {
+        let (icon, msg) = if self.is_recent_view() {
+            (ui::icons::Icon::History, self.empty_state_message())
+        } else if self.is_trash_view() {
             (ui::icons::Icon::Trash2, self.empty_state_message())
         } else {
             (ui::icons::Icon::Folder, self.empty_state_message())
@@ -4342,7 +4487,8 @@ impl FileExplorerWidget {
             return false;
         }
         match fileops::rename(&path, &new_name) {
-            Ok(_) => {
+            Ok(renamed) => {
+                self.recent_moved(&path, &renamed);
                 self.end_rename_editor();
                 self.refresh();
                 self.status = Some(t("files-renamed"));
@@ -4474,19 +4620,6 @@ fn merge_supported_path(path: &std::path::Path) -> bool {
         .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "txt" | "qdoc"))
 }
 
-#[cfg(test)]
-mod merge_support_tests {
-    use super::merge_supported_path;
-
-    #[test]
-    fn merge_is_never_offered_for_binary_or_unsupported_names() {
-        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
-        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
-        assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-}
-
 /// How the explorer hands a document to the application that owns it.
 ///
 /// `Ok(())` means the host took it. `Err(reason)` is a failure the user
@@ -4608,6 +4741,12 @@ impl FileExplorerWidget {
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
 
+        // Recent gathers files from many folders: it is for finding and
+        // reopening, not for editing in place.
+        if self.is_recent_view() {
+            return self.recent_menu_spec();
+        }
+
         // An archive is a read-only folder view. Synthetic member paths must
         // never leak into filesystem mutation commands such as rename, trash,
         // drag, paste, sharing, or terminal launch.
@@ -4652,6 +4791,9 @@ impl FileExplorerWidget {
                 t("files-menu-open"),
                 self.selection.primary().map(FileCommand::Activate),
             ));
+            if self.open_with_available() {
+                spec.push((t("files-menu-open-with"), Some(FileCommand::OpenWithMenu)));
+            }
             spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
@@ -4661,6 +4803,16 @@ impl FileExplorerWidget {
                     t("files-menu-send-nearby"),
                     Some(FileCommand::OpenNearbySend),
                 ));
+                if !self
+                    .shortcut_menu
+                    .offered_on(&self.selected_entry_identities())
+                    .is_empty()
+                {
+                    spec.push((
+                        t("files-menu-run-shortcut"),
+                        Some(FileCommand::OpenShortcutsMenu),
+                    ));
+                }
             }
             let displayed = self.displayed_entries();
             if self.selection.selected().iter().any(|index| {
@@ -5160,6 +5312,48 @@ impl FileExplorerWidget {
         layout_menu_widget(&mut self.submenu);
     }
 
+    /// Open the "Run shortcut" flyout: one row per shortcut that runs on the
+    /// selected entry.
+    fn open_shortcuts_submenu(&mut self, at: Point) {
+        let identities = self.selected_entry_identities();
+        let offered: Vec<(String, String)> = self
+            .shortcut_menu
+            .offered_on(&identities)
+            .into_iter()
+            .map(|offer| (offer.label().to_string(), offer.id().to_string()))
+            .collect();
+        if offered.is_empty() {
+            self.submenu.close();
+            self.submenu_commands.clear();
+            return;
+        }
+        let mut menu = self.new_overlay_menu();
+        let mut cmds = Vec::with_capacity(offered.len());
+        for (label, shortcut) in offered {
+            menu.push(MenuItem::action(label, || {}));
+            cmds.push(Some(FileCommand::RunShortcut { shortcut }));
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.submenu = menu;
+        self.submenu_commands = cmds;
+        layout_menu_widget(&mut self.submenu);
+    }
+
+    /// Say on the status line what became of a shortcut run from the menu,
+    /// when `event` says.
+    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.status = match self.shortcut_menu.handle_event(event) {
+            Some(crate::shortcut_menu::ShortcutOutcome::Started { label }) => {
+                Some(t_args("files-shortcut-started", &[arg("shortcut", label)]))
+            }
+            Some(crate::shortcut_menu::ShortcutOutcome::Refused { label, reason }) => Some(t_args(
+                "files-shortcut-failed",
+                &[arg("shortcut", label), arg("reason", reason)],
+            )),
+            None => return,
+        };
+    }
+
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
         let online = targets
             .iter()
@@ -5489,11 +5683,20 @@ impl FileExplorerWidget {
         }
         if let Some(idx) = self.context_menu.item_at([p.x, p.y]) {
             let cmd = self.menu_commands.get(idx).cloned().flatten();
-            if let Some(FileCommand::OpenTemplatesMenu) = cmd {
+            if let Some(FileCommand::OpenTemplatesMenu | FileCommand::OpenShortcutsMenu) = cmd {
                 // Open the flyout to the right of the clicked row; keep the
                 // main menu open behind it.
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                self.open_templates_submenu(anchor);
+                if cmd == Some(FileCommand::OpenShortcutsMenu) {
+                    self.open_shortcuts_submenu(anchor);
+                } else {
+                    self.open_templates_submenu(anchor);
+                }
+                return true;
+            }
+            if let Some(FileCommand::OpenWithMenu) = cmd {
+                let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
+                self.open_open_with_submenu(anchor);
                 return true;
             }
             self.context_menu.close();
@@ -5561,6 +5764,16 @@ impl FileExplorerWidget {
         if let Some(FileCommand::OpenTemplatesMenu) = command {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
+        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+            let rect = self.context_menu.get_rect();
+            self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
+        } else if let Some(FileCommand::OpenWithMenu) = command {
+            let rect = self.context_menu.get_rect();
+            let row = self
+                .context_menu
+                .item_rect(index)
+                .map_or(rect.y0 + 28.0, |row| row.y0);
+            self.open_open_with_submenu(Point::new(rect.x1 - 6.0, row));
         } else {
             self.submenu.close();
             self.context_menu.close();
@@ -5730,80 +5943,6 @@ impl FileExplorerWidget {
                 }
             }
             Err(error) => self.status = Some(error),
-        }
-        self.structure_dirty = true;
-        if lifecycle.is_some() {
-            self.resource_result = lifecycle;
-        }
-        true
-    }
-
-    fn poll_remote_browse_result(&mut self) -> bool {
-        let result = self
-            .remote_browse_result
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
-        let Some((account_id, result)) = result else {
-            return false;
-        };
-        self.remote_browse_pending = None;
-        let lifecycle = self
-            .resource_invocation
-            .take()
-            .map(|invocation| match &result {
-                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "files.remote_dav_failed".into(),
-                        message: error.message().into(),
-                        details: None,
-                        retryable: matches!(error, crate::remote_dav::DavError::Offline),
-                    },
-                },
-            });
-        match result {
-            Ok(RemoteDavResult::Browse(entries)) => {
-                self.remote_entries
-                    .insert(account_id.clone(), entries.clone());
-                let account = crate::remote_accounts::find(&account_id);
-                let label = account
-                    .as_ref()
-                    .map_or("Remote files", |account| account.label.as_str());
-                let lines = if entries.is_empty() {
-                    vec!["This remote folder is empty.".into()]
-                } else {
-                    entries
-                        .iter()
-                        .take(crate::remote_dav::MAX_REMOTE_ENTRIES)
-                        .map(|entry| {
-                            let kind = if entry.is_dir { "Folder" } else { "File" };
-                            format!("{kind} · {}", entry.name)
-                        })
-                        .collect()
-                };
-                self.status = Some(format!("Loaded {} remote item(s)", entries.len()));
-                self.show_collab_panel(CollabPanel {
-                    history: None,
-                    title: format!("{label} files"),
-                    summary: "Remote folder".into(),
-                    lines,
-                    action: None,
-                });
-            }
-            Ok(RemoteDavResult::Downloaded(path)) => {
-                self.status = Some(format!("Downloaded to {}", path.display()));
-                self.refresh_metadata_preserving_view();
-            }
-            Ok(RemoteDavResult::Mutated(message)) => {
-                self.status = Some(message);
-                self.remote_entries.remove(&account_id);
-            }
-            Err(error) => self.status = Some(error.message().into()),
         }
         self.structure_dirty = true;
         if lifecycle.is_some() {
@@ -6608,7 +6747,7 @@ impl FileExplorerWidget {
             &"",
         ) {
             folder.actions.push(spec.with_contract(ActionContract {
-                availability: if self.current_path.exists() {
+                availability: if self.current_path.exists() || self.is_recent_view() {
                     Availability::Available
                 } else {
                     Availability::Unavailable {
@@ -6633,6 +6772,7 @@ impl FileExplorerWidget {
             ("up", "Parent folder", "up", OperationKind::View),
             ("back", "Back", "back", OperationKind::View),
             ("forward", "Forward", "forward", OperationKind::View),
+            ("recent", "Show recent files", "recent", OperationKind::View),
             (
                 "open-terminal",
                 "Open terminal here",
@@ -6899,6 +7039,7 @@ impl FileExplorerWidget {
                 .actions
                 .push(spec.with_contract(ActionContract::view()));
         }
+        self.append_open_with_actions(entry, &resource_id, &mut resource);
         if !self.is_trash_view() {
             let rename_resource_id = resource_id.clone();
             resource.actions.push(
@@ -7155,11 +7296,16 @@ impl FileExplorerWidget {
 
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        self.nearby_send.poll_if_due(Instant::now());
-        self.nearby_send.take_requests()
+        let now = Instant::now();
+        self.nearby_send.poll_if_due(now);
+        self.shortcut_menu.poll_if_due(now);
+        let mut requests = self.nearby_send.take_requests();
+        requests.extend(self.shortcut_menu.take_requests());
+        requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
@@ -7286,6 +7432,7 @@ impl Widget for FileExplorerWidget {
             "files.paste",
             "files.new-from-template",
             "files.open",
+            "files.open-with",
             "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
@@ -7296,7 +7443,6 @@ impl Widget for FileExplorerWidget {
             "files.rename",
             "files.share-link",
             "files.remote-account",
-            "files.remote-dav",
             // The hand-positioned recovery Button still publishes through the
             // normal action door; this handler delegates its stable control
             // resource back to the retained widget.
@@ -7381,71 +7527,46 @@ impl Widget for FileExplorerWidget {
                     );
             folder.children.push(resource);
         }
-        // External file accounts are a read-only projection of Settings'
-        // canonical account store. Files intentionally has no network
-        // permission and never opens the credential vault; opening one shows
-        // its truthful lifecycle/mount state rather than fabricating a remote
-        // directory that this sandbox cannot actually access.
+        // External file accounts are the folders the storage daemon's cloud
+        // service mounts under `~/Remote`. Files never talks to the server or
+        // opens the vault: it opens the folder like any other place and shows
+        // the account's reported health as a badge.
         for account in self.remote_account_snapshot() {
             let resource_id = crate::remote_accounts::resource_id(&account.id);
-            let payload = vec!["details".to_string(), account.id.to_string()];
+            let availability = remote_folder_availability(&account);
             let mut resource =
                 Resource::new(resource_id, "files.remote-account", account.label.clone());
+            resource.presentation = Some(tilo_actions::ResourcePresentation {
+                detail: Some(format!("{} · {}", account.kind.label(), account.host)),
+                badge: account.health.badge().map(str::to_owned),
+                preview: None,
+            });
+            let open_payload = vec!["open".to_string(), account.id.to_string()];
             resource.actions.push(
                 ActionSpec::operation(
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Show connection details",
+                    "Open",
                     OperationKind::View,
                     "files.remote-account",
-                    &payload,
+                    &open_payload,
+                )
+                .expect("remote account open payload is serializable")
+                .with_contract(ActionContract {
+                    availability,
+                    ..ActionContract::view()
+                }),
+            );
+            let details_payload = vec!["details".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "details",
+                    "Show account status",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &details_payload,
                 )
                 .expect("remote account detail payload is serializable")
                 .with_contract(ActionContract::view()),
-            );
-            let create_account_id = account.id.to_string();
-            resource.actions.push(
-                ActionSpec::prompted_operation(
-                    "create-folder",
-                    "Create remote folder",
-                    "Folder name",
-                    "New Folder",
-                    OperationKind::Effect,
-                    "files.remote-dav",
-                    move |name| {
-                        EncodedAction::encode_operation(
-                            "files.remote-dav",
-                            &vec!["create-folder", create_account_id.as_str(), name],
-                        )
-                        .expect("remote create-folder payload is serializable")
-                    },
-                )
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job)
-                .with_contract(ActionContract {
-                    availability: remote_dav_availability(account.health),
-                    permission: PermissionRequirement::Write,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-            let browse_payload = vec!["browse".to_string(), account.id.to_string()];
-            resource.actions.push(
-                ActionSpec::operation(
-                    "browse",
-                    "Browse remote files",
-                    OperationKind::Effect,
-                    "files.remote-dav",
-                    &browse_payload,
-                )
-                .expect("remote browse payload is serializable")
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job)
-                .with_contract(ActionContract {
-                    availability: remote_dav_availability(account.health),
-                    permission: PermissionRequirement::Read,
-                    retry: RetryPolicy::Idempotent,
-                    ..ActionContract::default()
-                }),
             );
             let reauth_payload = vec!["reauthenticate".to_string(), account.id.to_string()];
             resource.actions.push(
@@ -7459,96 +7580,6 @@ impl Widget for FileExplorerWidget {
                 .expect("remote account reauthentication payload is serializable")
                 .with_contract(ActionContract::view()),
             );
-            if let Some(entries) = self.remote_entries.get(account.id.as_str()) {
-                for entry in entries {
-                    let entry_id = format!(
-                        "{}:{}",
-                        crate::remote_accounts::resource_id(&account.id),
-                        hex_prefix(entry.href.as_bytes(), entry.href.len())
-                    );
-                    let download_payload =
-                        vec!["download", account.id.as_str(), entry.href.as_str()];
-                    let delete_payload = vec!["delete", account.id.as_str(), entry.href.as_str()];
-                    let rename_account_id = account.id.to_string();
-                    let rename_href = entry.href.clone();
-                    let mut remote_entry =
-                        Resource::new(entry_id, "files.remote-entry", entry.name.clone());
-                    remote_entry.actions.push(
-                        ActionSpec::operation(
-                            "download",
-                            "Download to this folder",
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            &download_payload,
-                        )
-                        .expect("remote download payload")
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Read,
-                            // A prior attempt may already have written the
-                            // local destination before its result was lost.
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    remote_entry.actions.push(
-                        ActionSpec::prompted_operation(
-                            "rename",
-                            "Rename",
-                            "New name",
-                            &entry.name,
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            move |name| {
-                                EncodedAction::encode_operation(
-                                    "files.remote-dav",
-                                    &vec![
-                                        "rename",
-                                        rename_account_id.as_str(),
-                                        rename_href.as_str(),
-                                        name,
-                                    ],
-                                )
-                                .expect("remote rename payload")
-                            },
-                        )
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Write,
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    remote_entry.actions.push(
-                        ActionSpec::operation(
-                            "delete",
-                            "Delete remote file",
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            &delete_payload,
-                        )
-                        .expect("remote delete payload")
-                        .destructive()
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Write,
-                            risk: RiskLevel::Destructive,
-                            confirmation: ConfirmationPolicy::Confirm,
-                            retry: RetryPolicy::AtMostOnce,
-                            execution: ExecutionMode::Background { cancellable: false },
-                            result: ResultSpec::Job,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    resource.children.push(remote_entry);
-                }
-            }
             folder.children.push(resource);
         }
         // Keep the context catalogue bounded. The visible directory can still
@@ -7590,6 +7621,7 @@ impl Widget for FileExplorerWidget {
                     .actions
                     .push(spec.with_contract(ActionContract::view()));
             }
+            self.append_open_with_actions(entry, &resource_id, &mut resource);
             if !self.is_trash_view() {
                 let rename_resource_id = resource_id.clone();
                 resource.actions.push(
@@ -7935,6 +7967,9 @@ impl Widget for FileExplorerWidget {
                     .ok_or_else(|| "file location is no longer available".to_string())?;
                 self.open_path(target);
             }
+            (OperationKind::Effect, "files.open-with") => {
+                self.invoke_open_with(payload)?;
+            }
             (OperationKind::View, "files.reveal-record") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let record_id = uuid::Uuid::parse_str(&value)
@@ -7960,9 +7995,11 @@ impl Widget for FileExplorerWidget {
             (kind, "files.folder-command") => {
                 let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let expected_kind = match verb.as_str() {
-                    "up" | "back" | "forward" | "list" | "grid" | "sort-name" | "sort-size"
-                    | "sort-type" | "sort-modified" | "sort-ascending" | "sort-descending"
-                    | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => OperationKind::View,
+                    "up" | "back" | "forward" | "recent" | "list" | "grid" | "sort-name"
+                    | "sort-size" | "sort-type" | "sort-modified" | "sort-ascending"
+                    | "sort-descending" | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => {
+                        OperationKind::View
+                    }
                     "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
                     | "undo-trash" => OperationKind::Effect,
                     _ => return Ok(false),
@@ -7974,6 +8011,7 @@ impl Widget for FileExplorerWidget {
                     "up" => self.go_up(),
                     "back" => self.history_back(),
                     "forward" => self.history_forward(),
+                    "recent" => self.navigate(crate::recent::location()),
                     "list" => self.set_view_mode(ViewMode::List),
                     "grid" => self.set_view_mode(ViewMode::Grid),
                     "sort-name" => self.set_sort_by(SortBy::Name),
@@ -8208,9 +8246,14 @@ impl Widget for FileExplorerWidget {
                 let id = args
                     .get(1)
                     .ok_or_else(|| "missing remote account id".to_string())?;
-                let account = crate::remote_accounts::find(id)
+                let account = self
+                    .remote_account(id)
                     .ok_or_else(|| "remote account is no longer available".to_string())?;
                 match operation.as_str() {
+                    "open" => match (&account.mount, remote_folder_availability(&account)) {
+                        (Some(mount), Availability::Available) => self.open_path(mount.clone()),
+                        _ => self.show_remote_account_panel(&account, false),
+                    },
                     "details" => self.show_remote_account_panel(&account, false),
                     "reauthenticate" => self.show_remote_account_panel(&account, true),
                     _ => return Ok(false),
@@ -8238,107 +8281,6 @@ impl Widget for FileExplorerWidget {
         if self.resource_invocation.is_some() {
             return Err("another file operation is still running".into());
         }
-        if type_id == "files.remote-dav" {
-            if kind != OperationKind::Effect {
-                return Err("remote file operations must be effect actions".into());
-            }
-            let args: Vec<String> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let operation = args
-                .first()
-                .ok_or_else(|| "missing remote DAV operation".to_string())?;
-            let account_id = args
-                .get(1)
-                .ok_or_else(|| "missing remote account id".to_string())?
-                .clone();
-            let account = crate::remote_accounts::find(&account_id)
-                .ok_or_else(|| "remote account is no longer available".to_string())?;
-            if matches!(
-                account.health,
-                crate::remote_accounts::RemoteAccountHealth::Disabled
-            ) {
-                return Err("remote account is disabled".into());
-            }
-            if self.remote_browse_pending.is_some() {
-                return Err("a remote operation is already running".into());
-            }
-            let args = args.clone();
-            let current_path = self.current_path.clone();
-            let known_entry = args.get(2).is_some_and(|href| {
-                self.remote_entries
-                    .get(&account_id)
-                    .is_some_and(|entries| entries.iter().any(|entry| &entry.href == href))
-            });
-            if matches!(operation.as_str(), "download" | "delete" | "rename") && !known_entry {
-                return Err("remote file is no longer available".into());
-            }
-            let valid_shape = match operation.as_str() {
-                "browse" => args.len() == 2,
-                "create-folder" | "download" | "delete" => args.len() == 3,
-                "rename" => args.len() == 4,
-                _ => false,
-            };
-            if !valid_shape {
-                return Err("invalid remote file operation".into());
-            }
-            self.resource_invocation = Some(invocation);
-            self.remote_browse_pending = Some(account_id.clone());
-            self.status = Some("Running remote file operation…".into());
-            let result = Arc::clone(&self.remote_browse_result);
-            std::thread::spawn(move || {
-                let id = accounts::AccountId::from(account_id.clone());
-                let outcome = crate::remote_dav::DavConnection::open(&id).and_then(|connection| {
-                    match args.first().map(String::as_str) {
-                        Some("browse") => connection.list("").map(RemoteDavResult::Browse),
-                        Some("create-folder") => connection
-                            .create_folder(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Created remote folder".into())),
-                        Some("download") => {
-                            let href = args
-                                .get(2)
-                                .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?;
-                            let bytes = connection.download_url(href)?;
-                            let name = href
-                                .rsplit('/')
-                                .next()
-                                .filter(|name| !name.is_empty())
-                                .ok_or(crate::remote_dav::DavError::InvalidRemoteResponse)?;
-                            let destination = current_path.join(name);
-                            if destination.exists() {
-                                return Err(crate::remote_dav::DavError::Conflict);
-                            }
-                            std::fs::write(&destination, bytes)
-                                .map_err(|_| crate::remote_dav::DavError::RemoteFailure)?;
-                            Ok(RemoteDavResult::Downloaded(destination))
-                        }
-                        Some("rename") => connection
-                            .rename_url(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                args.get(3)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                None,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Renamed remote file".into())),
-                        Some("delete") => connection
-                            .delete_url(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                None,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Deleted remote file".into())),
-                        _ => Err(crate::remote_dav::DavError::InvalidConfiguration),
-                    }
-                });
-                if let Ok(mut slot) = result.lock() {
-                    *slot = Some((account_id, outcome));
-                }
-            });
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
@@ -8361,7 +8303,6 @@ impl Widget for FileExplorerWidget {
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
-        self.poll_remote_browse_result();
         if self
             .resource_result
             .as_ref()
@@ -8572,7 +8513,6 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.poll_remote_browse_result();
         self.paint_background(scene, transform, theme);
         // Recurse with `draw_with_presence` (not the plain `draw`) so the
         // inner `Scrollable` pushes its viewport rect and the file list culls
@@ -8637,6 +8577,7 @@ impl Widget for FileExplorerWidget {
         // floats above everything else.
         self.draw_drop_highlight(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
+        self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
     }
 
     // Primary widget event dispatcher; pointer, keyboard, drag, menu, and
@@ -8660,6 +8601,18 @@ impl Widget for FileExplorerWidget {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         self.poll_share_result();
         self.poll_history_result();
+        if self.app_chooser_open() {
+            self.route_app_chooser_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                focus_target,
+            );
+            *handled = true;
+            return;
+        }
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -8877,6 +8830,9 @@ impl Widget for FileExplorerWidget {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.app_chooser.take_control_invocation() {
+            return Some(invocation);
+        }
         self.state_retry.take_control_invocation().or_else(|| {
             self.children_mut()
                 .into_iter()
@@ -8895,7 +8851,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn traps_focus(&self) -> bool {
-        self.collab_panel.is_some()
+        self.collab_panel.is_some() || self.app_chooser_open()
     }
 
     fn is_focusable(&self) -> bool {
@@ -8916,6 +8872,9 @@ impl Widget for FileExplorerWidget {
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        if self.app_chooser_open() {
+            return self.app_chooser.accessibility();
+        }
         if let Some(panel) = &self.collab_panel {
             let mut children = Vec::with_capacity(panel.lines.len() + 2);
             children
@@ -9050,6 +9009,9 @@ impl AppWidget for FileExplorerWidget {
     }
 }
 
+#[path = "files_app/open_with_recent.rs"]
+mod open_with_recent;
+
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
@@ -9057,3 +9019,16 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
+
+#[cfg(test)]
+mod merge_support_tests {
+    use super::merge_supported_path;
+
+    #[test]
+    fn merge_is_never_offered_for_binary_or_unsupported_names() {
+        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
+        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
+        assert!(!merge_supported_path(std::path::Path::new("unknown")));
+    }
+}

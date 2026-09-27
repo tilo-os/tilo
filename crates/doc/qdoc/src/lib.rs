@@ -10,11 +10,12 @@
 //! File formats are not storage: importing and exporting `.docx`, `.odt`, `.md` and the rest is the
 //! job of the `qdoc-codecs` crate, which projects files into and out of these resources.
 //!
-//! Some of what lives here is not specific to documents and is meant for the app framework's
-//! resource layer once it offers it: version history and time travel ([`history`]), fractional
-//! order keys ([`order`]), deterministic id minting for replayable actions ([`IdGen`],
-//! [`model::seeded_id_gen`]), the shared schema genesis ([`model::init`]) and the bulk change
-//! writer ([`DocMut::bulk`]).
+//! Rich text as a resource, with the typed action vocabulary every editor edits through, is the
+//! `qdoc-rich-text` crate. The app framework's resource layer (`tilo_resource`) owns version
+//! history, time travel and fractional order keys. What remains here is document-specific:
+//! deterministic id minting for replayable actions
+//! ([`IdGen`], [`model::seeded_id_gen`]), the shared schema genesis ([`model::init`]) and the
+//! bulk change writer ([`DocMut::bulk`]).
 
 #![cfg_attr(
     test,
@@ -32,9 +33,7 @@
 pub mod diff;
 pub mod document;
 pub mod export;
-pub mod history;
 pub mod model;
-pub mod order;
 pub mod schema;
 pub mod sheet;
 pub mod snapshot;
@@ -45,7 +44,6 @@ pub use diff::{
 };
 pub use document::{DocError, Document, MarkSpan, author_runs};
 pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRun, RangeBoundary};
-pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{

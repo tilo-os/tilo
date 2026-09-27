@@ -943,7 +943,8 @@ mod tests {
     }
 
     #[test]
-    fn default_cursor_is_cached_and_antialiased_at_accessibility_sizes() {
+    fn cursor_images_are_cached_antialiased_and_composited_with_clipping() {
+        // Phase `default_cursor_is_cached_and_antialiased_at_accessibility_sizes`.
         for size in [24, 48, 64] {
             let first = bitmap(CursorShape::Default, size);
             let second = bitmap(CursorShape::Default, size);
@@ -959,6 +960,14 @@ mod tests {
                     .any(|pixel| (1..=254).contains(&pixel[3]))
             );
             assert!(first.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        }
+        // Phase `software_composite_clips_and_preserves_uncovered_pixels`.
+        {
+            let cursor = bitmap(CursorShape::Default, 24);
+            let mut dst = vec![17_u8; 12 * 12 * 4];
+            composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
+            assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
+            assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
         }
     }
 
@@ -1076,15 +1085,6 @@ mod tests {
             PointerImage::Shape(CursorShape::Text).describe()["shape"],
             "text"
         );
-    }
-
-    #[test]
-    fn software_composite_clips_and_preserves_uncovered_pixels() {
-        let cursor = bitmap(CursorShape::Default, 24);
-        let mut dst = vec![17_u8; 12 * 12 * 4];
-        composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
-        assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
-        assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
     }
 
     #[test]

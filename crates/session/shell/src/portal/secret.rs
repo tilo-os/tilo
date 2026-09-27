@@ -262,112 +262,116 @@ fn decode(encoded: &str) -> zbus::fdo::Result<[u8; SECRET_BYTES]> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    /// Store bytes sealed before a crypto-stack upgrade; the store file
-    /// persists across builds, so its XChaCha20-Poly1305 framing is pinned.
     #[test]
-    fn store_sealed_by_an_earlier_build_still_opens() {
-        let sealed = hex::decode(
-            "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
-            88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
-        )
-        .unwrap();
-        let opened = open_store(&[0x61; SECRET_BYTES], &sealed).unwrap();
-        assert_eq!(opened.as_slice(), b"kat-portal-store");
-        assert!(open_store(&[0x62; SECRET_BYTES], &sealed).is_none());
-    }
-
-    /// A legacy store still opens, and the next seal writes the current
-    /// envelope, which opens only under the portal store's binding.
-    #[test]
-    fn legacy_store_is_rewritten_as_a_bound_envelope() {
-        let legacy = hex::decode(
-            "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
-            88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
-        )
-        .unwrap();
-        let key = [0x61; SECRET_BYTES];
-        let plaintext = open_store(&key, &legacy).unwrap();
-        let resealed = seal_store(&key, &plaintext).unwrap();
-        assert!(tilo_seal::envelope::is_envelope(&resealed));
-        assert!(!resealed.starts_with(LEGACY_STORE_MAGIC));
-        assert_eq!(
-            open_store(&key, &resealed).unwrap().as_slice(),
-            b"kat-portal-store"
-        );
-        assert!(open_store(&[0x62; SECRET_BYTES], &resealed).is_none());
-        let foreign = tilo_seal::envelope::seal(
-            &SymmetricKey::from_bytes(key),
-            Context::new(Label::SecretVault, STORE_RECORD),
-            b"kat-portal-store",
-        )
-        .unwrap();
-        assert!(open_store(&key, &foreign).is_none());
-    }
-    #[test]
-    fn app_secret_persists_and_is_separate() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("secrets.json");
-        let a = SecretStore::at_path(&p);
-        let one = a.secret_for("org.example.One").unwrap();
-        assert_eq!(
-            one,
-            SecretStore::at_path(&p)
-                .secret_for("org.example.One")
-                .unwrap()
-        );
-        assert_ne!(one, a.secret_for("org.example.Two").unwrap());
-        assert_eq!(
-            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let disk = fs::read(&p).unwrap();
-        assert!(tilo_seal::envelope::is_envelope(&disk));
-        assert!(!disk.windows(one.len()).any(|window| window == one));
-        assert_eq!(
-            fs::metadata(key_path(&p)).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+    fn secret_store_envelopes_open_across_builds_and_migrate_legacy() {
+        // Phase `store_sealed_by_an_earlier_build_still_opens`.
+        // Store bytes sealed before a crypto-stack upgrade; the store file
+        // persists across builds, so its XChaCha20-Poly1305 framing is pinned.
+        {
+            let sealed = hex::decode(
+                "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
+                88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
+            )
+            .unwrap();
+            let opened = open_store(&[0x61; SECRET_BYTES], &sealed).unwrap();
+            assert_eq!(opened.as_slice(), b"kat-portal-store");
+            assert!(open_store(&[0x62; SECRET_BYTES], &sealed).is_none());
+        }
+        // Phase `legacy_store_is_rewritten_as_a_bound_envelope`.
+        // A legacy store still opens, and the next seal writes the current
+        // envelope, which opens only under the portal store's binding.
+        {
+            let legacy = hex::decode(
+                "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
+                88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
+            )
+            .unwrap();
+            let key = [0x61; SECRET_BYTES];
+            let plaintext = open_store(&key, &legacy).unwrap();
+            let resealed = seal_store(&key, &plaintext).unwrap();
+            assert!(tilo_seal::envelope::is_envelope(&resealed));
+            assert!(!resealed.starts_with(LEGACY_STORE_MAGIC));
+            assert_eq!(
+                open_store(&key, &resealed).unwrap().as_slice(),
+                b"kat-portal-store"
+            );
+            assert!(open_store(&[0x62; SECRET_BYTES], &resealed).is_none());
+            let foreign = tilo_seal::envelope::seal(
+                &SymmetricKey::from_bytes(key),
+                Context::new(Label::SecretVault, STORE_RECORD),
+                b"kat-portal-store",
+            )
+            .unwrap();
+            assert!(open_store(&key, &foreign).is_none());
+        }
     }
 
     #[test]
-    fn existing_key_is_never_replaced() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("secrets.json");
-        let key = key_path(&p);
+    fn app_secrets_share_one_key_that_is_never_replaced() {
+        // Phase `app_secret_persists_and_is_separate`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("secrets.json");
+            let a = SecretStore::at_path(&p);
+            let one = a.secret_for("org.example.One").unwrap();
+            assert_eq!(
+                one,
+                SecretStore::at_path(&p)
+                    .secret_for("org.example.One")
+                    .unwrap()
+            );
+            assert_ne!(one, a.secret_for("org.example.Two").unwrap());
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let disk = fs::read(&p).unwrap();
+            assert!(tilo_seal::envelope::is_envelope(&disk));
+            assert!(!disk.windows(one.len()).any(|window| window == one));
+            assert_eq!(
+                fs::metadata(key_path(&p)).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // Phase `existing_key_is_never_replaced`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("secrets.json");
+            let key = key_path(&p);
 
-        // Public access: refused rather than trusted or rewritten.
-        fs::write(&key, [7_u8; SECRET_BYTES]).unwrap();
-        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(load_or_create_key(&p).is_none());
-        assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
-        assert!(
-            SecretStore::at_path(&p)
-                .secret_for("org.example.One")
-                .is_err()
-        );
-        assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
+            // Public access: refused rather than trusted or rewritten.
+            fs::write(&key, [7_u8; SECRET_BYTES]).unwrap();
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(load_or_create_key(&p).is_none());
+            assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
+            assert!(
+                SecretStore::at_path(&p)
+                    .secret_for("org.example.One")
+                    .is_err()
+            );
+            assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
 
-        // Wrong length: refused and left in place.
-        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::write(&key, [7_u8; 3]).unwrap();
-        assert!(load_or_create_key(&p).is_none());
-        assert_eq!(fs::read(&key).unwrap(), [7_u8; 3]);
-    }
-
-    #[test]
-    fn concurrent_first_starts_share_one_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = Arc::new(dir.path().join("secrets.json"));
-        let keys: Vec<[u8; SECRET_BYTES]> = (0..8)
-            .map(|_| {
-                let p = Arc::clone(&p);
-                std::thread::spawn(move || *load_or_create_key(&p).expect("key"))
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect();
-        assert!(keys.iter().all(|key| *key == keys[0]));
-        assert_eq!(fs::read(key_path(&p)).unwrap(), keys[0]);
+            // Wrong length: refused and left in place.
+            fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::write(&key, [7_u8; 3]).unwrap();
+            assert!(load_or_create_key(&p).is_none());
+            assert_eq!(fs::read(&key).unwrap(), [7_u8; 3]);
+        }
+        // Phase `concurrent_first_starts_share_one_key`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = Arc::new(dir.path().join("secrets.json"));
+            let keys: Vec<[u8; SECRET_BYTES]> = (0..8)
+                .map(|_| {
+                    let p = Arc::clone(&p);
+                    std::thread::spawn(move || *load_or_create_key(&p).expect("key"))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect();
+            assert!(keys.iter().all(|key| *key == keys[0]));
+            assert_eq!(fs::read(key_path(&p)).unwrap(), keys[0]);
+        }
     }
 }

@@ -141,28 +141,43 @@ impl Registry {
 mod tests {
     use super::*;
 
+    /// One `[[provider]]` table.
+    fn provider(mime: &str, package: &str, wasm: &str, priority: &str, version: &str) -> String {
+        format!(
+            "[[provider]]\nmime = {mime:?}\npackage = {package:?}\nwasm = {wasm:?}\n\
+             version = {version:?}\npriority = {priority:?}\n"
+        )
+    }
+
     #[test]
-    fn parses_well_formed_toml() {
-        let toml = r#"
-[[provider]]
-mime     = "text/markdown"
-package  = "so.tilo.qdoc-md"
-wasm     = "/path/to/provider.wasm"
-version  = "1.0.0"
-priority = "builtin"
-trust    = ["tilo-curated/2025"]
-"#;
-        let r = Registry::parse(toml).unwrap();
+    fn registry_parses_providers_and_limits_and_picks_the_highest_tier() {
+        // A well-formed provider.
+        let toml = provider(
+            "text/markdown",
+            "so.tilo.qdoc-md",
+            "/path/to/provider.wasm",
+            "builtin",
+            "1.0.0",
+        ) + "trust = [\"tilo-curated/2025\"]\n";
+        let r = Registry::parse(&toml).unwrap();
         assert_eq!(r.providers.len(), 1);
         let p = &r.providers[0];
         assert_eq!(p.mime, "text/markdown");
         assert_eq!(p.package, "so.tilo.qdoc-md");
         assert_eq!(p.tier, Tier::Builtin);
         assert_eq!(p.trust, vec!["tilo-curated/2025".to_string()]);
-    }
 
-    #[test]
-    fn limits_default_and_override() {
+        // An unknown priority is refused.
+        let weird = provider(
+            "text/markdown",
+            "so.tilo.qdoc-md",
+            "/x.wasm",
+            "weird",
+            "1.0.0",
+        );
+        assert!(Registry::parse(&weird).is_err());
+
+        // Limits default, override, and refuse a zero cap or an unknown key.
         assert_eq!(Registry::parse("").unwrap().limits, Limits::default());
         let r = Registry::parse("[limits]\nfuel = 1000\nmax_memory_mib = 64\n").unwrap();
         assert_eq!(
@@ -174,45 +189,16 @@ trust    = ["tilo-curated/2025"]
         );
         assert!(Registry::parse("[limits]\nmax_memory_mib = 0\n").is_err());
         assert!(Registry::parse("[limits]\nwallclock = 3\n").is_err());
-    }
 
-    #[test]
-    fn missing_file_is_empty_registry() {
+        // A missing file is an empty registry.
         let r = Registry::load(Path::new("/nonexistent/tilo-format-host/test.toml")).unwrap();
         assert!(r.providers.is_empty());
-    }
 
-    #[test]
-    fn rejects_unknown_priority() {
-        let toml = r#"
-[[provider]]
-mime     = "text/markdown"
-package  = "so.tilo.qdoc-md"
-wasm     = "/x.wasm"
-version  = "1.0.0"
-priority = "weird"
-"#;
-        assert!(Registry::parse(toml).is_err());
-    }
-
-    #[test]
-    fn best_for_mime_picks_highest_tier() {
-        let toml = r#"
-[[provider]]
-mime = "text/markdown"
-package = "low"
-wasm = "/a.wasm"
-priority = "ephemeral"
-version = "0"
-
-[[provider]]
-mime = "text/markdown"
-package = "high"
-wasm = "/b.wasm"
-priority = "builtin"
-version = "0"
-"#;
-        let r = Registry::parse(toml).unwrap();
+        // The highest tier wins for a mime; an unknown mime has no provider.
+        let toml = provider("text/markdown", "low", "/a.wasm", "ephemeral", "0")
+            + "\n"
+            + &provider("text/markdown", "high", "/b.wasm", "builtin", "0");
+        let r = Registry::parse(&toml).unwrap();
         assert_eq!(r.best_for_mime("text/markdown").unwrap().package, "high");
         assert!(r.best_for_mime("application/x-nope").is_none());
     }

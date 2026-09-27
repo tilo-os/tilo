@@ -1,6 +1,6 @@
 //! Resolving an automerge actor id to the person behind it.
 //!
-//! `qdoc::history::VersionMeta` hands back an `actor_hex` — a raw hex string,
+//! `tilo_resource::history::Version` hands back an `actor_hex` — a raw hex string,
 //! unreadable on its own. This module is the join.
 //!
 //! Three shapes occur in documents: a raw 32-byte public key (the
@@ -244,131 +244,140 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 mod tests {
     use super::*;
 
-    /// Apps set their actor to the UTF-8 of `QUICK_APP_ID`; that has to come
-    /// back out, since it's the same key presence colours and author marks use.
     #[test]
-    fn handle_round_trips_the_app_id_an_app_set() {
-        let actor = automerge::ActorId::from("alice".as_bytes());
-        let hex = actor.to_hex_string();
-        assert_eq!(actor_handle(&hex).as_deref(), Some("alice"));
+    fn actors_are_named_by_registration_handle_or_agent_and_never_misread() {
+        // phase: handle_round_trips_the_app_id_an_app_set
+        // Apps set their actor to the UTF-8 of `QUICK_APP_ID`; that has to come
+        // back out, since it's the same key presence colours and author marks use.
+        {
+            let actor = automerge::ActorId::from("alice".as_bytes());
+            let hex = actor.to_hex_string();
+            assert_eq!(actor_handle(&hex).as_deref(), Some("alice"));
 
-        let dir = AuthorDirectory::new();
-        assert_eq!(dir.resolve(&hex).name, "alice");
-    }
+            let dir = AuthorDirectory::new();
+            assert_eq!(dir.resolve(&hex).name, "alice");
+        }
+        // phase: agent_principals_are_presented_as_named_agents_not_wire_ids
+        {
+            assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
+            assert_eq!(
+                participant_display_label("agent:opaque-runtime-id"),
+                "opaque-runtime-id · Agent"
+            );
+            assert_eq!(participant_display_label("agent:"), "Unknown agent · Agent");
+            assert_eq!(participant_display_label("ada"), "ada");
 
-    #[test]
-    fn agent_principals_are_presented_as_named_agents_not_wire_ids() {
-        assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
-        assert_eq!(
-            participant_display_label("agent:opaque-runtime-id"),
-            "opaque-runtime-id · Agent"
-        );
-        assert_eq!(participant_display_label("agent:"), "Unknown agent · Agent");
-        assert_eq!(participant_display_label("ada"), "ada");
+            let actor = automerge::ActorId::from("agent:scribe".as_bytes());
+            let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
+            assert_eq!(resolved.name, "scribe · Agent");
+            assert!(!resolved.name.contains("agent:"));
 
-        let actor = automerge::ActorId::from("agent:scribe".as_bytes());
-        let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
-        assert_eq!(resolved.name, "scribe · Agent");
-        assert!(!resolved.name.contains("agent:"));
+            let mut registered = AuthorDirectory::new();
+            registered.register(
+                "aabbccdd",
+                HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
+            );
+            assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
+        }
+        // phase: a_public_key_actor_is_not_mistaken_for_a_handle
+        // A 32-byte public key is not a handle. It must not be rendered as
+        // mojibake in the name slot.
+        {
+            // A key with high bytes: not valid UTF-8, so the handle decode fails.
+            let key: Vec<u8> = (0u8..32).map(|i| 0x80u8.wrapping_add(i)).collect();
+            let hex = automerge::ActorId::from(key.as_slice()).to_hex_string();
+            assert_eq!(
+                actor_handle(&hex),
+                None,
+                "a raw key must not decode to a handle"
+            );
 
-        let mut registered = AuthorDirectory::new();
-        registered.register(
-            "aabbccdd",
-            HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
-        );
-        assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
-    }
-
-    /// A 32-byte public key is not a handle. It must not be rendered as
-    /// mojibake in the name slot.
-    #[test]
-    fn a_public_key_actor_is_not_mistaken_for_a_handle() {
-        // A key with high bytes: not valid UTF-8, so the handle decode fails.
-        let key: Vec<u8> = (0u8..32).map(|i| 0x80u8.wrapping_add(i)).collect();
-        let hex = automerge::ActorId::from(key.as_slice()).to_hex_string();
-        assert_eq!(
-            actor_handle(&hex),
-            None,
-            "a raw key must not decode to a handle"
-        );
-
-        let dir = AuthorDirectory::new();
-        let a = dir.resolve(&hex);
-        assert_eq!(a.name, UNKNOWN_AUTHOR_NAME);
-        assert_eq!(a.identity_short.len(), SHORT_LEN);
-        assert!(
-            hex.starts_with(&a.identity_short),
-            "short id prefixes the actor"
-        );
-    }
-
-    /// An unknown actor gets a stable colour, so the same stranger is
-    /// recognisable across rows even with no name.
-    #[test]
-    fn unknown_actors_get_stable_distinct_hues() {
-        let a = "ff00ff00ff00ff00";
-        let b = "00ff00ff00ff00ff";
-        assert_eq!(stable_hue(a), stable_hue(a), "hue is deterministic");
-        assert_ne!(
-            stable_hue(a),
-            stable_hue(b),
-            "distinct actors, distinct hues"
-        );
-        assert!((0.0..360.0).contains(&stable_hue(a)));
-        assert!((0.0..360.0).contains(&stable_hue(b)));
-    }
-
-    /// An explicit registration beats the decoded handle — the collaboration
-    /// layer knows the peer's registered name; the handle is self-declared.
-    #[test]
-    fn registration_wins_over_the_decoded_handle() {
-        let hex = automerge::ActorId::from("wp-1234".as_bytes()).to_hex_string();
-        let mut dir = AuthorDirectory::new();
-        assert_eq!(dir.resolve(&hex).name, "wp-1234");
-        assert!(!dir.is_registered(&hex));
-
-        dir.register(&hex, HistoryAuthor::new("ada", 210.0, "abcdef01"));
-        let a = dir.resolve(&hex);
-        assert_eq!(a.name, "ada");
-        assert_eq!(a.avatar_hue, 210.0);
-        assert_eq!(a.identity_short, "abcdef01");
-        assert!(dir.is_registered(&hex));
-    }
-
-    /// Case-insensitive: `to_hex_string` is lowercase but callers that got the
-    /// id from somewhere else must still hit the same entry.
-    #[test]
-    fn lookup_is_case_insensitive() {
-        let mut dir = AuthorDirectory::new();
-        dir.register("ABCDEF01", HistoryAuthor::new("Bob", 30.0, "abcdef01"));
-        assert_eq!(dir.resolve("abcdef01").name, "Bob");
-        assert_eq!(dir.resolve("AbCdEf01").name, "Bob");
-    }
-
-    /// The identity file's avatar colour drives the dot, so the timeline
-    /// agrees with the colour the user picked at first boot.
-    #[test]
-    fn rgb_maps_onto_the_expected_hue_sextants() {
-        assert!((rgb_to_hue([255, 0, 0]) - 0.0).abs() < 0.5, "red");
-        assert!((rgb_to_hue([0, 255, 0]) - 120.0).abs() < 0.5, "green");
-        assert!((rgb_to_hue([0, 0, 255]) - 240.0).abs() < 0.5, "blue");
-        // First boot writes neutral grey; it has no hue and must not blow up.
-        assert_eq!(rgb_to_hue([128, 128, 128]), 0.0);
-    }
-
-    /// Garbage in the actor slot must not produce a garbage name.
-    #[test]
-    fn malformed_actor_ids_fall_through_to_unknown() {
-        let dir = AuthorDirectory::new();
-        for bad in ["", "zz", "abc", "00", "0a0b0c0d0e0f1011"] {
-            let a = dir.resolve(bad);
+            let dir = AuthorDirectory::new();
+            let a = dir.resolve(&hex);
+            assert_eq!(a.name, UNKNOWN_AUTHOR_NAME);
+            assert_eq!(a.identity_short.len(), SHORT_LEN);
             assert!(
-                a.name == UNKNOWN_AUTHOR_NAME || !a.name.is_empty(),
-                "{bad:?} produced an empty name"
+                hex.starts_with(&a.identity_short),
+                "short id prefixes the actor"
             );
         }
-        // A NUL-containing "handle" is not a handle.
-        assert_eq!(actor_handle("610062"), None, "control bytes are rejected");
+        // phase: registration_wins_over_the_decoded_handle
+        // An explicit registration beats the decoded handle — the collaboration
+        // layer knows the peer's registered name; the handle is self-declared.
+        {
+            let hex = automerge::ActorId::from("wp-1234".as_bytes()).to_hex_string();
+            let mut dir = AuthorDirectory::new();
+            assert_eq!(dir.resolve(&hex).name, "wp-1234");
+            assert!(!dir.is_registered(&hex));
+
+            dir.register(&hex, HistoryAuthor::new("ada", 210.0, "abcdef01"));
+            let a = dir.resolve(&hex);
+            assert_eq!(a.name, "ada");
+            assert_eq!(a.avatar_hue, 210.0);
+            assert_eq!(a.identity_short, "abcdef01");
+            assert!(dir.is_registered(&hex));
+        }
+        // phase: lookup_is_case_insensitive
+        // Case-insensitive: `to_hex_string` is lowercase but callers that got the
+        // id from somewhere else must still hit the same entry.
+        {
+            let mut dir = AuthorDirectory::new();
+            dir.register("ABCDEF01", HistoryAuthor::new("Bob", 30.0, "abcdef01"));
+            assert_eq!(dir.resolve("abcdef01").name, "Bob");
+            assert_eq!(dir.resolve("AbCdEf01").name, "Bob");
+        }
+        // phase: malformed_actor_ids_fall_through_to_unknown
+        // Garbage in the actor slot must not produce a garbage name.
+        {
+            let dir = AuthorDirectory::new();
+            for bad in ["", "zz", "abc", "00", "0a0b0c0d0e0f1011"] {
+                let a = dir.resolve(bad);
+                assert!(
+                    a.name == UNKNOWN_AUTHOR_NAME || !a.name.is_empty(),
+                    "{bad:?} produced an empty name"
+                );
+            }
+            // A NUL-containing "handle" is not a handle.
+            assert_eq!(actor_handle("610062"), None, "control bytes are rejected");
+        }
+        // phase: a_missing_identity_file_is_not_an_author
+        // With no identity anywhere, the chrome gets `None` and falls through to
+        // the handle/unknown ladder — an app run outside a Tilo session is not an
+        // error.
+        {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());
+            assert!(local_identity_author().is_none());
+        }
+    }
+
+    #[test]
+    fn unknown_actors_get_stable_distinct_hues_in_the_right_sextants() {
+        // phase: unknown_actors_get_stable_distinct_hues
+        // An unknown actor gets a stable colour, so the same stranger is
+        // recognisable across rows even with no name.
+        {
+            let a = "ff00ff00ff00ff00";
+            let b = "00ff00ff00ff00ff";
+            assert_eq!(stable_hue(a), stable_hue(a), "hue is deterministic");
+            assert_ne!(
+                stable_hue(a),
+                stable_hue(b),
+                "distinct actors, distinct hues"
+            );
+            assert!((0.0..360.0).contains(&stable_hue(a)));
+            assert!((0.0..360.0).contains(&stable_hue(b)));
+        }
+        // phase: rgb_maps_onto_the_expected_hue_sextants
+        // The identity file's avatar colour drives the dot, so the timeline
+        // agrees with the colour the user picked at first boot.
+        {
+            assert!((rgb_to_hue([255, 0, 0]) - 0.0).abs() < 0.5, "red");
+            assert!((rgb_to_hue([0, 255, 0]) - 120.0).abs() < 0.5, "green");
+            assert!((rgb_to_hue([0, 0, 255]) - 240.0).abs() < 0.5, "blue");
+            // First boot writes neutral grey; it has no hue and must not blow up.
+            assert_eq!(rgb_to_hue([128, 128, 128]), 0.0);
+        }
     }
 
     /// Seed for the minted test identities. Any fixed value works — it is
@@ -428,74 +437,67 @@ mod tests {
         }
     }
 
-    /// An on-disk identity file is read and turned into an author.
-    ///
-    /// The record is minted by the writer `shell::firstboot` calls. This schema
-    /// is declared twice on purpose
-    /// (`tilo_ui::widget::identity_flow::IdentityRecord` serialises it,
-    /// `runtime_identity` re-declares it rather than depending on `ui`), so
-    /// so the fixture checks that the reader accepts the writer's output.
     #[test]
     #[cfg(unix)]
-    fn local_identity_is_read_from_the_firstboot_json_shape() {
-        let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
+    fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
+        // phase: local_identity_is_read_from_the_firstboot_json_shape
+        // An on-disk identity file is read and turned into an author.
+        //
+        // The record is minted by the writer `shell::firstboot` calls. This schema
+        // is declared twice on purpose
+        // (`tilo_ui::widget::identity_flow::IdentityRecord` serialises it,
+        // `runtime_identity` re-declares it rather than depending on `ui`), so
+        // so the fixture checks that the reader accepts the writer's output.
+        {
+            let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
 
-        // The reader accepts what the writer produced, field for field.
-        let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
-        assert_eq!(id.display_name(), "ada");
-        assert_eq!(id.avatar_color(), [0, 255, 0]);
-        assert_eq!(
-            id.group_public_key(),
-            public_key,
-            "the record must carry the key its own secret derives"
-        );
+            // The reader accepts what the writer produced, field for field.
+            let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
+            assert_eq!(id.display_name(), "ada");
+            assert_eq!(id.avatar_color(), [0, 255, 0]);
+            assert_eq!(
+                id.group_public_key(),
+                public_key,
+                "the record must carry the key its own secret derives"
+            );
 
-        // The production entry point turns the file into the row the timeline
-        // renders.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("primary.json");
-        std::fs::write(&path, &bytes).expect("write identity");
-        secure_test_identity(&path);
-        let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
+            // The production entry point turns the file into the row the timeline
+            // renders.
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("primary.json");
+            std::fs::write(&path, &bytes).expect("write identity");
+            secure_test_identity(&path);
+            let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
-        let author = local_identity_author().expect("an identity on disk resolves to an author");
-        assert_eq!(author.name, "ada");
-        assert!(
-            (author.avatar_hue - 120.0).abs() < 0.5,
-            "green avatar colour"
-        );
-        assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
-        assert_eq!(author.identity_short.len(), SHORT_LEN);
-    }
+            let author =
+                local_identity_author().expect("an identity on disk resolves to an author");
+            assert_eq!(author.name, "ada");
+            assert!(
+                (author.avatar_hue - 120.0).abs() < 0.5,
+                "green avatar colour"
+            );
+            assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
+            assert_eq!(author.identity_short.len(), SHORT_LEN);
+        }
+        // phase: a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank
+        // First boot writes an empty display name and neutral grey — the user
+        // names and colours themselves later. That record must still load, and
+        // must render as the unknown-participant label rather than as a
+        // blank row.
+        {
+            let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 
-    /// First boot writes an empty display name and neutral grey — the user
-    /// names and colours themselves later. That record must still load, and
-    /// must render as the unknown-participant label rather than as a
-    /// blank row.
-    #[test]
-    #[cfg(unix)]
-    fn a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank() {
-        let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("primary.json");
+            std::fs::write(&path, &bytes).expect("write identity");
+            secure_test_identity(&path);
+            let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("primary.json");
-        std::fs::write(&path, &bytes).expect("write identity");
-        secure_test_identity(&path);
-        let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
-
-        let author = local_identity_author().expect("a provisioned identity resolves to an author");
-        assert_eq!(author.name, UNKNOWN_AUTHOR_NAME);
-        assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
-        assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
-    }
-
-    /// With no identity anywhere, the chrome gets `None` and falls through to
-    /// the handle/unknown ladder — an app run outside a Tilo session is not an
-    /// error.
-    #[test]
-    fn a_missing_identity_file_is_not_an_author() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());
-        assert!(local_identity_author().is_none());
+            let author =
+                local_identity_author().expect("a provisioned identity resolves to an author");
+            assert_eq!(author.name, UNKNOWN_AUTHOR_NAME);
+            assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
+            assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
+        }
     }
 }

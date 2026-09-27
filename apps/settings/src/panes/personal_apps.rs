@@ -441,75 +441,79 @@ mod tests {
             resources: [ResourceKind::extension(ext).unwrap()].into(),
         }
     }
+    /// Dropdown choices persist and MIME/scheme claims are personal defaults.
     #[test]
-    fn dropdown_change_persists_personal_choice() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("default-apps.json");
-        let candidates = vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")];
-        let mut pane = PersonalAppsPane::with_state(
-            candidates,
-            PersonalDefaults::default(),
-            Some(path.clone()),
-        );
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(
-            &automerge::ROOT,
-            "default_apps.ext.pdf",
-            "so.tilo.b — so.tilo.b",
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            pane.defaults
-                .handlers
-                .get(&ResourceKind::extension("pdf").unwrap())
-                .map(String::as_str),
-            Some("so.tilo.b")
-        );
-        assert_eq!(
-            PersonalDefaults::load_at(&path)
-                .handlers
-                .get(&ResourceKind::extension("pdf").unwrap())
-                .map(String::as_str),
-            Some("so.tilo.b"),
-            "the choice survives a reload"
-        );
-    }
+    fn personal_default_apps_persist_and_expose_claims() {
+        // Case `dropdown_change_persists_personal_choice`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("default-apps.json");
+            let candidates = vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")];
+            let mut pane = PersonalAppsPane::with_state(
+                candidates,
+                PersonalDefaults::default(),
+                Some(path.clone()),
+            );
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            doc.put(
+                &automerge::ROOT,
+                "default_apps.ext.pdf",
+                "so.tilo.b — so.tilo.b",
+            )
+            .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                pane.defaults
+                    .handlers
+                    .get(&ResourceKind::extension("pdf").unwrap())
+                    .map(String::as_str),
+                Some("so.tilo.b")
+            );
+            assert_eq!(
+                PersonalDefaults::load_at(&path)
+                    .handlers
+                    .get(&ResourceKind::extension("pdf").unwrap())
+                    .map(String::as_str),
+                Some("so.tilo.b"),
+                "the choice survives a reload"
+            );
+        }
 
-    #[test]
-    fn mime_and_scheme_claims_are_exposed_as_personal_defaults() {
-        let candidate = AppCandidate {
-            package_id: "so.tilo.browser".into(),
-            display_name: "Browser".into(),
-            resources: [
-                ResourceKind::mime("text/html").unwrap(),
-                ResourceKind::scheme("https").unwrap(),
-            ]
-            .into(),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("default-apps.json");
-        let mut pane = PersonalAppsPane::with_state(
-            vec![candidate],
-            PersonalDefaults::default(),
-            Some(path.clone()),
-        );
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            pane.defaults.handlers.is_empty(),
-            "showing the resolver's pick is not a personal choice"
-        );
-        assert!(!path.exists(), "opening the pane persists nothing");
-        assert_eq!(
-            read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
-            Some("Browser — so.tilo.browser")
-        );
-        assert_eq!(
-            read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
-            Some("Browser — so.tilo.browser")
-        );
+        // Case `mime_and_scheme_claims_are_exposed_as_personal_defaults`.
+        {
+            let candidate = AppCandidate {
+                package_id: "so.tilo.browser".into(),
+                display_name: "Browser".into(),
+                resources: [
+                    ResourceKind::mime("text/html").unwrap(),
+                    ResourceKind::scheme("https").unwrap(),
+                ]
+                .into(),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("default-apps.json");
+            let mut pane = PersonalAppsPane::with_state(
+                vec![candidate],
+                PersonalDefaults::default(),
+                Some(path.clone()),
+            );
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                pane.defaults.handlers.is_empty(),
+                "showing the resolver's pick is not a personal choice"
+            );
+            assert!(!path.exists(), "opening the pane persists nothing");
+            assert_eq!(
+                read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
+                Some("Browser — so.tilo.browser")
+            );
+            assert_eq!(
+                read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
+                Some("Browser — so.tilo.browser")
+            );
+        }
     }
 }

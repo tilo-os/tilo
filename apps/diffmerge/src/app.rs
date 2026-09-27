@@ -1619,7 +1619,20 @@ mod tests {
         );
     }
 
+    /// Opening files: a direct pair via the resource operation, the toolbar Open
+    /// action reaching the host portal (with in-flight guard), the stash-left step,
+    /// and portal success / cancel / failure. Each phase uses a fresh app, temp
+    /// files and recording host.
     #[test]
+    fn open_files_flow_through_direct_operation_and_host_portal() {
+        direct_pair_is_accepted_then_succeeds();
+        open_action_routes_to_the_host_portal();
+        first_pick_stashes_left_and_asks_for_the_right();
+        portal_pick_completes_two_file_diff_via_frame_drain();
+        portal_cancel_clears_pending_selection();
+        portal_failure_surfaces_on_the_status_line();
+    }
+
     fn direct_pair_is_accepted_then_succeeds() {
         let (mut app, mut state) = app_with_state();
         let left = write_temp("Grün links.txt", "Grün\nshared\n");
@@ -1658,7 +1671,6 @@ mod tests {
     /// The "Open files" toolbar action must reach the host portal, never an
     /// in-app dialog. A recording host stands in for the desktop, and the
     /// in-flight guard must keep a second press from stacking another dialog.
-    #[test]
     fn open_action_routes_to_the_host_portal() {
         let (mut app, _st) = app_with_state();
         let (services, recorder) = ui::host::HostServices::recording();
@@ -1678,7 +1690,6 @@ mod tests {
     /// The first file of a diff pair is stashed and a follow-up pick is
     /// requested (`consume_pick` returns true) — no host dialog is spawned by
     /// the consume step itself.
-    #[test]
     fn first_pick_stashes_left_and_asks_for_the_right() {
         let (mut app, _st) = app_with_state();
         let left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
@@ -1696,7 +1707,6 @@ mod tests {
     /// The terminal step: with a left file already pending, a portal-chosen
     /// right file completes the two-file diff through the per-frame `sync`
     /// drain — no real dialog, exercising the exact channel the worker feeds.
-    #[test]
     fn portal_pick_completes_two_file_diff_via_frame_drain() {
         let (mut app, mut st) = app_with_state();
         app.pending_left = Some(("left.txt".into(), "alpha\nbeta\ngamma\n".into()));
@@ -1728,7 +1738,6 @@ mod tests {
 
     /// A cancelled portal interaction abandons an in-progress selection and
     /// leaves the channel cleared.
-    #[test]
     fn portal_cancel_clears_pending_selection() {
         let (mut app, mut st) = app_with_state();
         app.pending_left = Some(("left.txt".into(), "x\n".into()));
@@ -1746,7 +1755,6 @@ mod tests {
 
     /// A portal failure (e.g. no desktop portal running) surfaces on the
     /// status line rather than silently dropping the request.
-    #[test]
     fn portal_failure_surfaces_on_the_status_line() {
         let (mut app, mut st) = app_with_state();
         open_with_outcome(&mut app, PortalOutcome::Failed("no portal".into()));
@@ -1757,12 +1765,23 @@ mod tests {
         assert!(err.contains("no portal"), "the reason is surfaced: {err}");
     }
 
+    /// One resolution action behind every entry point: the chip dispatch records one
+    /// undo boundary and reverts, chip and palette encode identically, a pointer click
+    /// on the drawn chip resolves that hunk, and the root accessibility tree resolves
+    /// through the CRDT path. Fresh demo app and state per phase.
+    #[test]
+    fn hunk_resolution_is_one_action_from_chip_palette_pointer_and_a11y() {
+        chip_dispatch_records_one_undo_boundary_and_reverts();
+        chip_and_palette_encode_identically();
+        clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path();
+        root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path();
+    }
+
     /// The full covenant on one on-panel affordance: driving the chip handler
     /// exactly as a click does queues a resolution; dispatching it through the
     /// app's shared action path mutates the merged buffer, records **one** undo
     /// boundary bracketed at the pre-action heads, and Ctrl+Z reverts precisely
     /// that action.
-    #[test]
     fn chip_dispatch_records_one_undo_boundary_and_reverts() {
         let mut app = DiffMergeApp::new_demo(); // Merge mode with a real conflict
         let mut state = ui::State::new();
@@ -1843,7 +1862,6 @@ mod tests {
     /// Single source of truth: the take-theirs chip on the merge panel builds the
     /// byte-identical [`EncodedAction`] the palette's take-theirs `ActionSpec`
     /// does — one action, two entry points.
-    #[test]
     fn chip_and_palette_encode_identically() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -1975,11 +1993,21 @@ mod tests {
             .expect("one compact source is selected")
     }
 
+    /// Phone-width layout: the three-way merge and the two-way diff present a
+    /// one-source switcher, the toolbar stays on screen without overlap, and a long
+    /// error bubble stays inside the viewport. Fresh app per phase.
+    #[test]
+    fn phone_width_keeps_controls_onscreen_with_one_source_switchers() {
+        phone_merge_uses_a_full_width_source_switcher();
+        phone_toolbar_keeps_every_control_visible_without_overlap();
+        phone_diff_uses_an_accessible_one_source_switcher();
+        narrow_status_bubble_stays_within_the_viewport_for_long_errors();
+    }
+
     /// At phone width, a three-way merge intentionally presents one full-width
     /// source pane plus an explicit Base/Ours/Theirs switcher. This guards
     /// against a future layout change quietly restoring three unreadable
     /// columns at 390px.
-    #[test]
     fn phone_merge_uses_a_full_width_source_switcher() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2040,7 +2068,6 @@ mod tests {
     /// The compact source switcher is only useful when the surrounding chrome
     /// is usable too. Keep the complete one-row phone toolbar on screen and
     /// non-overlapping (both modes, file open/sample, and change navigation).
-    #[test]
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2054,10 +2081,19 @@ mod tests {
         assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
     }
 
+    /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge
+    /// rows and the diff gutter all follow the renderer. Fresh apps per phase.
+    #[test]
+    fn layout_metrics_follow_the_measured_text_at_every_scale() {
+        toolbar_controls_fit_their_measured_labels_at_every_text_scale();
+        merge_chips_stay_inside_their_pane();
+        merge_rows_follow_the_scaled_line_height();
+        diff_rows_and_gutter_follow_the_scaled_line_height();
+    }
+
     /// Every toolbar control is sized from its measured label and centred on
     /// the measured bar, at 1× and at 200% text; the content starts below the
     /// bar that was actually painted.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "at 1x the scale literal and the authored toolbar height are reproduced exactly"
@@ -2125,7 +2161,6 @@ mod tests {
     /// Every resolution chip paints inside the pane that owns it, at 800 and
     /// 1200 wide and at 200% text: chip widths are measured, and the long
     /// "Take …" labels fall back to the short form when they cannot fit.
-    #[test]
     fn merge_chips_stay_inside_their_pane() {
         for (w, h, scale) in [
             (800.0f32, 700.0f32, 1.0f32),
@@ -2165,7 +2200,6 @@ mod tests {
 
     /// Row pitch, header band and chip band follow the renderer's measured
     /// line height, so 200% text does not overprint 19px rows.
-    #[test]
     fn merge_rows_follow_the_scaled_line_height() {
         let mut one = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2194,7 +2228,6 @@ mod tests {
 
     /// The two-way diff shares the same contract: rows, header and the
     /// line-number gutter grow with the measured text.
-    #[test]
     fn diff_rows_and_gutter_follow_the_scaled_line_height() {
         let mut one = DiffMergeApp::new_demo();
         one.act(Action::ModeDiff);
@@ -2222,10 +2255,20 @@ mod tests {
         );
     }
 
+    /// Input parity for the chrome: the compact source switcher by pointer, keyboard
+    /// and a11y; toolbar semantics, focus and activation; Tab/Enter order; and the
+    /// empty/error content explained to assistive tech. Fresh app per phase.
+    #[test]
+    fn controls_have_pointer_keyboard_and_semantic_parity() {
+        compact_source_switcher_has_pointer_keyboard_and_a11y_parity();
+        toolbar_controls_have_semantic_names_focus_geometry_and_activation();
+        toolbar_keyboard_tab_and_enter_follow_the_painted_control_order();
+        root_accessibility_explains_empty_and_error_content();
+    }
+
     /// Pointer, keyboard, and assistive activation all select the same compact
     /// source state. The test drives the real event/semantic routes rather
     /// than calling the selection helper directly.
-    #[test]
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
         use winit::dpi::PhysicalPosition;
         use winit::event::{DeviceId, Modifiers};
@@ -2305,7 +2348,6 @@ mod tests {
         assert_eq!(selected_compact_source(&app), "Show Theirs source");
     }
 
-    #[test]
     fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2338,7 +2380,6 @@ mod tests {
         assert_eq!(app.mode, Mode::Diff);
     }
 
-    #[test]
     fn toolbar_keyboard_tab_and_enter_follow_the_painted_control_order() {
         use winit::event::Modifiers;
 
@@ -2389,7 +2430,6 @@ mod tests {
         assert_eq!(app.mode, Mode::Merge);
     }
 
-    #[test]
     fn phone_diff_uses_an_accessible_one_source_switcher() {
         let mut app = DiffMergeApp::new_demo();
         app.mode = Mode::Diff;
@@ -2462,7 +2502,6 @@ mod tests {
         assert!(error.contains("comparison changed"));
     }
 
-    #[test]
     fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
         let mut app = DiffMergeApp::for_shot(Some("error"));
         app.arm_status_bubble_for_shots();
@@ -2480,7 +2519,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2509,7 +2547,6 @@ mod tests {
         assert_ne!(crate::doc::MergeDoc::merged_text(&state.doc), before);
     }
 
-    #[test]
     fn root_accessibility_explains_empty_and_error_content() {
         let mut empty = DiffMergeApp::for_shot(Some("empty"));
         draw_merge_frame(&mut empty, (980.0, 720.0));
@@ -2535,7 +2572,6 @@ mod tests {
     /// Clicking a resolution chip at its drawn pixel position resolves *that*
     /// hunk — proving the pointer → hit-rect → hunk mapping and the app's
     /// pending-action drain, not just `resolve` in isolation.
-    #[test]
     fn clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path() {
         use winit::dpi::PhysicalPosition;
         use winit::event::{DeviceId, Modifiers};

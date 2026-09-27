@@ -52,13 +52,25 @@ concurrency:
   group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) }}
 
+env:
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:

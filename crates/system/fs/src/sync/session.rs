@@ -35,14 +35,16 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use super::{
-    DirectMeshAuthorizer, FsTransportIdentity, PeerPolicy, RecordPlane, authenticate_connection,
-    authenticated_peer_may_read_whole_workspace, authenticated_peer_may_write_whole_workspace,
-    unix_now_ms, unix_now_ns,
+    DirectMeshAuthorizer, FsTransportIdentity, PeerPolicy, RecordPlane, accept_namespace_payload,
+    authenticate_connection, authenticated_peer_may_read_whole_workspace,
+    authenticated_peer_may_write_whole_workspace, unix_now_ms, unix_now_ns,
 };
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
+use crate::namespace_binding::{BoundNamespacePayloadV1, NamespaceBindingV1, NamespacePayloadKind};
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_changeset::{ChangesetLeafV1, ChangesetV1, SignedChangesetV1};
 use crate::record_materializer::ReconcileScope;
@@ -58,8 +60,8 @@ use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
 use crate::workspace_authority::{AuthorityRequest, AuthorityResponse, WorkspaceAuthority};
 
-pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/1";
-pub const SESSION_PROTOCOL_VERSION: u16 = 1;
+pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/2";
+pub const SESSION_PROTOCOL_VERSION: u16 = 2;
 
 /// Largest request or response frame, except Automerge sync messages
 /// between writers, which carry whole changes like the per-request sync
@@ -119,7 +121,8 @@ pub enum SessionOperationV1 {
     /// Automerge sync rounds between two workspace writers follow on the
     /// stream as [`SessionFrameV1::Sync`] frames, requester first.
     NamespaceSync,
-    /// The namespace changes beyond `heads`, for a read-only peer.
+    /// The namespace changes beyond `heads`, for a read-only peer: as
+    /// `NamespaceChunk` frames, then the binding of all of them.
     NamespaceSince {
         heads: Vec<[u8; 32]>,
     },
@@ -187,8 +190,12 @@ pub enum SessionFrameV1 {
     Blobs {
         blobs: Vec<SessionBlobV1>,
     },
-    Sync(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// One sync round's message, bound to the workspace by its sender;
+    /// `None` when that side has nothing to send.
+    Sync(Option<BoundNamespacePayloadV1>),
     NamespaceChunk(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// The binding of the concatenated `NamespaceChunk` bytes before it.
+    NamespaceBound(NamespaceBindingV1),
     ReplicaAcks {
         responses: Vec<ReplicaAckResponseV1>,
     },
@@ -206,28 +213,28 @@ pub enum SessionFrameV1 {
     ChangesetEnd,
 }
 
+/// Every request and response frame: a big-endian `u32` length, then the
+/// postcard encoding. Each read bounds the frame by what that step expects
+/// (see [`read_frame`]); nothing larger than the largest of those bounds is
+/// sent.
+const SESSION_FRAMING: Framing = Framing::big_endian(MAX_SYNC_FRAME_BYTES);
+
 async fn write_frame<T: Serialize + Sync>(send: &mut SendStream, value: &T) -> Result<()> {
-    let bytes = postcard::to_allocvec(value)?;
-    let length = u32::try_from(bytes.len()).map_err(|_| anyhow!("session frame too large"))?;
-    send.write_all(&length.to_be_bytes()).await?;
-    send.write_all(&bytes).await?;
+    SESSION_FRAMING.write_value_async(send, value).await?;
     Ok(())
 }
 
+/// The next frame, of at most `limit` bytes; the stream closing before it
+/// is an error.
 async fn read_frame<T: serde::de::DeserializeOwned>(
     recv: &mut RecvStream,
     limit: usize,
 ) -> Result<T> {
-    let mut prefix = [0_u8; 4];
-    recv.read_exact(&mut prefix).await?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    anyhow::ensure!(
-        length <= limit,
-        "session frame of {length} bytes exceeds {limit}"
-    );
-    let mut bytes = vec![0_u8; length];
-    recv.read_exact(&mut bytes).await?;
-    Ok(postcard::from_bytes(&bytes)?)
+    Ok(SESSION_FRAMING
+        .with_max_len(limit)
+        .read_value_async(recv)
+        .await?
+        .ok_or(FrameError::Closed)?)
 }
 
 fn denied(peer: &AuthenticatedFsPeer, identity: &FsTransportIdentity) -> bool {
@@ -837,7 +844,7 @@ impl SessionProtocol {
         let Ok(decoded) = crate::content::Manifest::decode(&bytes) else {
             return Vec::new();
         };
-        let total: u64 = decoded.chunks.iter().map(|c| u64::from(c.len)).sum();
+        let total = decoded.total_len();
         if total > limit {
             return Vec::new();
         }
@@ -845,7 +852,7 @@ impl SessionProtocol {
             hash: *manifest.as_bytes(),
             bytes: bytes.to_vec(),
         }];
-        for chunk in &decoded.chunks {
+        for chunk in decoded.chunks() {
             let Some(data) = self.store.local(iroh_blobs::Hash::from(chunk.hash)).await else {
                 return Vec::new();
             };
@@ -916,6 +923,22 @@ impl SessionProtocol {
             else {
                 break;
             };
+            let message = match message {
+                Some(payload) => {
+                    if let Err(error) = accept_namespace_payload(
+                        &self.policy,
+                        self.workspace_id,
+                        peer,
+                        NamespacePayloadKind::SyncMessage,
+                        &payload,
+                    ) {
+                        eprintln!("refusing a namespace sync message over a session: {error}");
+                        break;
+                    }
+                    payload.bytes
+                }
+                None => Vec::new(),
+            };
             if !message.is_empty() {
                 let _ = self
                     .namespace
@@ -931,7 +954,16 @@ impl SessionProtocol {
                 .sync_generate(state);
             drop(gate);
             let done = message.is_empty() && reply.is_none();
-            write_frame(send, &SessionFrameV1::Sync(reply.unwrap_or_default())).await?;
+            let reply = reply
+                .map(|reply| {
+                    self.identity.bind_namespace(
+                        self.workspace_id,
+                        NamespacePayloadKind::SyncMessage,
+                        reply,
+                    )
+                })
+                .transpose()?;
+            write_frame(send, &SessionFrameV1::Sync(reply)).await?;
             if done {
                 break;
             }
@@ -957,8 +989,17 @@ impl SessionProtocol {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .changes_since(&heads);
         drop(gate);
-        for chunk in delta.chunks(TARGET_FRAME_BYTES) {
-            write_frame(send, &SessionFrameV1::NamespaceChunk(chunk.to_vec())).await?;
+        if !delta.is_empty() {
+            let binding = NamespaceBindingV1::sign(
+                self.workspace_id,
+                NamespacePayloadKind::Changes,
+                &delta,
+                self.identity.credentials.signing_key(),
+            )?;
+            for chunk in delta.chunks(TARGET_FRAME_BYTES) {
+                write_frame(send, &SessionFrameV1::NamespaceChunk(chunk.to_vec())).await?;
+            }
+            write_frame(send, &SessionFrameV1::NamespaceBound(binding)).await?;
         }
         write_frame(send, &SessionFrameV1::Done).await
     }
@@ -1304,12 +1345,14 @@ impl Session {
 }
 
 /// Automerge sync with a workspace writer on one stream. Returns whether
-/// changes were received.
+/// changes were received. Each message the peer sends is applied only
+/// once [`accept_namespace_payload`] accepts it for this workspace.
 pub(super) async fn sync_namespace(
     pool: &SessionPool,
     session: &Session,
     namespace: &Arc<Mutex<Namespace>>,
     repository: Option<&crate::record_repository::RecordRepository>,
+    policy: &PeerPolicy,
 ) -> Result<bool> {
     let (mut send, mut recv) = session
         .open(&pool.request(SessionOperationV1::NamespaceSync))
@@ -1331,15 +1374,34 @@ pub(super) async fn sync_namespace(
             .sync_generate(&mut state);
         drop(gate);
         let sent_nothing = message.is_none();
-        write_frame(
-            &mut send,
-            &SessionFrameV1::Sync(message.unwrap_or_default()),
-        )
-        .await?;
+        let message = message
+            .map(|message| {
+                pool.identity.bind_namespace(
+                    pool.workspace_id,
+                    NamespacePayloadKind::SyncMessage,
+                    message,
+                )
+            })
+            .transpose()?;
+        write_frame(&mut send, &SessionFrameV1::Sync(message)).await?;
         let SessionFrameV1::Sync(reply) = read_frame(&mut recv, MAX_SYNC_FRAME_BYTES).await? else {
             anyhow::bail!("unexpected namespace sync frame");
         };
         session.heard();
+        let reply = match reply {
+            Some(payload) => {
+                accept_namespace_payload(
+                    policy,
+                    pool.workspace_id,
+                    &session.peer,
+                    NamespacePayloadKind::SyncMessage,
+                    &payload,
+                )
+                .map_err(|error| anyhow!("refusing the peer's namespace sync message: {error}"))?;
+                payload.bytes
+            }
+            None => Vec::new(),
+        };
         if !reply.is_empty() {
             received = true;
             let _ = namespace
@@ -1357,11 +1419,13 @@ pub(super) async fn sync_namespace(
 
 /// The namespace changes a peer holds beyond this device's heads, for a
 /// read-only device. Returns the resolution delta and whether anything was
-/// applied.
+/// applied. The changes are applied only once [`accept_namespace_payload`]
+/// accepts them for this workspace.
 pub(super) async fn pull_namespace(
     pool: &SessionPool,
     session: &Session,
     namespace: &Arc<Mutex<Namespace>>,
+    policy: &PeerPolicy,
 ) -> Result<(bool, Vec<u8>)> {
     let heads = namespace
         .lock()
@@ -1375,19 +1439,41 @@ pub(super) async fn pull_namespace(
         .await?;
     let _ = send.finish();
     let mut delta = Vec::new();
+    let mut binding = None;
     while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-        let SessionFrameV1::NamespaceChunk(chunk) = frame else {
-            anyhow::bail!("unexpected namespace frame");
-        };
-        anyhow::ensure!(
-            delta.len().saturating_add(chunk.len()) <= MAX_NAMESPACE_BYTES,
-            "namespace delta exceeds {MAX_NAMESPACE_BYTES} bytes"
-        );
-        delta.extend_from_slice(&chunk);
+        match frame {
+            SessionFrameV1::NamespaceChunk(chunk) if binding.is_none() => {
+                anyhow::ensure!(
+                    delta.len().saturating_add(chunk.len()) <= MAX_NAMESPACE_BYTES,
+                    "namespace delta exceeds {MAX_NAMESPACE_BYTES} bytes"
+                );
+                delta.extend_from_slice(&chunk);
+            }
+            SessionFrameV1::NamespaceBound(bound) if binding.is_none() => binding = Some(bound),
+            _ => anyhow::bail!("unexpected namespace frame"),
+        }
     }
     if delta.is_empty() {
         return Ok((false, Vec::new()));
     }
+    let payload = BoundNamespacePayloadV1 {
+        binding: binding.ok_or_else(|| {
+            anyhow!(
+                "refusing the peer's namespace changes: {}",
+                crate::namespace_binding::NamespaceBindingError::Unbound
+            )
+        })?,
+        bytes: delta,
+    };
+    accept_namespace_payload(
+        policy,
+        pool.workspace_id,
+        &session.peer,
+        NamespacePayloadKind::Changes,
+        &payload,
+    )
+    .map_err(|error| anyhow!("refusing the peer's namespace changes: {error}"))?;
+    let delta = payload.bytes;
     let mut ns = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2013,3 +2099,6 @@ pub(super) async fn collect_replica_acks(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

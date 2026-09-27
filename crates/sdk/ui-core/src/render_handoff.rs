@@ -139,116 +139,121 @@ mod tests {
         })
     }
     #[test]
-    fn handoff_disabled_does_not_sample_or_construct_emit_rows() {
-        let mut recorder = None;
-        received_with(
-            &mut recorder,
-            0,
-            None,
-            None,
-            None,
-            || panic!("disabled clock"),
-            |_| panic!("disabled JSON emission"),
-        );
-        record_with(&mut recorder, Stage::AfterPoolSend, || {
-            panic!("disabled stage clock")
-        });
-    }
-    #[test]
-    fn handoff_associates_previous_epilogue_and_own_log_with_next_received_frame() {
-        let mut recorder = Some(Recorder::default());
-        let ticks = std::cell::Cell::new(2);
-        let mut first = None;
-        received_with(
-            &mut recorder,
-            0,
-            None,
-            point(0),
-            point(1),
-            || {
-                ticks.set(ticks.get() + 1);
-                point(ticks.get())
-            },
-            |row| {
-                first = Some(row);
-                ticks.set(ticks.get() + 10);
-            },
-        );
-        let first = first.unwrap();
-        assert_eq!(first["worker_frame_ix"], 0);
-        assert!(first["cpu_frame_id"].is_null());
-        assert!(first["previous_worker_frame_ix"].is_null());
-        for name in NAMES
-            .into_iter()
-            .chain(["previous_handoff_log_before", "previous_handoff_log_after"])
+    fn handoff_rows_associate_the_right_frame_and_never_fabricate_clocks() {
+        // Case `handoff_disabled_does_not_sample_or_construct_emit_rows`.
         {
-            for side in ["lo", "hi"] {
-                let key = format!("{name}_host_{side}_s");
-                assert!(first.get(&key).is_some(), "missing explicit null {key}");
-                assert!(first[&key].is_null());
+            let mut recorder = None;
+            received_with(
+                &mut recorder,
+                0,
+                None,
+                None,
+                None,
+                || panic!("disabled clock"),
+                |_| panic!("disabled JSON emission"),
+            );
+            record_with(&mut recorder, Stage::AfterPoolSend, || {
+                panic!("disabled stage clock")
+            });
+        }
+
+        // Case `handoff_associates_previous_epilogue_and_own_log_with_next_received_frame`.
+        {
+            let mut recorder = Some(Recorder::default());
+            let ticks = std::cell::Cell::new(2);
+            let mut first = None;
+            received_with(
+                &mut recorder,
+                0,
+                None,
+                point(0),
+                point(1),
+                || {
+                    ticks.set(ticks.get() + 1);
+                    point(ticks.get())
+                },
+                |row| {
+                    first = Some(row);
+                    ticks.set(ticks.get() + 10);
+                },
+            );
+            let first = first.unwrap();
+            assert_eq!(first["worker_frame_ix"], 0);
+            assert!(first["cpu_frame_id"].is_null());
+            assert!(first["previous_worker_frame_ix"].is_null());
+            for name in NAMES
+                .into_iter()
+                .chain(["previous_handoff_log_before", "previous_handoff_log_after"])
+            {
+                for side in ["lo", "hi"] {
+                    let key = format!("{name}_host_{side}_s");
+                    assert!(first.get(&key).is_some(), "missing explicit null {key}");
+                    assert!(first[&key].is_null());
+                }
             }
+            for (index, stage) in [
+                Stage::RenderEnd,
+                Stage::AfterNativeWorkerLog,
+                Stage::AfterOutcomeLog,
+                Stage::AfterSceneRecycle,
+                Stage::AfterPoolSend,
+                Stage::AfterOutcomeSend,
+                Stage::AfterCompletionNotify,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                record_with(&mut recorder, stage, || point(30 + index as u32));
+            }
+            let mut second = None;
+            received_with(
+                &mut recorder,
+                1,
+                Some(353),
+                point(40),
+                point(41),
+                || point(42),
+                |row| second = Some(row),
+            );
+            let second = second.unwrap();
+            assert_eq!(second["worker_frame_ix"], 1);
+            assert_eq!(second["cpu_frame_id"], 353);
+            assert_eq!(second["previous_worker_frame_ix"], 0);
+            assert!(
+                second["previous_cpu_frame_id"].is_null(),
+                "auxiliary is not CPU frame zero"
+            );
+            assert_eq!(second["previous_handoff_log_before_host_lo_s"], 3.0);
+            assert_eq!(second["previous_handoff_log_after_host_lo_s"], 14.0);
+            assert_eq!(second["before_receive_host_lo_s"], 40.0);
+            assert_eq!(second["after_receive_host_lo_s"], 41.0);
+            for (index, name) in NAMES.into_iter().enumerate() {
+                assert_eq!(second[format!("{name}_host_lo_s")], (30 + index) as f64);
+            }
+            // The current final received frame already has a row; no next input is
+            // needed to emit it. Only its outgoing epilogue awaits a future receive.
+            assert_eq!(recorder.unwrap().frame.unwrap().ix, 1);
         }
-        for (index, stage) in [
-            Stage::RenderEnd,
-            Stage::AfterNativeWorkerLog,
-            Stage::AfterOutcomeLog,
-            Stage::AfterSceneRecycle,
-            Stage::AfterPoolSend,
-            Stage::AfterOutcomeSend,
-            Stage::AfterCompletionNotify,
-        ]
-        .into_iter()
-        .enumerate()
+
+        // Case `handoff_unavailable_clocks_remain_null_and_stages_do_not_shift`.
         {
-            record_with(&mut recorder, stage, || point(30 + index as u32));
+            let mut recorder = Some(Recorder::default());
+            received_with(&mut recorder, 8, Some(90), None, None, || None, |_| {});
+            set(&mut recorder, Stage::AfterOutcomeSend, point(30));
+            received_with(
+                &mut recorder,
+                9,
+                None,
+                None,
+                None,
+                || None,
+                |row| {
+                    assert_eq!(row["previous_cpu_frame_id"], 90);
+                    assert!(row["previous_after_pool_send_host_lo_s"].is_null());
+                    assert_eq!(row["previous_after_outcome_send_host_lo_s"], 30.0);
+                    assert!(row["after_receive_host_lo_s"].is_null());
+                },
+            );
         }
-        let mut second = None;
-        received_with(
-            &mut recorder,
-            1,
-            Some(353),
-            point(40),
-            point(41),
-            || point(42),
-            |row| second = Some(row),
-        );
-        let second = second.unwrap();
-        assert_eq!(second["worker_frame_ix"], 1);
-        assert_eq!(second["cpu_frame_id"], 353);
-        assert_eq!(second["previous_worker_frame_ix"], 0);
-        assert!(
-            second["previous_cpu_frame_id"].is_null(),
-            "auxiliary is not CPU frame zero"
-        );
-        assert_eq!(second["previous_handoff_log_before_host_lo_s"], 3.0);
-        assert_eq!(second["previous_handoff_log_after_host_lo_s"], 14.0);
-        assert_eq!(second["before_receive_host_lo_s"], 40.0);
-        assert_eq!(second["after_receive_host_lo_s"], 41.0);
-        for (index, name) in NAMES.into_iter().enumerate() {
-            assert_eq!(second[format!("{name}_host_lo_s")], (30 + index) as f64);
-        }
-        // The current final received frame already has a row; no next input is
-        // needed to emit it. Only its outgoing epilogue awaits a future receive.
-        assert_eq!(recorder.unwrap().frame.unwrap().ix, 1);
-    }
-    #[test]
-    fn handoff_unavailable_clocks_remain_null_and_stages_do_not_shift() {
-        let mut recorder = Some(Recorder::default());
-        received_with(&mut recorder, 8, Some(90), None, None, || None, |_| {});
-        set(&mut recorder, Stage::AfterOutcomeSend, point(30));
-        received_with(
-            &mut recorder,
-            9,
-            None,
-            None,
-            None,
-            || None,
-            |row| {
-                assert_eq!(row["previous_cpu_frame_id"], 90);
-                assert!(row["previous_after_pool_send_host_lo_s"].is_null());
-                assert_eq!(row["previous_after_outcome_send_host_lo_s"], 30.0);
-                assert!(row["after_receive_host_lo_s"].is_null());
-            },
-        );
     }
 }

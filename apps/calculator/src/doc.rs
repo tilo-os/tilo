@@ -211,44 +211,57 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn presentation_is_local() {
-        let mut d = AutoCommit::new();
-        store(&mut d, &CalcModel::seeded());
-        let mut m = CalcModel::default();
-        m.view2d.scale = 99.;
-        m.mode = crate::model::Mode::Graph3d;
-        assert!(load_into(&d, &mut m));
-        assert_eq!(m.view2d.scale, 99.);
-        assert_eq!(m.mode, crate::model::Mode::Graph3d);
-    }
-    #[test]
-    fn formulas_are_text() {
-        let mut d = AutoCommit::new();
-        store(&mut d, &CalcModel::seeded());
-        let rows = map_at(&d, FUNCS).unwrap();
-        let row = d.get(&rows, "legacy-funcs-0").unwrap().unwrap().1;
-        assert!(matches!(
-            d.get(&row, "expr"),
-            Ok(Some((Value::Object(ObjType::Text), _)))
-        ));
-    }
 
+    /// The document schema: loading keeps presentation state (view, mode)
+    /// local, formulas are stored as CRDT Text, and graph rows are ordered by
+    /// rank with a stable-id tiebreaker. Fresh document per phase.
     #[test]
-    fn graph_rows_follow_rank_with_a_stable_id_tiebreaker() {
-        let mut doc = AutoCommit::new();
-        let rows = ensure_map(&mut doc, FUNCS).expect("function resource map");
-        for (id, rank) in [("curve-z", 2_i64), ("curve-b", 1), ("curve-a", 1)] {
-            let row = doc
-                .put_object(&rows, id, ObjType::Map)
-                .expect("fixture graph row");
-            put_if_changed(&mut doc, &row, "rank", rank);
-            put_if_changed(&mut doc, &row, "deleted", false);
+    fn document_schema_keeps_presentation_local_text_formulas_and_ranked_rows() {
+        // phase presentation_is_local
+        {
+            let mut d = AutoCommit::new();
+            store(&mut d, &CalcModel::seeded());
+            let mut m = CalcModel::default();
+            m.view2d.scale = 99.;
+            m.mode = crate::model::Mode::Graph3d;
+            assert!(load_into(&d, &mut m), "presentation: load succeeds");
+            assert_eq!(m.view2d.scale, 99., "presentation: view2d scale kept");
+            assert_eq!(
+                m.mode,
+                crate::model::Mode::Graph3d,
+                "presentation: mode kept"
+            );
         }
-        assert_eq!(
-            visible_ids(&doc, FUNCS),
-            vec!["curve-a", "curve-b", "curve-z"],
-            "rank orders additions; id makes concurrent equal ranks deterministic"
-        );
+        // phase formulas_are_text
+        {
+            let mut d = AutoCommit::new();
+            store(&mut d, &CalcModel::seeded());
+            let rows = map_at(&d, FUNCS).unwrap();
+            let row = d.get(&rows, "legacy-funcs-0").unwrap().unwrap().1;
+            assert!(
+                matches!(
+                    d.get(&row, "expr"),
+                    Ok(Some((Value::Object(ObjType::Text), _)))
+                ),
+                "formulas_are_text: expr is a Text object"
+            );
+        }
+        // phase graph_rows_follow_rank_with_a_stable_id_tiebreaker
+        {
+            let mut doc = AutoCommit::new();
+            let rows = ensure_map(&mut doc, FUNCS).expect("function resource map");
+            for (id, rank) in [("curve-z", 2_i64), ("curve-b", 1), ("curve-a", 1)] {
+                let row = doc
+                    .put_object(&rows, id, ObjType::Map)
+                    .expect("fixture graph row");
+                put_if_changed(&mut doc, &row, "rank", rank);
+                put_if_changed(&mut doc, &row, "deleted", false);
+            }
+            assert_eq!(
+                visible_ids(&doc, FUNCS),
+                vec!["curve-a", "curve-b", "curve-z"],
+                "rank orders additions; id makes concurrent equal ranks deterministic"
+            );
+        }
     }
 }

@@ -371,93 +371,102 @@ mod tests {
     }
 
     #[test]
-    fn source_overscroll_reverse_resize_and_recreation_use_effective_view() {
-        check_clamped_scroll_cycle(
-            &scroll_fixture(&"row of historical source\n".repeat(80)),
-            "source",
-        );
+    fn source_and_diagnostics_overscroll_reverse_resize_and_recreate_with_effective_view() {
+        // Case `source_overscroll_reverse_resize_and_recreation_use_effective_view`.
+        {
+            check_clamped_scroll_cycle(
+                &scroll_fixture(&"row of historical source\n".repeat(80)),
+                "source",
+            );
+        }
+        // Case `diagnostics_overscroll_reverse_resize_and_recreation_use_effective_view`.
+        {
+            check_clamped_scroll_cycle(
+                &scroll_fixture(&"#missing_variable\n".repeat(40)),
+                "diagnostics",
+            );
+        }
     }
 
     #[test]
-    fn diagnostics_overscroll_reverse_resize_and_recreation_use_effective_view() {
-        check_clamped_scroll_cycle(
-            &scroll_fixture(&"#missing_variable\n".repeat(40)),
-            "diagnostics",
-        );
-    }
-
-    #[test]
-    fn pages_overscroll_reverse_resize_and_recreation_use_effective_view() {
-        check_clamped_scroll_cycle(
-            &scroll_fixture(
-                "#set page(width: 200pt, height: 500pt)\nOne\n#pagebreak()\nTwo\n#pagebreak()\nThree",
-            ),
-            "page:1",
-        );
+    fn pages_overscroll_reverse_resize_and_recreate_with_effective_view() {
+        // Case `pages_overscroll_reverse_resize_and_recreation_use_effective_view`.
+        {
+            check_clamped_scroll_cycle(
+                &scroll_fixture(
+                    "#set page(width: 200pt, height: 500pt)\nOne\n#pagebreak()\nTwo\n#pagebreak()\nThree",
+                ),
+                "page:1",
+            );
+        }
     }
 
     #[test]
     fn tall_source_and_compiled_pages_move_content_into_the_clip_at_both_widths() {
-        use std::fmt::Write;
-        let source = (0..160).fold(String::new(), |mut text, i| {
-            writeln!(text, "Line {i} of historical source.\n").unwrap();
-            text
-        });
-        let byte = source.find("Line 8 ").unwrap();
-        let mut doc = AutoCommit::new();
-        let obj = doc.put_object(ROOT, "source", ObjType::Text).unwrap();
-        doc.splice_text(&obj, 0, 0, &source).unwrap();
-        doc.get_heads();
-        let mut p = from_document(&doc, PreviewView::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        for width in [360., 1000.] {
-            let clip = Rect::new(0., 0., width, 240.);
-            p.navigate(PreviewNavigation::SelectPage("source".into()));
-            p.layout(clip, &mut tr, &theme).unwrap();
-            p.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
-            let before = p.editor.history_test_caret_rect(&theme, byte);
-            assert!(before.y0 > clip.y1);
-            p.navigate(PreviewNavigation::Scroll {
-                dx: 0.,
-                dy: -before.y0 + 80.,
+        {
+            use std::fmt::Write;
+            let source = (0..160).fold(String::new(), |mut text, i| {
+                writeln!(text, "Line {i} of historical source.\n").unwrap();
+                text
             });
-            p.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
-            let after = p.editor.history_test_caret_rect(&theme, byte);
-            assert!(
-                after.y0 >= clip.y0 && after.y1 <= clip.y1,
-                "{width}: {after:?}"
-            );
-            let mut recreated = from_document(&doc, p.view()).unwrap();
-            recreated.layout(clip, &mut tr, &theme).unwrap();
-            recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
-            let recreated_caret = recreated.editor.history_test_caret_rect(&theme, byte);
-            assert!((recreated_caret.y0 - after.y0).abs() < 0.01);
-            for _ in 0..2 {
+            let byte = source.find("Line 8 ").unwrap();
+            let mut doc = AutoCommit::new();
+            let obj = doc.put_object(ROOT, "source", ObjType::Text).unwrap();
+            doc.splice_text(&obj, 0, 0, &source).unwrap();
+            doc.get_heads();
+            let mut p = from_document(&doc, PreviewView::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            for width in [360., 1000.] {
+                let clip = Rect::new(0., 0., width, 240.);
+                p.navigate(PreviewNavigation::SelectPage("source".into()));
+                p.layout(clip, &mut tr, &theme).unwrap();
+                p.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+                let before = p.editor.history_test_caret_rect(&theme, byte);
+                assert!(before.y0 > clip.y1);
+                p.navigate(PreviewNavigation::Scroll {
+                    dx: 0.,
+                    dy: -before.y0 + 80.,
+                });
+                p.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+                let after = p.editor.history_test_caret_rect(&theme, byte);
+                assert!(
+                    after.y0 >= clip.y0 && after.y1 <= clip.y1,
+                    "{width}: {after:?}"
+                );
+                let mut recreated = from_document(&doc, p.view()).unwrap();
+                recreated.layout(clip, &mut tr, &theme).unwrap();
+                recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+                let recreated_caret = recreated.editor.history_test_caret_rect(&theme, byte);
+                assert!((recreated_caret.y0 - after.y0).abs() < 0.01);
+                for _ in 0..2 {
+                    recreated.layout(clip, &mut tr, &theme).unwrap();
+                    recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+                    assert!(
+                        (recreated.editor.history_test_caret_rect(&theme, byte).y0 - after.y0)
+                            .abs()
+                            < 0.01
+                    );
+                }
+                tr.bump_generation();
                 recreated.layout(clip, &mut tr, &theme).unwrap();
                 recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
                 assert!(
                     (recreated.editor.history_test_caret_rect(&theme, byte).y0 - after.y0).abs()
                         < 0.01
                 );
-            }
-            tr.bump_generation();
-            recreated.layout(clip, &mut tr, &theme).unwrap();
-            recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
-            assert!(
-                (recreated.editor.history_test_caret_rect(&theme, byte).y0 - after.y0).abs() < 0.01
-            );
 
-            p.navigate(PreviewNavigation::SelectPage("page:0".into()));
-            p.layout(clip, &mut tr, &theme).unwrap();
-            let before = p.pane.history_test_point(0, 400.);
-            p.navigate(PreviewNavigation::Scroll { dx: 0., dy: -180. });
-            p.layout(clip, &mut tr, &theme).unwrap();
-            let after = p.pane.history_test_point(0, 400.);
-            assert!(
-                (before.y - after.y - 180.).abs() < 0.01,
-                "compiled page must move by the requested pixels"
-            );
+                p.navigate(PreviewNavigation::SelectPage("page:0".into()));
+                p.layout(clip, &mut tr, &theme).unwrap();
+                let before = p.pane.history_test_point(0, 400.);
+                p.navigate(PreviewNavigation::Scroll { dx: 0., dy: -180. });
+                p.layout(clip, &mut tr, &theme).unwrap();
+                let after = p.pane.history_test_point(0, 400.);
+                assert!(
+                    (before.y - after.y - 180.).abs() < 0.01,
+                    "compiled page must move by the requested pixels"
+                );
+            }
         }
     }
 }

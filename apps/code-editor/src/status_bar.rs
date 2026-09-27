@@ -145,69 +145,67 @@ mod tests {
     }
 
     #[test]
-    fn label_leads_with_caret_and_language() {
-        let mut m = StatusModel::new();
-        m.set_state(caret(12, 5, "Rust"));
-        assert_eq!(m.bubble_text(), "Ln 12, Col 5 · Rust");
-    }
-
-    #[test]
-    fn label_drops_language_when_no_buffer_is_bound() {
-        let mut m = StatusModel::new();
-        m.set_state(caret(1, 1, ""));
-        assert_eq!(m.bubble_text(), "Ln 1, Col 1");
-    }
-
-    #[test]
-    fn label_omits_default_and_clean_signals() {
-        // No problems, no selection, an idle (not working) server, a clean
-        // buffer and no notice ⇒ nothing beyond the caret + language.
-        let mut m = StatusModel::new();
-        m.set_state(StatusState {
-            language: "Rust".into(),
-            line: 3,
-            col: 9,
-            problems: 0,
-            selection: 0,
-            caret_count: 1,
-            lsp: "rust-analyzer: ready".into(),
-            lsp_working: false,
-            dirty: false,
-            ..Default::default()
-        });
-        assert_eq!(m.bubble_text(), "Ln 3, Col 9 · Rust");
-    }
-
-    #[test]
-    fn label_appends_actionable_contextual_bits() {
-        let mut m = StatusModel::new();
-        m.set_state(StatusState {
-            language: "Rust".into(),
-            line: 8,
-            col: 2,
-            dirty: true,
-            selection: 20,
-            caret_count: 3,
-            problems: 4,
-            lsp: "rust-analyzer: indexing 42%".into(),
-            lsp_working: true,
-            notice: "Saved main.rs".into(),
-            ..Default::default()
-        });
-        assert_eq!(
-            m.bubble_text(),
-            "Ln 8, Col 2 · Rust · \u{25CF} Unsaved · 20 selected · 3 cursors · \u{26A0} 4 problems · rust-analyzer: indexing 42% · Saved main.rs"
-        );
-    }
-
-    #[test]
-    fn problems_count_singularizes() {
-        let mut m = StatusModel::new();
-        m.set_state(StatusState {
-            problems: 1,
-            ..caret(1, 1, "Rust")
-        });
-        assert_eq!(m.bubble_text(), "Ln 1, Col 1 · Rust · \u{26A0} 1 problem");
+    fn bubble_label_shows_caret_language_and_only_actionable_signals() {
+        let cases: Vec<(&str, StatusState, &str)> = vec![
+            (
+                "leads with caret and language",
+                caret(12, 5, "Rust"),
+                "Ln 12, Col 5 · Rust",
+            ),
+            (
+                "drops language when no buffer is bound",
+                caret(1, 1, ""),
+                "Ln 1, Col 1",
+            ),
+            // No problems, no selection, an idle (not working) server, a clean
+            // buffer and no notice ⇒ nothing beyond the caret + language.
+            (
+                "omits default and clean signals",
+                StatusState {
+                    language: "Rust".into(),
+                    line: 3,
+                    col: 9,
+                    problems: 0,
+                    selection: 0,
+                    caret_count: 1,
+                    lsp: "rust-analyzer: ready".into(),
+                    lsp_working: false,
+                    dirty: false,
+                    ..Default::default()
+                },
+                "Ln 3, Col 9 · Rust",
+            ),
+            (
+                "appends actionable contextual bits",
+                StatusState {
+                    language: "Rust".into(),
+                    line: 8,
+                    col: 2,
+                    dirty: true,
+                    selection: 20,
+                    caret_count: 3,
+                    problems: 4,
+                    lsp: "rust-analyzer: indexing 42%".into(),
+                    lsp_working: true,
+                    notice: "Saved main.rs".into(),
+                    ..Default::default()
+                },
+                "Ln 8, Col 2 · Rust · \u{25CF} Unsaved · 20 selected · 3 cursors · \u{26A0} 4 problems · rust-analyzer: indexing 42% · Saved main.rs",
+            ),
+            (
+                "problems count singularizes",
+                StatusState {
+                    problems: 1,
+                    ..caret(1, 1, "Rust")
+                },
+                "Ln 1, Col 1 · Rust · \u{26A0} 1 problem",
+            ),
+        ];
+        for (name, state, want) in cases {
+            let mut m = StatusModel::new();
+            m.set_state(state);
+            assert_eq!(m.bubble_text(), want, "case {name}");
+        }
     }
 
     #[test]

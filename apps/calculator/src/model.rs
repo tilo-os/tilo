@@ -730,148 +730,157 @@ fn pop_token(expr: &mut String) {
 mod tests {
     use super::*;
 
-    #[test]
+    /// Model key handling: `=` stores the evaluated value in ans/history, a digit
+    /// after `=` starts fresh while an operator continues, Backspace drops a whole
+    /// function name, M+ accumulates, and the error demo yields a renderable Calc
+    /// parse error. Fresh model per phase.
     #[allow(
         clippy::float_cmp,
         reason = "2+3 is exactly 5 in f64; an approximate compare would stop \
-                  proving that `=` stores the evaluated value verbatim"
-    )]
-    fn equals_pushes_history_and_sets_ans() {
-        let mut m = CalcModel {
-            expr: "2+3".into(),
-            ..CalcModel::default()
-        };
-        m.commit_equals();
-        assert_eq!(m.ans, 5.0);
-        assert_eq!(m.history[0].result, "5");
-        assert_eq!(m.expr, "5");
-        assert!(m.after_equals);
-    }
-
-    #[test]
-    fn digit_after_equals_starts_fresh() {
-        let mut m = CalcModel {
-            expr: "5".into(),
-            after_equals: true,
-            ..CalcModel::default()
-        };
-        apply_key(&mut m, &Key::Digit('7'));
-        assert_eq!(m.expr, "7");
-    }
-
-    #[test]
-    fn operator_after_equals_continues() {
-        let mut m = CalcModel {
-            expr: "5".into(),
-            after_equals: true,
-            ..CalcModel::default()
-        };
-        apply_key(&mut m, &Key::Ins("+"));
-        assert_eq!(m.expr, "5+");
-    }
-
-    #[test]
-    fn error_demo_is_calc_only_and_guarantees_a_renderable_parse_error() {
-        let mut m = CalcModel::seeded();
-        m.after_equals = true;
-        m.apply_error_demo();
-
-        assert_eq!(m.mode, Mode::Calc);
-        assert_eq!(m.expr, "sqrt(");
-        assert!(!m.after_equals);
-        assert!(engine::evaluate(&m.expr, &m.ctx()).is_err());
-    }
-
-    #[test]
-    fn backspace_drops_function_name() {
-        let mut m = CalcModel {
-            expr: "2+sin(".into(),
-            ..CalcModel::default()
-        };
-        apply_key(&mut m, &Key::Backspace);
-        assert_eq!(m.expr, "2+");
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "10 + 10 is exact in f64; the point of the test is the exact \
+                  proving that `=` stores the evaluated value verbatim; 10 + 10 is exact in f64; the point of the test is the exact \
                   accumulated total"
     )]
-    fn memory_add_accumulates() {
-        let mut m = CalcModel {
-            expr: "10".into(),
-            ..CalcModel::default()
-        };
-        apply_key(&mut m, &Key::MemAdd);
-        apply_key(&mut m, &Key::MemAdd);
-        assert_eq!(m.memory, 20.0);
-    }
-
     #[test]
-    fn keypad_is_full_grid() {
-        assert_eq!(keypad().len() % KEYPAD_COLS, 0);
-    }
+    fn key_entry_and_equals_update_expression_memory_and_history() {
+        // phase equals_pushes_history_and_sets_ans
+        {
+            let mut m = CalcModel {
+                expr: "2+3".into(),
+                ..CalcModel::default()
+            };
+            m.commit_equals();
+            assert_eq!(m.ans, 5.0);
+            assert_eq!(m.history[0].result, "5");
+            assert_eq!(m.expr, "5");
+            assert!(m.after_equals);
+        }
 
-    #[test]
-    fn every_keypad_layout_is_a_dense_grid() {
-        for layout in [
-            KeypadLayout::Compact,
-            KeypadLayout::Standard,
-            KeypadLayout::Scientific,
-        ] {
-            assert_eq!(
-                layout.keys().len() % layout.cols(),
-                0,
-                "{layout:?} keys must tile its column count exactly"
-            );
+        // phase digit_after_equals_starts_fresh
+        {
+            let mut m = CalcModel {
+                expr: "5".into(),
+                after_equals: true,
+                ..CalcModel::default()
+            };
+            apply_key(&mut m, &Key::Digit('7'));
+            assert_eq!(m.expr, "7");
+        }
+
+        // phase operator_after_equals_continues
+        {
+            let mut m = CalcModel {
+                expr: "5".into(),
+                after_equals: true,
+                ..CalcModel::default()
+            };
+            apply_key(&mut m, &Key::Ins("+"));
+            assert_eq!(m.expr, "5+");
+        }
+
+        // phase error_demo_is_calc_only_and_guarantees_a_renderable_parse_error
+        {
+            let mut m = CalcModel::seeded();
+            m.after_equals = true;
+            m.apply_error_demo();
+
+            assert_eq!(m.mode, Mode::Calc);
+            assert_eq!(m.expr, "sqrt(");
+            assert!(!m.after_equals);
+            assert!(engine::evaluate(&m.expr, &m.ctx()).is_err());
+        }
+
+        // phase backspace_drops_function_name
+        {
+            let mut m = CalcModel {
+                expr: "2+sin(".into(),
+                ..CalcModel::default()
+            };
+            apply_key(&mut m, &Key::Backspace);
+            assert_eq!(m.expr, "2+");
+        }
+
+        // phase memory_add_accumulates
+        {
+            let mut m = CalcModel {
+                expr: "10".into(),
+                ..CalcModel::default()
+            };
+            apply_key(&mut m, &Key::MemAdd);
+            apply_key(&mut m, &Key::MemAdd);
+            assert_eq!(m.memory, 20.0);
         }
     }
 
+    /// Keypad layouts: the default and every breakpoint layout tile their column
+    /// count exactly, widths pick the expected layout with growing column counts,
+    /// and every layout keeps the quick-calc essentials.
     #[test]
-    fn keypad_breakpoints_pick_expected_layout() {
-        assert_eq!(KeypadLayout::for_width(380.0), KeypadLayout::Compact);
-        assert_eq!(KeypadLayout::for_width(560.0), KeypadLayout::Standard);
-        assert_eq!(KeypadLayout::for_width(900.0), KeypadLayout::Scientific);
-        // wider layouts have at least as many columns
-        assert!(KeypadLayout::Compact.cols() < KeypadLayout::Standard.cols());
-        assert!(KeypadLayout::Standard.cols() < KeypadLayout::Scientific.cols());
-    }
+    fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials() {
+        // phase keypad_is_full_grid
+        {
+            assert_eq!(keypad().len() % KEYPAD_COLS, 0);
+        }
 
-    #[test]
-    fn every_layout_keeps_the_quick_calc_essentials() {
-        // A "quick calculation" user must always find the digits, the four
-        // basic operators and `=` regardless of breakpoint.
-        for layout in [
-            KeypadLayout::Compact,
-            KeypadLayout::Standard,
-            KeypadLayout::Scientific,
-        ] {
-            let keys = layout.keys();
-            for d in '0'..='9' {
-                assert!(
-                    keys.iter().any(|k| matches!(k, Key::Digit(c) if *c == d)),
-                    "{layout:?} missing digit {d}"
+        // phase every_keypad_layout_is_a_dense_grid
+        {
+            for layout in [
+                KeypadLayout::Compact,
+                KeypadLayout::Standard,
+                KeypadLayout::Scientific,
+            ] {
+                assert_eq!(
+                    layout.keys().len() % layout.cols(),
+                    0,
+                    "{layout:?} keys must tile its column count exactly"
                 );
             }
-            for op in ["+", "-", "*", "/"] {
+        }
+
+        // phase keypad_breakpoints_pick_expected_layout
+        {
+            assert_eq!(KeypadLayout::for_width(380.0), KeypadLayout::Compact);
+            assert_eq!(KeypadLayout::for_width(560.0), KeypadLayout::Standard);
+            assert_eq!(KeypadLayout::for_width(900.0), KeypadLayout::Scientific);
+            // wider layouts have at least as many columns
+            assert!(KeypadLayout::Compact.cols() < KeypadLayout::Standard.cols());
+            assert!(KeypadLayout::Standard.cols() < KeypadLayout::Scientific.cols());
+        }
+
+        // phase every_layout_keeps_the_quick_calc_essentials
+        {
+            // A "quick calculation" user must always find the digits, the four
+            // basic operators and `=` regardless of breakpoint.
+            for layout in [
+                KeypadLayout::Compact,
+                KeypadLayout::Standard,
+                KeypadLayout::Scientific,
+            ] {
+                let keys = layout.keys();
+                for d in '0'..='9' {
+                    assert!(
+                        keys.iter().any(|k| matches!(k, Key::Digit(c) if *c == d)),
+                        "{layout:?} missing digit {d}"
+                    );
+                }
+                for op in ["+", "-", "*", "/"] {
+                    assert!(
+                        keys.iter().any(|k| matches!(k, Key::Ins(s) if *s == op)),
+                        "{layout:?} missing operator {op}"
+                    );
+                }
                 assert!(
-                    keys.iter().any(|k| matches!(k, Key::Ins(s) if *s == op)),
-                    "{layout:?} missing operator {op}"
+                    keys.iter().any(|k| matches!(k, Key::Equals)),
+                    "{layout:?} missing ="
+                );
+                assert!(
+                    keys.iter().any(|k| matches!(k, Key::Clear)),
+                    "{layout:?} missing AC"
+                );
+                assert!(
+                    keys.iter().any(|k| matches!(k, Key::Backspace)),
+                    "{layout:?} missing ⌫"
                 );
             }
-            assert!(
-                keys.iter().any(|k| matches!(k, Key::Equals)),
-                "{layout:?} missing ="
-            );
-            assert!(
-                keys.iter().any(|k| matches!(k, Key::Clear)),
-                "{layout:?} missing AC"
-            );
-            assert!(
-                keys.iter().any(|k| matches!(k, Key::Backspace)),
-                "{layout:?} missing ⌫"
-            );
         }
     }
 }

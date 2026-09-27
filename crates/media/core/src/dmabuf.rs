@@ -254,118 +254,120 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn linearity_covers_the_unstated_modifier_but_not_a_tiled_one() {
-        let img = |modifier| DmabufImage {
-            planes: vec![],
-            fourcc: DRM_FORMAT_NV12,
-            modifier,
-            width: 16,
-            height: 16,
-            colorimetry: Colorimetry::default(),
-        };
-        assert!(img(DRM_FORMAT_MOD_LINEAR).is_linear());
-        assert!(
-            img(DRM_FORMAT_MOD_INVALID).is_linear(),
-            "unstated is treated as linear"
-        );
-        // The AMD GFX9 tiled modifier a VA-API decoder exports. This must be
-        // rejected: importing it as linear would sample garbage.
-        assert!(!img(0x0200_0000_1040_1b04).is_linear());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn dmabuf_descriptions_layouts_and_sizes_come_from_the_real_buffer() {
+        // Phase `linearity_covers_the_unstated_modifier_but_not_a_tiled_one`.
+        {
+            let img = |modifier| DmabufImage {
+                planes: vec![],
+                fourcc: DRM_FORMAT_NV12,
+                modifier,
+                width: 16,
+                height: 16,
+                colorimetry: Colorimetry::default(),
+            };
+            assert!(img(DRM_FORMAT_MOD_LINEAR).is_linear());
+            assert!(
+                img(DRM_FORMAT_MOD_INVALID).is_linear(),
+                "unstated is treated as linear"
+            );
+            // The AMD GFX9 tiled modifier a VA-API decoder exports. This must be
+            // rejected: importing it as linear would sample garbage.
+            assert!(!img(0x0200_0000_1040_1b04).is_linear());
+        }
+        // Phase `describe_names_the_format_and_layout`.
+        {
+            let img = DmabufImage {
+                planes: vec![],
+                fourcc: DRM_FORMAT_NV12,
+                modifier: 0,
+                width: 1920,
+                height: 1080,
+                colorimetry: Colorimetry::default(),
+            };
+            assert_eq!(img.describe(), "NV12 1920x1080 mod=0x0 planes=0");
+        }
+        // Phase `dmabuf_size_reads_the_end_offset_of_a_real_fd`.
+        {
+            // A plain file stands in for a dmabuf here: both answer SEEK_END, and
+            // this proves the binding returns the byte length rather than -1.
+            let dir = std::env::temp_dir().join(format!("tilo-dmabuf-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("buf");
+            std::fs::write(&path, vec![0u8; 4096]).unwrap();
+            let f = std::fs::File::open(&path).unwrap();
+            let fd = OwnedFd::from(f);
+            assert_eq!(
+                dmabuf_size(&fd),
+                Some(4096),
+                "SEEK_END reports the real size"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `planes_sharing_one_fd_are_detected_as_one_buffer`.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("tilo-dmabuf-share-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a");
+            let b = dir.join("b");
+            std::fs::write(&a, vec![0u8; 64]).unwrap();
+            std::fs::write(&b, vec![0u8; 64]).unwrap();
 
-    #[test]
-    #[cfg(unix)]
-    fn describe_names_the_format_and_layout() {
-        let img = DmabufImage {
-            planes: vec![],
-            fourcc: DRM_FORMAT_NV12,
-            modifier: 0,
-            width: 1920,
-            height: 1080,
-            colorimetry: Colorimetry::default(),
-        };
-        assert_eq!(img.describe(), "NV12 1920x1080 mod=0x0 planes=0");
-    }
+            let fd_a = OwnedFd::from(std::fs::File::open(&a).unwrap());
+            let fd_a2 = fd_a.try_clone().unwrap();
+            let shared = DmabufImage {
+                planes: vec![
+                    DmabufPlane {
+                        fd: fd_a,
+                        offset: 0,
+                        stride: 8,
+                    },
+                    DmabufPlane {
+                        fd: fd_a2,
+                        offset: 32,
+                        stride: 8,
+                    },
+                ],
+                fourcc: DRM_FORMAT_NV12,
+                modifier: 0,
+                width: 8,
+                height: 4,
+                colorimetry: Colorimetry::default(),
+            };
+            assert!(
+                shared.planes_share_one_buffer(),
+                "same inode → one buffer, bind at offsets"
+            );
 
-    #[test]
-    #[cfg(unix)]
-    fn dmabuf_size_reads_the_end_offset_of_a_real_fd() {
-        // A plain file stands in for a dmabuf here: both answer SEEK_END, and
-        // this proves the binding returns the byte length rather than -1.
-        let dir = std::env::temp_dir().join(format!("tilo-dmabuf-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("buf");
-        std::fs::write(&path, vec![0u8; 4096]).unwrap();
-        let f = std::fs::File::open(&path).unwrap();
-        let fd = OwnedFd::from(f);
-        assert_eq!(
-            dmabuf_size(&fd),
-            Some(4096),
-            "SEEK_END reports the real size"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
+            let split = DmabufImage {
+                planes: vec![
+                    DmabufPlane {
+                        fd: OwnedFd::from(std::fs::File::open(&a).unwrap()),
+                        offset: 0,
+                        stride: 8,
+                    },
+                    DmabufPlane {
+                        fd: OwnedFd::from(std::fs::File::open(&b).unwrap()),
+                        offset: 0,
+                        stride: 8,
+                    },
+                ],
+                fourcc: DRM_FORMAT_NV12,
+                modifier: 0,
+                width: 8,
+                height: 4,
+                colorimetry: Colorimetry::default(),
+            };
+            assert!(
+                !split.planes_share_one_buffer(),
+                "distinct inodes → import each plane"
+            );
 
-    #[test]
-    #[cfg(unix)]
-    fn planes_sharing_one_fd_are_detected_as_one_buffer() {
-        let dir = std::env::temp_dir().join(format!("tilo-dmabuf-share-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a");
-        let b = dir.join("b");
-        std::fs::write(&a, vec![0u8; 64]).unwrap();
-        std::fs::write(&b, vec![0u8; 64]).unwrap();
-
-        let fd_a = OwnedFd::from(std::fs::File::open(&a).unwrap());
-        let fd_a2 = fd_a.try_clone().unwrap();
-        let shared = DmabufImage {
-            planes: vec![
-                DmabufPlane {
-                    fd: fd_a,
-                    offset: 0,
-                    stride: 8,
-                },
-                DmabufPlane {
-                    fd: fd_a2,
-                    offset: 32,
-                    stride: 8,
-                },
-            ],
-            fourcc: DRM_FORMAT_NV12,
-            modifier: 0,
-            width: 8,
-            height: 4,
-            colorimetry: Colorimetry::default(),
-        };
-        assert!(
-            shared.planes_share_one_buffer(),
-            "same inode → one buffer, bind at offsets"
-        );
-
-        let split = DmabufImage {
-            planes: vec![
-                DmabufPlane {
-                    fd: OwnedFd::from(std::fs::File::open(&a).unwrap()),
-                    offset: 0,
-                    stride: 8,
-                },
-                DmabufPlane {
-                    fd: OwnedFd::from(std::fs::File::open(&b).unwrap()),
-                    offset: 0,
-                    stride: 8,
-                },
-            ],
-            fourcc: DRM_FORMAT_NV12,
-            modifier: 0,
-            width: 8,
-            height: 4,
-            colorimetry: Colorimetry::default(),
-        };
-        assert!(
-            !split.planes_share_one_buffer(),
-            "distinct inodes → import each plane"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

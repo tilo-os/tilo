@@ -74,25 +74,27 @@ impl LaunchpadAction {
         }
     }
 
-    const fn label(self) -> &'static str {
+    fn label(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::Chat => "Discuss",
-            Self::Notes => "Notes",
-            Self::Tasks => "Tasks",
-            Self::Meet => "Plan a meeting",
-            Self::Invite => "Invite people",
-            Self::Activity => "Catch up",
+            Self::Chat => t("a11y-shell-launchpad-discuss"),
+            Self::Notes => t("a11y-shell-launchpad-notes"),
+            Self::Tasks => t("a11y-shell-launchpad-tasks"),
+            Self::Meet => t("a11y-shell-launchpad-meet"),
+            Self::Invite => t("a11y-shell-launchpad-invite"),
+            Self::Activity => t("a11y-shell-launchpad-activity"),
         }
     }
 
-    const fn detail(self) -> &'static str {
+    fn detail(self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::Chat => "Open the shared conversation",
-            Self::Notes => "Write ideas together",
-            Self::Tasks => "Plan work in Calendar",
-            Self::Meet => "Open Chat, then start a voice or video call",
-            Self::Invite => "Bring someone into this workspace",
-            Self::Activity => "See what changed and why",
+            Self::Chat => t("a11y-shell-launchpad-discuss-detail"),
+            Self::Notes => t("a11y-shell-launchpad-notes-detail"),
+            Self::Tasks => t("a11y-shell-launchpad-tasks-detail"),
+            Self::Meet => t("a11y-shell-launchpad-meet-detail"),
+            Self::Invite => t("a11y-shell-launchpad-invite-detail"),
+            Self::Activity => t("a11y-shell-launchpad-activity-detail"),
         }
     }
 
@@ -329,7 +331,11 @@ impl Widget for CollaborationLaunchpad {
         let small = theme.tokens.typography.scale.sm / scale;
         let caption = theme.tokens.typography.scale.xs / scale;
         let heading = theme.tokens.typography.scale.x3l / scale;
-        let (button_w, button_h) = text.measure("Open an app", base, None);
+        let (button_w, button_h) = text.measure(
+            &crate::shell::i18n::t("a11y-shell-launchpad-open-app"),
+            base,
+            None,
+        );
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
@@ -351,7 +357,11 @@ impl Widget for CollaborationLaunchpad {
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
-        let title = text.elide_to_width("Make something together", heading, panel_width as f32);
+        let title = text.elide_to_width(
+            &crate::shell::i18n::t("a11y-shell-launchpad-title"),
+            heading,
+            panel_width as f32,
+        );
         text.draw_text(
             scene,
             &title,
@@ -417,7 +427,7 @@ impl Widget for CollaborationLaunchpad {
             action
                 .icon()
                 .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
-            let label = text.elide_to_width(action.label(), base, (rect.width() - 72.0) as f32);
+            let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,
                 &label,
@@ -427,11 +437,11 @@ impl Widget for CollaborationLaunchpad {
                 None,
             );
             let (_, label_h) = text.measure(&label, base, None);
-            let (_, detail_h) = text.measure(action.detail(), caption, None);
+            let (_, detail_h) = text.measure(&action.detail(), caption, None);
             let detail_y = (16.0 + f64::from(label_h) + 6.0).max(47.0);
             if detail_y + f64::from(detail_h) + 6.0 <= rect.height() {
                 let detail =
-                    text.elide_to_width(action.detail(), caption, (rect.width() - 72.0) as f32);
+                    text.elide_to_width(&action.detail(), caption, (rect.width() - 72.0) as f32);
                 text.draw_text(
                     scene,
                     &detail,
@@ -454,11 +464,14 @@ impl Widget for CollaborationLaunchpad {
             transform,
             text,
             theme,
-            &ButtonFace::new(button, "Open an app")
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
-                .text_size(base)
-                .focused(self.focused && self.selected == 6)
-                .hovered(button.contains(self.last_cursor)),
+            &ButtonFace::new(
+                button,
+                &crate::shell::i18n::t("a11y-shell-launchpad-open-app"),
+            )
+            .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
+            .text_size(base)
+            .focused(self.focused && self.selected == 6)
+            .hovered(button.contains(self.last_cursor)),
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
@@ -591,11 +604,9 @@ impl Widget for CollaborationLaunchpad {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Make something together")
+                .with_name(crate::shell::i18n::t("a11y-shell-launchpad-title"))
                 .with_bounds(self.content_bounds())
-                .with_description(
-                    "Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.",
-                )
+                .with_description(crate::shell::i18n::t("a11y-shell-launchpad-description"))
                 .with_children(
                     LaunchpadAction::ALL
                         .into_iter()
@@ -613,11 +624,17 @@ impl Widget for CollaborationLaunchpad {
                                     ..Default::default()
                                 })
                         })
-                        .chain(std::iter::once(AccessNode::new(Role::Button)
-                            .with_name("Open an app")
-                            .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
-                            .with_bounds(self.app_button_rect())
-                            .with_state(AccessState { focusable: true, focused: self.focused && self.selected == 6, ..Default::default() })))
+                        .chain(std::iter::once(
+                            AccessNode::new(Role::Button)
+                                .with_name(crate::shell::i18n::t("a11y-shell-launchpad-open-app"))
+                                .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
+                                .with_bounds(self.app_button_rect())
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    focused: self.focused && self.selected == 6,
+                                    ..Default::default()
+                                }),
+                        ))
                         .collect(),
                 ),
         )
@@ -672,167 +689,175 @@ mod tests {
     use super::*;
     use automerge::ReadDoc as _;
 
-    /// HIG §9.5: an idle card's edge derives from its own floor and must
-    /// register on every shipped palette — the former `border_standard` at
-    /// 0.72 alpha was invisible on the dark grid.
     #[test]
-    fn launchpad_cards_keep_an_edge_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let floor = theme.bg_primary;
-            let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
-            assert!(
-                delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{}: the card edge must separate it from its floor (Δ luminance {delta:.4})",
-                theme.name
-            );
-        }
-    }
-
-    #[test]
-    fn desktop_launchpad_exposes_an_app_opener() {
-        let pad = CollaborationLaunchpad::new();
-        assert!(
-            pad.accessibility()
-                .unwrap()
-                .children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("Open an app"))
-        );
-    }
-
-    #[test]
-    fn compact_large_text_heading_stays_below_top_chrome() {
-        let mut pad = CollaborationLaunchpad::new();
-        pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(2.0);
-        pad.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert!(
-            pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
-            "heading must clear chrome: {:?}",
-            pad.card_rects[0]
-        );
-    }
-
-    #[test]
-    fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
-        for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
-            let mut pad = CollaborationLaunchpad::new();
-            pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
-            for scale in [1.0, 1.5, 2.0] {
-                let theme = Theme::dark().with_text_scale(scale);
-                let mut text = TextRenderer::new();
-                text.set_text_scale(scale);
-                pad.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
-                let button = pad.app_button_rect();
-                let (label_w, label_h) = text.measure(
-                    "Open an app",
-                    theme.tokens.typography.scale.base / scale,
-                    None,
-                );
+    fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
+        /// HIG §9.5: an idle card's edge derives from its own floor and must
+        /// register on every shipped palette — the former `border_standard` at
+        /// 0.72 alpha was invisible on the dark grid.
+        fn launchpad_cards_keep_an_edge_on_every_palette() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let floor = theme.bg_primary;
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
                 assert!(
-                    f64::from(label_w) + 32.0 <= button.width()
-                        && f64::from(label_h) + 16.0 <= button.height()
-                );
-                assert!(button.width() >= 24.0 && button.height() >= 24.0);
-                assert!(
-                    pad.rect.contains(button.origin())
-                        && button.x1 <= pad.rect.x1
-                        && button.y1 <= pad.rect.y1,
-                    "{button:?} outside {:?}",
-                    pad.rect
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the card edge must separate it from its floor (Δ luminance {delta:.4})",
+                    theme.name
                 );
             }
         }
-    }
 
-    #[test]
-    fn every_card_has_a_unique_semantic_route() {
-        let routes = LaunchpadAction::ALL.map(LaunchpadAction::path);
-        let unique = routes.into_iter().collect::<std::collections::HashSet<_>>();
-        assert_eq!(unique.len(), LaunchpadAction::ALL.len());
-        assert!(
-            routes
-                .iter()
-                .all(|route| route.starts_with("shell.empty-workspace."))
-        );
-    }
-
-    #[test]
-    fn collaboration_cards_target_the_apps_that_own_those_features() {
-        assert_eq!(
-            LaunchpadAction::Chat.app_target(),
-            Some(("so.tilo.chat", "Chat"))
-        );
-        assert_eq!(
-            LaunchpadAction::Meet.app_target(),
-            Some(("so.tilo.chat", "Chat")),
-            "calls are a Chat feature, not a fabricated Meet package"
-        );
-        assert_eq!(
-            LaunchpadAction::Tasks.app_target(),
-            Some(("so.tilo.calendar", "Calendar")),
-            "Calendar is the repo's existing task manager"
-        );
-    }
-
-    #[test]
-    fn assistive_activation_publishes_the_same_action_as_a_card_click() {
-        let mut launchpad = CollaborationLaunchpad::new();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-
-        assert!(launchpad.perform_semantic_action(
-            EMPTY_WORKSPACE_ACTIVITY,
-            &Action::Activate,
-            &mut doc,
-            &root,
-        ));
-        assert!(matches!(
-            doc.get(&root, EMPTY_WORKSPACE_ACTIVITY),
-            Ok(Some((automerge::Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        ));
-    }
-
-    #[test]
-    fn wide_and_narrow_layouts_keep_all_cards_actionable() {
-        for rect in [
-            Rect::new(0.0, 0.0, 1200.0, 720.0),
-            Rect::new(0.0, 0.0, 460.0, 760.0),
-        ] {
-            let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
-            assert!(
-                cards
-                    .iter()
-                    .all(|card| card.width() >= 280.0 && card.height() >= 64.0)
+        fn compact_large_text_heading_stays_below_top_chrome() {
+            let mut pad = CollaborationLaunchpad::new();
+            pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            pad.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
             );
-            assert!(cards.windows(2).all(|pair| pair[0] != pair[1]));
+            assert!(
+                pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
+                "heading must clear chrome: {:?}",
+                pad.card_rects[0]
+            );
         }
+
+        fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
+            for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
+                let mut pad = CollaborationLaunchpad::new();
+                pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
+                for scale in [1.0, 1.5, 2.0] {
+                    let theme = Theme::dark().with_text_scale(scale);
+                    let mut text = TextRenderer::new();
+                    text.set_text_scale(scale);
+                    pad.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        &PresenceCtx::default(),
+                    );
+                    let button = pad.app_button_rect();
+                    let (label_w, label_h) = text.measure(
+                        "Open an app",
+                        theme.tokens.typography.scale.base / scale,
+                        None,
+                    );
+                    assert!(
+                        f64::from(label_w) + 32.0 <= button.width()
+                            && f64::from(label_h) + 16.0 <= button.height()
+                    );
+                    assert!(button.width() >= 24.0 && button.height() >= 24.0);
+                    assert!(
+                        pad.rect.contains(button.origin())
+                            && button.x1 <= pad.rect.x1
+                            && button.y1 <= pad.rect.y1,
+                        "{button:?} outside {:?}",
+                        pad.rect
+                    );
+                }
+            }
+        }
+
+        fn wide_and_narrow_layouts_keep_all_cards_actionable() {
+            for rect in [
+                Rect::new(0.0, 0.0, 1200.0, 720.0),
+                Rect::new(0.0, 0.0, 460.0, 760.0),
+            ] {
+                let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
+                assert!(
+                    cards
+                        .iter()
+                        .all(|card| card.width() >= 280.0 && card.height() >= 64.0)
+                );
+                assert!(cards.windows(2).all(|pair| pair[0] != pair[1]));
+            }
+        }
+
+        fn desktop_launchpad_clears_the_workspace_rail() {
+            let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
+            let rail_clearance =
+                crate::shell::overlay_host::workspace_rail_clearance_for_viewport(rect.height());
+            assert!(
+                cards.iter().all(|card| card.x0 >= rail_clearance),
+                "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
+            );
+        }
+
+        launchpad_cards_keep_an_edge_on_every_palette();
+        compact_large_text_heading_stays_below_top_chrome();
+        desktop_app_button_has_visible_bounds_in_compact_layouts();
+        wide_and_narrow_layouts_keep_all_cards_actionable();
+        desktop_launchpad_clears_the_workspace_rail();
     }
 
     #[test]
-    fn desktop_launchpad_clears_the_workspace_rail() {
-        let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
-        let rail_clearance =
-            crate::shell::overlay_host::workspace_rail_clearance_for_viewport(rect.height());
-        assert!(
-            cards.iter().all(|card| card.x0 >= rail_clearance),
-            "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
-        );
+    fn launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action() {
+        fn desktop_launchpad_exposes_an_app_opener() {
+            let pad = CollaborationLaunchpad::new();
+            assert!(
+                pad.accessibility()
+                    .unwrap()
+                    .children
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("Open an app"))
+            );
+        }
+
+        fn every_card_has_a_unique_semantic_route() {
+            let routes = LaunchpadAction::ALL.map(LaunchpadAction::path);
+            let unique = routes.into_iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(unique.len(), LaunchpadAction::ALL.len());
+            assert!(
+                routes
+                    .iter()
+                    .all(|route| route.starts_with("shell.empty-workspace."))
+            );
+        }
+
+        fn collaboration_cards_target_the_apps_that_own_those_features() {
+            assert_eq!(
+                LaunchpadAction::Chat.app_target(),
+                Some(("so.tilo.chat", "Chat"))
+            );
+            assert_eq!(
+                LaunchpadAction::Meet.app_target(),
+                Some(("so.tilo.chat", "Chat")),
+                "calls are a Chat feature, not a fabricated Meet package"
+            );
+            assert_eq!(
+                LaunchpadAction::Tasks.app_target(),
+                Some(("so.tilo.calendar", "Calendar")),
+                "Calendar is the repo's existing task manager"
+            );
+        }
+
+        fn assistive_activation_publishes_the_same_action_as_a_card_click() {
+            let mut launchpad = CollaborationLaunchpad::new();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            assert!(launchpad.perform_semantic_action(
+                EMPTY_WORKSPACE_ACTIVITY,
+                &Action::Activate,
+                &mut doc,
+                &root,
+            ));
+            assert!(matches!(
+                doc.get(&root, EMPTY_WORKSPACE_ACTIVITY),
+                Ok(Some((automerge::Value::Scalar(value), _)))
+                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+            ));
+        }
+
+        desktop_launchpad_exposes_an_app_opener();
+        every_card_has_a_unique_semantic_route();
+        collaboration_cards_target_the_apps_that_own_those_features();
+        assistive_activation_publishes_the_same_action_as_a_card_click();
     }
 }

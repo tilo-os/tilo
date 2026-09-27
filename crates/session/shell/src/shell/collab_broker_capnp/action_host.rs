@@ -38,6 +38,7 @@ impl BrokerActor {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
+            CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
         }
     }
 }
@@ -148,6 +149,127 @@ fn confirmation_evidence(confirmation: Option<&Confirmation>) -> serde_json::Val
 }
 
 impl CapnpBrokerState {
+    /// The caller an application connection's request is decided as.
+    ///
+    /// An application acts under its own identity: `person` is who admitted
+    /// the connection, `app_id` the application it is. The app reaches what
+    /// it owns — its own published surface, the launches the toolkit makes on
+    /// its behalf, and actions published under its own id (the shortcut
+    /// library is the shortcuts app's) — as that person, because those are
+    /// the person's own clicks in it. Reading the catalogue needs the app to
+    /// declare `[actions] query`; invoking another app's action needs
+    /// `[actions] invoke` and is then decided for the app, which holds no
+    /// role and has only what the workspace grants it.
+    ///
+    /// # Errors
+    ///
+    /// The refusal to answer with, when the request is outside what the app
+    /// declared.
+    pub(crate) fn app_door(
+        &self,
+        person: &Caller,
+        app_id: &str,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
+        use tilo_actions::remote::{RemoteActionMessage, refuse};
+        let access = self.app_action_access(app_id);
+        let mut as_app = Caller::local_app(app_id);
+        if let Some(room) = person.room() {
+            as_app = as_app.in_room(room);
+        }
+        let permitted = match message {
+            RemoteActionMessage::CatalogueRequest { .. } => access.query.then(|| person.clone()),
+            RemoteActionMessage::Invoke(request) => {
+                if self.app_owns(person, app_id, request) {
+                    Some(person.clone())
+                } else {
+                    access.invoke.then_some(as_app)
+                }
+            }
+            RemoteActionMessage::Observe { invocation }
+            | RemoteActionMessage::Cancel { invocation } => {
+                Some(if self.remote_job(&as_app, invocation).is_some() {
+                    as_app
+                } else {
+                    person.clone()
+                })
+            }
+            RemoteActionMessage::CatalogueResponse { .. }
+            | RemoteActionMessage::Receipt(_)
+            | RemoteActionMessage::Update { .. }
+            | RemoteActionMessage::CancelResponse { .. } => Some(person.clone()),
+        };
+        permitted.ok_or_else(|| {
+            Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
+                RemoteActionMessage::CatalogueResponse {
+                    correlation: 0,
+                    result: Err(ActionHostError::NotPermitted),
+                },
+            ))
+        })
+    }
+
+    /// What application `app_id` declared it may do on the door.
+    pub(crate) fn app_action_access(
+        &self,
+        app_id: &str,
+    ) -> crate::shell::app_action_access::ActionAccess {
+        self.app_action_access
+            .read()
+            .map(|resolver| resolver(app_id))
+            .unwrap_or_default()
+    }
+
+    /// Read declared access from `resolver` from now on.
+    pub(crate) fn set_app_action_access(
+        &self,
+        resolver: crate::shell::app_action_access::AccessResolver,
+    ) {
+        if let Ok(mut current) = self.app_action_access.write() {
+            *current = resolver;
+        }
+    }
+
+    /// Whether `request` names something application `app_id` owns, as
+    /// seen by the `person` using it.
+    fn app_owns(&self, person: &Caller, app_id: &str, request: &InvokeRequest) -> bool {
+        let target = &request.target;
+        if target.provider == OWN_PROVIDER
+            || (workspace_provider_room(&target.provider).is_some()
+                && target
+                    .address
+                    .resource
+                    .starts_with(APPLICATION_RESOURCE_PREFIX)
+                && target.address.action == APPLICATION_OPEN_ACTION)
+        {
+            return true;
+        }
+        if let Some(row) = self
+            .eager_catalogue(person, true)
+            .0
+            .into_iter()
+            .find(|row| {
+                row.provider == target.provider
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|descriptor| descriptor.address == target.address)
+            })
+        {
+            return row.app_id == app_id;
+        }
+        let Ok(peer_id) = target.provider.parse::<u64>() else {
+            return false;
+        };
+        self.published_surfaces()
+            .iter()
+            .any(|surface| surface.peer_id == peer_id && surface.app_id == app_id)
+            || self
+                .action_directory_roots()
+                .iter()
+                .any(|root| root.peer_id == peer_id && root.app_id == app_id)
+    }
+
     /// Workspaces `caller` may act in, with the policy actor for each. A
     /// caller confined to a room was admitted to it by its connection; any
     /// other caller must be a member.
@@ -170,28 +292,31 @@ impl CapnpBrokerState {
                     None => match caller.principal() {
                         CallerPrincipal::Person(id) => workspace.role_of(id).is_some(),
                         CallerPrincipal::Agent(id) => workspace.role_of_agent(id).is_some(),
+                        // An application is always admitted into one room;
+                        // unconfined, it is a member of none.
+                        CallerPrincipal::App(_) => false,
                     },
                 }
             })
-            .map(|workspace| {
-                let policy = if actor.is_agent {
-                    workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-                } else {
-                    workspace.actor_for_person(&actor.id)
-                };
-                (workspace.clone(), policy)
-            })
+            .map(|workspace| (workspace.clone(), actor.policy_in(workspace)))
             .collect()
     }
 
-    fn allowed(
+    pub(super) fn allowed(
         workspace: &crate::shell::state::Workspace,
         policy: &crate::shell::state::Actor,
         app: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
     ) -> bool {
-        permission_verb(permission).is_none_or(|verb| {
+        // An action that asks nothing of a person still has to be granted to
+        // an application: it holds no membership that would imply it.
+        let acting_app = policy
+            .principals
+            .iter()
+            .any(|principal| matches!(principal, crate::shell::state::Principal::App(_)));
+        let verb = permission_verb(permission).or_else(|| acting_app.then_some(Verb::Read));
+        verb.is_none_or(|verb| {
             workspace.decide(
                 policy,
                 &ResourceRef::Action {
@@ -212,7 +337,7 @@ impl CapnpBrokerState {
     /// caller on this machine — launching an application it may open. An
     /// action the caller may not use is absent. Alongside them, the
     /// publishers the caller may browse or invoke.
-    fn eager_catalogue(
+    pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
         with_rows: bool,
@@ -1166,11 +1291,7 @@ impl CapnpBrokerState {
         if address.resource == automation_host::LIBRARY_RESOURCE {
             return self.start_shortcut_library(caller, actor, room, &address.action, argument);
         }
-        if matches!(
-            address.action.as_str(),
-            crate::shell::state::PROFILE_SAVE_ACTION_ID
-                | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
-        ) {
+        if crate::shell::workspace_settings::is_governance_action(&address.action) {
             return self
                 .invoke_workspace_profile_action(
                     room,
@@ -1322,12 +1443,52 @@ impl CapnpBrokerState {
         Ok(self.receipt_for(request.invocation, job))
     }
 
+    /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
+    /// the screen: every step that needs confirmation and every question
+    /// waits in [`Self::take_step_prompt`] until the compositor's sheet
+    /// answers it.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`.
+    pub(crate) fn start_interactive_shortcut_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<u64, ActionHostError> {
+        let shortcut = self
+            .saved_shortcut(caller, room, shortcut_id)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let hooks = automation_host::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+        self.start_shortcut_run(
+            caller,
+            room,
+            shortcut,
+            automation_host::RunStart {
+                run: tilo_automation::RunId::new(),
+                trigger: tilo_automation::RunTrigger::Manual,
+                mode: tilo_automation::RunMode::Interactive,
+                inputs,
+            },
+            hooks,
+        )
+    }
+
+    /// The oldest step of an interactive run waiting for its person.
+    pub(crate) fn take_step_prompt(&self) -> Option<automation_host::PromptedStep> {
+        self.step_prompts.take_next()
+    }
+
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
     /// `room` on behalf of `caller`, who must be the person who saved it.
     ///
-    /// Nobody is present at a triggered run: a step asking for confirmation
-    /// proceeds only when its saver consented to exactly that action in
-    /// advance, and a question stops the run. Before anything runs the
+    /// A keyboard trigger means the person is at the screen: its run asks
+    /// them through the compositor's sheet, like a palette run. Nobody is
+    /// present at a scheduled run: a step asking for confirmation proceeds
+    /// only when its saver consented to exactly that action in advance, and
+    /// a question stops the run. Before anything runs the
     /// shortcut is checked again against what `caller` is offered now, so a
     /// shortcut that was deleted, lost the trigger, or reaches past a grant
     /// that has since been revoked does not start.
@@ -1342,6 +1503,7 @@ impl CapnpBrokerState {
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
@@ -1372,6 +1534,21 @@ impl CapnpBrokerState {
                     .join("; "),
             }
         })?;
+        if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
+            let hooks = automation_host::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+            return self.start_shortcut_run(
+                caller,
+                room,
+                shortcut,
+                automation_host::RunStart {
+                    run,
+                    trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
+                    mode: tilo_automation::RunMode::Interactive,
+                    inputs: serde_json::Map::new(),
+                },
+                hooks,
+            );
+        }
         self.start_shortcut_run(
             caller,
             room,
@@ -1380,7 +1557,7 @@ impl CapnpBrokerState {
                 run,
                 trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                 mode: tilo_automation::RunMode::Unattended,
-                inputs: serde_json::Map::new(),
+                inputs,
             },
             automation_host::DoorHooks::new(None),
         )

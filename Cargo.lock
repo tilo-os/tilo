@@ -121,12 +121,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "account-custody"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "cloud-source",
+ "cloud-source-dropbox",
+ "cloud-source-gdrive",
+ "cloud-source-icloud",
+ "cloud-source-onedrive",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-http",
+ "tilo-clock",
+ "tilo-net",
+ "tilo-oauth",
+ "tilo-test-env",
+ "toml 1.0.6+spec-1.1.0",
+ "tracing",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "accounts"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
  "bounded-command",
+ "cloud-source",
  "getrandom 0.4.1",
  "private-fs",
  "secret-vault",
@@ -305,6 +331,7 @@ dependencies = [
  "tilo-content",
  "tilo-model-gateway",
  "tilo-reference",
+ "tilo-resource",
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
@@ -2077,6 +2104,108 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "cloud-source-dav"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-dav",
+ "serde",
+ "serde_json",
+ "test-http",
+ "tilo-dav",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "cloud-source-dropbox"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-dropbox",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "cloud-source-gdrive"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-gdrive",
+ "md-5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "cloud-source-icloud"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "cloud-source",
+ "cloud-source-icloud",
+ "getrandom 0.4.1",
+ "hex",
+ "num-bigint 0.5.1",
+ "pbkdf2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "thiserror 2.0.18",
+ "tilo-net",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "cloud-source-onedrive"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "cloud-source",
+ "cloud-source-onedrive",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3786,6 +3915,7 @@ dependencies = [
  "cap-fs-ext",
  "cap-std",
  "chrono",
+ "cloud-source",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
@@ -3812,8 +3942,8 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-clock",
- "tilo-dav",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -4168,15 +4298,24 @@ dependencies = [
 name = "fs"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "anyhow",
  "atomic-file",
  "automerge",
+ "bao-tree",
  "blake3",
  "bounded-command",
  "bytes",
  "clap",
+ "cloud-source",
+ "cloud-source-dav",
+ "cloud-source-dropbox",
+ "cloud-source-gdrive",
+ "cloud-source-icloud",
+ "cloud-source-onedrive",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fs-content",
  "fs-native",
  "fuser",
  "futures-util",
@@ -4187,13 +4326,16 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "irpc",
  "libc",
  "moka",
+ "notify",
  "postcard",
  "qdoc",
  "qdoc-codecs",
  "rand 0.10.1",
  "redb",
+ "ref-cast",
  "runtime-fs",
  "serde",
  "serde_bytes",
@@ -4210,7 +4352,20 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "tracing",
  "uuid",
+ "wire-frame",
+ "zeroize",
+]
+
+[[package]]
+name = "fs-content"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fastcdc",
+ "postcard",
+ "serde",
 ]
 
 [[package]]
@@ -4218,7 +4373,7 @@ name = "fs-native"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "fastcdc",
+ "fs-content",
  "libc",
 ]
 
@@ -7789,6 +7944,7 @@ checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 name = "mail"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "async-imap",
  "atomic-file",
@@ -7807,15 +7963,14 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-net",
+ "tilo-oauth",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -7945,6 +8100,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-automerge",
  "tilo-test-env",
  "tracing",
@@ -9395,6 +9551,7 @@ name = "osk"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "emoji",
  "libc",
  "runtime-dylib",
  "serde",
@@ -10724,12 +10881,12 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tilo-automerge",
  "tilo-content",
+ "tilo-resource",
  "tracing",
 ]
 
@@ -10759,6 +10916,21 @@ dependencies = [
  "image",
  "qdoc",
  "tilo-content",
+]
+
+[[package]]
+name = "qdoc-rich-text"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "qdoc",
+ "qdoc-codecs",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-content",
+ "tilo-resource",
+ "url",
 ]
 
 [[package]]
@@ -12423,14 +12595,21 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "async-imap",
  "atomic-file",
  "automerge",
  "bounded-command",
+ "cloud-source",
+ "cloud-source-dropbox",
+ "cloud-source-gdrive",
+ "cloud-source-icloud",
+ "cloud-source-onedrive",
  "collab-types",
  "desktop-policy",
+ "fs",
  "hex",
  "launcher",
  "mail",
@@ -12457,6 +12636,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-model-gateway",
  "tilo-net",
+ "tilo-oauth",
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
@@ -12647,7 +12827,9 @@ dependencies = [
  "compat-service",
  "desktop-policy",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "file-explorer",
+ "fluent",
  "fs",
  "futures-util",
  "gbm",
@@ -12666,6 +12848,7 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
+ "notify",
  "os-actions",
  "package-store",
  "parking_lot",
@@ -12680,11 +12863,13 @@ dependencies = [
  "rand_core 0.10.0",
  "rcgen",
  "reis",
+ "resvg",
  "runtime-collab",
  "runtime-fs",
  "runtime-identity",
  "runtime-portal",
  "rustls",
+ "secret-vault",
  "serde",
  "serde_json",
  "serial_test",
@@ -12702,6 +12887,7 @@ dependencies = [
  "threshold-identity",
  "thumbnail",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-bluez",
@@ -12715,6 +12901,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -12726,12 +12913,15 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "tts",
  "uuid",
  "vello",
  "vello_encoding",
  "walkdir",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
  "wgpu",
  "windows-vm",
  "winit",
@@ -12754,6 +12944,18 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shortcuts"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-automation",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -14004,6 +14206,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-resource",
  "tilo-ui",
  "tracing",
@@ -14074,8 +14277,6 @@ dependencies = [
 name = "tilo-app-template-smoke"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "tilo-app",
  "tilo-app-cli",
 ]
@@ -14333,6 +14534,23 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "tilo-oauth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.1",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-clock",
+ "tilo-net",
+ "url",
 ]
 
 [[package]]
@@ -14666,6 +14884,7 @@ dependencies = [
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -15834,6 +16053,32 @@ dependencies = [
  "memoffset",
  "tempfile",
  "winapi",
+]
+
+[[package]]
+name = "ui-examples"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "atomic-file",
+ "automerge",
+ "chrono",
+ "collab-types",
+ "getrandom 0.4.1",
+ "image",
+ "pollster",
+ "qdoc",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-resource",
+ "tilo-ui",
+ "vello",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -17825,6 +18070,7 @@ dependencies = [
  "qdoc",
  "qdoc-codecs",
  "qdoc-pdf",
+ "qdoc-rich-text",
  "regex",
  "runtime-dylib",
  "serde",

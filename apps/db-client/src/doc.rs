@@ -225,56 +225,60 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
 
+    /// SQL text round-trips, merges between peers and is edited by bounded splices.
     #[test]
-    fn set_and_read_round_trip() {
-        let mut doc = AutoCommit::new();
-        EditorDoc::set_sql(&mut doc, "SELECT 1");
-        assert_eq!(EditorDoc::read_sql(&doc), "SELECT 1");
-        // Replacing keeps a single object and reflects new content.
-        EditorDoc::set_sql(&mut doc, "SELECT 2");
-        assert_eq!(EditorDoc::read_sql(&doc), "SELECT 2");
-    }
-
-    #[test]
-    fn merges_between_peers() {
-        let mut a = AutoCommit::new();
-        EditorDoc::set_sql(&mut a, "SELECT");
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let sql = EditorDoc::sql_text(&mut b);
-        b.splice_text(&sql, 6, 0, " 1").unwrap();
-        let mut b2 = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b2).unwrap();
-        assert_eq!(EditorDoc::read_sql(&a), "SELECT 1");
-    }
-
-    #[test]
-    fn appending_one_char_is_a_bounded_splice() {
-        // Anti-churn: growing a long buffer by one char must splice only the
-        // new char, not rewrite the whole SQL.
-        let mut doc = AutoCommit::new();
-        let long = "S".repeat(300);
-        EditorDoc::set_sql(&mut doc, &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('X');
-        EditorDoc::set_sql(&mut doc, &longer);
-        let grew = doc.save().len() - before;
-        assert_eq!(EditorDoc::read_sql(&doc), longer, "value round-trips");
-        assert!(grew < 40, "appending one char grew the doc by {grew} bytes");
-    }
-
-    #[test]
-    fn repeated_set_sql_keeps_doc_bounded() {
-        // set_sql previously spliced the whole buffer unconditionally; the
-        // diff-splice makes an unchanged re-store a no-op.
-        let mut doc = AutoCommit::new();
-        let long = "Q".repeat(300);
-        EditorDoc::set_sql(&mut doc, &long);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            EditorDoc::set_sql(&mut doc, &long);
+    fn sql_doc_round_trips_merges_and_splices_boundedly() {
+        // --- phase: set_and_read_round_trip ---
+        {
+            let mut doc = AutoCommit::new();
+            EditorDoc::set_sql(&mut doc, "SELECT 1");
+            assert_eq!(EditorDoc::read_sql(&doc), "SELECT 1");
+            // Replacing keeps a single object and reflects new content.
+            EditorDoc::set_sql(&mut doc, "SELECT 2");
+            assert_eq!(EditorDoc::read_sql(&doc), "SELECT 2");
         }
-        let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same SQL grew the document {a} -> {b}");
+
+        // --- phase: merges_between_peers ---
+        {
+            let mut a = AutoCommit::new();
+            EditorDoc::set_sql(&mut a, "SELECT");
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let sql = EditorDoc::sql_text(&mut b);
+            b.splice_text(&sql, 6, 0, " 1").unwrap();
+            let mut b2 = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b2).unwrap();
+            assert_eq!(EditorDoc::read_sql(&a), "SELECT 1");
+        }
+
+        // --- phase: appending_one_char_is_a_bounded_splice ---
+        {
+            // Anti-churn: growing a long buffer by one char must splice only the
+            // new char, not rewrite the whole SQL.
+            let mut doc = AutoCommit::new();
+            let long = "S".repeat(300);
+            EditorDoc::set_sql(&mut doc, &long);
+            let before = doc.save().len();
+            let mut longer = long.clone();
+            longer.push('X');
+            EditorDoc::set_sql(&mut doc, &longer);
+            let grew = doc.save().len() - before;
+            assert_eq!(EditorDoc::read_sql(&doc), longer, "value round-trips");
+            assert!(grew < 40, "appending one char grew the doc by {grew} bytes");
+        }
+
+        // --- phase: repeated_set_sql_keeps_doc_bounded ---
+        {
+            // set_sql previously spliced the whole buffer unconditionally; the
+            // diff-splice makes an unchanged re-store a no-op.
+            let mut doc = AutoCommit::new();
+            let long = "Q".repeat(300);
+            EditorDoc::set_sql(&mut doc, &long);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                EditorDoc::set_sql(&mut doc, &long);
+            }
+            let b = doc.save().len();
+            assert_eq!(a, b, "re-storing the same SQL grew the document {a} -> {b}");
+        }
     }
 }

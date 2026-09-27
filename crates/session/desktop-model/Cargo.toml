@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-desktop-model"
 version = "0.1.0"
 edition = "2024"
@@ -25,6 +26,10 @@ uuid.workspace = true
 
 [dev-dependencies]
 tilo-automerge = { path = "../../doc/tilo-automerge" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

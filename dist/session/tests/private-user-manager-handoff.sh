@@ -4,6 +4,11 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+. "$repo_root/tools/desktop-isolation.sh"
+# The private manager below re-enters this script with its own bus.
+if [[ ${1:-} != --private-manager ]]; then
+    tilo_test_isolate "$@"
+fi
 
 for command in dbus-daemon dbus-send dbus-update-activation-environment \
                systemctl; do
@@ -121,11 +126,14 @@ private_manager() {
             >"$XDG_DATA_HOME/dbus-1/services/org.tilo.SessionProbe${probe_name}.service"
     done
 
-    sed \
-        -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$root/tilo-shell|" \
-        -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$root/systemctl|" \
-        "$repo/dist/session/tilo-session" >"$root/tilo-session"
-    chmod 0755 "$root/tilo-session"
+    # Stage the runner from the tree under test too; an installed host runner
+    # would talk to the caller's real user manager.
+    tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
+        SYSTEMCTL="$root/systemctl" \
+        FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
+    tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
+        TILO_SHELL="$root/tilo-shell" \
+        SESSION_RUNNER="$root/tilo-session-runner" || return 1
 
     "$systemd_bin" --user --unit=basic.target >"$root/systemd.stdout" 2>"$root/systemd.stderr" &
     private_manager_pid=$!

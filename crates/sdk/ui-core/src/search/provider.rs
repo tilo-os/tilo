@@ -450,6 +450,9 @@ pub struct SearchCursor {
     generation: u64,
     normalized_query: String,
     body: Option<BodyCursor>,
+    /// The records holding the whole query as a word were all visited; the
+    /// rest of the field candidates follow.
+    words_done: bool,
 }
 
 impl SearchCursor {
@@ -469,6 +472,7 @@ impl SearchCursor {
             generation,
             normalized_query: normalized_query.into(),
             body: None,
+            words_done: false,
         }
     }
 
@@ -1174,6 +1178,14 @@ struct BodyCursor {
 
 struct InvalidBodyCursor;
 
+/// Where one [`PageState::visit`] stopped.
+#[derive(Default)]
+struct Visit {
+    stopped: bool,
+    last_id: Option<String>,
+    last_browse_ordinal: Option<u64>,
+}
+
 struct PageState {
     query: String,
     generation: u64,
@@ -1193,6 +1205,7 @@ impl PageState {
         after: Option<String>,
         ordinal: Option<u64>,
         body: Option<BodyCursor>,
+        words_done: bool,
     ) -> SearchCursor {
         SearchCursor {
             after_resource_id: after,
@@ -1200,6 +1213,7 @@ impl PageState {
             generation: self.generation,
             normalized_query: self.query.clone(),
             body,
+            words_done,
         }
     }
 
@@ -1214,28 +1228,89 @@ impl PageState {
     /// Exact field matches, ordered within the page by the shared ranker.
     /// Returns the continuation when the page filled before the candidates
     /// ran out.
+    ///
+    /// Records holding the whole query as a word come first: that posting
+    /// is usually tiny, so a unique name is found within any budget. It is
+    /// not complete (`needle` is inside the word `needle.rs` without being
+    /// one), so the complete candidate list follows, skipping what the word
+    /// posting already visited.
     fn fields_phase(
         &mut self,
         inner: &SearchCatalogInner,
         cursor: Option<&SearchCursor>,
     ) -> Option<SearchCursor> {
-        let query = self.query.as_str();
-        let grams = search_grams(query);
-        let candidates = field_candidates(inner, query, &grams)?;
-        let after = cursor.and_then(|cursor| cursor.after_resource_id.as_deref());
-        let after_browse_ordinal = cursor.and_then(|cursor| cursor.after_browse_ordinal);
+        let query = self.query.clone();
+        let grams = search_grams(&query);
+        let words = if query.is_empty() {
+            None
+        } else {
+            inner.tokens.get(query.as_str())
+        };
+        let mut after = cursor.and_then(|cursor| cursor.after_resource_id.clone());
+        let mut after_browse_ordinal = cursor.and_then(|cursor| cursor.after_browse_ordinal);
+        let words_done = words.is_none() || cursor.is_some_and(|cursor| cursor.words_done);
         let mut ranked = Vec::new();
-        let mut last_id = None;
-        let mut last_browse_ordinal = None;
-        let mut stopped = false;
-        for (browse_ordinal, resource_id) in candidates.ids_after(after, after_browse_ordinal) {
+        if let Some(words) = words.filter(|_| !words_done) {
+            let rows = CandidateRows::Posting(words);
+            let visit = self.visit(
+                inner,
+                &query,
+                &grams,
+                rows.ids_after(after.as_deref(), None),
+                None,
+                &mut ranked,
+            );
+            if visit.stopped {
+                self.push_ranked(ranked);
+                return Some(self.cursor(visit.last_id, None, None, false));
+            }
+            after = None;
+            after_browse_ordinal = None;
+        }
+        let Some(candidates) = field_candidates(inner, &query, &grams) else {
+            self.push_ranked(ranked);
+            return None;
+        };
+        let visit = self.visit(
+            inner,
+            &query,
+            &grams,
+            candidates.ids_after(after.as_deref(), after_browse_ordinal),
+            words,
+            &mut ranked,
+        );
+        self.push_ranked(ranked);
+        visit
+            .stopped
+            .then(|| self.cursor(visit.last_id, visit.last_browse_ordinal, None, true))
+    }
+
+    /// Inspect candidates until the budget or the page runs out, collecting
+    /// exact matches with their rank. Ids in `skip` were already inspected
+    /// by the word phase and are passed over without counting twice.
+    fn visit<'a>(
+        &mut self,
+        inner: &SearchCatalogInner,
+        query: &str,
+        grams: &[String],
+        ids: impl Iterator<Item = (Option<u64>, &'a Arc<str>)>,
+        skip: Option<&BTreeSet<Arc<str>>>,
+        ranked: &mut Vec<(i32, SearchResult)>,
+    ) -> Visit {
+        let mut visit = Visit::default();
+        for (browse_ordinal, resource_id) in ids {
+            if skip.is_some_and(|skip| skip.contains(resource_id)) {
+                visit.last_id = Some(resource_id.to_string());
+                visit.last_browse_ordinal = browse_ordinal;
+                continue;
+            }
             if self.inspected == self.work_budget || ranked.len() == self.result_limit {
-                stopped = true;
+                visit.stopped = true;
                 break;
             }
             self.inspected = self.inspected.saturating_add(1);
-            last_id = Some(resource_id.to_string());
-            last_browse_ordinal = browse_ordinal;
+            visit.last_id = Some(resource_id.to_string());
+            visit.last_browse_ordinal = browse_ordinal;
             let Some(entry) = inner.entries.get(resource_id) else {
                 continue;
             };
@@ -1250,12 +1325,15 @@ impl PageState {
                 ranked.push((entry.rank(query), entry.result.clone()));
             }
         }
-        // Stable: equal ranks keep candidate order, so unranked fields page
-        // exactly as they are stored.
+        visit
+    }
+
+    /// Stable: equal ranks keep candidate order, so unranked fields page
+    /// exactly as they are stored.
+    fn push_ranked(&mut self, mut ranked: Vec<(i32, SearchResult)>) {
         ranked.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
         self.results
             .extend(ranked.into_iter().map(|(_, result)| result));
-        stopped.then(|| self.cursor(last_id, last_browse_ordinal, None))
     }
 
     /// Body matches, verified a bounded chunk per inspection.
@@ -1295,7 +1373,7 @@ impl PageState {
                         resource: Some(resource_id.to_string()),
                         position,
                     };
-                    return Ok(Some(self.cursor(None, None, Some(resume))));
+                    return Ok(Some(self.cursor(None, None, Some(resume), true)));
                 }
                 self.inspected = self.inspected.saturating_add(1);
                 if !filtered {
@@ -1329,8 +1407,10 @@ impl PageState {
 }
 
 /// Every record whose fields could contain folded `query`: all of them for
-/// browsing, else the smallest complete posting — the whole query as a term,
-/// the rarest of its grams, or a term strictly inside it.
+/// browsing, else the smallest complete posting — the rarest of its grams,
+/// or a term strictly inside it. The whole query's own word posting is not
+/// complete: word segmentation keeps `needle.rs` as one word, so a record
+/// titled `needle.rs` contains `needle` without having it as a word.
 fn field_candidates<'a>(
     inner: &'a SearchCatalogInner,
     query: &str,
@@ -1338,9 +1418,6 @@ fn field_candidates<'a>(
 ) -> Option<CandidateRows<'a>> {
     if query.is_empty() {
         return Some(CandidateRows::Browse(&inner.browse_order));
-    }
-    if let Some(posting) = inner.tokens.get(query) {
-        return Some(CandidateRows::Posting(posting));
     }
     let mut rarest = rarest_posting(&inner.postings, grams)?;
     // A whitespace-delimited term strictly inside the query is a complete
@@ -1907,364 +1984,364 @@ mod tests {
     }
 
     #[test]
-    fn catalog_provider_answers_from_the_retained_catalogue_within_budgets() {
-        let catalog = catalog_rows(40);
-        let provider = Retained {
-            catalog: Some(catalog.clone()),
-            results_as_work: false,
-        };
-        assert_eq!(SearchProvider::name(&provider), "Retained");
-        assert_eq!(
-            provider.action_directory_generation(),
-            Some(catalog.stats().generation)
-        );
-
-        // `search` stops at the provider's result limit, and the query is
-        // folded before it reaches the catalogue.
-        assert_eq!(provider.search("ROW").len(), 5);
-        assert_eq!(provider.search_limited("row", 100).len(), 5);
-        assert_eq!(provider.search_limited("row", 3).len(), 3);
-
-        let page = provider.search_page("row", None, 4, 10);
-        assert_eq!(page.inspected, 4);
-        let next = page.next.expect("a broad query continues by cursor");
-        assert!(provider.action_directory_cursor_is_current(&next));
-        catalog.remove("row:0");
-        assert!(!provider.action_directory_cursor_is_current(&next));
-    }
-
-    #[test]
-    fn catalog_provider_can_spend_no_more_inspections_than_results() {
-        let catalog = catalog_rows(40);
-        let generous = Retained {
-            catalog: Some(catalog.clone()),
-            results_as_work: false,
-        };
-        let frugal = Retained {
-            catalog: Some(catalog),
-            results_as_work: true,
-        };
-        // Candidates alternate between matches and near misses, so two
-        // inspections find only one match.
-        assert_eq!(generous.search_limited("abcde", 2).len(), 2);
-        assert_eq!(frugal.search_limited("abcde", 2).len(), 1);
-    }
-
-    #[test]
-    fn catalog_provider_without_a_catalogue_is_empty_and_has_no_generation() {
-        let provider = Retained {
-            catalog: None,
-            results_as_work: false,
-        };
-        assert_eq!(provider.action_directory_generation(), None);
-        assert!(provider.search("row").is_empty());
-        let page = provider.search_page("row", None, 10, 10);
-        assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
-    }
-
-    #[test]
-    fn open_resource_search_indexes_nested_resources_and_prefers_view_actions() {
-        let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "delete",
-                    "Delete note",
-                    tilo_actions::OperationKind::Effect,
-                    "test.note",
-                    &serde_json::json!({}),
-                )
-                .unwrap(),
-            )
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "open",
-                    "Open note",
-                    tilo_actions::OperationKind::View,
-                    "test.note",
-                    &serde_json::json!({}),
-                )
-                .unwrap(),
+    fn catalog_provider_answers_within_budgets_or_is_empty() {
+        // phase: catalog_provider_answers_from_the_retained_catalogue_within_budgets
+        {
+            let catalog = catalog_rows(40);
+            let provider = Retained {
+                catalog: Some(catalog.clone()),
+                results_as_work: false,
+            };
+            assert_eq!(SearchProvider::name(&provider), "Retained");
+            assert_eq!(
+                provider.action_directory_generation(),
+                Some(catalog.stats().generation)
             );
-        let root =
-            tilo_actions::Resource::new("notes", "notes.collection", "Notes").with_child(nested);
-        let provider = OpenResourceSearch::new(&[root]);
 
-        let hit = provider
-            .search("launch")
-            .pop()
-            .expect("resource is findable");
-        let address = hit.action_address().expect("canonical activation");
-        assert_eq!(address, ActionAddress::new("note:launch", "open"));
-        assert_eq!(
-            provider
-                .resolve_action_resource(&address)
-                .expect("fresh authority resource")
-                .label,
-            "Launch plan"
-        );
-        assert_eq!(provider.action_directory_generation(), None);
+            // `search` stops at the provider's result limit, and the query is
+            // folded before it reaches the catalogue.
+            assert_eq!(provider.search("ROW").len(), 5);
+            assert_eq!(provider.search_limited("row", 100).len(), 5);
+            assert_eq!(provider.search_limited("row", 3).len(), 3);
+
+            let page = provider.search_page("row", None, 4, 10);
+            assert_eq!(page.inspected, 4);
+            let next = page.next.expect("a broad query continues by cursor");
+            assert!(provider.action_directory_cursor_is_current(&next));
+            catalog.remove("row:0");
+            assert!(!provider.action_directory_cursor_is_current(&next));
+        }
+        // phase: catalog_provider_can_spend_no_more_inspections_than_results
+        {
+            let catalog = catalog_rows(40);
+            let generous = Retained {
+                catalog: Some(catalog.clone()),
+                results_as_work: false,
+            };
+            let frugal = Retained {
+                catalog: Some(catalog),
+                results_as_work: true,
+            };
+            // Candidates alternate between matches and near misses, so two
+            // inspections find only one match.
+            assert_eq!(generous.search_limited("abcde", 2).len(), 2);
+            assert_eq!(frugal.search_limited("abcde", 2).len(), 1);
+        }
+        // phase: catalog_provider_without_a_catalogue_is_empty_and_has_no_generation
+        {
+            let provider = Retained {
+                catalog: None,
+                results_as_work: false,
+            };
+            assert_eq!(provider.action_directory_generation(), None);
+            assert!(provider.search("row").is_empty());
+            let page = provider.search_page("row", None, 10, 10);
+            assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
+        }
     }
 
     #[test]
-    fn open_resource_search_pages_with_hard_budgets() {
-        let resources = (0..20)
-            .map(|index| {
-                tilo_actions::Resource::new(
-                    format!("item:{index}"),
-                    "test.item",
-                    format!("Item {index}"),
-                )
+    fn open_resource_search_indexes_nested_resources_within_hard_budgets() {
+        // phase: open_resource_search_indexes_nested_resources_and_prefers_view_actions
+        {
+            let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
                 .with_action(
                     tilo_actions::ActionSpec::operation(
-                        "open",
-                        "Open",
-                        tilo_actions::OperationKind::View,
-                        "test.item",
+                        "delete",
+                        "Delete note",
+                        tilo_actions::OperationKind::Effect,
+                        "test.note",
                         &serde_json::json!({}),
                     )
                     .unwrap(),
                 )
-            })
-            .collect::<Vec<_>>();
-        let provider = OpenResourceSearch::new(&resources);
-        let page = provider.search_page("", None, 3, 2);
-        assert!(page.inspected <= 3);
-        assert!(page.results.len() <= 2);
-        assert!(page.next.is_some());
-    }
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "open",
+                        "Open note",
+                        tilo_actions::OperationKind::View,
+                        "test.note",
+                        &serde_json::json!({}),
+                    )
+                    .unwrap(),
+                );
+            let root = tilo_actions::Resource::new("notes", "notes.collection", "Notes")
+                .with_child(nested);
+            let provider = OpenResourceSearch::new(&[root]);
 
-    #[test]
-    fn empty_query_matches_everything() {
-        assert_eq!(fuzzy_score("", "anything"), Some(0));
-    }
-
-    #[test]
-    fn non_subsequence_does_not_match() {
-        assert_eq!(fuzzy_score("xyz", "alphabet"), None);
-        assert_eq!(fuzzy_score("abz", "abc"), None);
-    }
-
-    #[test]
-    fn canonical_action_address_round_trips_without_changing_legacy_shape() {
-        let address = ActionAddress::new("contacts.contact:ada", "open");
-        let hit = SearchResult::for_action("Contacts", "Ada", address.clone());
-        assert_eq!(hit.action_address(), Some(address));
-
-        let legacy = SearchResult::new("Contacts", "Ada", "contact:ada");
-        assert_eq!(legacy.action_address(), None);
-    }
-
-    #[test]
-    fn prefix_beats_midword_beats_scattered() {
-        // "cal" as a prefix of "Calculator" must outrank the same letters
-        // scattered through "Critical Analysis Log".
-        let prefix = fuzzy_score("cal", "Calculator").unwrap();
-        let scattered = fuzzy_score("cal", "Critical Analysis Log").unwrap();
-        assert!(
-            prefix > scattered,
-            "prefix {prefix} should beat scattered {scattered}"
-        );
-    }
-
-    #[test]
-    fn word_boundary_match_scores_well() {
-        // Matching the start of the second word ("Ng") should score positively
-        // — a common case for "last name" queries over "First Last".
-        let boundary = fuzzy_score("ng", "Alice Ng").unwrap();
-        assert!(
-            boundary > 0,
-            "word-boundary match should be positive, got {boundary}"
-        );
-    }
-
-    #[test]
-    fn contiguous_beats_gappy() {
-        let contiguous = fuzzy_score("abc", "abcdef").unwrap();
-        let gappy = fuzzy_score("abc", "a_b_c_def").unwrap();
-        assert!(
-            contiguous > gappy,
-            "contiguous {contiguous} should beat gappy {gappy}"
-        );
-    }
-
-    #[test]
-    fn is_case_insensitive() {
-        assert!(fuzzy_score("ALICE", "alice").is_some());
-        assert_eq!(fuzzy_score("Alice", "alice"), fuzzy_score("alice", "ALICE"));
-    }
-
-    #[test]
-    fn result_builders_populate_fields() {
-        let r = SearchResult::new("Contacts", "Alice Ng", "contact:42")
-            .with_subtitle("alice@example.com")
-            .with_icon(Icon::Mail)
-            .with_score(5);
-        assert_eq!(r.kind, "Contacts");
-        assert_eq!(r.title, "Alice Ng");
-        assert_eq!(r.action_id, "contact:42");
-        assert_eq!(r.subtitle.as_deref(), Some("alice@example.com"));
-        assert_eq!(r.icon, Some(Icon::Mail));
-        assert_eq!(r.score, 5);
-    }
-
-    #[test]
-    fn shared_text_index_keeps_the_complete_corpus() {
-        let texts =
-            (0..(DEFAULT_SEARCH_INDEX_LIMIT + 500)).map(|index| format!("Document {index}"));
-        let index = SearchTextIndex::new(texts);
-
-        assert_eq!(index.len(), DEFAULT_SEARCH_INDEX_LIMIT + 500);
-        assert_eq!(
-            index.matching_ids("Document 4595", DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            vec![4595]
-        );
-    }
-
-    #[test]
-    fn shared_text_index_is_unicode_aware_and_case_insensitive() {
-        let index = SearchTextIndex::new(["Résumé — Αθήνα", "東京 notes"]);
-
-        assert_eq!(index.matching_ids("ΑΘΉ", 8), vec![0]);
-        assert_eq!(index.matching_ids("東京", 8), vec![1]);
-        // Diacritics fold away with the shared tokenizer.
-        assert_eq!(index.matching_ids("resume", 8), vec![0]);
-        assert_eq!(index.matching_ids("αθηνα", 8), vec![0]);
-    }
-
-    #[test]
-    fn shared_text_index_honours_the_query_budget() {
-        let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
-        assert_eq!(index.matching_ids("common", 7).len(), 7);
-        assert!(index.matching_ids("common", 0).is_empty());
-    }
-
-    #[test]
-    fn shared_text_index_clamps_hostile_page_budgets() {
-        let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
-        let page = index.matching_page("common", None, usize::MAX, usize::MAX);
-
-        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
-        assert_eq!(page.ids.len(), DEFAULT_SEARCH_RESULT_LIMIT);
-        assert!(
-            page.next_after.is_some(),
-            "the bounded page remains continuable"
-        );
-    }
-
-    #[test]
-    fn shared_text_index_pages_a_broad_hundred_thousand_row_posting() {
-        let index = SearchTextIndex::new(
-            std::iter::once("common common item 0".to_owned())
-                .chain((1..100_001).map(|i| format!("common item {i}"))),
-        );
-        let first = index.matching_page("common", None, 7, 3);
-        assert_eq!(first.inspected, 3);
-        assert_eq!(first.ids, vec![0, 1, 2]);
-        let second = index.matching_page("common", first.next_after, 7, 3);
-        assert_eq!(second.inspected, 3);
-        assert_eq!(second.ids, vec![3, 4, 5]);
-    }
-
-    #[test]
-    fn oversized_query_stops_before_index_work_or_materialisation() {
-        // Every record contains the whole query, so any index work would
-        // inspect candidates and find them; `inspected == 0` proves the
-        // rejection came first without a large corpus to make a scan slow.
-        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
-        let catalog = SearchCatalog::new("Documents");
-        for index in 0..32 {
-            let id = format!("document:{index:06}");
-            catalog
-                .upsert(&id, format!("document {query}"), catalog_hit(&id, &id))
-                .unwrap();
+            let hit = provider
+                .search("launch")
+                .pop()
+                .expect("resource is findable");
+            let address = hit.action_address().expect("canonical activation");
+            assert_eq!(address, ActionAddress::new("note:launch", "open"));
+            assert_eq!(
+                provider
+                    .resolve_action_resource(&address)
+                    .expect("fresh authority resource")
+                    .label,
+                "Launch plan"
+            );
+            assert_eq!(provider.action_directory_generation(), None);
         }
-
-        let page = catalog.query_page(&query, None, 1, 1);
-        assert!(page.results.is_empty());
-        assert!(page.next.is_none());
-        assert_eq!(page.inspected, 0, "input rejection must precede scans");
-        assert!(
-            SearchTextIndex::new(["common searchable document"])
-                .matching_ids(&query, 1)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn bounded_query_normalization_keeps_unicode_case_matching() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .upsert(
-                "document:munich",
-                "MÜNCHEN 夏",
-                catalog_hit("document:munich", "München"),
-            )
-            .unwrap();
-
-        let page = catalog.query_page("mÜnChEn 夏", None, 1, 1);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.inspected, 1);
-    }
-
-    #[test]
-    fn embedded_nul_substrings_remain_distinct() {
-        let index = SearchTextIndex::new(["a", "a\0", "a\0\0"]);
-        assert_eq!(index.matching_ids("a\0\0", 8), vec![2]);
-    }
-
-    #[test]
-    fn repeated_occurrences_do_not_consume_the_result_budget_twice() {
-        let index = SearchTextIndex::new(["aaaaaa", "aaab"]);
-        assert_eq!(index.matching_ids("aaa", 2), vec![0, 1]);
-    }
-
-    #[test]
-    fn exact_suffix_range_does_not_lose_late_matches_to_false_candidates() {
-        let false_candidate = "abcXbcdXcdeXdefXefgXfgh";
-        let mut texts = vec![false_candidate; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
-        texts.push("the exact abcdefgh resource");
-        let index = SearchTextIndex::new(texts);
-
-        assert_eq!(
-            index.matching_ids("abcdefgh", 1),
-            vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
-        );
-    }
-
-    #[test]
-    fn suffix_pages_match_naive_exact_record_order_across_cursors_and_budgets() {
-        let source = ["banana", "bandana", "ananas", "", "BANANA"];
-        let index = SearchTextIndex::new(source);
-        for query in ["a", "ana", "nana", "band", "missing"] {
-            let normalized = normalize_search_text(query);
-            let matches: Vec<usize> = source
-                .iter()
-                .enumerate()
-                .filter_map(|(record_id, text)| {
-                    normalize_search_text(text)
-                        .contains(&normalized)
-                        .then_some(record_id)
+        // phase: open_resource_search_pages_with_hard_budgets
+        {
+            let resources = (0..20)
+                .map(|index| {
+                    tilo_actions::Resource::new(
+                        format!("item:{index}"),
+                        "test.item",
+                        format!("Item {index}"),
+                    )
+                    .with_action(
+                        tilo_actions::ActionSpec::operation(
+                            "open",
+                            "Open",
+                            tilo_actions::OperationKind::View,
+                            "test.item",
+                            &serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    )
                 })
-                .collect();
-            for after in [None, Some(0), Some(1), Some(3), Some(usize::MAX)] {
-                for budget in 1..=3 {
-                    let remaining: Vec<usize> = matches
-                        .iter()
-                        .copied()
-                        .filter(|record_id| after.is_none_or(|after| *record_id > after))
-                        .collect();
-                    let expected: Vec<usize> = remaining.iter().copied().take(budget).collect();
-                    let expected_next = expected
-                        .last()
-                        .copied()
-                        .filter(|_| remaining.len() > expected.len());
-                    let page = index.matching_page(query, after, budget, budget);
-                    assert_eq!(page.ids, expected, "query={query:?}, after={after:?}");
-                    assert_eq!(
-                        page.next_after, expected_next,
-                        "query={query:?}, after={after:?}"
-                    );
-                    assert_eq!(page.inspected, page.ids.len());
+                .collect::<Vec<_>>();
+            let provider = OpenResourceSearch::new(&resources);
+            let page = provider.search_page("", None, 3, 2);
+            assert!(page.inspected <= 3);
+            assert!(page.results.len() <= 2);
+            assert!(page.next.is_some());
+        }
+    }
+
+    #[test]
+    fn fuzzy_matching_ranks_prefix_word_boundary_and_contiguous_hits() {
+        // phase: empty_query_matches_everything
+        {
+            assert_eq!(fuzzy_score("", "anything"), Some(0));
+        }
+        // phase: non_subsequence_does_not_match
+        {
+            assert_eq!(fuzzy_score("xyz", "alphabet"), None);
+            assert_eq!(fuzzy_score("abz", "abc"), None);
+        }
+        // phase: prefix_beats_midword_beats_scattered
+        {
+            // "cal" as a prefix of "Calculator" must outrank the same letters
+            // scattered through "Critical Analysis Log".
+            let prefix = fuzzy_score("cal", "Calculator").unwrap();
+            let scattered = fuzzy_score("cal", "Critical Analysis Log").unwrap();
+            assert!(
+                prefix > scattered,
+                "prefix {prefix} should beat scattered {scattered}"
+            );
+        }
+        // phase: word_boundary_match_scores_well
+        {
+            // Matching the start of the second word ("Ng") should score positively
+            // — a common case for "last name" queries over "First Last".
+            let boundary = fuzzy_score("ng", "Alice Ng").unwrap();
+            assert!(
+                boundary > 0,
+                "word-boundary match should be positive, got {boundary}"
+            );
+        }
+        // phase: contiguous_beats_gappy
+        {
+            let contiguous = fuzzy_score("abc", "abcdef").unwrap();
+            let gappy = fuzzy_score("abc", "a_b_c_def").unwrap();
+            assert!(
+                contiguous > gappy,
+                "contiguous {contiguous} should beat gappy {gappy}"
+            );
+        }
+        // phase: is_case_insensitive
+        {
+            assert!(fuzzy_score("ALICE", "alice").is_some());
+            assert_eq!(fuzzy_score("Alice", "alice"), fuzzy_score("alice", "ALICE"));
+        }
+    }
+
+    #[test]
+    fn results_and_action_addresses_are_built_without_changing_legacy_shape() {
+        // phase: canonical_action_address_round_trips_without_changing_legacy_shape
+        {
+            let address = ActionAddress::new("contacts.contact:ada", "open");
+            let hit = SearchResult::for_action("Contacts", "Ada", address.clone());
+            assert_eq!(hit.action_address(), Some(address));
+
+            let legacy = SearchResult::new("Contacts", "Ada", "contact:ada");
+            assert_eq!(legacy.action_address(), None);
+        }
+        // phase: result_builders_populate_fields
+        {
+            let r = SearchResult::new("Contacts", "Alice Ng", "contact:42")
+                .with_subtitle("alice@example.com")
+                .with_icon(Icon::Mail)
+                .with_score(5);
+            assert_eq!(r.kind, "Contacts");
+            assert_eq!(r.title, "Alice Ng");
+            assert_eq!(r.action_id, "contact:42");
+            assert_eq!(r.subtitle.as_deref(), Some("alice@example.com"));
+            assert_eq!(r.icon, Some(Icon::Mail));
+            assert_eq!(r.score, 5);
+        }
+    }
+
+    #[test]
+    fn the_shared_text_index_matches_exact_unicode_substrings() {
+        // phase: shared_text_index_keeps_the_complete_corpus
+        {
+            let texts =
+                (0..(DEFAULT_SEARCH_INDEX_LIMIT + 500)).map(|index| format!("Document {index}"));
+            let index = SearchTextIndex::new(texts);
+
+            assert_eq!(index.len(), DEFAULT_SEARCH_INDEX_LIMIT + 500);
+            assert_eq!(
+                index.matching_ids("Document 4595", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+                vec![4595]
+            );
+        }
+        // phase: shared_text_index_is_unicode_aware_and_case_insensitive
+        {
+            let index = SearchTextIndex::new(["Résumé — Αθήνα", "東京 notes"]);
+
+            assert_eq!(index.matching_ids("ΑΘΉ", 8), vec![0]);
+            assert_eq!(index.matching_ids("東京", 8), vec![1]);
+            // Diacritics fold away with the shared tokenizer.
+            assert_eq!(index.matching_ids("resume", 8), vec![0]);
+            assert_eq!(index.matching_ids("αθηνα", 8), vec![0]);
+        }
+        // phase: bounded_query_normalization_keeps_unicode_case_matching
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .upsert(
+                    "document:munich",
+                    "MÜNCHEN 夏",
+                    catalog_hit("document:munich", "München"),
+                )
+                .unwrap();
+
+            let page = catalog.query_page("mÜnChEn 夏", None, 1, 1);
+            assert_eq!(page.results.len(), 1);
+            assert_eq!(page.inspected, 1);
+        }
+        // phase: embedded_nul_substrings_remain_distinct
+        {
+            let index = SearchTextIndex::new(["a", "a\0", "a\0\0"]);
+            assert_eq!(index.matching_ids("a\0\0", 8), vec![2]);
+        }
+        // phase: repeated_occurrences_do_not_consume_the_result_budget_twice
+        {
+            let index = SearchTextIndex::new(["aaaaaa", "aaab"]);
+            assert_eq!(index.matching_ids("aaa", 2), vec![0, 1]);
+        }
+        // phase: exact_suffix_range_does_not_lose_late_matches_to_false_candidates
+        {
+            let false_candidate = "abcXbcdXcdeXdefXefgXfgh";
+            let mut texts = vec![false_candidate; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
+            texts.push("the exact abcdefgh resource");
+            let index = SearchTextIndex::new(texts);
+
+            assert_eq!(
+                index.matching_ids("abcdefgh", 1),
+                vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
+            );
+        }
+    }
+
+    #[test]
+    fn the_shared_text_index_pages_within_hostile_budgets() {
+        // phase: shared_text_index_honours_the_query_budget
+        {
+            let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
+            assert_eq!(index.matching_ids("common", 7).len(), 7);
+            assert!(index.matching_ids("common", 0).is_empty());
+        }
+        // phase: shared_text_index_clamps_hostile_page_budgets
+        {
+            let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
+            let page = index.matching_page("common", None, usize::MAX, usize::MAX);
+
+            assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+            assert_eq!(page.ids.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(
+                page.next_after.is_some(),
+                "the bounded page remains continuable"
+            );
+        }
+        // phase: shared_text_index_pages_a_broad_hundred_thousand_row_posting
+        {
+            let index = SearchTextIndex::new(
+                std::iter::once("common common item 0".to_owned())
+                    .chain((1..100_001).map(|i| format!("common item {i}"))),
+            );
+            let first = index.matching_page("common", None, 7, 3);
+            assert_eq!(first.inspected, 3);
+            assert_eq!(first.ids, vec![0, 1, 2]);
+            let second = index.matching_page("common", first.next_after, 7, 3);
+            assert_eq!(second.inspected, 3);
+            assert_eq!(second.ids, vec![3, 4, 5]);
+        }
+        // phase: oversized_query_stops_before_index_work_or_materialisation
+        {
+            // Every record contains the whole query, so any index work would
+            // inspect candidates and find them; `inspected == 0` proves the
+            // rejection came first without a large corpus to make a scan slow.
+            let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
+            let catalog = SearchCatalog::new("Documents");
+            for index in 0..32 {
+                let id = format!("document:{index:06}");
+                catalog
+                    .upsert(&id, format!("document {query}"), catalog_hit(&id, &id))
+                    .unwrap();
+            }
+
+            let page = catalog.query_page(&query, None, 1, 1);
+            assert!(page.results.is_empty());
+            assert!(page.next.is_none());
+            assert_eq!(page.inspected, 0, "input rejection must precede scans");
+            assert!(
+                SearchTextIndex::new(["common searchable document"])
+                    .matching_ids(&query, 1)
+                    .is_empty()
+            );
+        }
+        // phase: suffix_pages_match_naive_exact_record_order_across_cursors_and_budgets
+        {
+            let source = ["banana", "bandana", "ananas", "", "BANANA"];
+            let index = SearchTextIndex::new(source);
+            for query in ["a", "ana", "nana", "band", "missing"] {
+                let normalized = normalize_search_text(query);
+                let matches: Vec<usize> = source
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(record_id, text)| {
+                        normalize_search_text(text)
+                            .contains(&normalized)
+                            .then_some(record_id)
+                    })
+                    .collect();
+                for after in [None, Some(0), Some(1), Some(3), Some(usize::MAX)] {
+                    for budget in 1..=3 {
+                        let remaining: Vec<usize> = matches
+                            .iter()
+                            .copied()
+                            .filter(|record_id| after.is_none_or(|after| *record_id > after))
+                            .collect();
+                        let expected: Vec<usize> = remaining.iter().copied().take(budget).collect();
+                        let expected_next = expected
+                            .last()
+                            .copied()
+                            .filter(|_| remaining.len() > expected.len());
+                        let page = index.matching_page(query, after, budget, budget);
+                        assert_eq!(page.ids, expected, "query={query:?}, after={after:?}");
+                        assert_eq!(
+                            page.next_after, expected_next,
+                            "query={query:?}, after={after:?}"
+                        );
+                        assert_eq!(page.inspected, page.ids.len());
+                    }
                 }
             }
         }
@@ -2275,168 +2352,169 @@ mod tests {
     }
 
     #[test]
-    fn incremental_catalog_finds_unique_resource_beyond_one_hundred_thousand() {
-        let catalog = SearchCatalog::new("Documents");
-        for index in 0..100_001 {
-            let id = format!("document:{index:06}");
-            let text = if index == 100_000 {
-                "row cobalt-orchid-needle"
-            } else {
-                "row"
-            };
-            catalog
-                .upsert(&id, text, catalog_hit(&id, format!("Document {index}")))
-                .unwrap();
-        }
-
-        let page = catalog.query_page("cobalt-orchid-needle", None, 8, 8);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(
-            page.results[0].action_address(),
-            Some(ActionAddress::new("document:100000", "open"))
-        );
-        assert_eq!(page.inspected, 1, "the rare posting avoids a corpus scan");
-        let stats = catalog.stats();
-        assert_eq!(stats.records, 100_001);
-        assert!(
-            stats.postings <= stats.normalized_scalars.saturating_mul(4),
-            "posting storage stays linear: {stats:?}"
-        );
-    }
-
-    #[test]
-    fn catalog_edits_and_deletes_only_change_incremental_generation() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
-            .unwrap();
-        let seeded = catalog.stats();
-        catalog
-            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
-            .unwrap();
-        assert_eq!(
-            catalog.stats(),
-            seeded,
-            "idempotent sync does no index work"
-        );
-        let provider = catalog.clone();
-        catalog
-            .upsert("document:a", "new phrase", catalog_hit("document:a", "A"))
-            .unwrap();
-        assert!(provider.search_limited("old", 4).is_empty());
-        assert_eq!(provider.search_limited("new", 4).len(), 1);
-        assert_eq!(catalog.stats().generation, seeded.generation + 1);
-        assert!(catalog.remove("document:a"));
-        assert!(provider.search_limited("new", 4).is_empty());
-        assert_eq!(catalog.stats().records, 0);
-    }
-
-    #[test]
-    fn adversarial_exact_verification_can_continue_in_fixed_work_pages() {
-        let catalog = SearchCatalog::new("Documents");
-        for index in 0..1_000 {
-            let id = format!("document:a{index:04}");
-            catalog
-                .upsert(&id, "abc c d", catalog_hit(&id, "False candidate"))
-                .unwrap();
-        }
-        catalog
-            .upsert(
-                "document:z-target",
-                "the exact abc d resource",
-                catalog_hit("document:z-target", "Target"),
-            )
-            .unwrap();
-
-        let mut cursor = None;
-        let mut found = Vec::new();
-        let mut pages = 0usize;
-        loop {
-            let page = catalog.query_page("abc d", cursor.as_ref(), 31, 4);
-            assert!(page.inspected <= 31);
-            pages = pages.saturating_add(1);
-            found.extend(page.results);
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
-        }
-        assert!(pages <= 1_001usize.div_ceil(31));
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].title, "Target");
-    }
-
-    #[test]
-    fn catalogue_clamps_hostile_page_budgets_without_truncating_discovery() {
-        let catalog = SearchCatalog::new("Documents");
-        for index in 0..1_000 {
-            let id = format!("document:{index:04}");
-            assert!(
+    fn the_incremental_catalogue_discovers_late_records_in_bounded_pages() {
+        // phase: incremental_catalog_finds_unique_resource_beyond_one_hundred_thousand
+        {
+            let catalog = SearchCatalog::new("Documents");
+            for index in 0..100_001 {
+                let id = format!("document:{index:06}");
+                let text = if index == 100_000 {
+                    "row cobalt-orchid-needle"
+                } else {
+                    "row"
+                };
                 catalog
-                    .upsert(&id, "common", catalog_hit(&id, format!("Document {index}")))
-                    .is_ok()
+                    .upsert(&id, text, catalog_hit(&id, format!("Document {index}")))
+                    .unwrap();
+            }
+
+            let page = catalog.query_page("cobalt-orchid-needle", None, 8, 8);
+            assert_eq!(page.results.len(), 1);
+            assert_eq!(
+                page.results[0].action_address(),
+                Some(ActionAddress::new("document:100000", "open"))
+            );
+            assert_eq!(page.inspected, 1, "the rare posting avoids a corpus scan");
+            let stats = catalog.stats();
+            assert_eq!(stats.records, 100_001);
+            assert!(
+                stats.postings <= stats.normalized_scalars.saturating_mul(4),
+                "posting storage stays linear: {stats:?}"
             );
         }
+        // phase: adversarial_exact_verification_can_continue_in_fixed_work_pages
+        {
+            let catalog = SearchCatalog::new("Documents");
+            for index in 0..1_000 {
+                let id = format!("document:a{index:04}");
+                catalog
+                    .upsert(&id, "abc c d", catalog_hit(&id, "False candidate"))
+                    .unwrap();
+            }
+            catalog
+                .upsert(
+                    "document:z-target",
+                    "the exact abc d resource",
+                    catalog_hit("document:z-target", "Target"),
+                )
+                .unwrap();
 
-        let page = catalog.query_page("common", None, usize::MAX, usize::MAX);
-        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
-        assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
-        assert!(page.next.is_some(), "the bounded page remains continuable");
+            let mut cursor = None;
+            let mut found = Vec::new();
+            let mut pages = 0usize;
+            loop {
+                let page = catalog.query_page("abc d", cursor.as_ref(), 31, 4);
+                assert!(page.inspected <= 31);
+                pages = pages.saturating_add(1);
+                found.extend(page.results);
+                let Some(next) = page.next else { break };
+                cursor = Some(next);
+            }
+            assert!(pages <= 1_001usize.div_ceil(31));
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].title, "Target");
+        }
+        // phase: catalogue_clamps_hostile_page_budgets_without_truncating_discovery
+        {
+            let catalog = SearchCatalog::new("Documents");
+            for index in 0..1_000 {
+                let id = format!("document:{index:04}");
+                assert!(
+                    catalog
+                        .upsert(&id, "common", catalog_hit(&id, format!("Document {index}")))
+                        .is_ok()
+                );
+            }
+
+            let page = catalog.query_page("common", None, usize::MAX, usize::MAX);
+            assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+            assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(page.next.is_some(), "the bounded page remains continuable");
+        }
     }
 
     #[test]
-    fn catalogue_rejects_legacy_or_mismatched_activation() {
-        let catalog = SearchCatalog::new("Documents");
-        assert_eq!(
-            catalog.upsert(
-                "document:a",
-                "A",
-                SearchResult::new("Documents", "A", "legacy-open")
-            ),
-            Err(SearchCatalogError::NonCanonicalResult)
-        );
-        assert_eq!(
-            catalog.upsert("document:a", "A", catalog_hit("document:different", "A")),
-            Err(SearchCatalogError::ResourceAddressMismatch)
-        );
-    }
+    fn the_incremental_catalogue_refuses_reuse_and_tracks_generations() {
+        // phase: catalog_edits_and_deletes_only_change_incremental_generation
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .unwrap();
+            let seeded = catalog.stats();
+            catalog
+                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .unwrap();
+            assert_eq!(
+                catalog.stats(),
+                seeded,
+                "idempotent sync does no index work"
+            );
+            let provider = catalog.clone();
+            catalog
+                .upsert("document:a", "new phrase", catalog_hit("document:a", "A"))
+                .unwrap();
+            assert!(provider.search_limited("old", 4).is_empty());
+            assert_eq!(provider.search_limited("new", 4).len(), 1);
+            assert_eq!(catalog.stats().generation, seeded.generation + 1);
+            assert!(catalog.remove("document:a"));
+            assert!(provider.search_limited("new", 4).is_empty());
+            assert_eq!(catalog.stats().records, 0);
+        }
+        // phase: catalogue_rejects_legacy_or_mismatched_activation
+        {
+            let catalog = SearchCatalog::new("Documents");
+            assert_eq!(
+                catalog.upsert(
+                    "document:a",
+                    "A",
+                    SearchResult::new("Documents", "A", "legacy-open")
+                ),
+                Err(SearchCatalogError::NonCanonicalResult)
+            );
+            assert_eq!(
+                catalog.upsert("document:a", "A", catalog_hit("document:different", "A")),
+                Err(SearchCatalogError::ResourceAddressMismatch)
+            );
+        }
+        // phase: catalogue_refuses_generation_reuse_without_partial_mutation
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .unwrap();
+            catalog
+                .inner
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .generation = u64::MAX;
 
-    #[test]
-    fn catalogue_refuses_generation_reuse_without_partial_mutation() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
-            .unwrap();
-        catalog
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .generation = u64::MAX;
+            assert_eq!(
+                catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
+                Err(SearchCatalogError::GenerationExhausted)
+            );
+            assert_eq!(catalog.search_limited("old", 4).len(), 1);
+            assert!(catalog.search_limited("new", 4).is_empty());
+            assert!(!catalog.remove("document:a"));
+            assert_eq!(catalog.stats().records, 1);
+            assert_eq!(catalog.stats().generation, u64::MAX);
+        }
+        // phase: catalogue_refuses_browse_ordinal_reuse_without_inserting
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .inner
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_browse_ordinal = u64::MAX;
 
-        assert_eq!(
-            catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
-            Err(SearchCatalogError::GenerationExhausted)
-        );
-        assert_eq!(catalog.search_limited("old", 4).len(), 1);
-        assert!(catalog.search_limited("new", 4).is_empty());
-        assert!(!catalog.remove("document:a"));
-        assert_eq!(catalog.stats().records, 1);
-        assert_eq!(catalog.stats().generation, u64::MAX);
-    }
-
-    #[test]
-    fn catalogue_refuses_browse_ordinal_reuse_without_inserting() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_browse_ordinal = u64::MAX;
-
-        assert_eq!(
-            catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),
-            Err(SearchCatalogError::BrowseOrdinalExhausted)
-        );
-        assert_eq!(catalog.stats(), SearchCatalogStats::default());
-        assert!(catalog.query_page("", None, 4, 4).results.is_empty());
+            assert_eq!(
+                catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),
+                Err(SearchCatalogError::BrowseOrdinalExhausted)
+            );
+            assert_eq!(catalog.stats(), SearchCatalogStats::default());
+            assert!(catalog.query_page("", None, 4, 4).results.is_empty());
+        }
     }
 
     fn record(resource_id: &str, title: &str) -> SearchRecord {
@@ -2752,6 +2830,23 @@ mod tests {
         assert_eq!(session.query_page("share", None, 8, 8).results.len(), 1);
         assert!(catalog.query_page("share", None, 8, 8).results.is_empty());
         assert_eq!(catalog.stats().records, 1);
+    }
+
+    #[test]
+    fn a_query_that_is_a_term_elsewhere_still_finds_it_inside_words() {
+        let catalog = SearchCatalog::new("Documents");
+        for (id, text) in [
+            ("document:1", "needle.rs"),
+            ("document:2", "contains-needle-here"),
+        ] {
+            catalog.upsert(id, text, catalog_hit(id, text)).unwrap();
+        }
+        let page = catalog.query_page("needle", None, 8, 8);
+        assert_eq!(
+            page.results.len(),
+            2,
+            "`needle` is a word of one record and inside a word of the other"
+        );
     }
 
     #[test]

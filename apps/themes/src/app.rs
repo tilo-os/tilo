@@ -2220,103 +2220,107 @@ mod tests {
         }
     }
 
+    /// Narrow layout: editor first, full specimen seeds, and scrolling to the specimen tail.
     #[test]
     #[expect(
         clippy::float_cmp,
         reason = "the gutter is an exact token offset, not a computed value"
     )]
-    fn narrow_editor_is_visible_before_full_preview() {
-        let (mut app, _, _env) = seeded_demo();
-        layout_narrow(&mut app, 480.0);
-        assert_eq!(
-            narrow_view_state(&app),
-            ("Customize".to_owned(), [true, false])
-        );
-        assert_eq!(
-            app.narrow_tabs.get_rect().x0,
-            16.0,
-            "view selector follows the narrow content gutter"
-        );
-        assert!(
-            app.customizer.get_rect().y0 < 160.0,
-            "{:?}",
-            app.customizer.get_rect()
-        );
-        assert!(
-            app.children()
-                .iter()
-                .all(|child| child.name() != "PreviewPane")
-        );
-    }
+    fn narrow_layout_shows_the_editor_and_a_scrollable_full_preview() {
+        // Case `narrow_editor_is_visible_before_full_preview`.
+        {
+            let (mut app, _, _env) = seeded_demo();
+            layout_narrow(&mut app, 480.0);
+            assert_eq!(
+                narrow_view_state(&app),
+                ("Customize".to_owned(), [true, false])
+            );
+            assert_eq!(
+                app.narrow_tabs.get_rect().x0,
+                16.0,
+                "view selector follows the narrow content gutter"
+            );
+            assert!(
+                app.customizer.get_rect().y0 < 160.0,
+                "{:?}",
+                app.customizer.get_rect()
+            );
+            assert!(
+                app.children()
+                    .iter()
+                    .all(|child| child.name() != "PreviewPane")
+            );
+        }
 
-    #[test]
-    fn live_preset_starts_with_its_full_specimen() {
-        let (mut app, _, _env) = seeded();
-        layout_narrow(&mut app, 480.0);
-        assert!(app.narrow_preview);
-        assert_eq!(
-            narrow_view_state(&app),
-            ("Full preview".to_owned(), [false, true])
-        );
-        assert!(app.preview_node.is_some());
-        assert!(app.customizer_node.is_none());
-    }
+        // Case `live_preset_starts_with_its_full_specimen`.
+        {
+            let (mut app, _, _env) = seeded();
+            layout_narrow(&mut app, 480.0);
+            assert!(app.narrow_preview);
+            assert_eq!(
+                narrow_view_state(&app),
+                ("Full preview".to_owned(), [false, true])
+            );
+            assert!(app.preview_node.is_some());
+            assert!(app.customizer_node.is_none());
+        }
 
-    #[test]
-    fn custom_preview_capture_seed_selects_full_preview() {
-        let _env = isolate_config();
-        let mut app = ThemesApp::new_demo();
-        app.seed_shot(480.0, "preview");
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        layout_narrow(&mut app, 480.0);
-        assert!(app.narrow_preview);
-        assert_eq!(
-            narrow_view_state(&app),
-            ("Full preview".to_owned(), [false, true])
-        );
-    }
+        // Case `custom_preview_capture_seed_selects_full_preview`.
+        {
+            let _env = isolate_config();
+            let mut app = ThemesApp::new_demo();
+            app.seed_shot(480.0, "preview");
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            layout_narrow(&mut app, 480.0);
+            assert!(app.narrow_preview);
+            assert_eq!(
+                narrow_view_state(&app),
+                ("Full preview".to_owned(), [false, true])
+            );
+        }
 
-    #[test]
-    fn narrow_full_preview_contains_and_can_scroll_to_the_specimen_tail() {
-        let (mut app, _, _env) = seeded();
-        let (tree, node) = layout_at(&mut app, 480.0, 480.0);
-        let card = app.preview.specimen_card_rect();
-        let tail = app.preview.specimen_tail_rect();
-        let preview = app.preview.get_rect();
-        assert!(contains_rect(preview, card));
-        assert!(contains_rect(card, tail));
-        assert!(
-            app.scroll_content_h > app.scroll_viewport_h,
-            "short preview must expose a scroll extent"
-        );
+        // Case `narrow_full_preview_contains_and_can_scroll_to_the_specimen_tail`.
+        {
+            let (mut app, _, _env) = seeded();
+            let (tree, node) = layout_at(&mut app, 480.0, 480.0);
+            let card = app.preview.specimen_card_rect();
+            let tail = app.preview.specimen_tail_rect();
+            let preview = app.preview.get_rect();
+            assert!(contains_rect(preview, card));
+            assert!(contains_rect(card, tail));
+            assert!(
+                app.scroll_content_h > app.scroll_viewport_h,
+                "short preview must expose a scroll extent"
+            );
 
-        let event = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, -100.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        app.apply_layout(&tree, node, Point::ZERO);
-        let max_scroll = app.scroll_content_h - app.scroll_viewport_h;
-        assert!(handled);
-        assert!((app.scroll - max_scroll).abs() < f64::EPSILON);
-        assert!(
-            app.preview.specimen_tail_rect().y1 <= app.content_rect.y1,
-            "maximum scroll must reveal the final chart"
-        );
+            let event = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -100.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                &event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
+            app.apply_layout(&tree, node, Point::ZERO);
+            let max_scroll = app.scroll_content_h - app.scroll_viewport_h;
+            assert!(handled);
+            assert!((app.scroll - max_scroll).abs() < f64::EPSILON);
+            assert!(
+                app.preview.specimen_tail_rect().y1 <= app.content_rect.y1,
+                "maximum scroll must reveal the final chart"
+            );
+        }
     }
 
     #[test]
@@ -2429,389 +2433,406 @@ mod tests {
         assert_eq!(state.doc.get_heads(), heads);
     }
 
+    /// Library commands and the live preset-only seed.
     #[test]
-    fn duplicate_command_adds_editable_copy_and_selects_it() {
-        let (mut app, mut st, _env) = seeded();
-        let before = catalog(&st).len();
-        run(&mut app, &mut st, "duplicate:tilo-blue");
-        let cat = catalog(&st);
-        assert_eq!(cat.len(), before + 1, "one theme added");
-        let copy = cat
-            .iter()
-            .find(|s| s.name == "Tilo Blue copy")
-            .expect("named copy exists");
-        assert!(!copy.builtin, "the copy is editable");
-        assert_eq!(selected(&app), copy.id, "the copy becomes the selection");
-    }
-
-    #[test]
-    fn live_seed_is_presets_only_and_selects_a_preset() {
-        // Honest live default: only built-in presets, and the focused theme is
-        // one of them — no fabricated "your custom theme".
-        let (app, st, _env) = seeded();
-        let cat = catalog(&st);
-        assert!(
-            cat.iter().all(|s| s.builtin),
-            "live catalog is presets only"
-        );
-        let sel = selected(&app);
-        assert!(cat.iter().find(|s| s.id == sel).is_some_and(|s| s.builtin));
-        assert!(
-            !cat.iter().any(|s| s.id == "sunset"),
-            "no seeded custom theme on the live path"
-        );
-    }
-
-    #[test]
-    fn delete_command_removes_a_custom_theme_and_reselects() {
-        let (mut app, mut st, _env) = seeded_demo();
-        assert!(
-            catalog(&st).iter().any(|s| s.id == "sunset"),
-            "seeded custom present"
-        );
-        run(&mut app, &mut st, "delete:sunset");
-        assert!(
-            !catalog(&st).iter().any(|s| s.id == "sunset"),
-            "custom theme removed"
-        );
-        assert!(
-            catalog(&st).iter().any(|s| s.id == selected(&app)),
-            "selection stays valid"
-        );
-    }
-
-    #[test]
-    fn delete_command_refuses_builtin_presets() {
-        let (mut app, mut st, _env) = seeded();
-        let before = catalog(&st).len();
-        run(&mut app, &mut st, "delete:tilo-blue");
-        assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
-        assert!(catalog(&st).iter().any(|s| s.id == "tilo-blue"));
-    }
-
-    #[test]
-    fn inline_name_edit_persists_into_the_selected_custom_theme() {
-        let (mut app, mut st, _env) = seeded_demo();
-        // The demo's editable custom "sunset" is selected out of the box.
-        assert_eq!(selected(&app), "sunset");
-        // Inline text stays local until reconciliation dispatches the canonical
-        // field action.
-        app.gallery.stage_edited_name("My Theme");
-        app.sync(&mut st.doc, &st.root);
-        assert_eq!(
-            catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name,
-            "My Theme"
-        );
-    }
-
-    #[test]
-    fn local_navigation_never_writes_or_overwrites_a_peer_theme_edit() {
-        let (mut app, mut state, _env) = seeded_demo();
-        state.doc.commit();
-        let mut peer = AutoCommit::load(&state.doc.save()).unwrap();
-        assert!(doc::set_token(
-            &mut peer,
-            &automerge::ROOT,
-            "sunset",
-            TokenId::Accent,
-            [1, 2, 3]
-        ));
-        state.doc.merge_incoming(&mut peer).unwrap();
-        let heads_after_peer_edit = state.doc.get_heads();
-
-        // Selection, token navigation, and opening the inline name editor are
-        // all per-window presentation. None is a catalog mutation or an undo
-        // boundary, and none may replay stale editor values over the peer edit.
-        run(&mut app, &mut state, "select:tilo-blue");
-        run(&mut app, &mut state, "edittoken:border");
-        run(&mut app, &mut state, "rename:sunset");
-
-        assert_eq!(state.doc.get_heads(), heads_after_peer_edit);
-        assert_eq!(
-            catalog(&state)
+    fn library_commands_duplicate_delete_rename_and_seed_presets() {
+        // Case `duplicate_command_adds_editable_copy_and_selects_it`.
+        {
+            let (mut app, mut st, _env) = seeded();
+            let before = catalog(&st).len();
+            run(&mut app, &mut st, "duplicate:tilo-blue");
+            let cat = catalog(&st);
+            assert_eq!(cat.len(), before + 1, "one theme added");
+            let copy = cat
                 .iter()
-                .find(|theme| theme.id == "sunset")
+                .find(|s| s.name == "Tilo Blue copy")
+                .expect("named copy exists");
+            assert!(!copy.builtin, "the copy is editable");
+            assert_eq!(selected(&app), copy.id, "the copy becomes the selection");
+        }
+
+        // Case `live_seed_is_presets_only_and_selects_a_preset`.
+        {
+            // Honest live default: only built-in presets, and the focused theme is
+            // one of them — no fabricated "your custom theme".
+            let (app, st, _env) = seeded();
+            let cat = catalog(&st);
+            assert!(
+                cat.iter().all(|s| s.builtin),
+                "live catalog is presets only"
+            );
+            let sel = selected(&app);
+            assert!(cat.iter().find(|s| s.id == sel).is_some_and(|s| s.builtin));
+            assert!(
+                !cat.iter().any(|s| s.id == "sunset"),
+                "no seeded custom theme on the live path"
+            );
+        }
+
+        // Case `delete_command_removes_a_custom_theme_and_reselects`.
+        {
+            let (mut app, mut st, _env) = seeded_demo();
+            assert!(
+                catalog(&st).iter().any(|s| s.id == "sunset"),
+                "seeded custom present"
+            );
+            run(&mut app, &mut st, "delete:sunset");
+            assert!(
+                !catalog(&st).iter().any(|s| s.id == "sunset"),
+                "custom theme removed"
+            );
+            assert!(
+                catalog(&st).iter().any(|s| s.id == selected(&app)),
+                "selection stays valid"
+            );
+        }
+
+        // Case `delete_command_refuses_builtin_presets`.
+        {
+            let (mut app, mut st, _env) = seeded();
+            let before = catalog(&st).len();
+            run(&mut app, &mut st, "delete:tilo-blue");
+            assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
+            assert!(catalog(&st).iter().any(|s| s.id == "tilo-blue"));
+        }
+
+        // Case `inline_name_edit_persists_into_the_selected_custom_theme`.
+        {
+            let (mut app, mut st, _env) = seeded_demo();
+            // The demo's editable custom "sunset" is selected out of the box.
+            assert_eq!(selected(&app), "sunset");
+            // Inline text stays local until reconciliation dispatches the canonical
+            // field action.
+            app.gallery.stage_edited_name("My Theme");
+            app.sync(&mut st.doc, &st.root);
+            assert_eq!(
+                catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name,
+                "My Theme"
+            );
+        }
+
+        // Case `rename_command_selects_its_target`.
+        {
+            let (mut app, mut st, _env) = seeded();
+            run(&mut app, &mut st, "duplicate:nord");
+            let copy_id = catalog(&st)
+                .iter()
+                .find(|s| s.name == "Nord copy")
                 .unwrap()
-                .accent,
-            [1, 2, 3]
-        );
-        assert_eq!(selected(&app), "sunset");
-        assert_eq!(app.edit_token, TokenId::Border);
+                .id
+                .clone();
+            run(&mut app, &mut st, "select:tilo-blue");
+            run(&mut app, &mut st, &format!("rename:{copy_id}"));
+            assert_eq!(
+                selected(&app),
+                copy_id,
+                "rename selects the target so its name is editable"
+            );
+        }
     }
 
+    /// Local navigation, export, New, apply and affordances dispatch the canonical actions and effects; an affordance delete is one undo boundary.
     #[test]
-    fn export_is_a_brokered_local_effect_not_document_scratch() {
-        let (mut app, mut state, _env) = seeded_demo();
-        state.doc.commit();
-        let before_heads = state.doc.get_heads();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::Effect,
-                "themes.export",
-                &serde_json::to_vec(&()).unwrap(),
-                &state.doc,
-                &state.root,
-            )
-            .unwrap()
-        );
-        assert_eq!(state.doc.get_heads(), before_heads);
-        assert!(
-            app.last_export
-                .as_deref()
-                .is_some_and(|json| json.contains("sunset"))
-        );
-        assert!(app.status.contains("Exported"));
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn operations_dispatch_canonical_actions_with_one_undo_boundary() {
+        // Case `local_navigation_never_writes_or_overwrites_a_peer_theme_edit`.
+        {
+            let (mut app, mut state, _env) = seeded_demo();
+            state.doc.commit();
+            let mut peer = AutoCommit::load(&state.doc.save()).unwrap();
+            assert!(doc::set_token(
+                &mut peer,
+                &automerge::ROOT,
+                "sunset",
+                TokenId::Accent,
+                [1, 2, 3]
+            ));
+            state.doc.merge_incoming(&mut peer).unwrap();
+            let heads_after_peer_edit = state.doc.get_heads();
 
-        let resources = Widget::resources(&app, &state.doc);
-        assert!(
-            resources[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "export-selected")
-        );
-        assert!(
-            resources[0]
+            // Selection, token navigation, and opening the inline name editor are
+            // all per-window presentation. None is a catalog mutation or an undo
+            // boundary, and none may replay stale editor values over the peer edit.
+            run(&mut app, &mut state, "select:tilo-blue");
+            run(&mut app, &mut state, "edittoken:border");
+            run(&mut app, &mut state, "rename:sunset");
+
+            assert_eq!(state.doc.get_heads(), heads_after_peer_edit);
+            assert_eq!(
+                catalog(&state)
+                    .iter()
+                    .find(|theme| theme.id == "sunset")
+                    .unwrap()
+                    .accent,
+                [1, 2, 3]
+            );
+            assert_eq!(selected(&app), "sunset");
+            assert_eq!(app.edit_token, TokenId::Border);
+        }
+
+        // Case `export_is_a_brokered_local_effect_not_document_scratch`.
+        {
+            let (mut app, mut state, _env) = seeded_demo();
+            state.doc.commit();
+            let before_heads = state.doc.get_heads();
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    tilo_actions::OperationKind::Effect,
+                    "themes.export",
+                    &serde_json::to_vec(&()).unwrap(),
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+            );
+            assert_eq!(state.doc.get_heads(), before_heads);
+            assert!(
+                app.last_export
+                    .as_deref()
+                    .is_some_and(|json| json.contains("sunset"))
+            );
+            assert!(app.status.contains("Exported"));
+
+            let resources = Widget::resources(&app, &state.doc);
+            assert!(
+                resources[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "export-selected")
+            );
+            assert!(
+                resources[0]
+                    .children
+                    .iter()
+                    .all(|theme| theme.actions.iter().any(|action| action.id == "export"))
+            );
+        }
+
+        // Case `visible_new_operation_dispatches_the_canonical_create_action`.
+        {
+            let (mut app, mut state, _env) = seeded_demo();
+            let before = catalog(&state).len();
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    tilo_actions::OperationKind::Effect,
+                    "themes.new",
+                    &serde_json::to_vec(&()).unwrap(),
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(catalog(&state).len(), before + 1);
+            let dispatched = app.last_dispatched().expect("create action dispatched");
+            assert_eq!(dispatched.type_id, crate::actions::THEMES_ACTION_TYPE);
+            assert!(matches!(
+                serde_json::from_slice::<crate::actions::ThemesAction>(&dispatched.payload)
+                    .unwrap(),
+                crate::actions::ThemesAction::CreateCustomTheme { .. }
+            ));
+            assert!(
+                Widget::resources(&app, &state.doc)[0]
+                    .actions
+                    .iter()
+                    .any(|action| {
+                        action.id == "new" && action.kind == tilo_actions::OperationKind::Effect
+                    })
+            );
+        }
+
+        // Case `selected_apply_operation_writes_the_active_theme_to_the_shared_store`.
+        {
+            let (mut app, mut st, _env) = seeded();
+            run(&mut app, &mut st, "select:dracula");
+            let invocation = tilo_actions::InvocationId::new();
+            assert_eq!(
+                Widget::start_resource_operation(
+                    &mut app,
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "themes.apply",
+                    &serde_json::to_vec(&()).unwrap(),
+                    &st.doc,
+                    &st.root,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            app.sync(&mut st.doc, &st.root);
+            // The in-app "Active" badge id updates immediately…
+            assert_eq!(
+                ui::doc::read_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
+                Some("dracula")
+            );
+            // …and the shared settings store on disk now names it the OS theme.
+            assert_eq!(store::load_active_id().as_deref(), Some("dracula"));
+            let back =
+                store::active_spec(&std::fs::read_to_string(store::store_path().unwrap()).unwrap())
+                    .expect("the full applied spec round-trips out of the store");
+            assert_eq!(back.id, "dracula");
+        }
+
+        // Case `affordance_dispatches_the_same_encoded_action_as_the_palette_spec`.
+        // One source of truth on the **live widget path**: the delete a sidebar
+        // affordance dispatches (drained through `process_command` →
+        // `perform_action`) is the byte-identical [`EncodedAction`] the theme's
+        // Ctrl+K "Delete theme" [`ActionSpec`] exports.
+        {
+            use tilo_actions::{ActionInput, ResourceProvider};
+            let (mut app, mut st, _env) = seeded_demo();
+            assert_eq!(selected(&app), "sunset");
+
+            // The affordance path: the sidebar's "Delete" command for the sunset row.
+            run(&mut app, &mut st, "delete:sunset");
+            let from_affordance = app
+                .last_dispatched()
+                .expect("a delete was dispatched")
+                .clone();
+
+            // The palette path: the sunset resource's exported delete spec. Rebuilt
+            // from a fresh doc that still holds sunset (the affordance already
+            // removed it from `st`), so both encode the same target.
+            let mut probe = AutoCommit::new();
+            doc::save_catalog(&mut probe, &automerge::ROOT, &demo_catalog());
+            let resources = ResourceProvider::resources(&app, &probe);
+            let sunset = resources[0]
                 .children
                 .iter()
-                .all(|theme| theme.actions.iter().any(|action| action.id == "export"))
-        );
-    }
-
-    #[test]
-    fn visible_new_operation_dispatches_the_canonical_create_action() {
-        let (mut app, mut state, _env) = seeded_demo();
-        let before = catalog(&state).len();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::Effect,
-                "themes.new",
-                &serde_json::to_vec(&()).unwrap(),
-                &state.doc,
-                &state.root,
-            )
-            .unwrap()
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(catalog(&state).len(), before + 1);
-        let dispatched = app.last_dispatched().expect("create action dispatched");
-        assert_eq!(dispatched.type_id, crate::actions::THEMES_ACTION_TYPE);
-        assert!(matches!(
-            serde_json::from_slice::<crate::actions::ThemesAction>(&dispatched.payload).unwrap(),
-            crate::actions::ThemesAction::CreateCustomTheme { .. }
-        ));
-        assert!(
-            Widget::resources(&app, &state.doc)[0]
+                .find(|r| r.id.as_str() == "themes.theme:sunset")
+                .expect("sunset resource");
+            let spec = sunset
                 .actions
                 .iter()
-                .any(|action| {
-                    action.id == "new" && action.kind == tilo_actions::OperationKind::Effect
-                })
-        );
+                .find(|a| a.id == "delete")
+                .expect("delete spec");
+            let from_spec = match &spec.input {
+                ActionInput::Immediate(enc) => enc.clone(),
+                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+            };
+
+            assert_eq!(from_affordance.type_id, from_spec.type_id);
+            assert_eq!(
+                from_affordance.payload, from_spec.payload,
+                "button and palette build the identical delete action"
+            );
+        }
+
+        // Case `affordance_delete_is_one_undo_boundary_reverted_by_ctrl_z`.
+        // The full undo covenant on the **live widget path**: a delete dispatched by
+        // an affordance mutates the document, the host's `take_committed_action`
+        // reports exactly one undo boundary bracketing it, and the host's Ctrl+Z
+        // (`State::undo`) reverts precisely that delete.
+        {
+            let (mut app, mut st, _env) = seeded_demo();
+            let before_len = catalog(&st).len();
+            assert!(
+                catalog(&st).iter().any(|s| s.id == "sunset"),
+                "custom present"
+            );
+
+            run(&mut app, &mut st, "delete:sunset");
+            assert!(
+                !catalog(&st).iter().any(|s| s.id == "sunset"),
+                "the delete landed"
+            );
+
+            // The host drains the affordance's captured heads (taken just before the
+            // dispatch, so the command-bus churn is outside the bracket) and records
+            // ONE boundary — exactly the `about_to_wait` path in `ui::App`.
+            let local_author = ui::collaboration::local_user_id();
+            let root: *mut dyn ui::widget::Widget = &mut app;
+            assert!(
+                ui::undo::record_dispatched_action(
+                    &mut st,
+                    root,
+                    &std::collections::HashMap::new(),
+                    &local_author,
+                ),
+                "the host recorded an undo boundary for the affordance's delete"
+            );
+            let entry = st
+                .peek_last_undo()
+                .expect("exactly one undo boundary recorded");
+            assert_eq!(
+                entry.author.as_ref(),
+                Some(&local_author),
+                "attributed to the local user, so their Ctrl+Z can reach it"
+            );
+            assert!(
+                app.take_committed_action().is_none(),
+                "rising-edge: the boundary is consumed once"
+            );
+
+            // Ctrl+Z reverts the delete.
+            st.undo_as(Some(&local_author), None, None)
+                .expect("an undo entry to pop");
+            app.sync(&mut st.doc, &st.root);
+            assert_eq!(
+                catalog(&st).len(),
+                before_len,
+                "undo restored the theme count"
+            );
+            assert!(
+                catalog(&st).iter().any(|s| s.id == "sunset"),
+                "sunset is back after undo"
+            );
+        }
     }
 
+    /// Exported apply runs a cancellable background lifecycle, and a static gallery stops requesting frames.
     #[test]
-    fn rename_command_selects_its_target() {
-        let (mut app, mut st, _env) = seeded();
-        run(&mut app, &mut st, "duplicate:nord");
-        let copy_id = catalog(&st)
-            .iter()
-            .find(|s| s.name == "Nord copy")
-            .unwrap()
-            .id
-            .clone();
-        run(&mut app, &mut st, "select:tilo-blue");
-        run(&mut app, &mut st, &format!("rename:{copy_id}"));
-        assert_eq!(
-            selected(&app),
-            copy_id,
-            "rename selects the target so its name is editable"
-        );
-    }
+    fn apply_lifecycle_is_cancellable_and_the_gallery_goes_idle() {
+        // Case `exported_apply_uses_cancellable_background_lifecycle`.
+        {
+            let (mut app, st, _env) = seeded();
+            let theme_id = catalog(&st)[0].id.clone();
+            let invocation = tilo_actions::InvocationId::new();
+            let started = app
+                .start_resource_operation(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "themes.apply",
+                    &serde_json::to_vec(&theme_id).unwrap(),
+                    &st.doc,
+                    &st.root,
+                )
+                .unwrap();
+            assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &st.doc, &st.root),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
 
-    #[test]
-    fn selected_apply_operation_writes_the_active_theme_to_the_shared_store() {
-        let (mut app, mut st, _env) = seeded();
-        run(&mut app, &mut st, "select:dracula");
-        let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            Widget::start_resource_operation(
-                &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "themes.apply",
-                &serde_json::to_vec(&()).unwrap(),
-                &st.doc,
-                &st.root,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
-        app.sync(&mut st.doc, &st.root);
-        // The in-app "Active" badge id updates immediately…
-        assert_eq!(
-            ui::doc::read_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
-            Some("dracula")
-        );
-        // …and the shared settings store on disk now names it the OS theme.
-        assert_eq!(store::load_active_id().as_deref(), Some("dracula"));
-        let back =
-            store::active_spec(&std::fs::read_to_string(store::store_path().unwrap()).unwrap())
-                .expect("the full applied spec round-trips out of the store");
-        assert_eq!(back.id, "dracula");
-    }
+            let apply = Widget::resources(&app, &st.doc)
+                .into_iter()
+                .flat_map(|resource| resource.children)
+                .flat_map(|theme| theme.actions)
+                .find(|action| action.id == "apply")
+                .unwrap();
+            assert!(matches!(
+                apply.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
+        }
 
-    /// One source of truth on the **live widget path**: the delete a sidebar
-    /// affordance dispatches (drained through `process_command` →
-    /// `perform_action`) is the byte-identical [`EncodedAction`] the theme's
-    /// Ctrl+K "Delete theme" [`ActionSpec`] exports.
-    #[test]
-    fn affordance_dispatches_the_same_encoded_action_as_the_palette_spec() {
-        use tilo_actions::{ActionInput, ResourceProvider};
-        let (mut app, mut st, _env) = seeded_demo();
-        assert_eq!(selected(&app), "sunset");
-
-        // The affordance path: the sidebar's "Delete" command for the sunset row.
-        run(&mut app, &mut st, "delete:sunset");
-        let from_affordance = app
-            .last_dispatched()
-            .expect("a delete was dispatched")
-            .clone();
-
-        // The palette path: the sunset resource's exported delete spec. Rebuilt
-        // from a fresh doc that still holds sunset (the affordance already
-        // removed it from `st`), so both encode the same target.
-        let mut probe = AutoCommit::new();
-        doc::save_catalog(&mut probe, &automerge::ROOT, &demo_catalog());
-        let resources = ResourceProvider::resources(&app, &probe);
-        let sunset = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "themes.theme:sunset")
-            .expect("sunset resource");
-        let spec = sunset
-            .actions
-            .iter()
-            .find(|a| a.id == "delete")
-            .expect("delete spec");
-        let from_spec = match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
-        };
-
-        assert_eq!(from_affordance.type_id, from_spec.type_id);
-        assert_eq!(
-            from_affordance.payload, from_spec.payload,
-            "button and palette build the identical delete action"
-        );
-    }
-
-    /// The full undo covenant on the **live widget path**: a delete dispatched by
-    /// an affordance mutates the document, the host's `take_committed_action`
-    /// reports exactly one undo boundary bracketing it, and the host's Ctrl+Z
-    /// (`State::undo`) reverts precisely that delete.
-    #[test]
-    fn affordance_delete_is_one_undo_boundary_reverted_by_ctrl_z() {
-        let (mut app, mut st, _env) = seeded_demo();
-        let before_len = catalog(&st).len();
-        assert!(
-            catalog(&st).iter().any(|s| s.id == "sunset"),
-            "custom present"
-        );
-
-        run(&mut app, &mut st, "delete:sunset");
-        assert!(
-            !catalog(&st).iter().any(|s| s.id == "sunset"),
-            "the delete landed"
-        );
-
-        // The host drains the affordance's captured heads (taken just before the
-        // dispatch, so the command-bus churn is outside the bracket) and records
-        // ONE boundary — exactly the `about_to_wait` path in `ui::App`.
-        let local_author = ui::collaboration::local_user_id();
-        let root: *mut dyn ui::widget::Widget = &mut app;
-        assert!(
-            ui::undo::record_dispatched_action(
-                &mut st,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ),
-            "the host recorded an undo boundary for the affordance's delete"
-        );
-        let entry = st
-            .peek_last_undo()
-            .expect("exactly one undo boundary recorded");
-        assert_eq!(
-            entry.author.as_ref(),
-            Some(&local_author),
-            "attributed to the local user, so their Ctrl+Z can reach it"
-        );
-        assert!(
-            app.take_committed_action().is_none(),
-            "rising-edge: the boundary is consumed once"
-        );
-
-        // Ctrl+Z reverts the delete.
-        st.undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        app.sync(&mut st.doc, &st.root);
-        assert_eq!(
-            catalog(&st).len(),
-            before_len,
-            "undo restored the theme count"
-        );
-        assert!(
-            catalog(&st).iter().any(|s| s.id == "sunset"),
-            "sunset is back after undo"
-        );
-    }
-
-    #[test]
-    fn exported_apply_uses_cancellable_background_lifecycle() {
-        let (mut app, st, _env) = seeded();
-        let theme_id = catalog(&st)[0].id.clone();
-        let invocation = tilo_actions::InvocationId::new();
-        let started = app
-            .start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "themes.apply",
-                &serde_json::to_vec(&theme_id).unwrap(),
-                &st.doc,
-                &st.root,
-            )
-            .unwrap();
-        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &st.doc, &st.root),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-
-        let apply = Widget::resources(&app, &st.doc)
-            .into_iter()
-            .flat_map(|resource| resource.children)
-            .flat_map(|theme| theme.actions)
-            .find(|action| action.id == "apply")
-            .unwrap();
-        assert!(matches!(
-            apply.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
-        ));
-        assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
-    }
-
-    #[test]
-    fn static_theme_gallery_stops_requesting_frames_after_draw() {
-        let (mut app, _state, _env) = seeded();
-        let layout = app.layout_class();
-        app.gallery_flap.snap(app.gallery_flap.is_open(layout));
-        app.mark_drawn();
-        assert!(
-            !app.needs_animation_frame(),
-            "an idle theme gallery must not keep the compositor at vsync"
-        );
+        // Case `static_theme_gallery_stops_requesting_frames_after_draw`.
+        {
+            let (mut app, _state, _env) = seeded();
+            let layout = app.layout_class();
+            app.gallery_flap.snap(app.gallery_flap.is_open(layout));
+            app.mark_drawn();
+            assert!(
+                !app.needs_animation_frame(),
+                "an idle theme gallery must not keep the compositor at vsync"
+            );
+        }
     }
 }
 

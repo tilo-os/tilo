@@ -4935,9 +4935,9 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// The app and Cargo children share a dedicated process group, so every
 /// restart and Ctrl-C stops the previous application before starting another.
 /// After the initial launch, changes are compiled while the last good app
-/// remains alive; only a successful candidate replaces its process group.
-/// A failed build or structural preflight leaves both it and the watcher alive
-/// for the next edit.
+/// remains alive. An app that links the shared toolkit reloads each open
+/// window in that same process. Any other app is replaced by the new binary.
+/// A failed build leaves the running app and the watcher alive for the next edit.
 ///
 /// # Errors
 ///
@@ -4976,11 +4976,35 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let mut child = spawn_dev_child_reported(&initial);
     // inotify does not cross every bind mount, and a busy editor keeps the
     // event channel from ever going idle. Stamp polls run on a timer either way.
     let mut sources = snapshot_restart_sources(&roots).unwrap_or_default();
     let mut next_source_poll = Instant::now();
+    // The first process has to be the prefer-dynamic host. A static binary
+    // links its own `ui`, so the library built on the next save cannot run
+    // inside those windows.
+    let mut child = if app_supports_in_place_reload(&app_dir) {
+        None
+    } else {
+        spawn_dev_child_reported(&initial)
+    };
+    if child.is_none()
+        && app_supports_in_place_reload(&app_dir)
+        && rebuild_running_dev_app(
+            &initial,
+            request,
+            &mut child,
+            &event_rx,
+            &roots,
+            &mut watcher,
+            &source_revision,
+            &mut sources,
+        )
+    {
+        stop_dev_child(&mut child);
+        eprintln!("[tilo-app] stopped");
+        return Ok(());
+    }
     'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         match watch_tick(
             &event_rx,
@@ -4988,7 +5012,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
             &mut watcher,
             &mut sources,
             &mut next_source_poll,
-        )? {
+        ) {
             WatchTick::Stop => bail!("app file watcher stopped"),
             WatchTick::Rebuild { bump_revision } => {
                 if bump_revision {
@@ -5018,6 +5042,10 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
 /// Returns whether the watcher itself should stop.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the rebuild shares the watch loop's child, events, roots, watcher, revision and source stamps"
+)]
 fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,
@@ -5521,7 +5549,7 @@ fn watch_tick(
     watcher: &mut DevWatcher,
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
     next_source_poll: &mut Instant,
-) -> Result<WatchTick> {
+) -> WatchTick {
     let timeout = next_source_poll
         .saturating_duration_since(Instant::now())
         .min(Duration::from_millis(100));
@@ -5535,19 +5563,19 @@ fn watch_tick(
             eprintln!("[tilo-app] watch error: {error}");
             false
         }
-        Err(RecvTimeoutError::Disconnected) => return Ok(WatchTick::Stop),
+        Err(RecvTimeoutError::Disconnected) => return WatchTick::Stop,
     };
     if event_restart {
-        return Ok(WatchTick::Rebuild {
+        return WatchTick::Rebuild {
             bump_revision: false,
-        });
+        };
     }
     if take_source_stamp_change(roots, sources, next_source_poll, Instant::now()) {
-        return Ok(WatchTick::Rebuild {
+        return WatchTick::Rebuild {
             bump_revision: true,
-        });
+        };
     }
-    Ok(WatchTick::Idle)
+    WatchTick::Idle
 }
 
 fn take_source_stamp_change(
@@ -5559,7 +5587,7 @@ fn take_source_stamp_change(
     if now < *next_source_poll {
         return false;
     }
-    *next_source_poll = now + SOURCE_POLL_INTERVAL;
+    *next_source_poll = now.checked_add(SOURCE_POLL_INTERVAL).unwrap_or(now);
     let Some(next) = snapshot_restart_sources(roots) else {
         return false;
     };
@@ -7840,13 +7868,12 @@ fn cargo_toml(spec: &AppSpec) -> String {
     };
     let extras = format!("{lints}{patches}");
     let sdk_path = sdk_path_for_ui(&spec.ui_path);
-    let runtime_path = sdk_path
-        .parent()
-        .and_then(Path::parent)
-        .map(|crates| crates.join("runtime/runtime-dylib"))
-        .unwrap_or_else(|| PathBuf::from("../../crates/runtime/runtime-dylib"));
+    let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
+        || PathBuf::from("../../crates/runtime/runtime-dylib"),
+        |crates| crates.join("runtime/runtime-dylib"),
+    );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nruntime-dylib = {{ path = {runtime:?}, optional = true }}\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         sdk_path = sdk_path.to_string_lossy(),

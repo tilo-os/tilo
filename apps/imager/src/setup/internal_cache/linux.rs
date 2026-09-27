@@ -36,7 +36,7 @@ pub(in crate::setup) use native::*;
 mod native {
     use super::super::{
         FreshProvider, MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete,
-        Provider, checkpoint::Record, initialize_fresh,
+        Provider, checkpoint::Record, initialize_fresh, working_leaf,
     };
     use super::{effective_mode_allowed, raw_components};
     use crate::setup::internal_download::SelectedManifest;
@@ -668,7 +668,7 @@ mod native {
             n == bytes.len() as isize,
             "Bounded cache name entropy unavailable",
         )?;
-        Ok(format!(".tilo-part-{:032x}", u128::from_le_bytes(bytes)))
+        Ok(working_leaf(u128::from_le_bytes(bytes)))
     }
     impl CacheRoot {
         pub(in crate::setup) fn bootstrap<'a>(

@@ -5895,32 +5895,160 @@ mod tests {
         (app, doc)
     }
 
+    /// Blank start, demo seeding, local state and restart reconciliation.
     #[test]
-    fn local_wizard_state_never_leaks_through_the_collaborative_document() {
-        let (mut app, mut doc) = seeded_app();
-        let before = doc.save();
-        app.selected = Some(0);
-        app.goto(&mut doc, Step::Confirm);
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.5,
-            verify_frac: 0.0,
-            rate_bps: 1,
-            error: None,
-        };
-        app.set_status(&doc, "local writer status");
-        assert_eq!(
-            doc.save(),
-            before,
-            "selection, station, status, and job progress are local"
-        );
-        let mut peer = AutoCommit::load(&before).unwrap();
-        let mut peer_app = ImagerApp::new();
-        peer_app.sync(&mut peer, &automerge::ROOT);
-        assert_eq!(peer_app.step, Step::Source);
-        assert_eq!(peer_app.selected, None);
-        assert_eq!(peer_app.progress.phase, JobPhase::Idle);
-        assert!(peer_app.status.is_empty());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn startup_state_is_blank_local_and_reconciled_before_writes() {
+        // Phase `local_wizard_state_never_leaks_through_the_collaborative_document`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let before = doc.save();
+            app.selected = Some(0);
+            app.goto(&mut doc, Step::Confirm);
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.5,
+                verify_frac: 0.0,
+                rate_bps: 1,
+                error: None,
+            };
+            app.set_status(&doc, "local writer status");
+            assert_eq!(
+                doc.save(),
+                before,
+                "selection, station, status, and job progress are local"
+            );
+            let mut peer = AutoCommit::load(&before).unwrap();
+            let mut peer_app = ImagerApp::new();
+            peer_app.sync(&mut peer, &automerge::ROOT);
+            assert_eq!(peer_app.step, Step::Source);
+            assert_eq!(peer_app.selected, None);
+            assert_eq!(peer_app.progress.phase, JobPhase::Idle);
+            assert!(peer_app.status.is_empty());
+        }
+
+        // Phase `sync_reads_demo_state_at_source_step`.
+        {
+            let (app, _doc) = seeded_app();
+            assert_eq!(app.targets.len(), 2);
+            assert!(app.source.is_some());
+            assert_eq!(app.step, Step::Source);
+            assert_eq!(app.recent.len(), 3);
+        }
+
+        // Phase `live_app_starts_blank_with_no_fabricated_content`.
+        {
+            // The live path (no demo seed) starts genuinely empty: no drives are
+            // invented and no image is pre-selected.
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.targets.is_empty(), "no fabricated drives");
+            assert!(app.source.is_none(), "no fabricated image");
+            assert!(app.recent.is_empty(), "no fabricated recent history");
+            assert_eq!(app.step, Step::Source);
+        }
+
+        // Phase `restart_drops_unsupervised_local_write_state_and_requires_new_review`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.step = Step::Write;
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.8,
+                verify_frac: 0.0,
+                rate_bps: 64_000_000,
+                error: None,
+            };
+            app.status = "Writing locally".into();
+            let saved = doc.save();
+            let mut restarted = ImagerApp::new();
+            let mut restored_doc = AutoCommit::load(&saved).unwrap();
+            restarted.sync(&mut restored_doc, &automerge::ROOT);
+            assert_eq!(restarted.step, Step::Source);
+            assert_eq!(restarted.progress.phase, JobPhase::Idle);
+            assert!(restarted.selected.is_none());
+            assert!(restarted.status.is_empty());
+            assert!(!restarted.can_advance_with_writer(Step::Drive, true));
+        }
+
+        // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.startup_write_state_reconciled = false;
+            app.confirm_input.set_text("sdb");
+
+            assert!(!app.can_advance_with_writer(Step::Confirm, true));
+            let error = app
+                .perform_operation(
+                    &crate::actions::ImagerOperation::Write {
+                        device: app.target().unwrap().dev_path(),
+                        confirmation: "sdb".into(),
+                    },
+                    &mut doc,
+                )
+                .expect_err("unreconciled startup must not expose a write");
+            assert!(error.contains("Restoring the previous image-write state"));
+
+            let job = <ImagerApp as Widget>::resources(&app, &doc)
+                .into_iter()
+                .find(|resource| resource.kind == "imager.write-plan")
+                .expect("write operation resource");
+            let write = job
+                .actions
+                .iter()
+                .find(|action| action.id == "write")
+                .expect("write action");
+            assert!(!write.contract.availability.is_available());
+        }
+
+        // Phase `live_app_offers_no_tilo_release_to_write`.
+        // A release row is a *write source for erasing a drive*, so the live app
+        // must offer none of its own invention: the list comes from the document,
+        // and a live (unseeded) document has nothing in it. Sample releases are
+        // opt-in via `--demo` / `--shots` like every other sample surface here.
+        {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.releases().is_empty(), "no fabricated Tilo releases");
+
+            // ...and nothing on the Source step is clickable that would select one.
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let offered = app
+                .compute_layout()
+                .hits
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::Release(_)));
+            assert!(
+                !offered,
+                "no release row may be hit-testable on the live path"
+            );
+            assert!(
+                app.source.is_none(),
+                "and nothing is pre-selected as the source"
+            );
+        }
+
+        // Phase `demo_document_offers_its_seeded_releases`.
+        // The gate is a gate, not a deletion: the demo document still offers them.
+        {
+            let (mut app, _doc) = seeded_app();
+            assert_eq!(app.releases().len(), 2);
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let offered = app
+                .compute_layout()
+                .hits
+                .iter()
+                .filter(|(_, h)| matches!(h, Hit::Release(_)))
+                .count();
+            assert_eq!(offered, 2, "each seeded release has a row to click");
+        }
     }
 
     // ---- synthetic winit events for driving the real event path -----------
@@ -6049,872 +6177,872 @@ mod tests {
         }
     }
 
+    /// Accessible semantics, selection labels, live regions and tab order.
     #[test]
-    fn main_canvas_semantics_expose_heading_sources_and_keyboard_order() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wizard_semantics_labels_live_regions_and_keyboard_order() {
+        // Phase `main_canvas_semantics_expose_heading_sources_and_keyboard_order`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
 
-        let tree = app.accessibility_tree();
-        assert_eq!(tree.role, ui::a11y::Role::Window);
-        assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
-        let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
-        assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
-        let selected = accessible_named(&tree, "Selected image").expect("selected image");
-        assert!(
-            selected
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("Tilo"))
-        );
+            let tree = app.accessibility_tree();
+            assert_eq!(tree.role, ui::a11y::Role::Window);
+            assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
+            let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
+            assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
+            let selected = accessible_named(&tree, "Selected image").expect("selected image");
+            assert!(
+                selected
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("Tilo"))
+            );
 
-        let mut order = Vec::new();
-        accessible_focus_order(&tree, &mut order);
-        assert_eq!(
-            order.first().map(String::as_str),
-            Some("Step 1 of 6: Source")
-        );
-        let browse = order
-            .iter()
-            .position(|name| name == "Browse for an image")
-            .expect("browse in focus order");
-        let continue_button = order
-            .iter()
-            .position(|name| name == "Continue")
-            .expect("continue in focus order");
-        assert!(browse < continue_button);
-        assert!(
-            accessible_named(&tree, "Step 3 of 6: Customize")
-                .expect("future customize step")
-                .state
-                .disabled
-        );
-    }
-
-    #[test]
-    fn hardware_variants_have_distinct_semantic_selection_and_review_labels() {
-        use ui::a11y::Action as AccessAction;
-
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let mut generic = crate::model::sample_releases().remove(0);
-        generic.architecture = "aarch64".into();
-        let mut board = generic.clone();
-        board.hardware_profile = "lenovo-83ed".into();
-        let target = format!("imager:release:{}", board.selection_id());
-        assert_ne!(generic.selection_id(), board.selection_id());
-        app.releases = vec![generic, board.clone()];
-        let tree = app.accessibility_tree();
-        assert!(accessible_named(&tree, &format!("Download {}", board.display_name())).is_some());
-        assert!(app.perform_semantic_action(
-            &target,
-            &AccessAction::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(board.matches_source(app.source.as_ref().unwrap()));
-        assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        let tree = app.accessibility_tree();
-        assert!(
-            accessible_named(&tree, "Image")
-                .unwrap()
-                .value
-                .as_deref()
-                .unwrap()
-                .contains("lenovo-83ed only")
-        );
-    }
-
-    #[test]
-    fn profile_and_confirmation_semantics_are_editable_and_focusable() {
-        use ui::a11y::Action as AccessAction;
-
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Customize);
-
-        let tree = app.accessibility_tree();
-        let mut order = Vec::new();
-        accessible_focus_order(&tree, &mut order);
-        let profile_order = [
-            "Hostname",
-            "Full name",
-            "Username",
-            "Language and locale",
-            "Time zone",
-            "Keyboard layout",
-            "Filesystem",
-            "Preview embedded setup",
-        ];
-        let positions = profile_order.map(|name| {
-            order
-                .iter()
-                .position(|candidate| candidate == name)
-                .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
-        });
-        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        for name in [
-            "Language and locale",
-            "Time zone",
-            "Keyboard layout",
-            "Filesystem",
-        ] {
+            let mut order = Vec::new();
+            accessible_focus_order(&tree, &mut order);
             assert_eq!(
-                accessible_named(&tree, name).expect("profile chooser").role,
-                ui::a11y::Role::ComboBox,
-                "{name} is exposed as a chooser, not unrestricted text"
+                order.first().map(String::as_str),
+                Some("Step 1 of 6: Source")
+            );
+            let browse = order
+                .iter()
+                .position(|name| name == "Browse for an image")
+                .expect("browse in focus order");
+            let continue_button = order
+                .iter()
+                .position(|name| name == "Continue")
+                .expect("continue in focus order");
+            assert!(browse < continue_button);
+            assert!(
+                accessible_named(&tree, "Step 3 of 6: Customize")
+                    .expect("future customize step")
+                    .state
+                    .disabled
             );
         }
 
-        assert!(app.perform_semantic_action(
-            "imager:profile:hostname",
-            &AccessAction::SetValue("accessible-host".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
+        // Phase `hardware_variants_have_distinct_semantic_selection_and_review_labels`.
+        {
+            use ui::a11y::Action as AccessAction;
 
-        for (target, chosen, expected) in [
-            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-        ] {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let mut generic = crate::model::sample_releases().remove(0);
+            generic.architecture = "aarch64".into();
+            let mut board = generic.clone();
+            board.hardware_profile = "lenovo-83ed".into();
+            let target = format!("imager:release:{}", board.selection_id());
+            assert_ne!(generic.selection_id(), board.selection_id());
+            app.releases = vec![generic, board.clone()];
+            let tree = app.accessibility_tree();
+            assert!(
+                accessible_named(&tree, &format!("Download {}", board.display_name())).is_some()
+            );
             assert!(app.perform_semantic_action(
-                target,
-                &AccessAction::SetValue(chosen.into()),
+                &target,
+                &AccessAction::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(board.matches_source(app.source.as_ref().unwrap()));
+            assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            let tree = app.accessibility_tree();
+            assert!(
+                accessible_named(&tree, "Image")
+                    .unwrap()
+                    .value
+                    .as_deref()
+                    .unwrap()
+                    .contains("lenovo-83ed only")
+            );
+        }
+
+        // Phase `profile_and_confirmation_semantics_are_editable_and_focusable`.
+        {
+            use ui::a11y::Action as AccessAction;
+
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Customize);
+
+            let tree = app.accessibility_tree();
+            let mut order = Vec::new();
+            accessible_focus_order(&tree, &mut order);
+            let profile_order = [
+                "Hostname",
+                "Full name",
+                "Username",
+                "Language and locale",
+                "Time zone",
+                "Keyboard layout",
+                "Filesystem",
+                "Preview embedded setup",
+            ];
+            let positions = profile_order.map(|name| {
+                order
+                    .iter()
+                    .position(|candidate| candidate == name)
+                    .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
+            });
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            for name in [
+                "Language and locale",
+                "Time zone",
+                "Keyboard layout",
+                "Filesystem",
+            ] {
+                assert_eq!(
+                    accessible_named(&tree, name).expect("profile chooser").role,
+                    ui::a11y::Role::ComboBox,
+                    "{name} is exposed as a chooser, not unrestricted text"
+                );
+            }
+
+            assert!(app.perform_semantic_action(
+                "imager:profile:hostname",
+                &AccessAction::SetValue("accessible-host".into()),
                 &mut doc,
                 &automerge::ROOT,
             ));
-            let profile = ImagerDoc::profile(&doc);
-            let actual = match target {
-                "imager:profile:locale" => profile.locale,
-                "imager:profile:timezone" => profile.timezone,
-                _ => profile.keyboard,
-            };
-            assert_eq!(actual, expected);
-        }
-        let timezone_before = ImagerDoc::profile(&doc).timezone;
-        assert!(app.perform_semantic_action(
-            "imager:profile:timezone",
-            &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
-        assert!(app.status.contains("Choose a listed Time zone"));
+            assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
 
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.scroll_y = 0.0;
-        assert!(app.perform_semantic_action(
-            "imager:profile:keyboard",
-            &AccessAction::Focus,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
-
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.goto(&mut doc, Step::Confirm);
-        let target_name = app.target().expect("target").name.clone();
-        let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
-            .expect("confirmation input")
-            .clone();
-        assert_eq!(confirm.role, ui::a11y::Role::TextInput);
-        assert!(confirm.state.required);
-        assert!(app.perform_semantic_action(
-            "imager:hit:confirm-field",
-            &AccessAction::SetValue(target_name),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.confirm_matches());
-        assert!(app.confirm_input.is_focused());
-    }
-
-    #[test]
-    fn write_progress_and_status_are_live_regions() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.step = Step::Write;
-        app.status = "Verifying written data".into();
-        app.progress = Progress {
-            phase: JobPhase::Verifying,
-            write_frac: 1.0,
-            verify_frac: 0.4,
-            rate_bps: 1,
-            error: None,
-        };
-
-        let tree = app.accessibility_tree();
-        let status = accessible_named(&tree, "Status").expect("live status");
-        assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
-        let progress = accessible_named(&tree, "Verifying image").expect("live progress");
-        assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
-        assert!(progress.state.busy);
-        assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
-        assert!(
-            progress
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("percent"))
-        );
-        assert_eq!(
-            accessible_named(&tree, "Write phase")
-                .expect("write phase progress")
-                .value
-                .as_deref(),
-            Some("100 percent")
-        );
-        assert_eq!(
-            accessible_named(&tree, "Verify phase")
-                .expect("verify phase progress")
-                .value
-                .as_deref(),
-            Some("40 percent")
-        );
-    }
-
-    #[test]
-    fn sync_reads_demo_state_at_source_step() {
-        let (app, _doc) = seeded_app();
-        assert_eq!(app.targets.len(), 2);
-        assert!(app.source.is_some());
-        assert_eq!(app.step, Step::Source);
-        assert_eq!(app.recent.len(), 3);
-    }
-
-    #[test]
-    fn live_app_starts_blank_with_no_fabricated_content() {
-        // The live path (no demo seed) starts genuinely empty: no drives are
-        // invented and no image is pre-selected.
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.targets.is_empty(), "no fabricated drives");
-        assert!(app.source.is_none(), "no fabricated image");
-        assert!(app.recent.is_empty(), "no fabricated recent history");
-        assert_eq!(app.step, Step::Source);
-    }
-
-    #[test]
-    fn restart_drops_unsupervised_local_write_state_and_requires_new_review() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.step = Step::Write;
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.8,
-            verify_frac: 0.0,
-            rate_bps: 64_000_000,
-            error: None,
-        };
-        app.status = "Writing locally".into();
-        let saved = doc.save();
-        let mut restarted = ImagerApp::new();
-        let mut restored_doc = AutoCommit::load(&saved).unwrap();
-        restarted.sync(&mut restored_doc, &automerge::ROOT);
-        assert_eq!(restarted.step, Step::Source);
-        assert_eq!(restarted.progress.phase, JobPhase::Idle);
-        assert!(restarted.selected.is_none());
-        assert!(restarted.status.is_empty());
-        assert!(!restarted.can_advance_with_writer(Step::Drive, true));
-    }
-
-    #[test]
-    fn write_operations_are_blocked_until_startup_state_is_reconciled() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.startup_write_state_reconciled = false;
-        app.confirm_input.set_text("sdb");
-
-        assert!(!app.can_advance_with_writer(Step::Confirm, true));
-        let error = app
-            .perform_operation(
-                &crate::actions::ImagerOperation::Write {
-                    device: app.target().unwrap().dev_path(),
-                    confirmation: "sdb".into(),
-                },
-                &mut doc,
-            )
-            .expect_err("unreconciled startup must not expose a write");
-        assert!(error.contains("Restoring the previous image-write state"));
-
-        let job = <ImagerApp as Widget>::resources(&app, &doc)
-            .into_iter()
-            .find(|resource| resource.kind == "imager.write-plan")
-            .expect("write operation resource");
-        let write = job
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .expect("write action");
-        assert!(!write.contract.availability.is_available());
-    }
-
-    /// A release row is a *write source for erasing a drive*, so the live app
-    /// must offer none of its own invention: the list comes from the document,
-    /// and a live (unseeded) document has nothing in it. Sample releases are
-    /// opt-in via `--demo` / `--shots` like every other sample surface here.
-    #[test]
-    fn live_app_offers_no_tilo_release_to_write() {
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.releases().is_empty(), "no fabricated Tilo releases");
-
-        // ...and nothing on the Source step is clickable that would select one.
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let offered = app
-            .compute_layout()
-            .hits
-            .iter()
-            .any(|(_, h)| matches!(h, Hit::Release(_)));
-        assert!(
-            !offered,
-            "no release row may be hit-testable on the live path"
-        );
-        assert!(
-            app.source.is_none(),
-            "and nothing is pre-selected as the source"
-        );
-    }
-
-    /// The gate is a gate, not a deletion: the demo document still offers them.
-    #[test]
-    fn demo_document_offers_its_seeded_releases() {
-        let (mut app, _doc) = seeded_app();
-        assert_eq!(app.releases().len(), 2);
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let offered = app
-            .compute_layout()
-            .hits
-            .iter()
-            .filter(|(_, h)| matches!(h, Hit::Release(_)))
-            .count();
-        assert_eq!(offered, 2, "each seeded release has a row to click");
-    }
-
-    #[test]
-    fn layout_has_six_step_stations() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let lay = app.compute_layout();
-        assert_eq!(lay.crumbs.len(), 6);
-        assert!(!lay.compact_crumbs);
-    }
-
-    #[test]
-    fn compact_layout_keeps_every_step_station_inside_the_viewport() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-        let lay = app.compute_layout();
-
-        assert!(lay.compact_crumbs);
-        assert_eq!(lay.crumbs.len(), Step::all().len());
-        // A station is a pointer target (HIG §9.6): the token is the floor,
-        // not the layout's own constant.
-        let target = f64::from(Metrics::BASE.min_pointer_target);
-        assert!(lay.crumbs.iter().all(|(rect, _)| {
-            rect.x0 >= app.rect.x0
-                && rect.x1 <= app.rect.x1
-                && rect.width() >= 40.0
-                && rect.height() >= target
-        }));
-        assert_eq!(
-            lay.crumbs.first().map(|(_, step)| *step),
-            Some(Step::Source)
-        );
-        assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
-    }
-
-    #[test]
-    fn compact_step_targets_use_the_same_on_screen_rects_as_the_rail() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        let lay = app.compute_layout();
-
-        for (rect, step) in &lay.crumbs {
-            if app.crumb_reachable(*step) {
-                assert!(lay.hits.iter().any(|(hit_rect, hit)| {
-                    hit_rect == rect && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
-                }));
+            for (target, chosen, expected) in [
+                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+            ] {
+                assert!(app.perform_semantic_action(
+                    target,
+                    &AccessAction::SetValue(chosen.into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                let profile = ImagerDoc::profile(&doc);
+                let actual = match target {
+                    "imager:profile:locale" => profile.locale,
+                    "imager:profile:timezone" => profile.timezone,
+                    _ => profile.keyboard,
+                };
+                assert_eq!(actual, expected);
             }
+            let timezone_before = ImagerDoc::profile(&doc).timezone;
+            assert!(app.perform_semantic_action(
+                "imager:profile:timezone",
+                &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
+            assert!(app.status.contains("Choose a listed Time zone"));
+
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.scroll_y = 0.0;
+            assert!(app.perform_semantic_action(
+                "imager:profile:keyboard",
+                &AccessAction::Focus,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
+
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.goto(&mut doc, Step::Confirm);
+            let target_name = app.target().expect("target").name.clone();
+            let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
+                .expect("confirmation input")
+                .clone();
+            assert_eq!(confirm.role, ui::a11y::Role::TextInput);
+            assert!(confirm.state.required);
+            assert!(app.perform_semantic_action(
+                "imager:hit:confirm-field",
+                &AccessAction::SetValue(target_name),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(app.confirm_matches());
+            assert!(app.confirm_input.is_focused());
         }
-    }
 
-    /// The Source drop zone starts below the measured heading group plus the
-    /// heading-to-content gap, at 1× and at 2×, and the Confirm review card
-    /// follows the same rule; the 1× floors the compact test pins still hold.
-    #[test]
-    fn step_content_starts_below_the_measured_heading_group() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-        let browse_top = |app: &ImagerApp| {
-            let lay = app.compute_layout();
-            let browse = lay
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-                .unwrap();
-            browse.y0 - lay.content.y0
-        };
-        let unmeasured = browse_top(&app);
-        assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
-
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let (title, sub) = app.source_heading();
-        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-        let at_1x = browse_top(&app);
-        assert!(
-            (at_1x - needed).abs() < 1e-6,
-            "drop zone starts after the measured heading"
-        );
-        assert!(
-            at_1x > unmeasured,
-            "the measured group needs more than the 1x floor"
-        );
-
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let at_2x = browse_top(&app);
-        assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
-
-        app.goto(&mut doc, Step::Confirm);
-        tr.set_text_scale(1.0);
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        let (title, sub) = app.confirm_heading();
-        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-        let lay = app.compute_layout();
-        assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
-        // The scroll extent grows by the same amount, so the bottom-anchored
-        // confirmation field cannot ride up into the review card.
-        let extent = app.content_extent(app.content_viewport_rect());
-        let confirm_field = lay
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
-            .unwrap();
-        let card_bottom = app.confirm_card_rect(lay.content).y1;
-        assert!(
-            lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
-            "the extent covers the field and its note"
-        );
-        assert!(
-            confirm_field.y0 >= card_bottom + SIBLING,
-            "field stays below the review card"
-        );
-    }
-
-    /// The Source blocks keep their 1× bands exactly and grow with the type at
-    /// 2×: every hit rect is the measured band, consecutive rows never
-    /// overlap, and the scroll extent covers the taller content.
-    #[test]
-    fn source_blocks_follow_the_text_scale_without_overlapping() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-        let rects = |app: &ImagerApp| {
-            let lay = app.compute_layout();
-            let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
-                let mut v: Vec<Rect> = lay
-                    .hits
-                    .iter()
-                    .filter_map(|(r, h)| f(h).then_some(*r))
-                    .collect();
-                v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-                v
+        // Phase `write_progress_and_status_are_live_regions`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            app.step = Step::Write;
+            app.status = "Verifying written data".into();
+            app.progress = Progress {
+                phase: JobPhase::Verifying,
+                write_frac: 1.0,
+                verify_frac: 0.4,
+                rate_bps: 1,
+                error: None,
             };
-            (
-                pick(&|h| matches!(h, Hit::PickFile))[0],
-                pick(&|h| matches!(h, Hit::Release(_))),
-                pick(&|h| matches!(h, Hit::Recent(_))),
-            )
-        };
 
-        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-        // Every band is its measured line boxes plus rhythm steps — a row is
-        // two lines a `LABEL` apart under `RELATED` padding — the hit rects
-        // are exactly the bands the painters fill, and no two neighbouring
-        // blocks come closer than a `LABEL` step at 1×.
-        let m = app.bands.source.clone();
-        let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
-        assert!(
-            (m.release_row_h - row).abs() < 1e-6,
-            "release row is measured"
-        );
-        // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
-        // every measured band equals its unmeasured estimate: the probe frame
-        // and the painted frame place the blocks identically.
-        let floors = SourceMetrics::default();
-        for (got, want) in [
-            (m.dropzone_h, floors.dropzone_h),
-            (m.card_h, floors.card_h),
-            (m.card_h_compact, floors.card_h_compact),
-            (m.release_row_h, floors.release_row_h),
-            (m.recent_row_h, floors.recent_row_h),
-            (m.section_h, floors.section_h),
-            (m.zero_h, floors.zero_h),
-        ] {
+            let tree = app.accessibility_tree();
+            let status = accessible_named(&tree, "Status").expect("live status");
+            assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
+            let progress = accessible_named(&tree, "Verifying image").expect("live progress");
+            assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
+            assert!(progress.state.busy);
+            assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
             assert!(
-                (got - want).abs() < 1e-6,
-                "1× band {got} equals its estimate {want}"
+                progress
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("percent"))
             );
-        }
-        let (browse, releases, recents) = rects(&app);
-        // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
-        // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
-        // 52.5 px, a recent row 50 px — and every block at least a pointer
-        // target tall.
-        let target = f64::from(Metrics::BASE.min_pointer_target);
-        assert!(
-            (browse.height() - 91.625).abs() < 1e-6,
-            "{}",
-            browse.height()
-        );
-        assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
-        assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
-        assert!(
-            releases
-                .iter()
-                .chain(&recents)
-                .all(|r| r.height() >= target)
-        );
-        assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-        assert!(
-            releases
-                .iter()
-                .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-        );
-        assert!(
-            recents
-                .iter()
-                .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-        );
-        assert!(!releases.is_empty() && !recents.is_empty());
-        let mut blocks: Vec<Rect> = std::iter::once(browse)
-            .chain(releases.iter().copied())
-            .chain(recents.iter().copied())
-            .collect();
-        blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        for pair in blocks.windows(2) {
-            assert!(
-                pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
-                "Source blocks keep a token gap at 1× ({} → {})",
-                pair[0].y1,
-                pair[1].y0
+            assert_eq!(
+                accessible_named(&tree, "Write phase")
+                    .expect("write phase progress")
+                    .value
+                    .as_deref(),
+                Some("100 percent")
+            );
+            assert_eq!(
+                accessible_named(&tree, "Verify phase")
+                    .expect("verify phase progress")
+                    .value
+                    .as_deref(),
+                Some("40 percent")
             );
         }
 
-        tr.set_text_scale(2.0);
-        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-        let m = app.bands.source.clone();
-        assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
-        let (browse, releases, recents) = rects(&app);
-        assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-        assert!(
-            releases
-                .iter()
-                .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-        );
-        assert!(
-            recents
-                .iter()
-                .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-        );
-        let mut all: Vec<Rect> = std::iter::once(browse)
-            .chain(releases.iter().copied())
-            .chain(recents.iter().copied())
-            .collect();
-        all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        for pair in all.windows(2) {
-            assert!(
-                pair[1].y0 >= pair[0].y1,
-                "Source blocks never overlap at 2×"
+        // Phase `tab_reaches_every_profile_control_and_both_footer_actions`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.goto(&mut doc, Step::Customize);
+            let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
+
+            for slot in 0..7 {
+                feed(&mut app, &mut doc, &tab);
+                assert_eq!(app.customize.keyboard_slot(), Some(slot));
+            }
+            assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
+
+            feed(&mut app, &mut doc, &tab);
+            assert_eq!(app.keyboard_hit, Some(Hit::Back));
+            feed(&mut app, &mut doc, &tab);
+            assert_eq!(app.keyboard_hit, Some(Hit::Next));
+            feed(
+                &mut app,
+                &mut doc,
+                &named_key_ev(winit::keyboard::NamedKey::Enter),
             );
+            assert_eq!(app.step, Step::Confirm, "focused Continue activates");
         }
-        // The content extent covers the last block plus the bottom margin.
-        let viewport = app.content_viewport_rect();
-        let last = all.last().unwrap();
-        let lay = app.compute_layout();
-        assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
     }
 
-    /// The Confirm blocks stack on their measured bands at both content
-    /// widths: the banner is the card's sibling, the field follows the banner
-    /// a group later under its caption, rows never overlap, and the hit rect
-    /// is the painted rect — the layout and the painter read one function.
+    /// Step stations and headings at compact and wide layouts.
     #[test]
-    fn confirm_field_follows_the_danger_banner() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut tr = TextRenderer::new();
-        for width in [1200.0, 320.0] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn step_rail_keeps_six_stations_inside_the_viewport() {
+        // Phase `layout_has_six_step_stations`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let lay = app.compute_layout();
+            assert_eq!(lay.crumbs.len(), 6);
+            assert!(!lay.compact_crumbs);
+        }
+
+        // Phase `compact_layout_keeps_every_step_station_inside_the_viewport`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+            let lay = app.compute_layout();
+
+            assert!(lay.compact_crumbs);
+            assert_eq!(lay.crumbs.len(), Step::all().len());
+            // A station is a pointer target (HIG §9.6): the token is the floor,
+            // not the layout's own constant.
+            let target = f64::from(Metrics::BASE.min_pointer_target);
+            assert!(lay.crumbs.iter().all(|(rect, _)| {
+                rect.x0 >= app.rect.x0
+                    && rect.x1 <= app.rect.x1
+                    && rect.width() >= 40.0
+                    && rect.height() >= target
+            }));
+            assert_eq!(
+                lay.crumbs.first().map(|(_, step)| *step),
+                Some(Step::Source)
+            );
+            assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
+        }
+
+        // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
+        {
             let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
             app.select_target(&doc, 0);
             app.goto(&mut doc, Step::Confirm);
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
             let lay = app.compute_layout();
-            let field = lay
+
+            for (rect, step) in &lay.crumbs {
+                if app.crumb_reachable(*step) {
+                    assert!(lay.hits.iter().any(|(hit_rect, hit)| {
+                        hit_rect == rect
+                            && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
+                    }));
+                }
+            }
+        }
+
+        // Phase `step_content_starts_below_the_measured_heading_group`.
+        // The Source drop zone starts below the measured heading group plus the
+        // heading-to-content gap, at 1× and at 2×, and the Confirm review card
+        // follows the same rule; the 1× floors the compact test pins still hold.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+            let browse_top = |app: &ImagerApp| {
+                let lay = app.compute_layout();
+                let browse = lay
+                    .hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+                    .unwrap();
+                browse.y0 - lay.content.y0
+            };
+            let unmeasured = browse_top(&app);
+            assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
+
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let (title, sub) = app.source_heading();
+            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
+            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+            let at_1x = browse_top(&app);
+            assert!(
+                (at_1x - needed).abs() < 1e-6,
+                "drop zone starts after the measured heading"
+            );
+            assert!(
+                at_1x > unmeasured,
+                "the measured group needs more than the 1x floor"
+            );
+
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let at_2x = browse_top(&app);
+            assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
+
+            app.goto(&mut doc, Step::Confirm);
+            tr.set_text_scale(1.0);
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let (title, sub) = app.confirm_heading();
+            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
+            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+            let lay = app.compute_layout();
+            assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
+            // The scroll extent grows by the same amount, so the bottom-anchored
+            // confirmation field cannot ride up into the review card.
+            let extent = app.content_extent(app.content_viewport_rect());
+            let confirm_field = lay
                 .hits
                 .iter()
                 .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
                 .unwrap();
-            let m = app.bands.confirm.clone();
-            let card = app.confirm_card_rect(lay.content);
-            let banner = app.confirm_banner_rect(lay.content);
-            assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
+            let card_bottom = app.confirm_card_rect(lay.content).y1;
             assert!(
-                (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
-                "banner is the card's sibling at width {width}"
+                lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
+                "the extent covers the field and its note"
             );
             assert!(
-                (field.y0 - (banner.y1 + GROUP + m.label_h + LABEL)).abs() < 1e-6,
-                "field follows the banner under its caption at width {width}"
+                confirm_field.y0 >= card_bottom + SIBLING,
+                "field stays below the review card"
             );
-            assert!((field.height() - CONTROL_H).abs() < 1e-6);
-            assert_eq!(field, app.confirm_field_rect(lay.content));
-            // Measured rows: one per review line, each at least a key line
-            // and a `SIBLING` apart, the card wrapping the last with padding.
-            assert_eq!(app.confirm_rows().len(), m.row_top.len());
-            assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
-            for pair in m.row_top.windows(2) {
-                assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
+        }
+    }
+
+    /// Body blocks, banners, footers, scrolling and failure detail layout.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn step_body_and_footer_reflow_without_overlap() {
+        // Phase `source_blocks_follow_the_text_scale_without_overlapping`.
+        // The Source blocks keep their 1× bands exactly and grow with the type at
+        // 2×: every hit rect is the measured band, consecutive rows never
+        // overlap, and the scroll extent covers the taller content.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+            let rects = |app: &ImagerApp| {
+                let lay = app.compute_layout();
+                let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
+                    let mut v: Vec<Rect> = lay
+                        .hits
+                        .iter()
+                        .filter_map(|(r, h)| f(h).then_some(*r))
+                        .collect();
+                    v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+                    v
+                };
+                (
+                    pick(&|h| matches!(h, Hit::PickFile))[0],
+                    pick(&|h| matches!(h, Hit::Release(_))),
+                    pick(&|h| matches!(h, Hit::Recent(_))),
+                )
+            };
+
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            // Every band is its measured line boxes plus rhythm steps — a row is
+            // two lines a `LABEL` apart under `RELATED` padding — the hit rects
+            // are exactly the bands the painters fill, and no two neighbouring
+            // blocks come closer than a `LABEL` step at 1×.
+            let m = app.bands.source.clone();
+            let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
+            assert!(
+                (m.release_row_h - row).abs() < 1e-6,
+                "release row is measured"
+            );
+            // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
+            // every measured band equals its unmeasured estimate: the probe frame
+            // and the painted frame place the blocks identically.
+            let floors = SourceMetrics::default();
+            for (got, want) in [
+                (m.dropzone_h, floors.dropzone_h),
+                (m.card_h, floors.card_h),
+                (m.card_h_compact, floors.card_h_compact),
+                (m.release_row_h, floors.release_row_h),
+                (m.recent_row_h, floors.recent_row_h),
+                (m.section_h, floors.section_h),
+                (m.zero_h, floors.zero_h),
+            ] {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "1× band {got} equals its estimate {want}"
+                );
             }
-            assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
-            // It still fits inside the step's extent (no scroll needed for
-            // the field itself on a tall window).
-            let extent = app.content_extent(app.content_viewport_rect());
-            assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
-        }
-    }
+            let (browse, releases, recents) = rects(&app);
+            // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
+            // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
+            // 52.5 px, a recent row 50 px — and every block at least a pointer
+            // target tall.
+            let target = f64::from(Metrics::BASE.min_pointer_target);
+            assert!(
+                (browse.height() - 91.625).abs() < 1e-6,
+                "{}",
+                browse.height()
+            );
+            assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
+            assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
+            assert!(
+                releases
+                    .iter()
+                    .chain(&recents)
+                    .all(|r| r.height() >= target)
+            );
+            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
+            assert!(
+                releases
+                    .iter()
+                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
+            );
+            assert!(
+                recents
+                    .iter()
+                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
+            );
+            assert!(!releases.is_empty() && !recents.is_empty());
+            let mut blocks: Vec<Rect> = std::iter::once(browse)
+                .chain(releases.iter().copied())
+                .chain(recents.iter().copied())
+                .collect();
+            blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            for pair in blocks.windows(2) {
+                assert!(
+                    pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
+                    "Source blocks keep a token gap at 1× ({} → {})",
+                    pair[0].y1,
+                    pair[1].y0
+                );
+            }
 
-    #[test]
-    fn compact_body_controls_reserve_space_for_wrapped_headings() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-        let source = app.compute_layout();
-        let browse = source
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-            .unwrap();
-        assert!(browse.y0 >= source.content.y0 + 64.0);
-        assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
-
-        app.goto(&mut doc, Step::Drive);
-        let drive = app.compute_layout();
-        let rescan = drive
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
-            .unwrap();
-        let target = drive
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
-            .unwrap();
-        assert!(rescan.y0 >= drive.content.y0 + 52.0);
-        assert!(target.y0 >= rescan.y1 + 12.0);
-    }
-
-    #[test]
-    fn compact_footer_actions_never_overlap() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-        for step in [Step::Drive, Step::Customize, Step::Confirm] {
-            app.goto(&mut doc, step);
+            tr.set_text_scale(2.0);
+            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+            let m = app.bands.source.clone();
+            assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
+            let (browse, releases, recents) = rects(&app);
+            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
+            assert!(
+                releases
+                    .iter()
+                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
+            );
+            assert!(
+                recents
+                    .iter()
+                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
+            );
+            let mut all: Vec<Rect> = std::iter::once(browse)
+                .chain(releases.iter().copied())
+                .chain(recents.iter().copied())
+                .collect();
+            all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            for pair in all.windows(2) {
+                assert!(
+                    pair[1].y0 >= pair[0].y1,
+                    "Source blocks never overlap at 2×"
+                );
+            }
+            // The content extent covers the last block plus the bottom margin.
+            let viewport = app.content_viewport_rect();
+            let last = all.last().unwrap();
             let lay = app.compute_layout();
-            let back = lay.back.unwrap();
-            let primary = lay.primary.unwrap();
-            assert!(back.x0 >= lay.content.x0);
-            assert!(primary.x1 <= lay.content.x1);
-            assert!(back.x1 + 12.0 <= primary.x0);
-            assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+            assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
+        }
+
+        // Phase `confirm_field_follows_the_danger_banner`.
+        // The Confirm blocks stack on their measured bands at both content
+        // widths: the banner is the card's sibling, the field follows the banner
+        // a group later under its caption, rows never overlap, and the hit rect
+        // is the painted rect — the layout and the painter read one function.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut tr = TextRenderer::new();
+            for width in [1200.0, 320.0] {
+                let (mut app, mut doc) = seeded_app();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.select_target(&doc, 0);
+                app.goto(&mut doc, Step::Confirm);
+                app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+                let lay = app.compute_layout();
+                let field = lay
+                    .hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
+                    .unwrap();
+                let m = app.bands.confirm.clone();
+                let card = app.confirm_card_rect(lay.content);
+                let banner = app.confirm_banner_rect(lay.content);
+                assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
+                assert!(
+                    (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
+                    "banner is the card's sibling at width {width}"
+                );
+                assert!(
+                    (field.y0 - (banner.y1 + GROUP + m.label_h + LABEL)).abs() < 1e-6,
+                    "field follows the banner under its caption at width {width}"
+                );
+                assert!((field.height() - CONTROL_H).abs() < 1e-6);
+                assert_eq!(field, app.confirm_field_rect(lay.content));
+                // Measured rows: one per review line, each at least a key line
+                // and a `SIBLING` apart, the card wrapping the last with padding.
+                assert_eq!(app.confirm_rows().len(), m.row_top.len());
+                assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
+                for pair in m.row_top.windows(2) {
+                    assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
+                }
+                assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
+                // It still fits inside the step's extent (no scroll needed for
+                // the field itself on a tall window).
+                let extent = app.content_extent(app.content_viewport_rect());
+                assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
+            }
+        }
+
+        // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+            let source = app.compute_layout();
+            let browse = source
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+                .unwrap();
+            assert!(browse.y0 >= source.content.y0 + 64.0);
+            assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
+
+            app.goto(&mut doc, Step::Drive);
+            let drive = app.compute_layout();
+            let rescan = drive
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
+                .unwrap();
+            let target = drive
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
+                .unwrap();
+            assert!(rescan.y0 >= drive.content.y0 + 52.0);
+            assert!(target.y0 >= rescan.y1 + 12.0);
+        }
+
+        // Phase `compact_footer_actions_never_overlap`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+            for step in [Step::Drive, Step::Customize, Step::Confirm] {
+                app.goto(&mut doc, step);
+                let lay = app.compute_layout();
+                let back = lay.back.unwrap();
+                let primary = lay.primary.unwrap();
+                assert!(back.x0 >= lay.content.x0);
+                assert!(primary.x1 <= lay.content.x1);
+                assert!(back.x1 + 12.0 <= primary.x0);
+                assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+            }
+        }
+
+        // Phase `short_viewport_scrolls_body_without_moving_sticky_footer`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+            app.goto(&mut doc, Step::Customize);
+            let before = app.compute_layout();
+            let footer_before = before.primary.unwrap();
+            assert!(app.max_scroll() > 100.0);
+
+            feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
+            feed(&mut app, &mut doc, &wheel_ev(-3.0));
+            assert!(app.scroll_y > 0.0);
+            let after = app.compute_layout();
+            assert!(after.content.y0 < before.content.y0);
+            assert_eq!(after.primary, Some(footer_before));
+            assert_eq!(after.viewport_content, before.viewport_content);
+        }
+
+        // Phase `failure_detail_is_measured_bounded_and_visible_at_compact_width`.
+        {
+            let mut renderer = TextRenderer::new();
+            let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
+            let max_width = 280.0;
+            let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+
+            assert_eq!(
+                lines.len(),
+                2,
+                "compact failure copy uses both visible lines"
+            );
+            assert!(
+                lines.iter().all(|line| {
+                    renderer
+                        .measure_weighted(line, 13.5, None, TextWeight::Regular)
+                        .0
+                        <= max_width
+                }),
+                "no failure-detail line paints beyond its content bounds"
+            );
+            assert!(
+                lines.join(" ").contains("authorized writer"),
+                "the actionable cause is visible rather than replaced by generic compact copy"
+            );
+            assert!(
+                lines.last().is_some_and(|line| line.ends_with('…')),
+                "bounded overflow is signalled"
+            );
         }
     }
 
+    /// Selection, capability, profile validity and confirmation gating.
     #[test]
-    fn short_viewport_scrolls_body_without_moving_sticky_footer() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.goto(&mut doc, Step::Customize);
-        let before = app.compute_layout();
-        let footer_before = before.primary.unwrap();
-        assert!(app.max_scroll() > 100.0);
-
-        feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
-        feed(&mut app, &mut doc, &wheel_ev(-3.0));
-        assert!(app.scroll_y > 0.0);
-        let after = app.compute_layout();
-        assert!(after.content.y0 < before.content.y0);
-        assert_eq!(after.primary, Some(footer_before));
-        assert_eq!(after.viewport_content, before.viewport_content);
-    }
-
-    #[test]
-    fn tab_reaches_every_profile_control_and_both_footer_actions() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-        app.goto(&mut doc, Step::Customize);
-        let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
-
-        for slot in 0..7 {
-            feed(&mut app, &mut doc, &tab);
-            assert_eq!(app.customize.keyboard_slot(), Some(slot));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
+        // Phase `advancing_requires_selections`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            // Source is seeded → can advance to Drive.
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Drive);
+            // No target selected yet → stays on Drive.
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Drive);
+            app.select_target(&doc, 0);
+            app.advance(&mut doc);
+            // Seeded source is an installable Tilo image → goes through Customize.
+            assert_eq!(app.step, Step::Customize);
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Confirm);
         }
-        assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
 
-        feed(&mut app, &mut doc, &tab);
-        assert_eq!(app.keyboard_hit, Some(Hit::Back));
-        feed(&mut app, &mut doc, &tab);
-        assert_eq!(app.keyboard_hit, Some(Hit::Next));
-        feed(
-            &mut app,
-            &mut doc,
-            &named_key_ev(winit::keyboard::NamedKey::Enter),
-        );
-        assert_eq!(app.step, Step::Confirm, "focused Continue activates");
-    }
+        // Phase `privileged_helper_capability_enables_confirm_but_disabled_backend_does_not`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
 
-    #[test]
-    fn advancing_requires_selections() {
-        let (mut app, mut doc) = seeded_app();
-        // Source is seeded → can advance to Drive.
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Drive);
-        // No target selected yet → stays on Drive.
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Drive);
-        app.select_target(&doc, 0);
-        app.advance(&mut doc);
-        // Seeded source is an installable Tilo image → goes through Customize.
-        assert_eq!(app.step, Step::Customize);
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Confirm);
-    }
+            assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
+            assert!(app.can_advance_with_writer(
+                Step::Confirm,
+                crate::write::WriteBackend::PrivilegedHelper.is_available()
+            ));
+            assert!(!app.can_advance_with_writer(
+                Step::Confirm,
+                crate::write::WriteBackend::Disabled.is_available()
+            ));
+        }
 
-    #[test]
-    fn privileged_helper_capability_enables_confirm_but_disabled_backend_does_not() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("sdb");
+        // Phase `invalid_media_profile_blocks_confirm_and_direct_write`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.profile.hostname = "bad host".into();
+            app.goto(&mut doc, Step::Customize);
 
-        assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
-        assert!(app.can_advance_with_writer(
-            Step::Confirm,
-            crate::write::WriteBackend::PrivilegedHelper.is_available()
-        ));
-        assert!(!app.can_advance_with_writer(
-            Step::Confirm,
-            crate::write::WriteBackend::Disabled.is_available()
-        ));
-    }
+            app.advance(&mut doc);
+            assert_eq!(app.step, Step::Customize);
+            assert!(app.status.contains("Hostname"));
 
-    #[test]
-    fn pending_release_download_keeps_the_event_loop_awake() {
-        let (mut app, _doc) = seeded_app();
-        assert!(!app.needs_animation_frame());
+            // A direct operation dispatch must repeat the gate rather than relying
+            // only on wizard navigation.
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
+            app.start_write(&mut doc);
+            assert_eq!(app.step, Step::Confirm);
+            assert!(app.job_rx.is_none());
+            assert!(app.status.contains("Hostname"));
+        }
 
-        let (_tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        assert!(app.needs_animation_frame());
-
-        app.release_rx = None;
-        assert!(!app.needs_animation_frame());
-    }
-
-    #[test]
-    fn active_release_download_replaces_selection_with_an_accessible_cancel_action() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        let (_tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        app.release_control = Some(crate::release::DownloadControl::default());
-        app.release_download_index = Some(0);
-        app.release_download_progress = Some((25, 100));
-        app.release_download_stage = Some("downloading");
-
-        let layout = app.compute_layout();
-        assert!(
-            layout
-                .hits
+        // Phase `plain_iso_skips_customize`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let iso = app
+                .recent
                 .iter()
-                .any(|(_, hit)| *hit == Hit::CancelDownload)
-        );
-        assert!(
-            !layout
-                .hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::Release(_)))
-        );
-        let tree = app.accessibility_tree();
-        assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+                .find(|s| s.kind == SourceKind::IsoFile)
+                .cloned()
+                .unwrap();
+            app.select_source(&mut doc, &iso);
+            app.advance(&mut doc); // → Drive
+            app.select_target(&doc, 0);
+            app.advance(&mut doc); // installable == false → straight to Confirm
+            assert_eq!(app.step, Step::Confirm);
+            assert!(!app.customizable());
+        }
+
+        // Phase `local_tilo_claim_cannot_unlock_preconfiguration`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let official = crate::model::sample_source();
+            let mut local = official.clone();
+            local.kind = SourceKind::IsoFile;
+            local.path = "/tmp/tilo-official-looking.iso".into();
+            local.identity = None;
+            app.select_source(&mut doc, &local);
+            assert!(!app.customizable());
+            assert_eq!(app.action, Action::Flash);
+
+            app.source = Some(official);
+            assert!(app.customizable());
+        }
+
+        // Phase `write_refused_without_matching_confirmation`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0); // sdb
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("wrong");
+            app.start_write(&mut doc);
+            assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
+            assert!(app.job_rx.is_none());
+            assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
+            assert!(app.status.to_lowercase().contains("confirm"));
+        }
     }
 
+    /// Release download job presentation.
     #[test]
-    fn release_progress_is_local_visible_and_terminal_events_clear_the_job() {
-        let (mut app, mut doc) = seeded_app();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.release_rx = Some(rx);
-        app.release_control = Some(crate::release::DownloadControl::default());
-        app.release_download_index = Some(0);
-        tx.send(crate::release::DownloadEvent::Downloading {
-            received: 25,
-            total: 100,
-        })
-        .unwrap();
-        app.drain_release(&mut doc);
-        assert_eq!(app.release_download_progress, Some((25, 100)));
-        assert!(app.status.contains("25%"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn release_download_is_local_visible_cancellable_and_keeps_the_loop_awake() {
+        // Phase `pending_release_download_keeps_the_event_loop_awake`.
+        {
+            let (mut app, _doc) = seeded_app();
+            assert!(!app.needs_animation_frame());
 
-        tx.send(crate::release::DownloadEvent::Finished(Err(
-            "Tilo installer download cancelled.".into(),
-        )))
-        .unwrap();
-        app.drain_release(&mut doc);
-        assert!(app.release_rx.is_none());
-        assert!(app.release_control.is_none());
-        assert!(app.status.contains("cancelled"));
-    }
+            let (_tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            assert!(app.needs_animation_frame());
 
-    #[test]
-    fn invalid_media_profile_blocks_confirm_and_direct_write() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.profile.hostname = "bad host".into();
-        app.goto(&mut doc, Step::Customize);
+            app.release_rx = None;
+            assert!(!app.needs_animation_frame());
+        }
 
-        app.advance(&mut doc);
-        assert_eq!(app.step, Step::Customize);
-        assert!(app.status.contains("Hostname"));
+        // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let (_tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            app.release_control = Some(crate::release::DownloadControl::default());
+            app.release_download_index = Some(0);
+            app.release_download_progress = Some((25, 100));
+            app.release_download_stage = Some("downloading");
 
-        // A direct operation dispatch must repeat the gate rather than relying
-        // only on wizard navigation.
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("sdb");
-        app.start_write(&mut doc);
-        assert_eq!(app.step, Step::Confirm);
-        assert!(app.job_rx.is_none());
-        assert!(app.status.contains("Hostname"));
+            let layout = app.compute_layout();
+            assert!(
+                layout
+                    .hits
+                    .iter()
+                    .any(|(_, hit)| *hit == Hit::CancelDownload)
+            );
+            assert!(
+                !layout
+                    .hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::Release(_)))
+            );
+            let tree = app.accessibility_tree();
+            assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+        }
+
+        // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.release_rx = Some(rx);
+            app.release_control = Some(crate::release::DownloadControl::default());
+            app.release_download_index = Some(0);
+            tx.send(crate::release::DownloadEvent::Downloading {
+                received: 25,
+                total: 100,
+            })
+            .unwrap();
+            app.drain_release(&mut doc);
+            assert_eq!(app.release_download_progress, Some((25, 100)));
+            assert!(app.status.contains("25%"));
+
+            tx.send(crate::release::DownloadEvent::Finished(Err(
+                "Tilo installer download cancelled.".into(),
+            )))
+            .unwrap();
+            app.drain_release(&mut doc);
+            assert!(app.release_rx.is_none());
+            assert!(app.release_control.is_none());
+            assert!(app.status.contains("cancelled"));
+        }
     }
 
     /// The primary interaction, proven end to end by clicking the real
@@ -6982,52 +7110,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_iso_skips_customize() {
-        let (mut app, mut doc) = seeded_app();
-        let iso = app
-            .recent
-            .iter()
-            .find(|s| s.kind == SourceKind::IsoFile)
-            .cloned()
-            .unwrap();
-        app.select_source(&mut doc, &iso);
-        app.advance(&mut doc); // → Drive
-        app.select_target(&doc, 0);
-        app.advance(&mut doc); // installable == false → straight to Confirm
-        assert_eq!(app.step, Step::Confirm);
-        assert!(!app.customizable());
-    }
-
-    #[test]
-    fn local_tilo_claim_cannot_unlock_preconfiguration() {
-        let (mut app, mut doc) = seeded_app();
-        let official = crate::model::sample_source();
-        let mut local = official.clone();
-        local.kind = SourceKind::IsoFile;
-        local.path = "/tmp/tilo-official-looking.iso".into();
-        local.identity = None;
-        app.select_source(&mut doc, &local);
-        assert!(!app.customizable());
-        assert_eq!(app.action, Action::Flash);
-
-        app.source = Some(official);
-        assert!(app.customizable());
-    }
-
-    #[test]
-    fn write_refused_without_matching_confirmation() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0); // sdb
-        app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("wrong");
-        app.start_write(&mut doc);
-        assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
-        assert!(app.job_rx.is_none());
-        assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-        assert!(app.status.to_lowercase().contains("confirm"));
-    }
-
-    #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn matching_confirmation_does_not_simulate_a_disabled_write() {
         if crate::write::allow_write() {
@@ -7044,102 +7126,110 @@ mod tests {
         assert!(app.status.contains("disabled"));
     }
 
+    /// Portal sources, external drives, rescans and forbidden disks.
     #[test]
-    fn portal_open_selects_inspected_source() {
-        let (mut app, mut doc) = seeded_app();
-        // The recording host answers with a real Tilo-looking image.
-        let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
-        app.open_file_picker(&doc);
-        assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
-        app.drain_portal(&mut doc);
-        // A `.iso` file → a valid source is selected.
-        assert!(app.source.is_some());
-        assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn source_and_target_selection_accept_only_inspected_external_media() {
+        // Phase `portal_open_selects_inspected_source`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            // The recording host answers with a real Tilo-looking image.
+            let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+            std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
+            app.open_file_picker(&doc);
+            assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
+            app.drain_portal(&mut doc);
+            // A `.iso` file → a valid source is selected.
+            assert!(app.source.is_some());
+            assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
+        }
 
-    #[test]
-    fn drive_step_only_offers_external_installation_media() {
-        let (app, _doc) = seeded_app();
-        // Sample has one USB (removable) + one NVMe (fixed).
-        assert_eq!(app.visible_targets().len(), 1);
-        assert_eq!(app.removable_count(), 1);
-    }
+        // Phase `drive_step_only_offers_external_installation_media`.
+        {
+            let (app, _doc) = seeded_app();
+            // Sample has one USB (removable) + one NVMe (fixed).
+            assert_eq!(app.visible_targets().len(), 1);
+            assert_eq!(app.removable_count(), 1);
+        }
 
-    #[test]
-    fn authoritative_empty_rescan_clears_stale_target_and_consent() {
-        let (mut app, doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.confirm_input.set_text("sdb");
+        // Phase `authoritative_empty_rescan_clears_stale_target_and_consent`.
+        {
+            let (mut app, doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.confirm_input.set_text("sdb");
 
-        app.apply_drive_inventory(Vec::new());
+            app.apply_drive_inventory(Vec::new());
 
-        assert!(app.targets.is_empty());
-        assert_eq!(app.selected, None);
-        assert!(app.confirm_input.value().is_empty());
-    }
+            assert!(app.targets.is_empty());
+            assert_eq!(app.selected, None);
+            assert!(app.confirm_input.value().is_empty());
+        }
 
-    #[test]
-    fn rescan_preserves_only_the_same_physical_target() {
-        let (mut app, doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.confirm_input.set_text("sdb");
-        let selected = app.target().unwrap().clone();
-        let mut reordered = crate::model::sample_targets();
-        reordered.swap(0, 1);
+        // Phase `rescan_preserves_only_the_same_physical_target`.
+        {
+            let (mut app, doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.confirm_input.set_text("sdb");
+            let selected = app.target().unwrap().clone();
+            let mut reordered = crate::model::sample_targets();
+            reordered.swap(0, 1);
 
-        app.apply_drive_inventory(reordered);
+            app.apply_drive_inventory(reordered);
 
-        assert_eq!(app.selected, Some(1));
-        assert_eq!(
-            app.target().and_then(|drive| drive.stable_id.as_deref()),
-            selected.stable_id.as_deref()
-        );
-        assert_eq!(app.confirm_input.value(), "sdb");
+            assert_eq!(app.selected, Some(1));
+            assert_eq!(
+                app.target().and_then(|drive| drive.stable_id.as_deref()),
+                selected.stable_id.as_deref()
+            );
+            assert_eq!(app.confirm_input.value(), "sdb");
 
-        let mut replacement = selected;
-        replacement.stable_id = Some("different-usb-stick".into());
-        app.apply_drive_inventory(vec![replacement]);
+            let mut replacement = selected;
+            replacement.stable_id = Some("different-usb-stick".into());
+            app.apply_drive_inventory(vec![replacement]);
 
-        assert_eq!(
-            app.selected, None,
-            "a reused OS device slot is not the reviewed drive"
-        );
-        assert!(
-            app.confirm_input.value().is_empty(),
-            "consent never carries to replacement hardware"
-        );
+            assert_eq!(
+                app.selected, None,
+                "a reused OS device slot is not the reviewed drive"
+            );
+            assert!(
+                app.confirm_input.value().is_empty(),
+                "consent never carries to replacement hardware"
+            );
 
-        let mut unidentified_before = crate::model::sample_targets()[0].clone();
-        unidentified_before.stable_id = None;
-        app.targets = vec![unidentified_before.clone()];
-        app.selected = Some(0);
-        app.confirm_input.set_text(&unidentified_before.name);
-        app.apply_drive_inventory(vec![unidentified_before]);
-        assert_eq!(
-            app.selected, None,
-            "a drive without stable identity must be chosen again after rescan"
-        );
-        assert!(app.confirm_input.value().is_empty());
-    }
+            let mut unidentified_before = crate::model::sample_targets()[0].clone();
+            unidentified_before.stable_id = None;
+            app.targets = vec![unidentified_before.clone()];
+            app.selected = Some(0);
+            app.confirm_input.set_text(&unidentified_before.name);
+            app.apply_drive_inventory(vec![unidentified_before]);
+            assert_eq!(
+                app.selected, None,
+                "a drive without stable identity must be chosen again after rescan"
+            );
+            assert!(app.confirm_input.value().is_empty());
+        }
 
-    #[test]
-    fn internal_and_system_disks_can_never_be_selected() {
-        let mut app = ImagerApp::new();
-        let mut doc = AutoCommit::new();
-        let mut targets = crate::model::sample_targets();
-        targets[1].is_system = true; // the internal NVMe is the system disk
-        app.targets = targets.clone();
-        ImagerDoc::seed(&mut doc, &targets);
-        ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
-        app.sync(&mut doc, &automerge::ROOT);
+        // Phase `internal_and_system_disks_can_never_be_selected`.
+        {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            let mut targets = crate::model::sample_targets();
+            targets[1].is_system = true; // the internal NVMe is the system disk
+            app.targets = targets.clone();
+            ImagerDoc::seed(&mut doc, &targets);
+            ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+            app.sync(&mut doc, &automerge::ROOT);
 
-        app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(app.selected, None, "the system disk is never selectable");
-        assert!(app.status.to_lowercase().contains("system disk"));
+            app.dispatch_hit(&mut doc, Hit::Target(1));
+            assert_eq!(app.selected, None, "the system disk is never selectable");
+            assert!(app.status.to_lowercase().contains("system disk"));
+        }
     }
 
     /// Set the Customize step up with one field cleared and focused, ready for
@@ -7165,200 +7255,183 @@ mod tests {
         (app, doc)
     }
 
+    /// Hostname typing, keyboard chooser and preview.
     #[test]
-    fn typing_into_hostname_persists_to_profile_through_the_panel() {
-        use crate::customize::CzField;
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
-        for s in ["l", "a", "b", "0", "1"] {
-            feed(&mut app, &mut doc, &char_ev(s));
+    fn profile_panel_edits_persist_through_the_real_event_path() {
+        // Phase `typing_into_hostname_persists_to_profile_through_the_panel`.
+        {
+            use crate::customize::CzField;
+            let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
+            for s in ["l", "a", "b", "0", "1"] {
+                feed(&mut app, &mut doc, &char_ev(s));
+            }
+            assert_eq!(
+                ImagerDoc::profile(&doc).hostname,
+                "lab01",
+                "persisted to the doc"
+            );
+            assert_eq!(
+                app.customize.field_value(CzField::Hostname),
+                "lab01",
+                "the input holds it"
+            );
         }
-        assert_eq!(
-            ImagerDoc::profile(&doc).hostname,
-            "lab01",
-            "persisted to the doc"
-        );
-        assert_eq!(
-            app.customize.field_value(CzField::Hostname),
-            "lab01",
-            "the input holds it"
-        );
-    }
 
-    #[test]
-    fn keyboard_chooser_filters_and_commits_through_the_real_event_path() {
-        use crate::customize::CzField;
-        use winit::keyboard::NamedKey;
+        // Phase `keyboard_chooser_filters_and_commits_through_the_real_event_path`.
+        {
+            use crate::customize::CzField;
+            use winit::keyboard::NamedKey;
 
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
-        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-        for character in ["g", "e", "r", "m", "a", "n"] {
-            feed(&mut app, &mut doc, &char_ev(character));
+            let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
+            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+            for character in ["g", "e", "r", "m", "a", "n"] {
+                feed(&mut app, &mut doc, &char_ev(character));
+            }
+            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+
+            assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
+            assert_eq!(
+                app.customize.field_value(CzField::Keyboard),
+                "German (QWERTZ)"
+            );
         }
-        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
 
-        assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
-        assert_eq!(
-            app.customize.field_value(CzField::Keyboard),
-            "German (QWERTZ)"
-        );
+        // Phase `preview_shows_the_embedded_profile`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 1);
+            app.export_config(&mut doc);
+            let text = app.export_dialog.text();
+            assert!(text.contains("\"schema\": 1"));
+            assert!(text.contains("\"hostname\""));
+            assert!(!text.contains("password"));
+            assert!(app.export_dialog.is_open());
+        }
     }
 
+    /// Write another, failure, cancellation and cancel races.
     #[test]
-    fn preview_shows_the_embedded_profile() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 1);
-        app.export_config(&mut doc);
-        let text = app.export_dialog.text();
-        assert!(text.contains("\"schema\": 1"));
-        assert!(text.contains("\"hostname\""));
-        assert!(!text.contains("password"));
-        assert!(app.export_dialog.is_open());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn write_completion_failure_and_cancel_return_to_a_truthful_state() {
+        // Phase `write_another_resets_to_source`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.progress = Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                rate_bps: 0,
+                error: None,
+            };
+            app.write_another(&mut doc);
+            assert_eq!(app.step, Step::Source);
+            assert_eq!(app.progress.phase, JobPhase::Idle);
+        }
 
-    #[test]
-    fn write_another_resets_to_source() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.progress = Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-            error: None,
-        };
-        app.write_another(&mut doc);
-        assert_eq!(app.step, Step::Source);
-        assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    #[test]
-    fn failed_write_keeps_its_cause_and_returns_to_a_fresh_review() {
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0);
-        app.goto(&mut doc, Step::Write);
-        app.progress = Progress {
-            phase: JobPhase::Writing,
-            write_frac: 0.4,
-            verify_frac: 0.0,
-            rate_bps: 0,
-            error: None,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.job_rx = Some(rx);
-        tx.send(Progress {
-            phase: JobPhase::Failed,
-            write_frac: 0.4,
-            verify_frac: 0.0,
-            rate_bps: 0,
-            error: Some("Could not write the drive: the selected drive was disconnected.".into()),
-        })
-        .unwrap();
-
-        app.drain_job(&mut doc);
-        assert_eq!(app.step, Step::Done);
-        assert_eq!(app.progress.phase, JobPhase::Failed);
-        assert!(
-            app.status.contains("disconnected"),
-            "the privileged writer's actionable cause reaches the UI"
-        );
-        let tree = app.accessibility_tree();
-        let result =
-            accessible_named(&tree, "Write failure details").expect("accessible terminal result");
-        assert!(
-            result
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains("disconnected"))
-        );
-
-        app.confirm_input.set_text("sdb");
-        app.write_another(&mut doc);
-        assert_eq!(app.step, Step::Confirm, "failure returns to review");
-        assert!(app.source.is_some(), "the verified source is preserved");
-        assert_eq!(app.selected, Some(0), "the selected drive is preserved");
-        assert!(
-            app.confirm_input.value().is_empty(),
-            "retry requires fresh destructive consent"
-        );
-        assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    #[test]
-    fn active_write_cancel_operation_requests_a_safe_stop() {
-        let (mut app, mut doc) = seeded_app();
-        let control = JobControl::new();
-        app.job_control = Some(control.clone());
-        app.goto(&mut doc, Step::Write);
-
-        app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
+        // Phase `failed_write_keeps_its_cause_and_returns_to_a_fresh_review`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Write);
+            app.progress = Progress {
+                phase: JobPhase::Writing,
+                write_frac: 0.4,
+                verify_frac: 0.0,
+                rate_bps: 0,
+                error: None,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.job_rx = Some(rx);
+            tx.send(Progress {
+                phase: JobPhase::Failed,
+                write_frac: 0.4,
+                verify_frac: 0.0,
+                rate_bps: 0,
+                error: Some(
+                    "Could not write the drive: the selected drive was disconnected.".into(),
+                ),
+            })
             .unwrap();
 
-        assert!(control.is_cancelled());
-        assert!(app.status.contains("Keep the drive connected"));
-        let footer = app.a11y_footer_controls(&app.compute_layout());
-        let cancel = footer
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Cancel image write"))
-            .expect("write screen exposes a cancel button");
-        assert!(cancel.state.disabled);
-    }
+            app.drain_job(&mut doc);
+            assert_eq!(app.step, Step::Done);
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(
+                app.status.contains("disconnected"),
+                "the privileged writer's actionable cause reaches the UI"
+            );
+            let tree = app.accessibility_tree();
+            let result = accessible_named(&tree, "Write failure details")
+                .expect("accessible terminal result");
+            assert!(
+                result
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("disconnected"))
+            );
 
-    #[test]
-    fn cancel_wins_a_race_with_an_already_queued_success() {
-        let (mut app, mut doc) = seeded_app();
-        let control = JobControl::new();
-        control.cancel();
-        app.job_control = Some(control);
-        app.progress.phase = JobPhase::Verifying;
-        app.goto(&mut doc, Step::Write);
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.job_rx = Some(rx);
-        tx.send(Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-            error: None,
-        })
-        .unwrap();
+            app.confirm_input.set_text("sdb");
+            app.write_another(&mut doc);
+            assert_eq!(app.step, Step::Confirm, "failure returns to review");
+            assert!(app.source.is_some(), "the verified source is preserved");
+            assert_eq!(app.selected, Some(0), "the selected drive is preserved");
+            assert!(
+                app.confirm_input.value().is_empty(),
+                "retry requires fresh destructive consent"
+            );
+            assert_eq!(app.progress.phase, JobPhase::Idle);
+        }
 
-        app.drain_job(&mut doc);
+        // Phase `active_write_cancel_operation_requests_a_safe_stop`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let control = JobControl::new();
+            app.job_control = Some(control.clone());
+            app.goto(&mut doc, Step::Write);
 
-        assert_eq!(app.progress.phase, JobPhase::Failed);
-        assert!(app.progress.error.as_deref().is_some_and(|message| {
-            message.contains("cancelled") && message.contains("incomplete")
-        }));
-        assert_eq!(app.step, Step::Done);
-    }
+            app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
+                .unwrap();
 
-    #[test]
-    fn failure_detail_is_measured_bounded_and_visible_at_compact_width() {
-        let mut renderer = TextRenderer::new();
-        let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
-        let max_width = 280.0;
-        let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+            assert!(control.is_cancelled());
+            assert!(app.status.contains("Keep the drive connected"));
+            let footer = app.a11y_footer_controls(&app.compute_layout());
+            let cancel = footer
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Cancel image write"))
+                .expect("write screen exposes a cancel button");
+            assert!(cancel.state.disabled);
+        }
 
-        assert_eq!(
-            lines.len(),
-            2,
-            "compact failure copy uses both visible lines"
-        );
-        assert!(
-            lines.iter().all(|line| {
-                renderer
-                    .measure_weighted(line, 13.5, None, TextWeight::Regular)
-                    .0
-                    <= max_width
-            }),
-            "no failure-detail line paints beyond its content bounds"
-        );
-        assert!(
-            lines.join(" ").contains("authorized writer"),
-            "the actionable cause is visible rather than replaced by generic compact copy"
-        );
-        assert!(
-            lines.last().is_some_and(|line| line.ends_with('…')),
-            "bounded overflow is signalled"
-        );
+        // Phase `cancel_wins_a_race_with_an_already_queued_success`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let control = JobControl::new();
+            control.cancel();
+            app.job_control = Some(control);
+            app.progress.phase = JobPhase::Verifying;
+            app.goto(&mut doc, Step::Write);
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.job_rx = Some(rx);
+            tx.send(Progress {
+                phase: JobPhase::Success,
+                write_frac: 1.0,
+                verify_frac: 1.0,
+                rate_bps: 0,
+                error: None,
+            })
+            .unwrap();
+
+            app.drain_job(&mut doc);
+
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(app.progress.error.as_deref().is_some_and(|message| {
+                message.contains("cancelled") && message.contains("incomplete")
+            }));
+            assert_eq!(app.step, Step::Done);
+        }
     }
 }

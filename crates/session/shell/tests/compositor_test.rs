@@ -87,6 +87,7 @@ fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool 
 
 /// Returns (child handle, socket name like `wayland-3`).
 fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
+    tilo_test_env::require_isolated_desktop();
     // Built by `cargo test`'s pre-build step, at the workspace target directory.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -168,6 +169,7 @@ fn extract_socket_name(line: &str) -> Option<String> {
 #[test]
 #[ignore = "spawns two real native compositor processes"]
 fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
+    tilo_test_env::require_isolated_desktop();
     let runtime = tempfile::tempdir().expect("temporary runtime");
     let state = runtime.path().join("state.json");
     let identity_root = runtime.path().join("identity-root");
@@ -225,6 +227,7 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
                 assert!(
                     !name.starts_with("wayland-")
                         && !name.starts_with("tilo-osk-")
+                        && !name.starts_with("tilo-im-")
                         && !name.starts_with("tilo-privileged-")
                         && !std::path::Path::new(&name)
                             .extension()
