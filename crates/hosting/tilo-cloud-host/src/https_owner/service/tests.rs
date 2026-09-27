@@ -397,7 +397,10 @@ async fn started(
             "server stopped before Ready: {:?}",
             server.await
         );
-        assert!(std::time::Instant::now() < deadline, "Ready not published");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never published its Ready record"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(ready).unwrap()).unwrap();
@@ -514,9 +517,8 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         .await;
     assert_eq!(status, reqwest::StatusCode::OK);
     let later_commit = accepted(&body);
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+    let woken = tilo_test_env::within("the held poll to be woken by the next commit", held)
         .await
-        .expect("held poll woken by commit")
         .unwrap()
         .expect("committed group");
     assert_eq!(woken.committed(), &later_commit);
@@ -697,7 +699,9 @@ async fn cloud_https_upload_and_private_replies_are_answered_without_ticks() {
         session: None,
     };
     handshake(&mut client, &root).await;
-    let bound = Duration::from_secs(10);
+    // Well inside the disabled 60 s idle tick, so an answer within it came
+    // from a wake-up event, yet loose enough for a loaded runner.
+    let bound = Duration::from_secs(30);
     let large = browser_delta(&root, MACHINE, "evented ");
     let (wakes_before, spent_before) = super::quiet_ticks::wakes(&root);
     let window = std::time::Instant::now();
@@ -1136,7 +1140,10 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
             "server stopped before Ready: {:?}",
             server.await
         );
-        assert!(std::time::Instant::now() < deadline, "Ready not published");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never published its Ready record"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let record: serde_json::Value =
@@ -1153,9 +1160,8 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
         assert!(ready.exists(), "Ready record withdrawn while serving");
     }
     let _ = stop.send(());
-    let served = tokio::time::timeout(tilo_test_env::hang_bound(), server)
+    let served = tilo_test_env::within("the server's clean shutdown", server)
         .await
-        .expect("clean shutdown")
         .unwrap();
     assert!(served.is_ok(), "{served:?}");
     // Worker startup publications were admitted by the scoped evaluator: the
@@ -1199,7 +1205,7 @@ async fn renewed(client: &Client, before: [u8; 32]) -> [u8; 32] {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "descriptor was not renewed"
+            "the descriptor to be renewed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1447,9 +1453,8 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
         "/peer/v3/events?cursor={}&mode=poll",
         encode_cursor_url(cursor.as_ref().unwrap().as_bytes()).unwrap()
     );
-    let (status, body) = tokio::time::timeout(tilo_test_env::hang_bound(), client.get(&target))
-        .await
-        .expect("answered");
+    let (status, body) =
+        tilo_test_env::within("the events poll's answer", client.get(&target)).await;
     assert_eq!(
         status,
         reqwest::StatusCode::OK,
@@ -1555,9 +1560,11 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
         "/peer/v3/events?cursor={}&mode=poll",
         encode_cursor_url(cursor.as_ref().unwrap().as_bytes()).unwrap()
     );
-    let (status, body) = tokio::time::timeout(tilo_test_env::hang_bound(), client.get(&target))
-        .await
-        .expect("rotation wakes the held poll");
+    let (status, body) = tilo_test_env::within(
+        "the descriptor rotation to wake the held poll",
+        client.get(&target),
+    )
+    .await;
     assert_eq!(
         status,
         reqwest::StatusCode::OK,
@@ -1649,7 +1656,9 @@ async fn private_call(
     };
     let started = std::time::Instant::now();
     // 503 is the carrier's retryable answer (owner contended past the request
-    // deadline, e.g. a loaded debug test process); retry like a client does.
+    // deadline, e.g. a loaded debug test process); retry like a client does,
+    // until the hang bound.
+    let give_up = tilo_test_env::hang_deadline();
     let mut attempts = 0;
     let (status, body) = loop {
         let (status, body) = client
@@ -1659,7 +1668,9 @@ async fn private_call(
             )
             .await;
         attempts += 1;
-        if status != reqwest::StatusCode::SERVICE_UNAVAILABLE || attempts == 5 {
+        if status != reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || std::time::Instant::now() >= give_up
+        {
             break (status, body);
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1711,7 +1722,10 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
             "server stopped before Ready: {:?}",
             server.await
         );
-        assert!(std::time::Instant::now() < deadline, "Ready not published");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never published its Ready record"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let record: serde_json::Value =
@@ -1812,9 +1826,8 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(body.is_empty());
     let _ = stop.send(());
-    let served = tokio::time::timeout(tilo_test_env::hang_bound(), server)
+    let served = tilo_test_env::within("the server's clean shutdown", server)
         .await
-        .expect("clean shutdown")
         .unwrap();
     assert!(served.is_ok(), "{served:?}");
 }
@@ -2266,12 +2279,11 @@ async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
         format!("h3=\":{port}\"; ma=3600")
     );
     let over_h2 = response.bytes().await.unwrap().to_vec();
-    let (status, over_h3) = tokio::time::timeout(
-        tilo_test_env::hang_bound(),
+    let (status, over_h3) = tilo_test_env::within(
+        "the descriptor over HTTP/3",
         h3_get(&origin, "/peer/v3/descriptor"),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(status, "200");
     assert_eq!(over_h3, over_h2, "same signed descriptor bytes over HTTP/3");
     // Proof-required data routes keep their HTTP/2 semantics over HTTP/3.
@@ -2447,7 +2459,10 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
             session: client.session,
         };
         let cursor = cursor.clone();
-        tokio::spawn(async move { poll(&client, cursor.as_ref()).await })
+        tokio::spawn(async move {
+            let answer = poll(&client, cursor.as_ref()).await;
+            (answer, std::time::Instant::now())
+        })
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
     // Another component commits and keeps the lock across several service
@@ -2465,12 +2480,12 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
     })
     .await
     .unwrap();
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
-        .await
-        .expect("held poll woken after the lock is released, not at its idle deadline")
-        .unwrap()
-        .expect("committed group");
-    let latency = released.elapsed();
+    let (woken, answered) =
+        tilo_test_env::within("the held poll's answer after the lock release", held)
+            .await
+            .unwrap();
+    let woken = woken.expect("committed group");
+    let latency = answered.saturating_duration_since(released);
     assert!(woken.committed().sequence > first_commit.sequence);
     assert!(
         latency < Duration::from_secs(2),
@@ -2525,7 +2540,10 @@ async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
             session: client.session,
         };
         let cursor = cursor.clone();
-        tokio::spawn(async move { poll(&client, cursor.as_ref()).await })
+        tokio::spawn(async move {
+            let answer = poll(&client, cursor.as_ref()).await;
+            (answer, std::time::Instant::now())
+        })
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
     let later = browser_delta(&root, MACHINE, "out of band ");
@@ -2540,12 +2558,11 @@ async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
     })
     .await
     .unwrap();
-    let woken = tokio::time::timeout(Duration::from_secs(5), held)
+    let (woken, answered) = tilo_test_env::within("the held poll's answer after the commit", held)
         .await
-        .expect("held poll woken by the commit, not at its idle deadline")
-        .unwrap()
-        .expect("committed group");
-    let latency = committed.elapsed();
+        .unwrap();
+    let woken = woken.expect("committed group");
+    let latency = answered.saturating_duration_since(committed);
     assert!(woken.committed().sequence > first_commit.sequence);
     assert!(
         latency < Duration::from_millis(1000),
