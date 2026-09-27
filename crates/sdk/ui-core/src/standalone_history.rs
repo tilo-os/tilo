@@ -60,6 +60,18 @@ pub(crate) struct RestoreReview {
     document_identity: uuid::Uuid,
 }
 
+impl RestoreReview {
+    /// The committed heads of the version being restored.
+    pub(crate) fn target_heads(&self) -> &[ChangeHash] {
+        &self.target_heads
+    }
+
+    /// The live frontier the review was taken against, sorted.
+    pub(crate) fn reviewed_live_heads(&self) -> &[ChangeHash] {
+        &self.reviewed_live_heads
+    }
+}
+
 fn sorted(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
     heads.sort_unstable();
     heads
@@ -403,6 +415,23 @@ impl StandaloneHistory {
     /// written there and nowhere else.
     pub(crate) fn target(&self) -> &HistoryTarget {
         &self.target
+    }
+
+    /// A review a caller took earlier, possibly in another process: the same
+    /// admission as [`Self::review_restore`], but against the live frontier
+    /// the caller says it reviewed. [`Self::validate_restore`] refuses it
+    /// unless the document is still at that frontier.
+    pub(crate) fn review_restore_against(
+        &mut self,
+        context: &HistoryReadContext<'_>,
+        entry: HistoryEntryId,
+        reviewed_live_heads: Vec<ChangeHash>,
+    ) -> Result<RestoreReview, HistoryError> {
+        let review = self.review_restore(context, entry)?;
+        Ok(RestoreReview {
+            reviewed_live_heads: sorted(reviewed_live_heads),
+            ..review
+        })
     }
 
     /// Recheck authority and the reviewed frontier at confirmation.
