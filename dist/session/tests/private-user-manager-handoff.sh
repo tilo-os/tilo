@@ -68,6 +68,8 @@ private_manager() {
     export TILO_SESSION_TEST_LOG="$root/log"
     mkdir -p "$HOME" "$XDG_CONFIG_HOME/systemd/user/graphical-session.target.wants" \
         "$XDG_DATA_HOME/dbus-1/services" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
+    printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/loginctl"
+    chmod 0755 "$root/loginctl"
     chmod 0700 "$XDG_RUNTIME_DIR"
 
     # Keep the production Tilo target intact. The two standard targets and the
@@ -130,6 +132,7 @@ private_manager() {
     # would talk to the caller's real user manager.
     tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
         SYSTEMCTL="$root/systemctl" \
+        LOGINCTL="$root/loginctl" \
         FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
     tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
         TILO_SHELL="$root/tilo-shell" \
