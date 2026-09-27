@@ -33,6 +33,7 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
     use std::io::Read;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Stdio;
+    use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = dir.path().join("owner");
@@ -60,7 +61,14 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
         .unwrap();
     let mut child = ChildGuard(Some(child));
 
-    tilo_test_env::wait_until("the test host's ready metadata", || ready.exists());
+    let startup_deadline = tilo_test_env::hang_deadline();
+    while !ready.exists() {
+        assert!(
+            Instant::now() < startup_deadline,
+            "test host never wrote ready metadata"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let process = child.0.as_mut().unwrap();
     assert!(
@@ -69,10 +77,17 @@ fn sigint_exits_after_flushing_with_an_open_idle_stdin_pipe() {
     );
     assert_eq!(unsafe { libc::kill(process.id() as i32, libc::SIGINT) }, 0);
 
-    let status = tilo_test_env::wait_for(
-        "the peer to exit on SIGINT instead of waiting on its idle stdin pipe",
-        || process.try_wait().unwrap(),
-    );
+    let shutdown_deadline = tilo_test_env::hang_deadline();
+    let status = loop {
+        if let Some(status) = process.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < shutdown_deadline,
+            "SIGINT left the peer waiting on its idle stdin pipe"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     let mut stderr = String::new();
     process
         .stderr
@@ -588,12 +603,14 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
     }
     let mut input = child.stdin.take().unwrap();
     let mut guard = ChildGuard(child);
-    tilo_test_env::within("the test host's ready metadata", async {
-        while !ready.exists() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    let deadline = tilo_test_env::hang_deadline();
+    while !ready.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "test host never wrote ready metadata"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let metadata: serde_json::Value = serde_json::from_slice(&fs::read(&ready).unwrap()).unwrap();
     let origin = metadata["fixture_origin"]
         .as_str()
@@ -645,7 +662,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
         }
         assert!(
             subscribed,
-            "connection cycle {cycle} never subscribed with actions ready within the hang bound; frequent health polls must not starve it"
+            "frequent health polls must not starve connection cycle {cycle}"
         );
     }
     // Abrupt process death must release custody without losing acknowledged state.

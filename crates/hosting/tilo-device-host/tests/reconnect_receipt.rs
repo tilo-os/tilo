@@ -32,7 +32,7 @@ async fn status(origin: &str, deadline: Instant) -> serde_json::Value {
         serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
     })
     .await
-    .expect("the /status exchange did not finish within the hang bound")
+    .expect("status exchange exceeded its polling deadline")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -237,7 +237,7 @@ async fn failed_flush_keeps_status_and_terminal_controls_alive() {
         }),
     )
     .await
-    .expect("the terminal owner never answered its queued controls within the hang bound")
+    .expect("terminal controls did not finish")
     .unwrap();
     let console: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(console["generation"], before["generation"]);

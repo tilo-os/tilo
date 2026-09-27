@@ -21,6 +21,8 @@
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
 #   STAGE          scratch for payload trees + .tapp files  [default: mktemp]
+#   TILO_IMAGE_BUILD=1 pins the scratch path and registry install time to
+#                  SOURCE_DATE_EPOCH for independently reproduced OS images
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
@@ -46,7 +48,13 @@ BIN_DIR="${BIN_DIR:-/out}"
 STORE="${STORE:-/usr/share/tilo-apps}"
 owned_stage=0
 if [ -z "${STAGE:-}" ]; then
-    STAGE=$(mktemp -d)
+    if [ "${TILO_IMAGE_BUILD:-0}" = 1 ]; then
+        STAGE=/tmp/tilo-image-app-pack-stage
+        [ ! -e "$STAGE" ] || { printf 'image app stage already exists\n' >&2; exit 1; }
+        [ -n "${SOURCE_DATE_EPOCH:-}" ] || { printf 'image app build needs SOURCE_DATE_EPOCH\n' >&2; exit 1; }
+    else
+        STAGE=$(mktemp -d)
+    fi
     owned_stage=1
 fi
 # The default stage contains an ephemeral private publisher key. Remove it
@@ -101,6 +109,9 @@ else
     fi
     PUBKEY="$("$BUNDLE_BIN" key pubkey --identity "$IDENTITY_JSON")"
     [ -n "$PUBKEY" ] || die "could not read the signing pubkey"
+    if [ -n "$EXPECTED_PUBKEY" ] && [ "${PUBKEY,,}" != "${EXPECTED_PUBKEY,,}" ]; then
+        die "source-pack identity does not match EXPECTED_PUBKEY"
+    fi
     [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
     msg "signing as ed25519:$PUBKEY"
 fi
