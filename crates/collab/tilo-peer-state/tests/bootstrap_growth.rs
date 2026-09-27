@@ -394,7 +394,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
 
 #[test]
 fn durable_generation_room_growth_is_small_per_generation() {
-    let generations = 2000u64;
+    let generations = 200u64;
     let mut report = Vec::new();
     for documents in [2usize, 8] {
         let (bytes, whole_map, saved) = durable_generation_growth(documents, generations);

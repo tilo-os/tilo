@@ -86,9 +86,7 @@ async fn observer(
     key: &SigningKey,
 ) -> RelayCoeditSession {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(
-            host.packet_url.clone(),
-        )))
+        .relay_mode(host.relay_mode())
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
         .unwrap()
         .bind()
