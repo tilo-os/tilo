@@ -75,7 +75,8 @@ A standalone app builds the code this repository tests:
 
 - `[patch.crates-io]` repeats each fork the SDK's dependency graph uses,
   because Cargo does not apply the SDK workspace's patches to an app that
-  depends on it. The private git forks come from their copies in `vendor/git`.
+  depends on it. The forks pinned in git come from their public repositories
+  at the revision the workspace pins.
 - `Cargo.lock` starts as this repository's lockfile, so the first build picks
   the dependency versions CI tested rather than the newest ones. Cargo drops
   the entries the app does not use.
