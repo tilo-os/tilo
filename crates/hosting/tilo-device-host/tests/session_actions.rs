@@ -35,12 +35,10 @@ async fn request(
     };
     socket.write_all(wire.as_bytes()).await.unwrap();
     let mut bytes = vec![];
-    tilo_test_env::within(
-        format!("the host's response to {route}"),
-        socket.read_to_end(&mut bytes),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(tilo_test_env::hang_bound(), socket.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
     let response = String::from_utf8(bytes).unwrap();
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
     (
@@ -62,25 +60,26 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         .unwrap();
     let pid = child.id();
     let host = Host(child);
-    let metadata = tilo_test_env::within("the isolated native host's ready metadata", async {
-        loop {
-            if let Ok(bytes) = fs::read(ready)
-                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
-                && value["pid"].as_u64() == Some(u64::from(pid))
-            {
-                break value;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
     let deadline = tilo_test_env::hang_deadline();
+    let metadata = loop {
+        assert!(
+            Instant::now() < deadline,
+            "isolated native host did not become ready"
+        );
+        if let Ok(bytes) = fs::read(ready)
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && value["pid"].as_u64() == Some(u64::from(pid))
+        {
+            break value;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     let origin = metadata["fixture_origin"].as_str().unwrap();
     let mut last_readiness = serde_json::Value::Null;
     loop {
         assert!(
             Instant::now() < deadline,
-            "native peer never subscribed with actions ready; last readiness: {last_readiness}"
+            "native peer never subscribed; last readiness: {last_readiness}"
         );
         let (code, status) = request(origin, "/status", None, None).await;
         last_readiness = serde_json::json!({
@@ -955,7 +954,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         .await
         .unwrap_or_else(|_| {
             panic!(
-                "automatic native suffix did not arrive within the hang bound: {}",
+                "automatic native suffix did not arrive within the original deadline: {}",
                 coverage_summary(&recovered, &expected)
             )
         })
@@ -1174,7 +1173,7 @@ async fn checked_application_catalogue(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tilo_test_env::within("the relay's Ready for the subscribed room", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             let event = client.recv().await.unwrap();
             if matches!(event, Envelope::Ready { .. }) {
@@ -1183,7 +1182,8 @@ async fn checked_application_catalogue(
             apply_state(&mut remote, event);
         }
     })
-    .await;
+    .await
+    .unwrap();
     client
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
@@ -1596,19 +1596,17 @@ async fn checked_application_catalogue(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tilo_test_env::within(
-        "the restarted relay's Ready for the subscribed room",
-        async {
-            loop {
-                let event = client.recv().await.unwrap();
-                if matches!(event, Envelope::Ready { .. }) {
-                    break;
-                }
-                apply_state(&mut remote, event);
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            let event = client.recv().await.unwrap();
+            if matches!(event, Envelope::Ready { .. }) {
+                break;
             }
-        },
-    )
-    .await;
+            apply_state(&mut remote, event);
+        }
+    })
+    .await
+    .unwrap();
     client
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
@@ -1693,29 +1691,29 @@ async fn checked_application_catalogue(
             message: ActionMessage::CatalogueRefresh { scope: None },
         }))
         .unwrap();
-    let current_catalogue =
-        tilo_test_env::within("the broker's catalogue refresh response", async {
-            loop {
-                if let EnvelopeV2::Delivered {
-                    action,
-                    source_user,
-                } = client.recv_action().await.unwrap()
-                    && action.request_id == refresh
-                {
-                    assert_eq!(source_user, native.user_public_key);
-                    assert_eq!(action.source, native.device_public_key);
-                    assert_eq!(action.target, cert.device_public_key);
-                    assert_eq!(action.room, room);
-                    if let ActionMessage::BrokerCatalogue { host, catalogue } = action.message {
-                        assert_eq!(host, broker_host);
-                        break catalogue;
-                    } else {
-                        panic!("catalogue response missing");
-                    }
+    let current_catalogue = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            if let EnvelopeV2::Delivered {
+                action,
+                source_user,
+            } = client.recv_action().await.unwrap()
+                && action.request_id == refresh
+            {
+                assert_eq!(source_user, native.user_public_key);
+                assert_eq!(action.source, native.device_public_key);
+                assert_eq!(action.target, cert.device_public_key);
+                assert_eq!(action.room, room);
+                if let ActionMessage::BrokerCatalogue { host, catalogue } = action.message {
+                    assert_eq!(host, broker_host);
+                    break catalogue;
+                } else {
+                    panic!("catalogue response missing");
                 }
             }
-        })
-        .await;
+        }
+    })
+    .await
+    .unwrap();
     let surface = current_catalogue["surfaces"]
         .as_array()
         .unwrap()
@@ -1778,7 +1776,7 @@ async fn checked_application_catalogue(
     // an explicit post-unregistration relay refusal, never a fake success.
     let mut probes = std::collections::BTreeSet::new();
     let mut probe_tick = tokio::time::interval(Duration::from_millis(100));
-    tilo_test_env::within("the relay to explicitly retire the failed broker", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             tokio::select! {
                 _ = probe_tick.tick() => {
@@ -1803,7 +1801,7 @@ async fn checked_application_catalogue(
                 event = client.recv() => { if let Some(event) = event { apply_state(&mut remote, event); } else { panic!("retirement client state disconnected"); } },
             }
         }
-    }).await;
+    }).await.expect("relay did not explicitly retire the failed broker within the bounded probe window");
     client.close().await;
     restarted.0.kill().unwrap();
     restarted.0.wait().unwrap();
@@ -1895,10 +1893,7 @@ async fn invoke_and_expect_closed_publication(
     pending.insert(directed.clone()).unwrap();
     client.send_action(EnvelopeV2::Directed(directed)).unwrap();
     let mut admitted = false;
-    // Until the invocation is admitted this only guards against a hang. From
-    // admission on it is a fixed quiet interval in which the owner's refusal
-    // must hold and no refused change may replicate.
-    let mut window = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    let window = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < window {
         tokio::select! {
             state = client.recv() => apply_state(remote, state.unwrap()),
@@ -1914,10 +1909,7 @@ async fn invoke_and_expect_closed_publication(
                             !matches!(update, Some(tilo_actions::InvocationUpdate::Succeeded { .. })),
                             "a closed native publication must never report success"
                         );
-                        if update.is_some() && !admitted {
-                            admitted = true;
-                            window = tokio::time::Instant::now() + Duration::from_secs(3);
-                        }
+                        admitted |= update.is_some();
                         request_id = uuid::Uuid::new_v4();
                         let status = DirectedAction {
                             room,
@@ -1952,10 +1944,7 @@ async fn invoke_and_expect_closed_publication(
             () = tokio::time::sleep_until(window) => {}
         }
     }
-    assert!(
-        admitted,
-        "the certified invocation was never admitted within the hang bound"
-    );
+    assert!(admitted, "the certified invocation was never admitted");
     assert_eq!(table_cells(remote), 0, "no refused change may replicate");
     assert_eq!(
         writer_heads(&request(origin, "/status", None, None).await.1),
@@ -2024,7 +2013,7 @@ async fn invoke_and_observe_until(
     pending.insert(directed.clone()).unwrap();
     client.send_action(EnvelopeV2::Directed(directed)).unwrap();
     let mut success = false;
-    tilo_test_env::within("the actual Writer operation to commit, replicate and complete", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if success && complete(remote) { break; }
             tokio::select! {
@@ -2048,7 +2037,7 @@ async fn invoke_and_observe_until(
                 }
             }
         }
-    }).await;
+    }).await.expect("actual Writer operation never committed, replicated and completed");
 }
 
 #[cfg(feature = "test-support")]
@@ -2304,7 +2293,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         .unwrap();
     let host = LocalHost::start(&owner).await.unwrap();
     let mut native = host.connect(&owner).await.unwrap();
-    tilo_test_env::within("the native subscription's Ready", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !native.is_ready() {
             if let tilo_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
                 owner
@@ -2316,7 +2305,8 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
             }
         }
     })
-    .await;
+    .await
+    .unwrap();
     let capture = Capture::default();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(
@@ -2349,7 +2339,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         .await
         .unwrap();
     publish(&owner, &native).unwrap();
-    tilo_test_env::within("the owner's retained checkpoint publication", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         // Leave one actual checkpoint unadmitted so recovery must do more than
         // count replay frames: it must fill the missing document in this peer.
         let mut omitted_chat = false;
@@ -2372,7 +2362,8 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         assert!(omitted_chat);
         assert!(remote.document("so.tilo.chat", "").is_none());
     })
-    .await;
+    .await
+    .unwrap();
     // Retain a local mutation absent from the owner/relay's checkpoint basis.
     let row = remote
         .rows()
@@ -2411,7 +2402,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         .unwrap();
     let certificates = remote.certificates();
     capture.close_connection();
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = Instant::now() + Duration::from_millis(3800);
     tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
         loop {
             if matches!(observer_event(&client).await, ObserverEvent::Ended) {
@@ -2526,7 +2517,7 @@ async fn active_replacement(
             message: operation,
         }))
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = Instant::now() + Duration::from_secs(3);
     let mut accepted = false;
     let generation = loop {
         let status = request(origin, "/status", None, None).await.1;
@@ -2589,18 +2580,17 @@ async fn active_replacement(
             signature: [0; 64],
         })
         .unwrap();
-    // Notes delivery, transport replacement, replay/capability restoration and
-    // authenticated pending Status must all finish inside the host's held-action
-    // window, which the host itself measures and reports as `expired`.
-    let deadline = tilo_test_env::hang_deadline();
+    // This one absolute budget includes Notes delivery, transport replacement,
+    // replay/capability restoration and authenticated pending Status.
+    let deadline = Instant::now() + Duration::from_millis(3800);
     let client = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
         loop {
             let status = request(origin, "/status", None, None).await.1;
-            assert_eq!(status["qualification"]["expired"], false, "the qualification hold expired before the held action finished: {status}");
             assert_eq!(
                 status["qualification"]["held"], true,
                 "response was not held while delivering state: {status}"
             );
+            assert_eq!(status["qualification"]["expired"], false);
             if status["qualification"]["workers"]
                 .as_array()
                 .unwrap()
@@ -2638,9 +2628,9 @@ async fn active_replacement(
         let mut observed_pending = false;
         loop {
             let status = request(origin, "/status", None, None).await.1;
-            assert_eq!(status["qualification"]["expired"], false, "the qualification hold expired before the held action finished: {status}");
             assert_eq!(status["qualification"]["held"], true,
                 "old completion escaped replacement boundary: {status}");
+            assert_eq!(status["qualification"]["expired"], false);
             assert!(Instant::now() < deadline, "active replacement did not become ready: {status}");
             let native_ready = status["actions"] == "ready"
                 && status["native_subscription_generation"].as_u64().unwrap() > generation;
@@ -2704,9 +2694,9 @@ async fn active_replacement(
                                 result = &mut recovery => break result.expect("observer recovery failed"),
                                 _ = tokio::time::sleep(Duration::from_millis(5)) => {
                                     let status = request(origin, "/status", None, None).await.1;
-                                    assert_eq!(status["qualification"]["expired"], false, "the qualification hold expired before the held action finished: {status}");
                                     assert_eq!(status["qualification"]["held"], true,
                                         "old completion escaped during observer recovery: {status}");
+                                    assert_eq!(status["qualification"]["expired"], false);
                                 }
                             }
                         }
@@ -2719,7 +2709,7 @@ async fn active_replacement(
         }
         eprintln!("original invocation authenticated pending after native replacement; observer replacements={replacements}");
         client
-    }).await.expect("Notes delivery, transport replacement and pending Status never finished while the action was held");
+    }).await.expect("Notes/replacement/Status exceeded the original 3.8s held-action deadline");
     writeln!(host.0.stdin.as_mut().unwrap(), "qualification release").unwrap();
     // Terminal recovery is Status for this original UUID, never an implicit Invoke.
     client
@@ -2784,10 +2774,11 @@ async fn owner_and_room_isolation(
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tilo_test_env::within("the second client's relay Ready", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !matches!(second.recv().await.unwrap(), Envelope::Ready { .. }) {}
     })
-    .await;
+    .await
+    .unwrap();
     second
         .send_action(EnvelopeV2::EnableActions { room })
         .unwrap();
@@ -2807,39 +2798,37 @@ async fn owner_and_room_isolation(
                 },
             }))
             .unwrap();
-        tilo_test_env::within(
-            "the Status observation of a foreign or absent invocation",
-            async {
-                loop {
-                    if let EnvelopeV2::Delivered {
-                        action,
-                        source_user,
-                    } = second.recv_action().await.unwrap()
-                        && action.request_id == query
-                    {
-                        assert_eq!(source_user, native.user_public_key);
-                        assert_eq!(action.source, native.device_public_key);
-                        assert_eq!(action.target, cert.device_public_key);
-                        assert_eq!(action.room, room);
-                        // Unknown status reveals only the public host and caller's
-                        // own requested ID, identically for absent and foreign IDs.
-                        assert_eq!(
-                            action.message,
-                            ActionMessage::Observation {
-                                host: broker_host,
-                                invocation: foreign_or_absent,
-                                update: None,
-                                uncertain: false,
-                                cancellation_requested: false,
-                            },
-                            "another device learned original invocation state"
-                        );
-                        break;
-                    }
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            loop {
+                if let EnvelopeV2::Delivered {
+                    action,
+                    source_user,
+                } = second.recv_action().await.unwrap()
+                    && action.request_id == query
+                {
+                    assert_eq!(source_user, native.user_public_key);
+                    assert_eq!(action.source, native.device_public_key);
+                    assert_eq!(action.target, cert.device_public_key);
+                    assert_eq!(action.room, room);
+                    // Unknown status reveals only the public host and caller's
+                    // own requested ID, identically for absent and foreign IDs.
+                    assert_eq!(
+                        action.message,
+                        ActionMessage::Observation {
+                            host: broker_host,
+                            invocation: foreign_or_absent,
+                            update: None,
+                            uncertain: false,
+                            cancellation_requested: false,
+                        },
+                        "another device learned original invocation state"
+                    );
+                    break;
                 }
-            },
-        )
-        .await;
+            }
+        })
+        .await
+        .unwrap();
     }
     let wrong_room = uuid::Uuid::new_v4();
     let query = uuid::Uuid::new_v4();
@@ -2852,30 +2841,28 @@ async fn owner_and_room_isolation(
             message: ActionMessage::Status { invocation },
         }))
         .unwrap();
-    tilo_test_env::within(
-        "the NotAuthorised refusal of a wrong-room Status query",
-        async {
-            loop {
-                match first.recv_action().await.unwrap() {
-                    EnvelopeV2::Unavailable {
-                        room: got,
-                        request_id,
-                        reason,
-                        ..
-                    } if request_id == query => {
-                        assert_eq!(got, wrong_room);
-                        assert_eq!(reason, UnavailableReason::NotAuthorised);
-                        break;
-                    }
-                    EnvelopeV2::Delivered { action, .. } if action.request_id == query => {
-                        panic!("wrong room disclosed private result: {:?}", action.message)
-                    }
-                    _ => {}
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            match first.recv_action().await.unwrap() {
+                EnvelopeV2::Unavailable {
+                    room: got,
+                    request_id,
+                    reason,
+                    ..
+                } if request_id == query => {
+                    assert_eq!(got, wrong_room);
+                    assert_eq!(reason, UnavailableReason::NotAuthorised);
+                    break;
                 }
+                EnvelopeV2::Delivered { action, .. } if action.request_id == query => {
+                    panic!("wrong room disclosed private result: {:?}", action.message)
+                }
+                _ => {}
             }
-        },
-    )
-    .await;
+        }
+    })
+    .await
+    .unwrap();
     second.close().await;
 }
 
@@ -2888,7 +2875,7 @@ async fn observe_native_publication(
     remote: &mut tilo_peer_state::StatePeer,
 ) {
     let started = Instant::now();
-    tilo_test_env::within("the observer to admit the fixed native publication", async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let (code, target) = request(origin, "/status", None, None).await;
         assert_eq!(code, 200);
         assert_eq!(target["actions"], "ready");
@@ -2935,7 +2922,8 @@ async fn observe_native_publication(
             serde_json::json!({"generation": target["generation"], "room_heads": publication["room_heads"], "receipt_ids": receipts.iter().map(|receipt| &receipt["receipt_id"]).collect::<Vec<_>>(), "exact_rows_and_receipts": true, "frames": frames, "elapsed_us": started.elapsed().as_micros()})
         );
     })
-    .await;
+    .await
+    .expect("observer did not admit the fixed native publication within five seconds");
 }
 
 #[expect(
@@ -3171,8 +3159,7 @@ async fn desktop_open_through_broker(
     let prior = remote.rows().len();
     // A desktop gesture must publish its committed topology and checked record
     // without waiting for the five-second background checkpoint timer.
-    let started = Instant::now();
-    tilo_test_env::within("the native desktop record to replicate", async {
+    tokio::time::timeout(Duration::from_secs(2), async {
         invoke_and_observe_until(
             client,
             remote,
@@ -3189,12 +3176,8 @@ async fn desktop_open_through_broker(
             apply_state(remote, client.recv().await.unwrap());
         }
     })
-    .await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "the native desktop record took {elapsed:?} to replicate; it must not wait for the idle publication delay"
-    );
+    .await
+    .expect("native desktop record must replicate without the idle publication delay");
     let records = remote.rows().len();
     invoke_and_observe_until(
         client,
@@ -3318,7 +3301,7 @@ async fn desktop_close_through_broker(
         } else {
             2
         };
-    tilo_test_env::within("the closed app to leave the replicated desktop", async {
+    tokio::time::timeout(Duration::from_secs(budget), async {
         invoke_and_observe_until(
             client,
             remote,
@@ -3332,14 +3315,13 @@ async fn desktop_close_through_broker(
         )
         .await;
     })
-    .await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(budget),
-        "close took {elapsed:?} to remove the app from the replicated desktop; it must not wait for the idle timer"
-    );
+    .await
+    .expect("close must remove the app from the replicated desktop without the idle timer");
     assert!(!present(remote));
-    eprintln!("Confirmed desktop removal in {} ms", elapsed.as_millis());
+    eprintln!(
+        "Confirmed desktop removal in {} ms",
+        started.elapsed().as_millis()
+    );
 }
 
 #[cfg(feature = "test-support")]
