@@ -41,6 +41,9 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TARGET = REPO / "target" / "debug"
 DATA = REPO / "target" / "feedback-dev"
+# Packaged worktree apps outlive `down --purge`: they are build output, keyed
+# by the sources they were built from, not community state.
+APPS = REPO / "target" / "feedback-dev-apps"
 # Unix sockets are capped near 108 bytes, so everything with a socket lives
 # under the short per-user runtime directory, not the worktree.
 RUNTIME = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-feedback-dev"
@@ -552,7 +555,7 @@ def ci_apps(run: str) -> Apps:
     """
     if not run.isdigit():
         raise Fix(f"`{run}` is not a run number", "fgj run list --workflow release-apps.yml")
-    dest = DATA / "apps" / f"ci-{run}"
+    dest = APPS / f"ci-{run}"
     archive = dest / "tilo-apps-x86_64.zip"
     if not archive.exists():
         say(f"downloading the apps release-apps run #{run} built")
@@ -585,30 +588,89 @@ def ci_apps(run: str) -> Apps:
     return runtime_apps(packages, unpacked / "runtime")
 
 
+def app_sources(app: str) -> list[str]:
+    """Every workspace path the thin package of `app` is built from: the app,
+    the runtime it links against, their path dependencies, and the build
+    scripts — from `cargo metadata`, which resolves without building."""
+    result = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--locked", "--offline"],
+        cwd=REPO, capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        raise Fix(f"cargo metadata failed:\n{result.stderr}", "run it in the worktree and fix what it says")
+    metadata = json.loads(result.stdout)
+    packages = {package["id"]: package for package in metadata["packages"]}
+    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    roots = [pid for pid, package in packages.items()
+             if package["name"] in (app, "runtime-dylib") and package["source"] is None]
+    seen: set[str] = set()
+    while roots:
+        pid = roots.pop()
+        if pid in seen or packages[pid]["source"] is not None:
+            continue
+        seen.add(pid)
+        roots.extend(dep["pkg"] for dep in nodes[pid]["deps"])
+    dirs = sorted({str(pathlib.Path(packages[pid]["manifest_path"]).parent.relative_to(REPO))
+                   for pid in seen})
+    return [*dirs, "Cargo.lock", "Cargo.toml", "os/scripts/build-thin-apps.sh", "tools/ci"]
+
+
+def app_fingerprint(app: str) -> str:
+    """A digest of `app`'s sources as they are in the worktree, committed or
+    not, and of the packaging tools."""
+    import hashlib
+    paths = app_sources(app)
+    digest = hashlib.sha256()
+    staged = subprocess.run(["git", "-C", str(REPO), "ls-files", "-s", "--", *paths],
+                            capture_output=True, check=True).stdout
+    digest.update(staged)
+    changed = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "-m", "-o", "--exclude-standard", "--", *paths],
+        capture_output=True, check=True,
+    ).stdout.split(b"\0")
+    for name in sorted(filter(None, changed)):
+        path = REPO / name.decode()
+        digest.update(name)
+        digest.update(path.read_bytes() if path.is_file() else b"-")
+    for tool in ("tilo-app", "tilo-app-package", "tilo-runtime-bundle"):
+        stat = (TARGET / tool).stat()
+        digest.update(f"{tool}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return digest.hexdigest()
+
+
 def package_apps(rebuild: bool) -> Apps:
+    """This worktree's apps, packaged thin. Packaged once and kept; with
+    `rebuild`, packaged again only when their sources changed since."""
     packages = []
     for app in WORKTREE_APPS:
-        out = DATA / "apps" / f"{app}.tapp"
+        out = APPS / f"{app}.tapp"
         packages.append(out)
+        stamp = APPS / f"{app}.sources"
         if out.exists() and not rebuild:
+            continue
+        fingerprint = app_fingerprint(app)
+        if out.exists() and stamp.exists() and stamp.read_text() == fingerprint:
+            say(f"apps/{app} is unchanged since it was packaged; keeping {out.name}")
             continue
         say(f"packaging apps/{app} from this worktree (built by rcargo)")
         out.parent.mkdir(parents=True, exist_ok=True)
-        log = DATA / "apps" / f"{app}.log"
+        stamp.unlink(missing_ok=True)
+        log = APPS / f"{app}.log"
         with open(log, "wb") as output:
             # Thin, against a runtime bundle baked from this same build — the
             # shipped apps' shape; `tilo-app package --help` explains it.
             result = subprocess.run(
                 [binary("tilo-app"), "package", str(REPO / "apps" / app),
                  "--output", str(out), "--force",
-                 "--runtime-out", str(DATA / "apps" / "runtime")],
+                 "--runtime-out", str(APPS / "runtime")],
                 env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package"),
                      "BUNDLE_BIN": binary("tilo-runtime-bundle")},
                 cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=3600,
             )
         if result.returncode != 0:
             raise Fix(f"packaging apps/{app} failed:\n{tail(log)}", f"see {log}")
-    return runtime_apps(packages, DATA / "apps" / "runtime")
+        stamp.write_text(fingerprint)
+    return runtime_apps(packages, APPS / "runtime")
 
 
 def trusted_publishers(name: str) -> pathlib.Path:
@@ -1267,7 +1329,8 @@ def main() -> int:
     up.add_argument("--worktree-apps", action="store_true",
                     help="package and install this worktree's chat into both sessions")
     up.add_argument("--rebuild-apps", action="store_true",
-                    help="repackage this worktree's apps (chat) even if a package exists")
+                    help="repackage this worktree's apps (chat) when their sources changed "
+                         "since they were last packaged (packages outlive `down --purge`)")
     sub.add_parser("status", help="what runs, the room, each shell's community status")
     sub.add_parser("check", help="the reporter posts in #feedback; everyone in the room must see it")
     ctl = sub.add_parser("ctl", help="run tilo-control against one shell")
