@@ -131,9 +131,10 @@ pub const COMPOSER_EXECUTABLE: &str = "/usr/bin/fcitx5";
 /// Addons of the composer that Tilo does not use. Cloud Pinyin sends typed
 /// text to a remote server, the tray and panel addons need services the
 /// session does not run, the clipboard addon claims a global chord, and the
-/// X11/IBus/Fcitx4 frontends would claim buses and displays nobody asked for.
+/// IBus/Fcitx4 frontends would claim bus names nobody asked for. XIM stays:
+/// it serves X11 apps on the workspace displays the session connects it to.
 const DISABLED_COMPOSER_ADDONS: &str = "cloudpinyin,clipboard,kimpanel,notificationitem,\
-ibusfrontend,fcitx4frontend,xim,virtualkeyboard";
+ibusfrontend,fcitx4frontend,virtualkeyboard";
 
 /// What the composer needs from the session: its user, locale, session bus,
 /// and the directories its dictionaries and engines live in.
@@ -177,8 +178,9 @@ pub struct ComposerLaunch {
 }
 
 /// Describe the composer run for `engine`, typing on `layout` (an XKB source
-/// id, `layout` or `layout:variant`), connected to `socket` and configured
-/// from `config_home`. The configuration is regenerated on every start: the
+/// id, `layout` or `layout:variant`), connected to `socket`, configured from
+/// `config_home`, and reaching X11 workspace displays with the cookies in
+/// `x11_authority`. The configuration is regenerated on every start: the
 /// session owns which engine is active and how it is switched, so the
 /// composer's own switching chords are cleared (Super+Space is Tilo's
 /// search, Ctrl+Space is an application chord). User dictionaries stay in the
@@ -188,6 +190,7 @@ pub fn composer_launch(
     layout: &str,
     socket: &Path,
     config_home: &Path,
+    x11_authority: &Path,
 ) -> ComposerLaunch {
     let layout = layout.replace(':', "-");
     let profile = format!(
@@ -221,6 +224,7 @@ pub fn composer_launch(
             ("WAYLAND_DISPLAY".into(), socket.display().to_string()),
             ("XDG_CONFIG_HOME".into(), config_home.display().to_string()),
             ("XDG_SESSION_TYPE".into(), "wayland".into()),
+            ("XAUTHORITY".into(), x11_authority.display().to_string()),
         ],
         inherit: COMPOSER_INHERITED_ENV.to_vec(),
         files: vec![(dir.join("profile"), profile), (dir.join("config"), config)],
@@ -284,6 +288,7 @@ mod tests {
             "jp:kana",
             Path::new("/run/user/1000/tilo-im-1"),
             Path::new("/run/user/1000/tilo-session/input-method"),
+            Path::new("/run/user/1000/tilo-session/xwayland/composer-Xauthority"),
         );
         assert_eq!(launch.program, Path::new(COMPOSER_EXECUTABLE));
         let disabled = launch
@@ -293,6 +298,14 @@ mod tests {
             .nth(1)
             .expect("disabled addons");
         assert!(disabled.split(',').any(|addon| addon == "cloudpinyin"));
+        assert!(
+            !disabled.split(',').any(|addon| addon == "xim"),
+            "X11 apps compose through XIM"
+        );
+        assert!(launch.env.contains(&(
+            "XAUTHORITY".into(),
+            "/run/user/1000/tilo-session/xwayland/composer-Xauthority".into()
+        )));
         assert!(
             launch
                 .env

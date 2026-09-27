@@ -78,6 +78,38 @@ impl KeyboardSettings {
     pub fn load() -> Self {
         Self::from_section(&settings_store::load_section(SECTION))
     }
+
+    /// The person-facing name of source `index` — XKB's own description
+    /// ("English (US)", "German (no dead keys)") — falling back to the
+    /// source id when the keymap cannot be compiled.
+    pub fn source_label(&self, index: usize) -> String {
+        use smithay::input::keyboard::xkb;
+        let fallback = || self.source_ids.get(index).cloned().unwrap_or_default();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let Some(keymap) = xkb::Keymap::new_from_names(
+            &context,
+            "",
+            "",
+            &self.layouts,
+            &self.variants,
+            None,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) else {
+            return fallback();
+        };
+        let Ok(layout) = u32::try_from(index) else {
+            return fallback();
+        };
+        if layout >= keymap.num_layouts() {
+            return fallback();
+        }
+        let name = keymap.layout_get_name(layout);
+        if name.is_empty() {
+            fallback()
+        } else {
+            name.to_string()
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -952,10 +984,17 @@ mod tests {
             assert_eq!(settings.layouts, "us,de,fr");
             assert_eq!(settings.variants, ",nodeadkeys,");
             assert_eq!(settings.active_index, 1);
-            assert_eq!(
-                settings.options.as_deref(),
-                Some("grp:alt_shift_toggle,compose:ralt")
+            assert_eq!(settings.options.as_deref(), Some("compose:ralt"));
+        }
+        // Phase `a_source_is_named_as_xkb_describes_it`.
+        {
+            let settings = KeyboardSettings::default();
+            let label = settings.source_label(0);
+            assert!(
+                label == "English (US)" || label == "us",
+                "XKB's description, or the id when no XKB data is installed: {label}"
             );
+            assert_eq!(settings.source_label(3), "", "no fourth source");
         }
         // Phase `keyboard_settings_migrate_the_single_legacy_layout`.
         {

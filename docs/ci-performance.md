@@ -59,9 +59,10 @@ job. Run #21842, a 74-package shard, took about 29 minutes that way: 12.5 of
 test execution after a 3-minute test compile, 2.6 of check and 8.5 of Clippy.
 Now the critical path is the test job alone. `check` and `clippy` use the
 architecture's ordinary runner because they link nothing. The jobs no longer
-share a warm target tree. Each fetches dependency artifacts from sccache
-instead, and compiles proc-macro and build-script crates, which sccache does
-not store, once per job. That is the CPU cost of the shorter wall time. The
+share a warm target tree within a run; each keeps the target tree of its runner
+slot instead (see [Cache layers](#cache-layers)), and a cold slot fetches
+dependency artifacts from sccache and compiles proc-macro and build-script
+crates, which sccache does not store. The
 `checks` aggregate accepts them only when all selected jobs succeed (the
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
@@ -194,6 +195,21 @@ The weekly quality workflow runs the same script with `--workspace`.
   to compress and upload from every revision, and overlaps the compiler
   objects already handled by sccache. Within one job, later Cargo steps reuse
   the live target tree directly.
+- Each runner slot keeps `target/` and the Cargo downloads of check.yml's Rust
+  jobs in a Docker volume of its persistent store, bind-mounted at the ordinary
+  `<workspace>/target` (`tools/ci/slot_cache.py`), so links, build scripts and
+  proc-macros of unchanged crates are not redone and sccache keys do not
+  change. There is one volume per trust class: only a push to main reads and
+  writes the trusted one, so no build script a pull request ran writes a tree a
+  main build uses; publications never mount one. A tree is keyed by the
+  compiler and the builder image's package set, wiped weekly, above 60 GiB, or
+  when the store passes 75%. Checkout gives files new mtimes; the helper
+  restores them for blobs a sealed previous job built from, and an unsealed job
+  leaves nothing to restore.
+- `tilo-relay.yaml` and `registry-server-image.yml` keep a persistent BuildKit
+  builder per slot and trust class (`setup-buildx` `persistent`), so the
+  compile step's `target/` cache mount and pulled layers survive the job.
+  Publications start from a fresh builder.
 - The OS image build uses a registry-backed BuildKit cache because its
   intermediate container layers are not compiler outputs.
 
