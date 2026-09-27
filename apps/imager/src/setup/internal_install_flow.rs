@@ -423,28 +423,7 @@ pub(super) fn staging_consumer(
 /// A fresh RFC 4122 version 4 identifier. Not a secret: it names one
 /// operation's record, and the helper refuses to reuse a finished one.
 fn new_operation_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let half = |index: usize| {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u128(nanos);
-        hasher.write_usize(index);
-        hasher.write_u32(std::process::id());
-        u128::from(hasher.finish())
-    };
-    let random = (half(0) << 64) | half(1);
-    // Version 4 in bits 76..80, RFC 4122 variant in bits 62..64.
-    let value = (random & !(0xf << 76) & !(0x3 << 62)) | (0x4 << 76) | (0x2 << 62);
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        value >> 96,
-        (value >> 80) & 0xffff,
-        (value >> 64) & 0xffff,
-        (value >> 48) & 0xffff,
-        value & 0xffff_ffff_ffff
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Host readiness for Full Tilo, as shown on the experience page.
