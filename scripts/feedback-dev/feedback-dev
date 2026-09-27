@@ -46,6 +46,12 @@ DATA = REPO / "target" / "feedback-dev"
 RUNTIME = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-feedback-dev"
 STATE = DATA / "state.json"
 SESSIONS = ("team", "reporter", "teammate")
+# What each nested window is called, so a person can tell them apart.
+WINDOW_TITLES = {
+    "team": "Tilo — TEAM (owner of the community room)",
+    "reporter": "Tilo — REPORTER (Commenter)",
+    "teammate": "Tilo — TEAMMATE (Editor)",
+}
 # The teammate is a second person on the team: not the room's owner, admitted
 # through the standing invitation like anyone, then made an Editor by the
 # owner — the path a team member who triages takes.
@@ -109,6 +115,43 @@ What `up` does, each step skipped when already done:
                Chat must see #feedback and offer `post` there
 
 Logs: {DATA}/<name>/log (shells), {DATA}/relay/log. State: {STATE}.
+
+Hand test, three windows (from a graphical session):
+  feedback-dev up --nested --teammate --ci-apps <RUN>    (or --worktree-apps)
+  `up` finishes with #feedback made; then each window is titled by who it is.
+  Keys use Super; if your desktop takes one (GNOME keeps Super+M), use the
+  `feedback-dev ctl` line under it instead. Moving between workspaces: the
+  arrows left of the workspace name in the top bar.
+
+  REPORTER window  (a stranger who joined by the standing invitation)
+    1. Top-bar arrows until the workspace reads "Tilo Community".
+    2. Open Chat: Super+K, type "Chat", Enter (it may already be open).
+    3. Click #feedback. Type a report in "Message #feedback", press Enter.
+       What you write stays your own record in the room, not the team's.
+    4. Say something about a part of any app: Super+M (or Super+K,
+       "Say something about this…"), point at it, write, send.
+         feedback-dev ctl reporter -- actions invoke actions remark.open
+    5. Record what just happened: Super+K, "Record what just happened".
+         feedback-dev ctl reporter -- feedback record capture-recent
+    6. Your private room with the team: workspace "Tilo team", open Chat.
+
+  TEAM window  (owns the room; the relay hosts it for you)
+    1. Workspace "Tilo Community", Chat, #feedback: the reporter's report
+       arrives within seconds, with its remark and recording if sent.
+    2. Triage it from the report's menu: "Set report status", "Reply in
+       thread", "Vote for this report"; "Sort and filter reports" on top.
+    3. Workspace "Reporter" is your side of the reporter's private room:
+       write there and the reporter reads it in "Tilo team".
+
+  TEAMMATE window  (`--teammate`: joined like anyone, made an Editor)
+    1. Workspace "Tilo Community", Chat, #feedback: the same report.
+    2. As an Editor you triage too; a status you set shows in the TEAM
+       window within seconds.
+
+  What should never happen: the teammate reading the reporter's private
+  room, or any window acting on this machine's power, lock, brightness or
+  network (the host guard refuses those).
+  Done: feedback-dev down   (--purge to forget the identities)
 """
 
 
@@ -356,6 +399,7 @@ def session_env(name: str, headless: bool) -> dict:
     if headless:
         env["TILO_HEADLESS_SIZE"] = "1280x800"
     else:
+        env["TILO_WINIT_TITLE"] = WINDOW_TITLES[name]
         for key in ("WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"):
             if key in os.environ:
                 env[key] = os.environ[key]
@@ -905,18 +949,14 @@ def ensure_chat(name: str, room: str) -> None:
             return
         time.sleep(1.0)
     say(f"opening Chat in the community room in the {name} shell")
-    # An action is invoked by the address a listing gave: the listing is also
-    # what has the shell index its applications, so the first may be empty.
+    # The shell indexes its applications in the background from startup.
     for _ in range(120):
         if running_here():
             return
-        listed = answer(name, {"op": "actions_enumerate", "query": "chat"}).get("actions", [])
-        if any(row.get("provider") == "applications" and row.get("id") == "so.tilo.chat"
-               for row in listed):
-            response = control(name, {"op": "actions_invoke", "provider": "applications",
-                                      "id": "so.tilo.chat", "args": {}})
-            if "err" not in response:
-                break
+        response = control(name, {"op": "actions_invoke", "provider": "applications",
+                                  "id": "so.tilo.chat", "args": {}})
+        if "err" not in response:
+            break
         time.sleep(1.0)
     else:
         raise Fix(f"the {name} shell never offered Chat: {response['err']}",
