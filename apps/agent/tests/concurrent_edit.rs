@@ -191,7 +191,7 @@ fn drive_peer_and_type(
                 action,
                 argument,
                 actor,
-                ..
+                context,
             } => {
                 invocation_actor = Some(actor.clone());
                 let resources = word_processor_resources(replica);
@@ -205,6 +205,7 @@ fn drive_peer_and_type(
                     action,
                     argument.as_deref(),
                     &actor,
+                    context.as_deref(),
                 );
 
                 // Land a human edit while the broker invocation is still in
