@@ -70,6 +70,25 @@ struct ForeignFrame {
     rect: Option<ForeignRect>,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartConnectDisposition {
+    Ready,
+    NoDaemon,
+    Retry,
+    Fail,
+}
+
+#[cfg(test)]
+fn start_connect_disposition(result: &Result<Remote, CliError>) -> StartConnectDisposition {
+    match result {
+        Ok(_) => StartConnectDisposition::Ready,
+        Err(CliError::DaemonMissing { .. }) => StartConnectDisposition::NoDaemon,
+        Err(CliError::Unreachable { .. }) => StartConnectDisposition::Retry,
+        Err(_) => StartConnectDisposition::Fail,
+    }
+}
+
 fn foreign_frames_args() -> &'static [String] {
     static ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     ARGS.get_or_init(|| {
@@ -1943,7 +1962,9 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
-        run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
+        if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
+            run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
+        }
         let started = Instant::now();
         let mut reachable = false;
         let mut no_daemon = None;
@@ -1955,15 +1976,17 @@ impl App {
                     remote = Some(connected);
                     break;
                 }
-                // sshd is up and says no: waiting will not change that.
-                Err(error @ CliError::RootKeyRefused { .. }) => return Err(error),
                 // SSH works; the image just has no daemon, and never will.
                 Err(error @ CliError::DaemonMissing { .. }) => {
                     reachable = true;
                     no_daemon = Some(error);
                     break;
                 }
-                Err(_) => std::thread::sleep(Duration::from_secs(2)),
+                // Connection transport failures can resolve while the VM boots.
+                Err(CliError::Unreachable { .. }) => std::thread::sleep(Duration::from_secs(2)),
+                // SSH and tilo-vmd already answered. Waiting cannot fix a refused
+                // key, incompatible protocol, or any other semantic failure.
+                Err(error) => return Err(error),
             }
         }
         self.receipt.record("boot", started.elapsed().as_secs_f64());
@@ -5397,6 +5420,47 @@ mod tests {
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn status_and_errors_explain_what_is_wrong_and_what_to_do() {
+        // Phase: vm_start_retries_only_transport_failures.
+        {
+            let unreachable = Err(CliError::Unreachable {
+                vm: "dev".into(),
+                detail: "connection refused".into(),
+                debug: Vec::new(),
+            });
+            assert_eq!(
+                start_connect_disposition(&unreachable),
+                StartConnectDisposition::Retry
+            );
+            let missing = Err(CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(false),
+            });
+            assert_eq!(
+                start_connect_disposition(&missing),
+                StartConnectDisposition::NoDaemon
+            );
+            let mismatch = Err(CliError::ProtocolMismatch {
+                vm: "dev".into(),
+                client: 5,
+                daemon: 3,
+                bootc: Some(false),
+            });
+            assert_eq!(
+                start_connect_disposition(&mismatch),
+                StartConnectDisposition::Fail
+            );
+            let refused = Err(CliError::RootKeyRefused {
+                vm: "dev".into(),
+                key: "/tmp/key".into(),
+                install: "install key".into(),
+                credentials: false,
+            });
+            assert_eq!(
+                start_connect_disposition(&refused),
+                StartConnectDisposition::Fail
+            );
+        }
+
         // Phase: status_tells_off_from_silent_from_missing_from_incompatible.
         {
             let debug = [
