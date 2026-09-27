@@ -1384,6 +1384,7 @@ impl AppHandler {
                 return;
             }
         }
+        sync_safe_area(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1830,12 +1831,13 @@ impl AppHandler {
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
+    /// Whether something consumed the event.
+    fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) -> bool {
         let _entry = self.app.enter_wake_scope();
         let event = other;
         if self.app.close_handle_event(&event, window.scale_factor()) {
             window.request_redraw();
-            return;
+            return true;
         }
         let app = &mut self.app;
         let history_input = app.history_controls_event(&event, window.scale_factor());
@@ -1870,7 +1872,7 @@ impl AppHandler {
         if history_input {
             app.dispatch_framework_history_event(&event, window.scale_factor());
             window.request_redraw();
-            return;
+            return true;
         }
         let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
         // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
@@ -2413,6 +2415,7 @@ impl AppHandler {
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
             p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
         }
+        handled
     }
 }
 
@@ -2939,6 +2942,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
         // Conservative shared-root fallback: hidden primary work may stay at
         // 60Hz while a visible auxiliary depends on its update/sync projection.
@@ -3353,20 +3357,7 @@ impl AppHandler {
         }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
-            WindowEvent::CloseRequested => match self.app.root_widget.on_window_close_requested() {
-                crate::widget::WindowCloseAdmission::Allow => {
-                    if self.app.admit_native_close_request() {
-                        event_loop.exit();
-                    } else {
-                        window.request_redraw();
-                    }
-                }
-                crate::widget::WindowCloseAdmission::Defer => {
-                    self.app.needs_sync = true;
-                    self.app.layout.layout_dirty = true;
-                    window.request_redraw();
-                }
-            },
+            WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
             WindowEvent::Resized(_) => {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -3381,8 +3372,62 @@ impl AppHandler {
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, window),
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-            other => self.handle_other_window_event(window, other),
+            other if self.app.input.platform.platform() == crate::platform::Platform::Android => {
+                if let Some(escape) = crate::interaction::back_key_as_escape(&other) {
+                    self.handle_back_key(event_loop, window, escape);
+                } else {
+                    self.handle_other_window_event(window, other);
+                }
+            }
+            other => {
+                self.handle_other_window_event(window, other);
+            }
         }
+    }
+
+    fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        match self.app.root_widget.on_window_close_requested() {
+            crate::widget::WindowCloseAdmission::Allow => {
+                if self.app.admit_native_close_request() {
+                    event_loop.exit();
+                } else {
+                    window.request_redraw();
+                }
+            }
+            crate::widget::WindowCloseAdmission::Defer => {
+                self.app.needs_sync = true;
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Back dismisses what Escape would, then navigates back, and at the root
+    /// closes the app; exiting the event loop lets Android finish the activity.
+    fn handle_back_key(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        escape: WindowEvent,
+    ) {
+        let pressed = matches!(
+            &escape,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
+        );
+        if self.handle_other_window_event(window, escape) || !pressed {
+            return;
+        }
+        let app = &mut self.app;
+        if app.root_widget.on_nav_gesture(
+            crate::gesture::NavDirection::Back,
+            &mut app.state.doc,
+            &app.state.root,
+        ) {
+            app.needs_sync = true;
+            window.request_redraw();
+            return;
+        }
+        self.close_primary_window(event_loop, window);
     }
 
     fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
@@ -3547,4 +3592,23 @@ impl App {
             }
         }
     }
+}
+
+/// Follow the system chrome drawn over the window. Android reports it
+/// from `TiloActivity`'s insets listener; elsewhere it stays zero.
+fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
+    #[cfg(target_os = "android")]
+    {
+        let area = crate::scale::SafeArea::from_physical(
+            crate::launch::android::safe_area_insets(),
+            window.scale_factor(),
+        );
+        if area != app.layout.safe_area {
+            app.layout.safe_area = area;
+            app.layout.layout_dirty = true;
+            window.request_redraw();
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, window);
 }

@@ -3,13 +3,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// The base directories for an app whose `getFilesDir()` is `files`. The cache
-/// directory Android clears under storage pressure is its sibling `cache`.
+/// The base directories for an app whose `getFilesDir()` is `files`. `HOME`
+/// is the sandbox root above it (`getDataDir()`), the boundary of what the app
+/// may open; the cache Android clears under storage pressure is `cache` there.
 pub(super) fn directories(files: &Path) -> [(&'static str, PathBuf); 7] {
     let root = files.parent().unwrap_or(files);
     let cache = root.join("cache");
     [
-        ("HOME", files.to_path_buf()),
+        ("HOME", root.to_path_buf()),
         ("XDG_DATA_HOME", files.join("data")),
         ("XDG_CONFIG_HOME", files.join("config")),
         ("XDG_STATE_HOME", files.join("state")),
@@ -32,7 +33,10 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| value.clone())
         };
-        assert_eq!(get("HOME").as_deref(), Some(files));
+        assert_eq!(
+            get("HOME").as_deref(),
+            Some(Path::new("/data/user/0/so.tilo.calculator"))
+        );
         assert_eq!(get("XDG_DATA_HOME"), Some(files.join("data")));
         assert_eq!(get("XDG_CONFIG_HOME"), Some(files.join("config")));
         assert_eq!(get("XDG_STATE_HOME"), Some(files.join("state")));
