@@ -121,13 +121,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
-            .scenarios(&[
-                "default",
-                "empty",
-                "status",
-                "connect",
-                "confirm",
-            ])
+            .scenarios(&["default", "empty", "status", "connect", "confirm"])
             .allowed_flags(&["--empty", "--status", "--connect", "--confirm"])
             .configure_app(|app| {
                 db_client::actions::register(app.action_registry_mut());
