@@ -341,86 +341,10 @@ pub fn parse_committed(range: Option<&str>) -> Option<u64> {
 
 /// An RFC 3339 timestamp as Drive writes them (`2024-05-01T12:30:45.123Z`,
 /// or with a numeric offset).
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "two-digit calendar fields and offsets; the day count is checked"
-)]
 pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
-    let bytes = text.as_bytes();
-    let digits = |from: usize, len: usize| -> Option<i64> {
-        let part = text.get(from..from.checked_add(len)?)?;
-        part.bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| part.parse().ok())?
-    };
-    if bytes.get(4) != Some(&b'-')
-        || bytes.get(7) != Some(&b'-')
-        || !matches!(bytes.get(10), Some(b'T' | b't' | b' '))
-        || bytes.get(13) != Some(&b':')
-        || bytes.get(16) != Some(&b':')
-    {
-        return None;
-    }
-    let (year, month, day) = (digits(0, 4)?, digits(5, 2)?, digits(8, 2)?);
-    let (hour, minute, second) = (digits(11, 2)?, digits(14, 2)?, digits(17, 2)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-    let mut rest = text.get(19..)?;
-    let mut nanos: u32 = 0;
-    if let Some(fraction) = rest.strip_prefix('.') {
-        let len = fraction.bytes().take_while(u8::is_ascii_digit).count();
-        let digits_text = fraction.get(..len)?;
-        let mut scaled: String = digits_text.chars().take(9).collect();
-        while scaled.len() < 9 {
-            scaled.push('0');
-        }
-        nanos = scaled.parse().ok()?;
-        rest = fraction.get(len..)?;
-    }
-    let offset_seconds: i64 = match rest {
-        "Z" | "z" => 0,
-        offset => {
-            let sign = match offset.as_bytes().first() {
-                Some(b'+') => 1,
-                Some(b'-') => -1,
-                _ => return None,
-            };
-            let hours: i64 = offset.get(1..3)?.parse().ok()?;
-            let minutes: i64 = offset.get(4..6)?.parse().ok()?;
-            if offset.len() != 6 || offset.as_bytes().get(3) != Some(&b':') {
-                return None;
-            }
-            sign * (hours * 3600 + minutes * 60)
-        }
-    };
-    let days = days_from_civil(year, month, day);
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(hour * 3600 + minute * 60 + second.min(59))?
-        .checked_sub(offset_seconds)?;
-    let base = if seconds >= 0 {
-        SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds.unsigned_abs()))?
-    } else {
-        SystemTime::UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))?
-    };
-    base.checked_add(Duration::from_nanos(u64::from(nanos)))
-}
-
-/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's
-/// `days_from_civil`).
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "inputs are range-checked calendar fields; the algorithm cannot overflow i64"
-)]
-pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let month_index = (month + 9) % 12;
-    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(SystemTime::from)
 }
 
 /// Quote `value` for a Drive search query string literal.
