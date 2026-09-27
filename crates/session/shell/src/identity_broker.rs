@@ -412,17 +412,32 @@ fn channel_keys(
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
             .id()
             .to_string();
-    let reads = {
+    let (reads, class) = {
         let tree = tree.read();
         tree.desktop
             .workspaces
             .iter()
             .find(|workspace| &workspace.room == route.bound_room)
-            .and_then(|workspace| workspace.role_of(&principal_id))
-            .is_some_and(|role| role != crate::shell::state::CapRole::Denied)
+            .map_or((false, None), |workspace| {
+                (
+                    workspace
+                        .role_of(&principal_id)
+                        .is_some_and(|role| role != crate::shell::state::CapRole::Denied),
+                    Some(workspace.channel_class),
+                )
+            })
     };
     if !reads {
         return Response::Denied("identity may not read this workspace".into());
+    }
+    // A public room's content is signed and never sealed: it has no keys,
+    // whether or not this device could hold any.
+    if class.is_some_and(|class| !class.keeps_group_key()) {
+        return Response::ChannelKeys {
+            access: runtime_identity::wire::ChannelAccess::Public,
+            generation: 0,
+            keys: Vec::new(),
+        };
     }
     let Some(channels) = channels else {
         return Response::ChannelKeys {
@@ -525,6 +540,66 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
+
+    /// A route in a public room is told so, and never waits for keys, even
+    /// on a device that could not hold any; a route in an encrypted room on
+    /// that device still waits.
+    #[test]
+    fn a_public_rooms_routes_are_told_their_content_is_never_sealed() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let public = tree.append_public_workspace("Community");
+        let encrypted = tree.append_empty_workspace("Team");
+        let profile = |room: RoomId| {
+            crate::identity_registry::selected_identity_profile(&room.to_string())
+                .expect("registry")
+                .expect("profile")
+        };
+        let rooms = [public, encrypted].map(|id| tree.room_of(id).expect("room"));
+        for (workspace, room) in tree.desktop.workspaces.iter_mut().zip(rooms) {
+            workspace.set_owner(profile(room).principal_id());
+        }
+        let tree = tree.shared();
+        let keys = |room: &RoomId| {
+            let workspace_id = room.to_string();
+            channel_keys(
+                &tree,
+                None,
+                &ChannelKeyRoute {
+                    bound_room: room,
+                    bound_app_id: "so.tilo.chat",
+                    workspace_id: &workspace_id,
+                    app_id: "so.tilo.chat",
+                    record_id: "",
+                },
+                0,
+            )
+        };
+        assert!(matches!(
+            keys(&rooms[0]),
+            Response::ChannelKeys {
+                access: runtime_identity::wire::ChannelAccess::Public,
+                ref keys,
+                ..
+            } if keys.is_empty()
+        ));
+        assert!(matches!(
+            keys(&rooms[1]),
+            Response::ChannelKeys {
+                access: runtime_identity::wire::ChannelAccess::Unavailable,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {

@@ -1,15 +1,18 @@
 //! What one route's endpoint can seal and open.
 //!
-//! Every collaboration route of a certified app is an encrypted channel.
-//! The endpoint asks the workspace identity service for the route's content
-//! keys when it joins and keeps asking until they arrive; until then the
-//! route is *waiting*: nothing the app writes leaves the endpoint in the
+//! Every collaboration route of a certified app in an encrypted room is an
+//! encrypted channel. The endpoint asks the workspace identity service for
+//! the route's content keys when it joins and keeps asking until they
+//! arrive; until then the route is *waiting*: nothing the app writes leaves the endpoint in the
 //! clear, and ciphertext that arrives is held rather than shown as garbage
 //! or dropped. When the keys arrive the held edits are sealed and sent and
 //! the held ciphertext is opened, in order.
 //!
-//! Only an endpoint with no identity service at all (an explicit test
-//! harness) stays plaintext, and only until a group is installed on it.
+//! Two routes stay plaintext: one whose endpoint has no identity service at
+//! all (an explicit test harness), until a group is installed on it; and one
+//! the identity service reports is in a public room, whose content is signed
+//! and never sealed. A public route still refuses ciphertext, since no
+//! member of a public room holds a key to it.
 
 use std::collections::VecDeque;
 
@@ -25,7 +28,8 @@ const MAX_HELD_OUTBOUND_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HELD_INBOUND: usize = 4096;
 
 pub(super) enum Keys {
-    /// No identity service: plaintext.
+    /// Plaintext: an endpoint with no identity service, or a route whose
+    /// room is public, where content is signed and never sealed.
     Plain,
     /// Channel keys requested and not held.
     Pending(ChannelAccessState),
@@ -153,6 +157,7 @@ impl RouteKeys {
             Wire::Waiting => self.keys = Keys::Pending(ChannelAccessState::WaitingForAccess),
             Wire::Removed => self.keys = Keys::Pending(ChannelAccessState::Removed),
             Wire::Unavailable => self.keys = Keys::Pending(ChannelAccessState::Unavailable),
+            Wire::Public => self.keys = Keys::Plain,
         }
     }
 
@@ -382,6 +387,43 @@ mod tests {
         let other = keys(ChannelId::new()).0;
         let (metadata, sealed) = other
             .seal_content(old.artifact, ContentRetention::Delta, b"x")
+            .unwrap();
+        assert!(matches!(
+            route.open(&envelope(sealed, Some(metadata)), true),
+            Err(Unopened::Never)
+        ));
+    }
+
+    #[test]
+    fn a_public_room_sends_what_waited_in_the_clear_and_refuses_ciphertext() {
+        let artifact = ArtifactId::new();
+        let mut route = RouteKeys::requested();
+        assert!(route.hold_outbound(held(b"written while asking")));
+
+        route.update(Wire::Public, 0, None);
+        assert_eq!(
+            route.take_state_change(),
+            Some(ChannelAccessState::Unencrypted)
+        );
+        assert!(
+            !route.asks_identity_service(),
+            "a public room's class is fixed, so there is nothing more to ask"
+        );
+        assert_eq!(
+            route.take_held_outbound(),
+            vec![held(b"written while asking")]
+        );
+        assert!(matches!(
+            route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
+            Sealed::Ready(cleartext, None) if cleartext == b"mine"
+        ));
+        assert!(matches!(
+            route.open(&envelope(b"a member's".to_vec(), None), true),
+            Ok(None)
+        ));
+        let (metadata, sealed) = keys(ChannelId::new())
+            .0
+            .seal_content(artifact, ContentRetention::Delta, b"x")
             .unwrap();
         assert!(matches!(
             route.open(&envelope(sealed, Some(metadata)), true),
