@@ -22,7 +22,7 @@ This directory is deployable but deploys nothing by itself:
 - `identity/` — the relay's own paired identity (`device-keypair.bin`,
   `device-cert.bin`, `user-pubkey.bin`). A secret. It is a room-host
   certificate issued by the team's root; the team's root itself never leaves
-  the custody directory. The relay's Iroh endpoint id derives from this key,
+  the team's desktop. The relay's Iroh endpoint id derives from this key,
   so keeping it keeps the address every invitation names.
 - `records/<room>.json` — what the relay hosts: the room, its owner, the
   team's signed delegation to this relay and the standing invitations with
@@ -78,6 +78,25 @@ tilo-community revoke-invite ID  # then redeploy the records
 `tilo-community guide` is the whole procedure and `tilo-community decisions`
 lists what only the team can decide: whose identity owns the room, where its
 root lives, where this relay runs and its public address.
+
+The governance acts are the team desktop's own palette actions, in a release
+build: "Create a public room", "Mint this public room's standing
+invitation", "Revoke a standing invitation" and "Make someone an Editor of
+this public room" (Admin, confirmation required, re-checked when they run).
+`tilo-community` names each one when it is due, then checks what it produced
+— the invitation's room, owner and relay, the relay's record — before going
+on. It never drives the desktop itself.
+
+Two ways to automate those acts later, each needing a decision first:
+
+- **(A)** The compositor serves the MCP projection of its own action broker
+  (`runtime_host::mcp::McpServer` over the session's `BrokerActionHost`) on an
+  owner-only socket, opted into per session. It adds a same-user action
+  surface to release builds, which is why it is not there.
+- **(B)** The operator tool runs as a launcher-launched agent (the
+  `apps/agent` pattern) that the team grants an Admin role in the community
+  room (`profile.assign`), reaching the actions through the broker door.
+  Creating the room stays a person's act.
 
 Inside the container, `tilo-relay-admin --config /etc/tilo/relay.toml
 community status --room ROOM` shows what is hosted and `tilo-relay-admin

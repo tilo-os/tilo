@@ -312,9 +312,12 @@ How the pieces fit:
   offered as shell actions (`community.leave`, `community.join`), in
   Settings > Users and as `tilo-control community leave|join`.
 
-The real community is stood up and run by `scripts/community-ops/tilo-community`,
-on the same steps as the local `scripts/feedback-dev/feedback-dev`. The team's
-identity stays in an operator's custody directory. The relay
+The real community is stood up and run by `scripts/community-ops/tilo-community`
+on the team's own release desktop. The governance acts are that desktop's
+admin-gated palette actions (create the public room, mint and revoke its
+standing invitation, make someone an Editor), which the tool names and then
+checks. It does the pairing, delegation and deployment bundle itself, with the
+release binaries, and the team's root never leaves the desktop. The relay
 (`os/containers/tilo-relay/community`) receives only its paired room-host
 identity and a public record of what it hosts (`tilo-relay-admin community
 export` / `install`). `community.toml` is a build input: release images and
