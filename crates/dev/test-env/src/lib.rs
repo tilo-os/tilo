@@ -24,14 +24,19 @@
 //! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
 //!   FUSE or fanotify where the host lacks it, and fails it instead on a CI
 //!   lane that sets `TILO_REQUIRE_<CAP>=1`.
+//! - [`require_isolated_desktop`] refuses to go on when a test binary was
+//!   started outside the test environment, where it could reach the caller's
+//!   session bus, portals, media players or display.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
 //! mutates the variable without this crate.
 
 mod capability;
+mod desktop;
 
 pub use capability::{Capability, Probe, capability_unavailable};
+pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;

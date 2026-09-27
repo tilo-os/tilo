@@ -186,6 +186,9 @@ pub struct InputPrefs {
     pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
     pub compose_key: Option<String>,
+    /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
+    /// Caps Lock itself.
+    pub caps_lock: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
     pub keyboard_layouts: Vec<String>,
@@ -219,6 +222,7 @@ impl Default for InputPrefs {
             touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
             compose_key: None,
+            caps_lock: None,
             keyboard_layouts: vec!["us".into()],
             pen_output: None,
         }
@@ -278,6 +282,7 @@ impl InputPrefs {
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
+            caps_lock: self.caps_lock.clone(),
             touchpad_gestures: self.touchpad_gestures,
             touchpad_click_method: self.touchpad_click_method,
             touchpad_scroll_method: self.touchpad_scroll_method,

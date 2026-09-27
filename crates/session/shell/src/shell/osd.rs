@@ -66,6 +66,49 @@ pub enum OsdKind {
     MouseKeys { enabled: bool },
     /// The magnifier after a magnifier shortcut; `zoom` is the factor, `1` meaning off.
     Magnifier { zoom: u8 },
+    /// The keyboard input source just switched to.
+    InputSource(OsdLabel),
+}
+
+/// A short caption carried inline so a readout stays `Copy`: the slab is
+/// raised from input handlers every keypress and must never allocate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OsdLabel {
+    bytes: [u8; Self::CAPACITY],
+    len: u8,
+}
+
+impl OsdLabel {
+    const CAPACITY: usize = 48;
+
+    /// `text`, cut at the last whole character that fits.
+    pub fn new(text: &str) -> Self {
+        let mut end = text.len().min(Self::CAPACITY);
+        while !text.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        let mut bytes = [0; Self::CAPACITY];
+        if let (Some(dst), Some(src)) = (bytes.get_mut(..end), text.as_bytes().get(..end)) {
+            dst.copy_from_slice(src);
+        }
+        Self {
+            bytes,
+            len: u8::try_from(end).unwrap_or(0),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .get(..usize::from(self.len))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or("")
+    }
+}
+
+impl std::fmt::Debug for OsdLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OsdLabel").field(&self.as_str()).finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +247,14 @@ impl Osd {
         }
     }
 
+    pub fn input_source(name: &str) -> Self {
+        Self {
+            kind: OsdKind::InputSource(OsdLabel::new(name)),
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
@@ -249,6 +300,7 @@ impl Osd {
             OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
             OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
             OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
+            OsdKind::InputSource(name) => name.as_str().to_string(),
         }
     }
 
@@ -482,7 +534,9 @@ fn draw_glyph(
             },
             colors.text_primary,
         ),
-        OsdKind::KeyboardBacklight => (ui::icons::Icon::Keyboard, colors.text_primary),
+        OsdKind::KeyboardBacklight | OsdKind::InputSource(_) => {
+            (ui::icons::Icon::Keyboard, colors.text_primary)
+        }
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
@@ -755,6 +809,16 @@ mod tests {
         a_second_press_restarts_the_slab_instead_of_stacking_one();
         a_different_key_replaces_rather_than_queues();
         expiry_reports_whether_it_changed_anything();
+    }
+
+    #[test]
+    fn an_input_source_readout_names_the_layout_and_stays_bounded() {
+        let osd = Osd::input_source("German (no dead keys)");
+        assert_eq!(osd.caption(), "German (no dead keys)");
+        assert!(!osd.has_level());
+        let long = "Ü".repeat(40);
+        let cut = Osd::input_source(&long).caption();
+        assert!(cut.len() <= 48 && long.starts_with(&cut) && !cut.is_empty());
     }
 
     #[test]

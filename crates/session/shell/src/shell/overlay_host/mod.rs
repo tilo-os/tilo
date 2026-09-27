@@ -941,6 +941,37 @@ fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<Ma
     }
 }
 
+/// Make the next keyboard input source the active one in the settings
+/// document, so it survives a settings reload and the next session, and
+/// return the keyboard group to select and the source's name. `None` with a
+/// single source.
+fn select_next_input_source(settings: Option<&std::path::Path>) -> Option<(usize, String)> {
+    use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
+    let settings = settings?;
+    let section = settings_store::load_section_at(settings, SECTION);
+    let mut config = settings_store::hardware::RichInputConfig::from_section(&section);
+    config.select_next_source()?;
+    let mut values = serde_json::Map::new();
+    values.insert(
+        "keyboard_layout".into(),
+        serde_json::Value::String(config.keyboard_layout.clone()),
+    );
+    if let Err(error) = settings_store::update_section_at(settings, SECTION, values) {
+        tracing::warn!(%error, "input source choice could not be saved");
+    }
+    // The keyboard switches to an XKB group: the active layout, or the
+    // primary layout an input-method engine types on. The input-method
+    // arbiter picks the engine up from the saved choice.
+    let keyboard =
+        KeyboardSettings::from_section(&settings_store::load_section_at(settings, SECTION));
+    let group = keyboard.active_index;
+    let name = config.active_input_method().map_or_else(
+        || keyboard.source_label(group),
+        |engine| engine.label().to_string(),
+    );
+    Some((group, name))
+}
+
 /// The Shift+Print capture: everything on `viewport`, saved and copied.
 fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
     instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
@@ -4857,8 +4888,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // (strip, group, row index, the group's display neighbours when the
-        // row is partitioned)
+        // (strip, group, row index, the group's display and its neighbours
+        // there when the row is partitioned)
         let mut changes: Vec<(StripId, u64, usize, displays::ReorderNeighbours)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -4876,7 +4907,7 @@ impl ShellOverlayHost {
                     let after = at
                         .and_then(|i| ids.get(i.saturating_add(1)).copied())
                         .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
-                    (before, after)
+                    (row.output_of_group(group_id), before, after)
                 });
                 changes.push((strip_id, group_id, new_index, neighbours));
             }
@@ -4884,11 +4915,18 @@ impl ShellOverlayHost {
         if changes.is_empty() {
             return;
         }
-        let st = chrome.borrow_mut();
+        let mut st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
+        let mut rehomed = false;
         for (strip_id, group_id, new_index, neighbours) in changes {
             let new_index = match neighbours {
-                Some((before, after)) => {
+                Some((display, before, after)) => {
+                    // Dropped onto another display: it belongs there now.
+                    if let Some(display) = display
+                        && tree.rehome_group(strip_id, group_id, display)
+                    {
+                        rehomed = true;
+                    }
                     let order: Vec<u64> = tree
                         .desktop
                         .workspaces
@@ -4915,6 +4953,10 @@ impl ShellOverlayHost {
                 None => new_index,
             };
             tree.reorder_group_within_strip(strip_id, group_id, new_index);
+        }
+        drop(tree);
+        if rehomed {
+            st.bump();
         }
     }
 
@@ -5265,6 +5307,16 @@ impl ShellOverlayHost {
         state.set_viewport_size((self.rect.width(), self.rect.height()));
     }
 
+    /// The strip other than `except` whose windows `p` is over (see
+    /// [`GroupRow::covers`]).
+    fn strip_over(&self, p: Point, except: StripId) -> Option<StripId> {
+        self.group_row_ptrs.iter().find_map(|(&strip_id, &ptr)| {
+            // SAFETY: read-only use under the stable row-pointer contract.
+            let row: &GroupRow = unsafe { &*ptr };
+            (strip_id != except && row.covers(p)).then_some(strip_id)
+        })
+    }
+
     /// Preview and commit cross-strip tab drops with one retained
     /// [`TabDropTarget`]. A release outside every sibling strip restores the
     /// source exactly; it never invents a same-strip fallback group.
@@ -5285,14 +5337,12 @@ impl ShellOverlayHost {
         // the destination row mutably, conflicting with a held source
         // payload reference.
         let mut detaches: Vec<(StripId, CrossStripDetach)> = Vec::new();
-        let mut strip_rects: Vec<(StripId, Rect)> = Vec::with_capacity(self.group_row_ptrs.len());
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
             // captured from a `Box<GroupRow>` owned through the content
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            strip_rects.push((strip_id, row.get_rect()));
             if let Some(payload) = row.take_pending_cross_strip_detach() {
                 detaches.push((strip_id, payload));
             }
@@ -5305,12 +5355,8 @@ impl ShellOverlayHost {
             });
             let destination = source.and_then(|source| {
                 let cursor = self.last_cursor?;
-                strip_rects
-                    .iter()
-                    .find(|(strip_id, rect)| {
-                        *strip_id != source && (cursor.y >= rect.y0 && cursor.y <= rect.y1)
-                    })
-                    .map(|(strip_id, _)| (*strip_id, cursor))
+                self.strip_over(cursor, source)
+                    .map(|strip_id| (strip_id, cursor))
             });
             for (&strip_id, &ptr) in &self.group_row_ptrs {
                 // SAFETY: each distinct row is visited once, sequentially.
@@ -5327,22 +5373,7 @@ impl ShellOverlayHost {
         // target while the pointer moved. Release consumes that enum verbatim.
         for (src_strip_id, payload) in detaches {
             let release = payload.release_point;
-            // Not a mismatched-field typo: `release.y` is deliberately
-            // checked against the *same* rect's paired `y0`/`y1` bounds to
-            // test membership in its vertical band (see the hit-test note
-            // above), not against a second rect's fields.
-            #[allow(
-                clippy::suspicious_operation_groupings,
-                reason = "release.y >= rect.y0 && release.y <= rect.y1 is a deliberate \
-                          single-field range check against one rect's paired bounds, not a \
-                          copy-pasted comparison that meant to swap in a different field"
-            )]
-            let dest_strip_id = strip_rects
-                .iter()
-                .find(|(sid, rect)| {
-                    *sid != src_strip_id && release.y >= rect.y0 && release.y <= rect.y1
-                })
-                .map(|(sid, _)| *sid);
+            let dest_strip_id = self.strip_over(release, src_strip_id);
             let Some(dest_strip_id) = dest_strip_id else {
                 if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
                     // SAFETY: source and destination routing is sequential.
@@ -7236,8 +7267,7 @@ impl ShellOverlayHost {
             // SAFETY: read-only use under the same stable Box<GroupRow>
             // contract as every other `group_row_ptrs` accessor.
             let row: &GroupRow = unsafe { &*ptr };
-            let row_rect = row.get_rect();
-            if p.y < row_rect.y0 || p.y > row_rect.y1 {
+            if !row.covers(p) {
                 continue;
             }
             // A live hover target is hysteretic and is exactly what the
@@ -7324,8 +7354,7 @@ impl ShellOverlayHost {
             self.group_row_ptrs.iter().find_map(|(&strip_id, &ptr)| {
                 // SAFETY: read-only use under the stable row pointer contract.
                 let row: &GroupRow = unsafe { &*ptr };
-                let rect = row.get_rect();
-                (point.y >= rect.y0 && point.y <= rect.y1).then_some(strip_id)
+                row.covers(point).then_some(strip_id)
             })
         });
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -11542,6 +11571,7 @@ impl ShellOverlayHost {
                 | A::Notifications
                 | A::ToggleFullscreen
                 | A::PowerMenu
+                | A::NextInputSource
         ) {
             return false;
         }
@@ -11566,6 +11596,15 @@ impl ShellOverlayHost {
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
             A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::NextInputSource => {
+                if let Some((index, name)) =
+                    select_next_input_source(settings_store::settings_path().as_deref())
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.request_input_source(index);
+                    st.show_osd(crate::shell::osd::Osd::input_source(&name));
+                }
+            }
             A::PowerMenu => {
                 self.power_menu.open();
                 let mut st = chrome.borrow_mut();

@@ -121,10 +121,13 @@ for a in $APPS; do
     missing="$missing $a(nobin)"
     continue
   fi
-  # Offscreen: no Wayland socket, so the app takes its own headless path.
+  # Offscreen, in the test environment: no display, so the app takes its own
+  # headless path, and no session bus, so it registers no media player or
+  # portal client on the caller's desktop.
   # Keep the output: when an app fails to produce a frame its own complaint is
   # the only thing that explains why, and discarding it leaves a bare "noshot".
-  WAYLAND_DISPLAY= TILO_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
+  TILO_SHOTS_THEME="$THEME" bash tools/with-test-environment.sh \
+    timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
     > "$SHOTS/$a.log" 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"

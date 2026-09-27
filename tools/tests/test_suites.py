@@ -122,6 +122,12 @@ class RunTests(unittest.TestCase):
         with self.subTest(phase='suites run from the repository root'):
             code, _ = self.run_suites({"x/where.sh": "test -f tools/ci/suites.toml\n"}, ["x/where.sh"])
             self.assertEqual(code, 0)
+        with self.subTest(phase='suites run without the caller\'s desktop session'):
+            code, output = self.run_suites(
+                {"x/session.sh": 'test -z "${WAYLAND_DISPLAY:-}" && test -n "$TILO_TEST_ENVIRONMENT" '
+                                 '&& test "$XDG_RUNTIME_DIR" = "$TILO_TEST_ENVIRONMENT/runtime"\n'},
+                ["x/session.sh"])
+            self.assertEqual(code, 0, output)
         with self.subTest(phase='undeclared or empty selection fails'):
             self.assertEqual(self.run_suites({"x/ok.sh": "true\n"}, ["x/other.sh"])[0], 2)
             self.assertEqual(self.run_suites({"x/ok.sh": "true\n"}, [])[0], 2)
