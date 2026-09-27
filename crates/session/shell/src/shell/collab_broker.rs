@@ -551,6 +551,31 @@ impl AppActionBroker {
         self.state.take_finished_shortcut_runs()
     }
 
+    /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
+    /// screen; its confirmations and questions wait for the compositor's
+    /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
+    /// run reports on.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`.
+    pub fn start_interactive_shortcut_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        shortcut: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+        self.state
+            .start_interactive_shortcut_run(caller, room, shortcut, inputs)
+    }
+
+    /// The oldest step of an interactive shortcut run waiting for its
+    /// person.
+    pub fn take_step_prompt(&self) -> Option<crate::shell::automation_host::PromptedStep> {
+        self.state.take_step_prompt()
+    }
+
     /// Start saved shortcut `shortcut` in `room` because its `trigger`
     /// fired, on behalf of `caller`, the person who saved it. Answers with
     /// the broker job the run reports on.

@@ -22,6 +22,7 @@ pub mod scale;
 pub mod scanout;
 pub mod seat_diag;
 pub mod session;
+mod tablet;
 mod xrgb_history;
 
 use std::sync::mpsc::Receiver;

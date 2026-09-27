@@ -383,17 +383,17 @@ fn draw_cursor(scene: &mut Scene, at: Point, theme: &Theme) {
 pub fn label_for_mimes(mimes: &[String]) -> String {
     let has = |p: &str| mimes.iter().any(|m| m.starts_with(p));
     if has("image/") {
-        "Image".to_string()
+        crate::shell::i18n::t("drag-image")
     } else if has("video/") {
-        "Video".to_string()
+        crate::shell::i18n::t("drag-video")
     } else if has("audio/") {
-        "Audio".to_string()
+        crate::shell::i18n::t("drag-audio")
     } else if mimes.iter().any(|m| m == "application/pdf") {
-        "PDF document".to_string()
+        crate::shell::i18n::t("drag-pdf")
     } else if has("text/") {
-        "Text".to_string()
+        crate::shell::i18n::t("drag-text")
     } else {
-        "1 item".to_string()
+        crate::shell::i18n::t_args("drag-items", &[("count", 1_u32.into())])
     }
 }
 
@@ -412,7 +412,10 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
     if entries.len() > 1 {
-        return Some(format!("{} items", entries.len()));
+        return Some(crate::shell::i18n::t_args(
+            "drag-items",
+            &[("count", entries.len().into())],
+        ));
     }
     let first = entries.first()?;
     let path = first.strip_prefix("file://").unwrap_or(first);
@@ -430,12 +433,12 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
 /// A readable name for a set of paths the compositor itself is carrying.
 pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
     match paths {
-        [] => "1 item".to_string(),
+        [] => crate::shell::i18n::t_args("drag-items", &[("count", 1_u32.into())]),
         [one] => one.file_name().map_or_else(
             || one.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         ),
-        many => format!("{} items", many.len()),
+        many => crate::shell::i18n::t_args("drag-items", &[("count", many.len().into())]),
     }
 }
 

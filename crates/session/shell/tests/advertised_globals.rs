@@ -118,6 +118,12 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     // raw deltas; SDL and Proton refuse mouse-look without these.
     "zwp_pointer_constraints_v1",
     "zwp_relative_pointer_manager_v1",
+    // Krita, GIMP, Xournal++ and every GTK/Qt app read pen pressure and
+    // tilt only through tablet-v2.
+    "zwp_tablet_manager_v2",
+    // virt-manager, RDP clients and Moonlight capture Super through it.
+    "zwp_keyboard_shortcuts_inhibit_manager_v1",
+    "wp_content_type_manager_v1",
 ];
 
 #[test]

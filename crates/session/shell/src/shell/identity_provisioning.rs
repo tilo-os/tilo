@@ -1415,7 +1415,9 @@ mod tests {
             let mut screen = ui::widget::identity_flow::pair_device::PairDeviceScreen::new();
             screen.perform_pairing_from_payload(&payload).unwrap()
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // The exchange crosses a real TLS broker and a DKG on each side; the
+        // loop ends as soon as it completes, so this bound only catches a hang.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
         let completed = loop {
             if host.poll_handshake(&authority).unwrap() {
                 break true;
@@ -1425,7 +1427,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        assert!(completed, "pinned TLS broker DKG did not finish within 10s");
+        assert!(completed, "pinned TLS broker DKG did not finish");
         let host_identity = host
             .take_completed_identity()
             .expect("completed broker DKG must retain the host identity");

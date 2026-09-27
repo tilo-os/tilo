@@ -177,6 +177,13 @@ pub enum FloatingSurfaceClientMessage {
     Dismiss {
         id: String,
     },
+    /// Withhold every window of this app from captures — screenshots,
+    /// recordings, screen sharing, remote viewers — or stop doing so. The
+    /// local display is unaffected. The shell applies it to windows mapped
+    /// later too, and drops it when this connection closes.
+    SetCaptureProtection {
+        protected: bool,
+    },
 }
 
 /// Shell → app lifecycle. The shell supplies one authoritative combined
@@ -1397,6 +1404,22 @@ mod tests {
                     SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
+        }
+    }
+
+    #[test]
+    fn capture_protection_request_has_a_stable_wire_form() {
+        for protected in [true, false] {
+            let message = FloatingSurfaceClientMessage::SetCaptureProtection { protected };
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                json,
+                format!(r#"{{"type":"set_capture_protection","protected":{protected}}}"#)
+            );
+            assert_eq!(
+                serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+                message
+            );
         }
     }
 
