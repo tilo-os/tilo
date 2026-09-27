@@ -443,6 +443,8 @@ rand_core = "0.10"
 rand_chacha = "0.10"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 sha2 = "0.11"
+# Gravatar paths and the Drive fake's checksums.
+md-5 = "0.11"
 hmac = "0.13"
 # SRP-6a for the iCloud sign-in (cloud-source-icloud).
 pbkdf2 = "0.13"
