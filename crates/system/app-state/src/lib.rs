@@ -1093,21 +1093,20 @@ fn sync_directory_ancestors(
     mut visit: impl FnMut(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let physical = fs::canonicalize(dir).map_err(|e| io_err("resolving canonical directory", e))?;
-    // Windows owns and provisions the profile root before launching an
-    // app. Our durability obligation includes that root and every child
-    // directory, including ancestors left by an interrupted earlier open.
-    // It does not include creating the OS-owned C:\Users or volume root.
-    // Query the OS known folder, not USERPROFILE supplied by an environment.
-    // On Android the root is the app's sandbox, whose ancestors the app may
-    // not even open; `ui::android_main!` makes it `$HOME`.
-    #[cfg(any(windows, target_os = "android"))]
+    // The home directory is provisioned before the app runs. Our durability
+    // obligation includes that root and every child directory, including
+    // ancestors left by an interrupted earlier open, but not the directories
+    // above it, which the app never creates and may not even open: the
+    // OS-owned C:\Users or volume root on Windows (queried as the known
+    // folder, not an environment variable), the app sandbox on Android
+    // (`ui::android_main!` makes it `$HOME`), and the room directory the
+    // Linux launcher binds at `/run/tilo/app` beneath a Landlock boundary.
     let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
             .and_then(|f| f.sync_all())
             .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
-        #[cfg(any(windows, target_os = "android"))]
         if profile_root.as_deref() == Some(path) {
             break;
         }
@@ -1375,6 +1374,27 @@ mod tests {
         env.set("XDG_DATA_HOME", dir.path())
             .remove("TILO_PACKAGE_ID");
         ScratchHome { _env: env, dir }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn directory_sync_stops_at_the_home_directory() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let nested = home.join("state").join("docs");
+        fs::create_dir_all(&nested).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &home);
+        let mut visited = Vec::new();
+        sync_directory_ancestors(&nested, |path| {
+            visited.push(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        drop(env);
+        let home = fs::canonicalize(&home).unwrap();
+        assert_eq!(visited.last(), Some(&home), "{visited:?}");
+        assert_eq!(visited.len(), 3, "{visited:?}");
     }
 
     #[test]
