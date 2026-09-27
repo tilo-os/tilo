@@ -70,8 +70,9 @@ pub enum PushOutcome {
 /// Peer-side widget rendering one shared surface: the decoder, the latest
 /// decoded frame as a peniko image, and the pending-input queue.
 pub struct PeerView {
-    /// Cached `AppWidget::app_title` result, materialised at construction.
-    title: String,
+    /// Cached `AppWidget::app_title` result, resolved on first use so
+    /// building a view never waits on the catalogue.
+    title: std::sync::OnceLock<String>,
     /// Surface id the owner uses to address this share.
     surface_id: SurfaceId,
     /// Local peer id (the *viewer*) — the value the owner sees as the
@@ -142,10 +143,7 @@ impl PeerView {
         metrics: PeerSurfaceMetrics,
     ) -> Self {
         Self {
-            title: crate::shell::i18n::t_args(
-                "peer-view-surface-title",
-                &[("id", surface_id.to_string().into())],
-            ),
+            title: std::sync::OnceLock::new(),
             surface_id,
             local_peer,
             decoder: {
@@ -212,10 +210,7 @@ impl PeerView {
             | SurfaceColorOp::TranscodeHdrTransfer => None,
         };
         Self {
-            title: crate::shell::i18n::t_args(
-                "peer-view-surface-title",
-                &[("id", surface_id.to_string().into())],
-            ),
+            title: std::sync::OnceLock::new(),
             surface_id,
             local_peer,
             decoder,
@@ -664,7 +659,12 @@ impl AppWidget for PeerView {
     }
 
     fn app_title(&self) -> &str {
-        &self.title
+        self.title.get_or_init(|| {
+            crate::shell::i18n::t_args(
+                "peer-view-surface-title",
+                &[("id", self.surface_id.to_string().into())],
+            )
+        })
     }
 
     fn app_icon(&self) -> IconDescriptor {
