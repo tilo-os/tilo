@@ -15558,6 +15558,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-rich-text"
+version = "0.1.0"
+dependencies = [
+ "qdoc",
+ "qdoc-rich-text",
+ "serde",
+ "tilo-app",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rollback"
 version = "0.1.0"
 dependencies = [
@@ -18937,7 +18949,6 @@ dependencies = [
  "tilo-content",
  "tilo-resource",
  "tilo-test-env",
- "url",
  "vello",
  "winit",
  "workspace-hack",

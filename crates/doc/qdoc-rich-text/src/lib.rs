@@ -152,6 +152,9 @@ impl BodyOrder {
 #[derive(Clone, Debug)]
 pub struct RichTextState {
     containers: Containers,
+    /// Where the rich text sits in its document: empty at the root, the
+    /// path to the field's map when it is a field of another resource.
+    root_path: tilo_resource::Path,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -324,8 +327,18 @@ impl RichTextState {
     }
 }
 
-fn containers_of(doc: &Doc) -> Result<Containers, ModelError> {
-    model::open(doc, &automerge::ROOT).map_err(|error| ModelError::invalid(error.to_string()))
+fn containers_of(doc: &Doc, root: &ObjId) -> Result<Containers, ModelError> {
+    model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))
+}
+
+/// The path from the document's root to `obj`, root first.
+fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::Path {
+    let mut path: tilo_resource::Path = doc
+        .parents(obj)
+        .map(|parents| parents.map(|parent| (parent.obj, parent.prop)).collect())
+        .unwrap_or_default();
+    path.reverse();
+    path
 }
 
 fn block_obj(doc: &Doc, blocks: &ObjId, id: &str) -> Option<ObjId> {
@@ -336,15 +349,19 @@ fn block_obj(doc: &Doc, blocks: &ObjId, id: &str) -> Option<ObjId> {
 }
 
 /// The objects of body paragraph `id` and the path to each.
-fn paragraph_objects(doc: &Doc, c: &Containers, id: &str) -> Vec<(ObjId, tilo_resource::Path)> {
+fn paragraph_objects(
+    doc: &Doc,
+    c: &Containers,
+    root_path: &[(ObjId, automerge::Prop)],
+    id: &str,
+) -> Vec<(ObjId, tilo_resource::Path)> {
     use automerge::Prop;
     let Some(block) = block_obj(doc, &c.blocks, id) else {
         return Vec::new();
     };
-    let to_block = vec![
-        (c.root.clone(), Prop::Map(KEY_BLOCKS.into())),
-        (c.blocks.clone(), Prop::Map(id.into())),
-    ];
+    let mut to_block = root_path.to_vec();
+    to_block.push((c.root.clone(), Prop::Map(KEY_BLOCKS.into())));
+    to_block.push((c.blocks.clone(), Prop::Map(id.into())));
     let mut objects = vec![(block.clone(), to_block.clone())];
     for key in [BLOCK_TEXT, BLOCK_ATTRS] {
         if let Ok(Some((Value::Object(_), child))) = doc.get(&block, key) {
@@ -360,7 +377,7 @@ impl RichTextState {
     /// Index where paragraph `id`'s objects sit, dropping what it had.
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
-        let objects = paragraph_objects(doc, &self.containers, id);
+        let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
         self.objects.extend(objects);
     }
 
@@ -381,30 +398,7 @@ impl Resource for RichText {
     type Action = RichTextAction;
 
     fn read(doc: &Doc) -> Result<RichTextState, ModelError> {
-        let c = containers_of(doc)?;
-        let spine = model::body_spine(doc, &c);
-        let featured_ids: Vec<String> = spine
-            .iter()
-            .filter(|entry| RichTextState::is_featured(&entry.kind))
-            .map(|entry| entry.id.clone())
-            .collect();
-        let featured = model::materialize_blocks(doc, &c, &featured_ids)
-            .into_iter()
-            .map(|view| (view.id.clone(), Rc::new(view)))
-            .collect();
-        Ok(RichTextState {
-            body: Rc::new(BodyOrder::from_spine(spine)),
-            featured: Rc::new(featured),
-            loaded: HashMap::new(),
-            objects: HashMap::new(),
-            header: Rc::new(model::materialize_region(doc, &c, Region::Header)),
-            footer: Rc::new(model::materialize_region(doc, &c, Region::Footer)),
-            notes: Rc::new(model::materialize_notes(doc, &c)),
-            comments: Rc::new(model::materialize_comments(doc, &c)),
-            changes: Rc::new(model::materialize_changes(doc, &c)),
-            content: Rc::new(model::referenced_content(doc, &c)),
-            containers: c,
-        })
+        Self::read_under(doc, &automerge::ROOT)
     }
 
     /// A change to a paragraph on screen is placed from the index kept of
@@ -415,110 +409,11 @@ impl Resource for RichText {
 
     /// A new document: the shared schema and one empty paragraph to type in.
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        let c = model::init(doc, &automerge::ROOT);
-        if model::blocks_in_order(doc, &c).is_empty() {
-            let mut ids = model::IdGen::new(doc.get_actor().to_hex_string());
-            let mut dm = model::DocMut {
-                doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.insert_block(None, "paragraph");
-        }
-        Ok(())
+        Self::initialize_under(doc, &automerge::ROOT)
     }
 
     fn refresh(state: &mut RichTextState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
-        if delta.is_empty() {
-            return Ok(());
-        }
-        let root = delta.under(&state.containers.root);
-        if delta.is_everything() || root.is_all() || root.key(KEY_BLOCKS) == Touch::Written {
-            *state = Self::read(doc)?;
-            return Ok(());
-        }
-        // A lazily created container (the first header, note or comment)
-        // is a new object: find it before reading it.
-        if root.written().next().is_some() {
-            state.containers = containers_of(doc)?;
-        }
-        let c = state.containers.clone();
-        if root.key(KEY_HEADER) != Touch::Untouched {
-            state.header = Rc::new(model::materialize_region(doc, &c, Region::Header));
-        }
-        if root.key(KEY_FOOTER) != Touch::Untouched {
-            state.footer = Rc::new(model::materialize_region(doc, &c, Region::Footer));
-        }
-        if root.key(KEY_NOTES) != Touch::Untouched {
-            state.notes = Rc::new(model::materialize_notes(doc, &c));
-        }
-        if root.key(KEY_COMMENTS) != Touch::Untouched {
-            state.comments = Rc::new(model::materialize_comments(doc, &c));
-        }
-        if root.key(KEY_CHANGES) != Touch::Untouched {
-            state.changes = Rc::new(model::materialize_changes(doc, &c));
-        }
-        if root.key(KEY_BLOBS) != Touch::Untouched {
-            state.content = Rc::new(model::referenced_content(doc, &c));
-        }
-        if root.key(KEY_BLOCKS) == Touch::Untouched {
-            return Ok(());
-        }
-        let touched = delta.under(&c.blocks);
-        for id in touched.keys() {
-            let entry = model::body_spine_entry(doc, &c, id);
-            // The paragraph's place: new, gone, or moved.
-            let placed = state.body.key(id).map(<[u8]>::to_vec);
-            match &entry {
-                Some(entry) if placed.as_deref() != Some(entry.order.as_slice()) => {
-                    Rc::make_mut(&mut state.body).insert(id, &entry.order);
-                }
-                None if placed.is_some() => Rc::make_mut(&mut state.body).remove(id),
-                _ => {}
-            }
-            // Its content, when on screen or in the outline. A paragraph
-            // whose order key alone changed keeps its view.
-            let order_only = touched.key(id) == Touch::Below
-                && block_obj(doc, &c.blocks, id).is_some_and(|obj| {
-                    let inner = delta.under(&obj);
-                    inner.keys().all(|key| key == BLOCK_ORDER) && !inner.is_all()
-                });
-            let was_featured = state.featured.contains_key(id);
-            let is_featured = entry
-                .as_ref()
-                .is_some_and(|entry| RichTextState::is_featured(&entry.kind));
-            let on_screen = state.loaded.contains_key(id);
-            if entry.is_none() {
-                state.loaded.remove(id);
-                state.forget_paragraph(id);
-                if was_featured {
-                    Rc::make_mut(&mut state.featured).remove(id);
-                }
-                continue;
-            }
-            if order_only || !(on_screen || was_featured || is_featured) {
-                continue;
-            }
-            let Some(view) = model::materialize_blocks(doc, &c, &[id.to_owned()]).pop() else {
-                continue;
-            };
-            // A paragraph whose content came out the same keeps its shared
-            // value, so views can tell a changed paragraph by pointer.
-            let view = match state.loaded.get(id).or_else(|| state.featured.get(id)) {
-                Some(old) if **old == view => Rc::clone(old),
-                _ => Rc::new(view),
-            };
-            if RichTextState::is_featured(&view.kind) {
-                Rc::make_mut(&mut state.featured).insert(id.to_owned(), Rc::clone(&view));
-            } else if was_featured {
-                Rc::make_mut(&mut state.featured).remove(id);
-            }
-            if on_screen {
-                state.loaded.insert(id.to_owned(), view);
-                state.index_paragraph(doc, id);
-            }
-        }
-        Ok(())
+        Self::refresh_under(state, doc, delta)
     }
 
     fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
@@ -629,6 +524,162 @@ impl Resource for RichText {
                 text: view.text.clone(),
             }))
             .collect()
+    }
+}
+
+impl RichText {
+    /// [`Resource::read`] of rich text stored under `root`: the document's
+    /// root, or the map of a rich-text field inside another resource.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `root` holds no rich text.
+    pub fn read_under(doc: &Doc, root: &ObjId) -> Result<RichTextState, ModelError> {
+        let c = containers_of(doc, root)?;
+        let spine = model::body_spine(doc, &c);
+        let featured_ids: Vec<String> = spine
+            .iter()
+            .filter(|entry| RichTextState::is_featured(&entry.kind))
+            .map(|entry| entry.id.clone())
+            .collect();
+        let featured = model::materialize_blocks(doc, &c, &featured_ids)
+            .into_iter()
+            .map(|view| (view.id.clone(), Rc::new(view)))
+            .collect();
+        Ok(RichTextState {
+            body: Rc::new(BodyOrder::from_spine(spine)),
+            featured: Rc::new(featured),
+            loaded: HashMap::new(),
+            objects: HashMap::new(),
+            header: Rc::new(model::materialize_region(doc, &c, Region::Header)),
+            footer: Rc::new(model::materialize_region(doc, &c, Region::Footer)),
+            notes: Rc::new(model::materialize_notes(doc, &c)),
+            comments: Rc::new(model::materialize_comments(doc, &c)),
+            changes: Rc::new(model::materialize_changes(doc, &c)),
+            content: Rc::new(model::referenced_content(doc, &c)),
+            root_path: path_to(doc, &c.root),
+            containers: c,
+        })
+    }
+
+    /// Start rich text under `root`: the shared schema and one empty
+    /// paragraph to type in.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn initialize_under(doc: &mut Doc, root: &ObjId) -> Result<(), ModelError> {
+        let c = model::init(doc, root);
+        if model::blocks_in_order(doc, &c).is_empty() {
+            let mut ids = model::IdGen::new(doc.get_actor().to_hex_string());
+            let mut dm = model::DocMut {
+                doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            dm.insert_block(None, "paragraph");
+        }
+        Ok(())
+    }
+
+    /// [`Resource::refresh`] for rich text under any root: the state knows
+    /// where it was read from.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the rich text is no longer there.
+    pub fn refresh_under(
+        state: &mut RichTextState,
+        doc: &Doc,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        let root = delta.under(&state.containers.root);
+        if delta.is_everything() || root.is_all() || root.key(KEY_BLOCKS) == Touch::Written {
+            *state = Self::read_under(doc, &state.containers.root)?;
+            return Ok(());
+        }
+        // A lazily created container (the first header, note or comment)
+        // is a new object: find it before reading it.
+        if root.written().next().is_some() {
+            state.containers = containers_of(doc, &state.containers.root)?;
+        }
+        let c = state.containers.clone();
+        if root.key(KEY_HEADER) != Touch::Untouched {
+            state.header = Rc::new(model::materialize_region(doc, &c, Region::Header));
+        }
+        if root.key(KEY_FOOTER) != Touch::Untouched {
+            state.footer = Rc::new(model::materialize_region(doc, &c, Region::Footer));
+        }
+        if root.key(KEY_NOTES) != Touch::Untouched {
+            state.notes = Rc::new(model::materialize_notes(doc, &c));
+        }
+        if root.key(KEY_COMMENTS) != Touch::Untouched {
+            state.comments = Rc::new(model::materialize_comments(doc, &c));
+        }
+        if root.key(KEY_CHANGES) != Touch::Untouched {
+            state.changes = Rc::new(model::materialize_changes(doc, &c));
+        }
+        if root.key(KEY_BLOBS) != Touch::Untouched {
+            state.content = Rc::new(model::referenced_content(doc, &c));
+        }
+        if root.key(KEY_BLOCKS) == Touch::Untouched {
+            return Ok(());
+        }
+        let touched = delta.under(&c.blocks);
+        for id in touched.keys() {
+            let entry = model::body_spine_entry(doc, &c, id);
+            // The paragraph's place: new, gone, or moved.
+            let placed = state.body.key(id).map(<[u8]>::to_vec);
+            match &entry {
+                Some(entry) if placed.as_deref() != Some(entry.order.as_slice()) => {
+                    Rc::make_mut(&mut state.body).insert(id, &entry.order);
+                }
+                None if placed.is_some() => Rc::make_mut(&mut state.body).remove(id),
+                _ => {}
+            }
+            // Its content, when on screen or in the outline. A paragraph
+            // whose order key alone changed keeps its view.
+            let order_only = touched.key(id) == Touch::Below
+                && block_obj(doc, &c.blocks, id).is_some_and(|obj| {
+                    let inner = delta.under(&obj);
+                    inner.keys().all(|key| key == BLOCK_ORDER) && !inner.is_all()
+                });
+            let was_featured = state.featured.contains_key(id);
+            let is_featured = entry
+                .as_ref()
+                .is_some_and(|entry| RichTextState::is_featured(&entry.kind));
+            let on_screen = state.loaded.contains_key(id);
+            if entry.is_none() {
+                state.loaded.remove(id);
+                state.forget_paragraph(id);
+                if was_featured {
+                    Rc::make_mut(&mut state.featured).remove(id);
+                }
+                continue;
+            }
+            if order_only || !(on_screen || was_featured || is_featured) {
+                continue;
+            }
+            let Some(view) = model::materialize_blocks(doc, &c, &[id.to_owned()]).pop() else {
+                continue;
+            };
+            // A paragraph whose content came out the same keeps its shared
+            // value, so views can tell a changed paragraph by pointer.
+            let view = match state.loaded.get(id).or_else(|| state.featured.get(id)) {
+                Some(old) if **old == view => Rc::clone(old),
+                _ => Rc::new(view),
+            };
+            if RichTextState::is_featured(&view.kind) {
+                Rc::make_mut(&mut state.featured).insert(id.to_owned(), Rc::clone(&view));
+            } else if was_featured {
+                Rc::make_mut(&mut state.featured).remove(id);
+            }
+            if on_screen {
+                state.loaded.insert(id.to_owned(), view);
+                state.index_paragraph(doc, id);
+            }
+        }
+        Ok(())
     }
 }
 
