@@ -35,13 +35,17 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
 
 /// Connect p1 and p2 to relay1, subscribe both to workspace 3, and drain
 /// their initial Ready acks.
@@ -77,9 +81,8 @@ async fn connect_both_to_relay1(
     c1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     c2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     for cli in [&c1, &c2] {
-        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
+        let env = tilo_test_env::within("Ready timeout", cli.recv())
             .await
-            .expect("Ready timeout")
             .expect("closed");
         match env {
             Envelope::Ready { .. } => {}
@@ -101,7 +104,8 @@ async fn fail_p2_over_from_relay1(
     p2_pubkey: [u8; 32],
 ) {
     c2_r1.close().await;
-    for _ in 0..300 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1500 {
         if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
             break;
         }
@@ -133,21 +137,31 @@ async fn p2_returns_and_drains(
     c2_r1_again
         .send(Envelope::Subscribe { workspace_id: 3 })
         .unwrap();
+    // Pending delivery is at-least-once: a queued delta is acknowledged only
+    // after wire delivery (WorkspaceStore::load_pending), so the delta p2
+    // received live just before closing may be redelivered once. That
+    // duplicate is harmless (signed deltas are idempotent); the queued delta
+    // must still arrive exactly once.
     let mut got_delta = false;
-    for _ in 0..2 {
-        let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
+    let mut ready = false;
+    let mut redelivered = 0_u32;
+    while !(ready && got_delta) {
+        let env = tilo_test_env::within("a message on c2_r1_again", c2_r1_again.recv())
             .await
-            .unwrap()
             .unwrap();
         match env {
-            Envelope::Delta { delta, .. } => {
-                assert_eq!(delta, b"queued-on-relay1".to_vec());
+            Envelope::Delta { delta, .. } if delta == b"queued-on-relay1" => {
+                assert!(!got_delta, "the queued delta was delivered twice");
                 got_delta = true;
+            }
+            Envelope::Delta { delta, .. } if delta == b"via-relay1" => {
+                redelivered = redelivered.saturating_add(1);
+                assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
             Envelope::Ready {
                 workspace_id: 3,
-                pending_deltas: 1,
-            } => {}
+                pending_deltas,
+            } if pending_deltas == 1 || pending_deltas == 2 => ready = true,
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -170,8 +184,8 @@ async fn peers_use_several_relays_and_fail_over() {
 
         let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-        let relay1 = spawn_relay(&user, relay_dev_1, &[3], &members).await;
-        let relay2 = spawn_relay(&user, relay_dev_2, &[3], &members).await;
+        let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[3], &members)).await;
+        let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[3], &members)).await;
 
         // Peers dial relay1 first — verify they can both dial and
         // fan-out works via relay1.
@@ -187,9 +201,8 @@ async fn peers_use_several_relays_and_fail_over() {
             signature: [1u8; 64],
         };
         c1_r1.send(d1).unwrap();
-        let got = tokio::time::timeout(Duration::from_secs(2), c2_r1.recv())
+        let got = tilo_test_env::within("a message on c2_r1", c2_r1.recv())
             .await
-            .unwrap()
             .unwrap();
         match got {
             Envelope::Delta { delta, .. } => {
@@ -212,9 +225,8 @@ async fn peers_use_several_relays_and_fail_over() {
         .await
         .unwrap();
         c2_r2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
-        let ready = tokio::time::timeout(Duration::from_secs(2), c2_r2.recv())
+        let ready = tilo_test_env::within("a message on c2_r2", c2_r2.recv())
             .await
-            .unwrap()
             .unwrap();
         match ready {
             Envelope::Ready {
@@ -249,7 +261,10 @@ async fn peers_use_several_relays_and_fail_over() {
         };
         // Wait for the write rather than guessing how long it takes: a fixed sleep
         // is a race that fails on a loaded machine and proves nothing on a fast one.
-        wait_for(|| count(&pending_r1) == 1, 300).await;
+        wait_until("relay1 to queue the delta for offline p2", || {
+            count(&pending_r1) == 1
+        })
+        .await;
         let count_r1 = count(&pending_r1);
         let count_r2 = count(&pending_r2);
         assert_eq!(count_r1, 1, "relay1 should hold the delta for offline p2");
@@ -268,7 +283,7 @@ async fn peers_use_several_relays_and_fail_over() {
         let user = TestUser::fresh("Alice");
         let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let relay = spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()]).await;
+        let relay = Box::pin(spawn_relay(&user, relay_dev, &[7], &[a.device_pubkey()])).await;
         let real_addr = relay.relay.node_addr();
 
         // Ghost address: a randomly-generated node id nobody listens on.
@@ -300,8 +315,8 @@ async fn peers_use_several_relays_and_fail_over() {
 
         // Dial the real relay — succeeds.
         let ep2 = client_endpoint().await;
-        let real = tokio::time::timeout(
-            Duration::from_secs(5),
+        let real = tilo_test_env::within(
+            "real dial timed out",
             RelayClient::connect(
                 ep2,
                 real_addr,
@@ -312,7 +327,6 @@ async fn peers_use_several_relays_and_fail_over() {
             ),
         )
         .await
-        .expect("real dial timed out")
         .expect("real dial failed");
         drop(real);
     }

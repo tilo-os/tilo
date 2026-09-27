@@ -423,8 +423,10 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use crate::history_mode::HistoryRegistration;
     use automerge::AutoCommit;
+
     fn test_host() -> HistoryHost {
         fn preview(
             _: FilePreviewInput,
@@ -705,7 +707,7 @@ mod tests {
             }
         }
         fn settle(host: &mut HistoryHost) {
-            let end = crate::time::now() + crate::time::Duration::from_secs(2);
+            let end = crate::time::now() + HANG_BOUND;
             while !host.file_target_resolved && crate::time::now() < end {
                 host.refresh(&AutoCommit::new());
                 std::thread::sleep(crate::time::Duration::from_millis(1));
@@ -802,7 +804,7 @@ mod tests {
         assert_eq!(files.restore.request, Some(request));
         assert!(files.restore.prepare(review, request.operation).is_err());
         files.check_result();
-        let end = crate::time::now() + crate::time::Duration::from_secs(2);
+        let end = crate::time::now() + HANG_BOUND;
         while original.results.load(Ordering::SeqCst) == 0 && crate::time::now() < end {
             std::thread::sleep(crate::time::Duration::from_millis(1));
         }

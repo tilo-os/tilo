@@ -111,6 +111,14 @@ pub trait Resource: Sized + 'static {
         false
     }
 
+    /// Whether `action` only annotates what the action before it in the
+    /// same event wrote (who wrote the text just typed): it joins that
+    /// step, and the next action continues the one it annotates.
+    fn annotates(action: &Self::Action) -> bool {
+        let _ = action;
+        false
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -250,8 +258,8 @@ impl<R: Resource> ActionDecl<R> {
 /// origin, when an action is built; never inside `apply`.
 #[must_use]
 pub fn origin_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
         })

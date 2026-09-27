@@ -23,6 +23,7 @@ capnpc.workspace = true
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
+atomic-file = { path = "../../system/atomic-file" }
 blake3.workspace = true
 cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs"] }
@@ -39,6 +40,7 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }

@@ -191,12 +191,33 @@ REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 # of structural cost. Only shard balancing uses these numbers.
 TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
+# A package without a recorded time (new since the last refresh) is assumed to
+# test for about as long as the upper quartile of recorded packages, so a new
+# service suite does not ride along as free weight on an already full shard.
+UNRECORDED_TEST_SECONDS = 20
 # Test jobs are sharded on their own, by recorded test time: one test job per
 # this many recorded seconds, so a large tested set runs its suites on several
 # runners instead of queueing them on one. Each test job links only its own
 # packages' tests; the type-check shards above are unaffected.
 TEST_SHARD_SECONDS = 1_000
 MAX_TEST_SHARDS = 4
+# Suites whose tests fsync heavily: fs's durability, checked-restore and
+# release-matrix tests over real FUSE (with fs-native and private-fs), and the
+# host suites that commit a durable Store, owner journal or relay journal on
+# every step. On one runner their fsyncs queue behind each other until the host
+# suites' handshake bounds expire, so test shards keep them apart whenever
+# there is more than one shard.
+TEST_SHARD_APART = (
+    frozenset({"fs", "fs-native", "private-fs"}),
+    frozenset({
+        "tilo-action-broker",
+        "tilo-cloud-host",
+        "tilo-device-host",
+        "tilo-peer-state",
+        "tilo-relay",
+        "tilo-workspace-host",
+    }),
+)
 
 
 def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
@@ -209,6 +230,13 @@ def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
             for name, value in data.items()):
         raise ValueError(f"{path} must map package names to whole seconds")
     return data
+
+
+def expected_test_seconds(name: str, test_seconds: dict[str, int] | None) -> int:
+    """Recorded seconds, the unrecorded default when timings exist, else zero."""
+    if not test_seconds:
+        return 0
+    return test_seconds.get(name, UNRECORDED_TEST_SECONDS)
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -447,19 +475,30 @@ def direct_dependants_within_budget(
 
 
 def balance(names: set[str], packages: dict[str, dict], shard_count: int,
-            test_seconds: dict[str, int] | None = None) -> list[dict]:
-    """Spread packages over shards by structural cost plus recorded test time."""
+            test_seconds: dict[str, int] | None = None,
+            apart: tuple[frozenset[str], ...] = ()) -> list[dict]:
+    """Spread packages over shards by structural cost plus recorded test time.
+
+    Packages of different `apart` sets never share a shard while another
+    shard can take them.
+    """
     if not names:
         return []
     test_seconds = test_seconds or {}
 
     def weight(name: str) -> int:
-        return package_cost(packages[name]) + TEST_SECOND_WEIGHT * test_seconds.get(name, 0)
+        return (package_cost(packages[name])
+                + TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds))
+
+    def clashes(name: str, shard: dict) -> bool:
+        return any(name in group and any(other in rival for other in shard["names"])
+                   for group in apart for rival in apart if rival is not group)
 
     shards = [{"names": [], "cost": 0, "weight": 0}
               for _ in range(max(1, min(shard_count, len(names))))]
     for name in sorted(names, key=lambda n: (-weight(n), n)):
-        shard = min(shards, key=lambda item: (item["weight"], len(item["names"])))
+        candidates = [shard for shard in shards if not clashes(name, shard)] or shards
+        shard = min(candidates, key=lambda item: (item["weight"], len(item["names"])))
         shard["names"].append(name)
         shard["cost"] += package_cost(packages[name])
         shard["weight"] += weight(name)
@@ -485,7 +524,7 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
 
 
 def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> int:
-    total = sum(test_seconds.get(name, 0) for name in names)
+    total = sum(expected_test_seconds(name, test_seconds) for name in names)
     time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
     return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
 
@@ -642,7 +681,8 @@ def make_plan(
     # recorded test time.
     test_units = (tested | scoped_tests.keys()) & selected
     test_shards = balance(test_units, packages,
-                          useful_test_shard_count(test_units, test_seconds or {}), test_seconds)
+                          useful_test_shard_count(test_units, test_seconds or {}), test_seconds,
+                          TEST_SHARD_APART)
     if selected and not test_shards:
         # Keep the aggregate's test result applicable: one row whose steps skip.
         test_shards = [{"shard": 1, "packages": "", "package_count": 0,

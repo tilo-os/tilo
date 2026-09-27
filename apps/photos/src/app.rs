@@ -1777,7 +1777,7 @@ impl PhotosApp {
                         crate::actions::PHOTOS_ACTION_TYPE,
                         &action,
                         tilo_actions::ActionContext::for_action(
-                            "org.tilo.Photos",
+                            "so.tilo.photos",
                             "Photos",
                             &action,
                         ),
@@ -1912,7 +1912,7 @@ impl PhotosApp {
                             crate::actions::PHOTOS_ACTION_TYPE,
                             &action,
                             tilo_actions::ActionContext::for_action(
-                                "org.tilo.Photos",
+                                "so.tilo.photos",
                                 "Photos",
                                 &action,
                             ),
@@ -3672,7 +3672,7 @@ impl PhotosApp {
             crate::actions::PHOTOS_ACTION_TYPE,
             &crate::actions::PhotosAction::set(&next),
             tilo_actions::ActionContext::for_action(
-                "org.tilo.Photos",
+                "so.tilo.photos",
                 "Photos",
                 &crate::actions::PhotosAction::set(&next),
             ),
@@ -3698,7 +3698,7 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
         );
     }
 
@@ -7252,7 +7252,7 @@ impl PhotosApp {
                 doc,
                 crate::actions::PHOTOS_ACTION_TYPE,
                 &action,
-                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
             ) {
                 Ok(()) => {
                     if let Some(job) = self.directory_import.as_mut() {
@@ -14729,7 +14729,7 @@ impl Widget for PhotosApp {
                 doc,
                 crate::actions::PHOTOS_ACTION_TYPE,
                 &action,
-                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
             )
             .map_err(|error| error.to_string())?;
         self.notice = Some("Imported Camera photo".to_owned());

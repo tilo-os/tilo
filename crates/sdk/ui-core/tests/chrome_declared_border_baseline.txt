@@ -15,6 +15,3 @@ crates/sdk/ui-core/src/widget/radar_chart.rs declared_border 3
 crates/sdk/ui-core/src/widget/video_player.rs declared_border 2
 crates/session/shell/src/onboarding_view.rs declared_border 1
 crates/session/shell/src/shell/overlay_host/mod.rs declared_border 4
-crates/session/shell/src/shell/room_activity.rs declared_border 3
-crates/session/shell/src/shell/topbar_chrome.rs declared_border 1
-crates/session/shell/src/shell/workspace_settings.rs declared_border 1

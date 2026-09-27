@@ -947,8 +947,8 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
     !needle.is_empty() && identities.iter().any(|i| i.eq_ignore_ascii_case(needle))
 }
 
-/// The window identities a Tilo package id implies: the id itself, and
-/// its trailing component (`so.tilo.hello` ↔ `hello`).
+/// The window identities a Tilo package id implies: the id itself plus its
+/// trailing component (`so.tilo.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
     let mut out = vec![package_id.to_string()];
     if let Some(last) = package_id.rsplit('.').next()
@@ -1539,6 +1539,21 @@ pub fn revalidate_resource_claim(
         .is_ok()
 }
 
+/// This machine's applications, as the shared workspace settings name
+/// them: running under this session, installed as packages, or host apps.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShellApps;
+
+impl tilo_desktop::workspace_settings::AppDirectory for ShellApps {
+    fn app_display_name(&self, app_id: &str) -> Option<String> {
+        Some(display_name_for_app_id(app_id).unwrap_or_else(|| display_name_for_package_id(app_id)))
+    }
+
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        default_app_candidates()
+    }
+}
+
 pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
     default_app_candidates_from(&gui_apps())
 }
@@ -1675,7 +1690,7 @@ pub fn build_launch_command(
 /// later continuation capture can attach metadata to this exact tab.
 #[allow(
     clippy::too_many_arguments,
-    reason = "launch authority and durable tab identity are explicit boundary inputs"
+    reason = "The launch command binds the installed app, sandbox endpoints and exact durable tab route together."
 )]
 pub fn build_launch_command_for_tab(
     app: &InstalledApp,
@@ -2153,9 +2168,11 @@ fn launch_with_context(
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
-    let app = installed_apps()?
-        .into_iter()
+    let apps = installed_apps()?;
+    let app = apps
+        .iter()
         .find(|a| a.package_id == package_id)
+        .cloned()
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: package_id.to_string(),
         })?;
@@ -2218,6 +2235,10 @@ enum LaunchContext<'a> {
     Raw(String),
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
+)]
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
@@ -2238,6 +2259,10 @@ fn execute_installed(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
+)]
 fn execute_installed_inner(
     app: InstalledApp,
     room: RoomId,
@@ -2737,9 +2762,8 @@ fn start_launch(
             command.service_identity.is_some(),
         );
         mark_launch_spawned(&app.package_id, child.id());
-        // The child cannot exec the launcher (and therefore cannot reach the
-        // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.write_all(&[1]);
+        // Recorded before the gate opens, so the session learns of the start
+        // before the app can do anything a start explains.
         events.push(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -2747,6 +2771,9 @@ fn start_launch(
             managed_workspace_id: app.managed_workspace_id.clone(),
             kind: LaunchEventKind::Started { pid: child.id() },
         });
+        // The child cannot exec the launcher (and therefore cannot reach the
+        // public Wayland socket) until both registries above are complete.
+        let _ = launch_gate.write_all(&[1]);
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
@@ -3289,6 +3316,28 @@ pub fn wayland_socket_display() -> OsString {
     )
 }
 
+/// Package processes require the Linux execution authority.
+///
+/// # Errors
+/// Always fails on hosts without that authority, before spawning any worker.
+#[cfg(all(not(test), not(target_os = "linux")))]
+pub fn spawn_launch(
+    _package_id: String,
+    _display_name: String,
+    _command: LaunchCommand,
+) -> Result<(), String> {
+    Err(LaunchError::ProviderUnavailable {
+        provider: "Linux package execution",
+    }
+    .to_string())
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3807,7 +3856,7 @@ mod tests {
         )
         .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         let mut saw_started = false;
         let mut saw_exit = false;
         while Instant::now() < deadline && !saw_exit {
@@ -4529,7 +4578,7 @@ mod tests {
             assert_eq!(app.display_name, "Hello");
 
             // wait for the worker to report the child's exit
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             let mut failed = None;
             let mut saw_started = false;
             while Instant::now() < deadline && failed.is_none() {
@@ -4812,7 +4861,7 @@ mod tests {
             spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
                 .expect("launch worker");
 
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = tilo_test_env::hang_deadline();
             let launcher_pid = loop {
                 let started = drain_events().into_iter().find_map(|event| {
                     (event.package_id == "org.example.Flatpak")
@@ -4876,6 +4925,11 @@ mod tests {
                 },
             );
             let (_, start_time) = proc_stat(pid).expect("launcher process stat");
+            assert_eq!(
+                consume_trusted_service_launch(pid, start_time, "so.tilo.agent", "room-1"),
+                None,
+                "another app id must deny without transferring the record"
+            );
             assert_eq!(
                 consume_trusted_service_launch(pid, start_time, "so.tilo.windows", "wrong-room"),
                 None,
@@ -5071,20 +5125,4 @@ mod tests {
         governance_projection_is_atomic_bounded_and_owner_only();
         files_launch_receives_only_the_staged_projection_path();
     }
-}
-
-/// Package processes require the Linux execution authority.
-///
-/// # Errors
-/// Always fails on hosts without that authority, before spawning any worker.
-#[cfg(all(not(test), not(target_os = "linux")))]
-pub fn spawn_launch(
-    _package_id: String,
-    _display_name: String,
-    _command: LaunchCommand,
-) -> Result<(), String> {
-    Err(LaunchError::ProviderUnavailable {
-        provider: "Linux package execution",
-    }
-    .to_string())
 }

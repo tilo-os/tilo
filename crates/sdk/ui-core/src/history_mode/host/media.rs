@@ -90,7 +90,7 @@ impl HistoryHost {
                         heads: snapshot.heads().to_vec(),
                     };
                     *expected = Some(key.clone());
-                    canvas.status = Some("Loading historical media".into());
+                    canvas.set_status(Some("Loading historical media".into()));
                     provider.request(
                         HistoricalAssetRequest {
                             resource: resource.clone(),
@@ -134,7 +134,7 @@ impl HistoryHost {
                     assets,
                 })),
                 Err(error) => {
-                    canvas.status = Some(error);
+                    canvas.set_status(Some(error));
                 }
             }
         }

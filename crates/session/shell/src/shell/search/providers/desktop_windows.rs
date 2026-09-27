@@ -5,17 +5,18 @@
 //! row commits through the durable tab lifecycle, including the compositor's
 //! normal foreign-surface close request; it never synthesises pointer input.
 
-use std::fmt::Write as _;
 use std::rc::Rc;
 
+use tilo_desktop::search::{
+    WINDOWS_PROVIDER_ID, WindowAction, WindowRowKind, window_rows, window_rows_revision,
+    windows_provider_name,
+};
 use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::{GroupId, TabId, TileContent, WorkspaceId};
-
-pub const PROVIDER_ID: &str = "desktop-windows";
+use crate::shell::state::{GroupId, TabId, WorkspaceId};
 
 /// The shared ranker over a window's names, every one of which names it.
 fn score(needle: &str, fields: &[&str]) -> Option<i32> {
@@ -43,17 +44,6 @@ fn move_contract() -> tilo_actions::ActionContract {
         retry: tilo_actions::RetryPolicy::AtMostOnce,
         tags: vec!["desktop".into(), "window".into(), "move".into()],
         ..tilo_actions::ActionContract::default()
-    }
-}
-
-fn app_id(tile: &TileContent) -> Option<&str> {
-    match tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => Some(app_id),
-        TileContent::AppPlaceholder { .. }
-        | TileContent::Stub { .. }
-        | TileContent::WorkspaceActivity => None,
     }
 }
 
@@ -109,7 +99,7 @@ fn move_tab(
 ) -> Result<(), ActionError> {
     tab_in_group(chrome, expected_group, tab_id)?;
     crate::shell::window_actions::move_tab_to_workspace(&mut chrome.borrow_mut(), tab_id, target)
-        .map_err(|err| ActionError::Refused(err.user_message().to_string()))
+        .map_err(|err| ActionError::Refused(err.user_message()))
 }
 
 /// Closes every tab and remembers the group as one close, so a single
@@ -145,80 +135,33 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
     Ok(())
 }
 
-/// One "move to workspace" row per other workspace `tab` may go to. A
-/// workspace's own history and a collaborator's window stay where they are.
-fn move_rows(
-    needle: &str,
-    workspaces: &[crate::shell::state::Workspace],
-    workspace: &crate::shell::state::Workspace,
-    group_id: GroupId,
-    tab: &crate::shell::state::Tab,
-) -> Vec<SearchResult> {
-    if matches!(
-        tab.tile,
-        TileContent::WorkspaceActivity | TileContent::PeerWindow { .. }
-    ) {
-        return Vec::new();
+fn contract(action: WindowAction) -> tilo_actions::ActionContract {
+    match action {
+        WindowAction::CloseGroup { .. } | WindowAction::CloseTab { .. } => close_contract(),
+        WindowAction::MoveTab { .. } => move_contract(),
     }
-    let tab_id = tab.id;
-    let title = &tab.title;
-    let app = app_id(&tab.tile).unwrap_or("native");
-    let mut rows = Vec::new();
-    for other in workspaces.iter().filter(|other| other.id != workspace.id) {
-        let target = other.id;
-        let id = DesktopWindowsProvider::tab_move_id(group_id, tab_id, target);
-        let Some(row_score) = score(needle, &[title, app, &workspace.name, &other.name, &id])
-        else {
-            continue;
-        };
-        rows.push(SearchResult {
-            kind: ResourceKind::Custom("Tabs".into()),
-            operation_kind: tilo_actions::OperationKind::Effect,
-            provider_id: PROVIDER_ID.into(),
-            id,
-            title: format!("Move tab “{title}” to workspace “{}”", other.name),
-            subtitle: Some(format!(
-                "App {app} · from workspace “{}” · group {group_id} · tab {tab_id}",
-                workspace.name
-            )),
-            badge: Some("Tab".into()),
-            score: row_score,
-            params: Vec::new(),
-            contract: Some(move_contract()),
-            on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                move_tab(chrome, group_id, tab_id, target)
-            }),
-            on_invoke: None,
-            on_begin_invoke: None,
-        });
+}
+
+fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
+    match action {
+        WindowAction::CloseGroup { group } => close_group(chrome, group),
+        WindowAction::CloseTab { group, tab } => close_tab(chrome, group, tab),
+        WindowAction::MoveTab {
+            group,
+            tab,
+            workspace,
+        } => move_tab(chrome, group, tab, workspace),
     }
-    rows
 }
 
 pub struct DesktopWindowsProvider;
 
-static KINDS: std::sync::LazyLock<Vec<ResourceKind>> = std::sync::LazyLock::new(|| {
-    vec![
-        ResourceKind::Custom("Tabs".into()),
-        ResourceKind::Custom("Window groups".into()),
-    ]
-});
+static KINDS: std::sync::LazyLock<Vec<ResourceKind>> =
+    std::sync::LazyLock::new(|| vec![ResourceKind::Tab, ResourceKind::WindowGroup]);
 
 impl DesktopWindowsProvider {
     pub fn new() -> Self {
         Self
-    }
-
-    pub fn tab_close_id(group: GroupId, tab: TabId) -> String {
-        format!("tab.close:{group}:{tab}")
-    }
-
-    pub fn group_close_id(group: GroupId) -> String {
-        format!("group.close:{group}")
-    }
-
-    pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String {
-        format!("tab.move:{group}:{tab}:{}", workspace.raw())
     }
 }
 
@@ -230,11 +173,15 @@ impl Default for DesktopWindowsProvider {
 
 impl SearchProvider for DesktopWindowsProvider {
     fn id(&self) -> &str {
-        PROVIDER_ID
+        WINDOWS_PROVIDER_ID
     }
 
     fn name(&self) -> &'static str {
         "Desktop Windows"
+    }
+
+    fn display_name(&self) -> String {
+        windows_provider_name()
     }
 
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -247,115 +194,38 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return Vec::new();
-        };
-        let mut rows = Vec::new();
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                let group_id = group.id;
-                let group_title = group
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == group.active_tab)
-                    .or_else(|| group.tabs.first())
-                    .map_or_else(
-                        || format!("Window group {group_id}"),
-                        |tab| tab.title.clone(),
-                    );
-                let group_id_string = Self::group_close_id(group_id);
-                if let Some(row_score) = score(
-                    ctx.needle,
-                    &[&group_title, &workspace.name, &strip.name, &group_id_string],
-                ) {
-                    rows.push(SearchResult {
-                        kind: ResourceKind::Custom("Window groups".into()),
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        provider_id: PROVIDER_ID.into(),
-                        id: group_id_string,
-                        title: format!("Close window group “{group_title}”"),
-                        subtitle: Some(format!(
-                            "Workspace “{}” · strip “{}” · group {} · {} tabs",
-                            workspace.name,
-                            strip.name,
-                            group_id,
-                            group.tabs.len()
-                        )),
-                        badge: Some("Window group".into()),
-                        score: row_score,
-                        params: Vec::new(),
-                        contract: Some(close_contract()),
-                        on_open: Rc::new(
-                            move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                                close_group(chrome, group_id)
-                            },
-                        ),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-                for tab in &group.tabs {
-                    let tab_id = tab.id;
-                    let title = tab.title.clone();
-                    let app = app_id(&tab.tile).unwrap_or("native");
-                    let id = Self::tab_close_id(group_id, tab_id);
-                    if let Some(row_score) = score(
-                        ctx.needle,
-                        &[&title, app, &workspace.name, &strip.name, &id],
-                    ) {
-                        rows.push(SearchResult {
-                        kind: ResourceKind::Custom("Tabs".into()),
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        provider_id: PROVIDER_ID.into(),
-                        id,
-                        title: format!("Close tab “{title}”"),
-                        subtitle: Some(format!(
-                            "App {app} · workspace “{}” · strip “{}” · group {group_id} · tab {tab_id}",
-                            workspace.name, strip.name
-                        )),
-                        badge: Some("Tab".into()),
-                        score: row_score,
-                        params: Vec::new(),
-                        contract: Some(close_contract()),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                            close_tab(chrome, group_id, tab_id)
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                    }
-                    rows.extend(move_rows(
-                        ctx.needle,
-                        &tree.desktop.workspaces,
-                        workspace,
-                        group_id,
-                        tab,
-                    ));
-                }
-            }
-        }
+        let rows = window_rows(&tree.desktop, |fields| score(ctx.needle, fields));
         drop(tree);
-        rows
+        rows.into_iter()
+            .map(|row| {
+                let action = row.action;
+                SearchResult {
+                    kind: match row.kind {
+                        WindowRowKind::Tab => ResourceKind::Tab,
+                        WindowRowKind::WindowGroup => ResourceKind::WindowGroup,
+                    },
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    provider_id: WINDOWS_PROVIDER_ID.into(),
+                    id: row.id,
+                    title: row.title,
+                    subtitle: Some(row.subtitle),
+                    badge: Some(row.badge),
+                    score: row.score,
+                    params: Vec::new(),
+                    contract: Some(contract(action)),
+                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
+                        invoke(chrome, action)
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                }
+            })
+            .collect()
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let tree = ctx.chrome.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return "desktop-windows:empty".into();
-        };
-        let mut revision = format!("desktop-windows:{}", workspace.id.raw());
-        // Every other workspace is somewhere a tab can move to.
-        for other in &tree.desktop.workspaces {
-            let _ = write!(revision, ":w{}:{}", other.id.raw(), other.name);
-        }
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                let _ = write!(revision, ":g{}", group.id);
-                for tab in &group.tabs {
-                    let _ = write!(revision, ":t{}", tab.id);
-                }
-            }
-        }
+        let revision = window_rows_revision(&tree.desktop);
         drop(tree);
         revision
     }
@@ -367,7 +237,7 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
     use crate::shell::search::{SearchRegistry, SearchScope};
-    use crate::shell::state::{FreshId as _, Tab, WindowGroup, WindowWidth};
+    use crate::shell::state::{FreshId as _, Tab, TileContent, WindowGroup, WindowWidth};
     use automerge::{AutoCommit, ROOT};
 
     fn fixture() -> (Chrome, AutoCommit) {
@@ -471,7 +341,7 @@ mod tests {
                 let state = chrome.borrow();
                 ActionCatalog::build_exact(
                     &registry(),
-                    PROVIDER_ID,
+                    WINDOWS_PROVIDER_ID,
                     "tab.close:200:3",
                     SearchScope::All,
                     None,
@@ -482,7 +352,7 @@ mod tests {
                 )
             };
             catalog
-                .select(&ResourceRef::new(PROVIDER_ID, "tab.close:200:3"))
+                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"))
                 .expect("exact live tab action")
                 .invoke(&mut doc, &ROOT, &chrome, [])
                 .expect("close accepted");
@@ -506,7 +376,7 @@ mod tests {
                 let state = chrome.borrow();
                 ActionCatalog::build_exact(
                     &registry(),
-                    PROVIDER_ID,
+                    WINDOWS_PROVIDER_ID,
                     "tab.close:100:999",
                     SearchScope::All,
                     None,
@@ -518,7 +388,7 @@ mod tests {
             };
             assert!(
                 catalog
-                    .select(&ResourceRef::new(PROVIDER_ID, "tab.close:100:999"))
+                    .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"))
                     .is_none()
             );
             assert_eq!(
@@ -548,12 +418,12 @@ mod tests {
             tree.seed_doc_from_cache();
             id
         };
-        let id = DesktopWindowsProvider::tab_move_id(200, 3, target);
+        let id = tilo_desktop::search::tab_move_id(200, 3, target);
         let catalog = {
             let state = chrome.borrow();
             ActionCatalog::build_exact(
                 &registry(),
-                PROVIDER_ID,
+                WINDOWS_PROVIDER_ID,
                 &id,
                 SearchScope::All,
                 None,
@@ -564,7 +434,7 @@ mod tests {
             )
         };
         let action = catalog
-            .select(&ResourceRef::new(PROVIDER_ID, &id))
+            .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, &id))
             .expect("every tab can move to every other workspace");
         assert_eq!(
             action.title(),

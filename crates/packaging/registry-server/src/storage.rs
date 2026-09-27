@@ -20,6 +20,12 @@
 //!     snapshots/
 //!         <sequence>-<hash>.json     # immutable owner-signed history
 //!     published-snapshot.json        # atomic current channel pointer
+//!     payload-blobs/
+//!         <blake3>                   # reviewed payload blobs, by content
+//!     thin-packages/
+//!         <package-root>.tapp        # reviewed thin tapps, by package root
+//!     artifacts/
+//!         <blake3>.tapp              # operator-imported full tapps, by content
 //! ```
 //!
 //! Writes go through atomic rename (`.tmp` → target path) so a
@@ -70,6 +76,8 @@ impl Storage {
             "moderation-requests",
             "staged-artifacts",
             "payload-blobs",
+            "thin-packages",
+            "artifacts",
         ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
@@ -176,28 +184,43 @@ impl Storage {
     }
 
     fn payload_blob_path(&self, blake3_hex: &str) -> Option<PathBuf> {
-        (blake3_hex.len() == 64 && blake3_hex.bytes().all(|byte| byte.is_ascii_hexdigit())).then(
-            || {
-                self.root
-                    .join("payload-blobs")
-                    .join(blake3_hex.to_ascii_lowercase())
-            },
-        )
+        is_hex_digest(blake3_hex).then(|| {
+            self.root
+                .join("payload-blobs")
+                .join(blake3_hex.to_ascii_lowercase())
+        })
+    }
+
+    fn thin_package_path(&self, root_hex: &str) -> Option<PathBuf> {
+        is_hex_digest(root_hex).then(|| {
+            self.root
+                .join("thin-packages")
+                .join(format!("{}.tapp", root_hex.to_ascii_lowercase()))
+        })
+    }
+
+    fn artifact_path(&self, blake3_hex: &str) -> Option<PathBuf> {
+        is_hex_digest(blake3_hex).then(|| {
+            self.root
+                .join("artifacts")
+                .join(format!("{}.tapp", blake3_hex.to_ascii_lowercase()))
+        })
     }
 
     /// Keep every payload blob a full package carries, each at its BLAKE3
-    /// path, so a client installing the package's thin form can fetch just
-    /// the blobs it lacks from this registry. Only reviewed artifacts pass
-    /// through here, so the registry serves no bytes it has not inspected.
-    /// Bytes that do not decode as a package carry no payload to serve.
+    /// path, and the package's thin form at its package root, so a client
+    /// installing the thin form can fetch just the blobs it lacks from this
+    /// registry. Only reviewed artifacts pass through here, so the registry
+    /// serves no bytes it has not inspected. Bytes that do not decode as a
+    /// package carry no payload to serve.
     ///
     /// # Errors
     /// Returns an error if a blob cannot be written durably.
     pub fn save_payload_blobs(&self, tapp_bytes: &[u8]) -> Result<usize, StorageError> {
         let mut blobs = std::collections::BTreeMap::new();
-        if tilo_app_package::tapp::read(tapp_bytes, &mut blobs).is_err() {
+        let Ok(decoded) = tilo_app_package::tapp::read(tapp_bytes, &mut blobs) else {
             return Ok(0);
-        }
+        };
         let count = blobs.len();
         for (hash, bytes) in blobs {
             let path = self
@@ -207,7 +230,83 @@ impl Storage {
                 atomic_write(&path, &bytes)?;
             }
         }
+        let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)
+            .map_err(|error| StorageError::Encode(format!("thin package: {error}")))?;
+        let path = self
+            .thin_package_path(&decoded.meta.id.to_hex())
+            .ok_or_else(|| StorageError::Encode("invalid package root".into()))?;
+        if !path.exists() {
+            atomic_write(&path, &thin)?;
+        }
         Ok(count)
+    }
+
+    /// The thin form of the reviewed package whose signed root hashes to
+    /// `root_hex`, re-checked against that root, or `None` when this
+    /// registry holds no such package.
+    ///
+    /// # Errors
+    /// Returns an error when a stored package cannot be read or no longer
+    /// matches its name.
+    pub fn load_thin_package(&self, root_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.thin_package_path(root_hex) else {
+            return Ok(None);
+        };
+        let Some(bytes) = read_if_exists(&path, "thin package")? else {
+            return Ok(None);
+        };
+        let decoded =
+            tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
+                .map_err(|error| StorageError::Parse(format!("thin package: {error}")))?;
+        if !decoded.carried.is_empty() || !decoded.meta.id.to_hex().eq_ignore_ascii_case(root_hex) {
+            return Err(StorageError::Parse(
+                "thin package does not match its package root".into(),
+            ));
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Store a full package under its BLAKE3 so this registry can host it at
+    /// `/artifacts/<blake3>.tapp`, returning the digest. Nothing is published
+    /// by importing: a version still binds these exact bytes, and review
+    /// still verifies them.
+    ///
+    /// # Errors
+    /// Returns an error if the bytes are not a package or cannot be written.
+    pub fn import_artifact(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
+        tilo_app_package::tapp::read(tapp_bytes, &mut tilo_app_package::DiscardBlobs)
+            .map_err(|error| StorageError::Parse(format!("artifact: {error}")))?;
+        let digest = blake3::hash(tapp_bytes).to_hex().to_string();
+        let path = self
+            .artifact_path(&digest)
+            .ok_or_else(|| StorageError::Encode("invalid artifact digest".into()))?;
+        if !path.exists() {
+            atomic_write(&path, tapp_bytes)?;
+        }
+        Ok(digest)
+    }
+
+    /// An imported artifact, re-checked against its digest.
+    ///
+    /// # Errors
+    /// Returns an error when a stored artifact cannot be read or no longer
+    /// matches its name.
+    pub fn load_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.artifact_path(blake3_hex) else {
+            return Ok(None);
+        };
+        let Some(bytes) = read_if_exists(&path, "artifact")? else {
+            return Ok(None);
+        };
+        if !blake3::hash(&bytes)
+            .to_hex()
+            .eq_ignore_ascii_case(blake3_hex)
+        {
+            return Err(StorageError::Parse(
+                "artifact content does not match its name".into(),
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     /// The payload blob named `blake3_hex`, re-checked against its name, or
@@ -1173,6 +1272,18 @@ pub struct ServerIdentity {
     pub base_url: String,
 }
 
+fn is_hex_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_if_exists(path: &Path, what: &str) -> Result<Option<Vec<u8>>, StorageError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StorageError::Io(format!("read {what}: {error}"))),
+    }
+}
+
 /// Write bytes to `path` via a `.tmp` sibling + rename. Both the
 /// tmp and the final file end up in the same directory so the
 /// rename is atomic on every POSIX filesystem Tilo supports.
@@ -1366,6 +1477,32 @@ mod tests {
             );
             assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
             assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
+
+            let root = packed.meta.id.to_hex();
+            let thin = storage.load_thin_package(&root).unwrap().unwrap();
+            assert_eq!(
+                thin,
+                tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap()
+            );
+            assert_eq!(storage.load_thin_package(&"0".repeat(64)).unwrap(), None);
+            assert_eq!(storage.load_thin_package("../x").unwrap(), None);
+            std::fs::write(
+                dir.path()
+                    .join("thin-packages")
+                    .join(format!("{}.tapp", "1".repeat(64))),
+                &thin,
+            )
+            .unwrap();
+            assert!(storage.load_thin_package(&"1".repeat(64)).is_err());
+
+            let imported = storage.import_artifact(&bytes).unwrap();
+            assert_eq!(imported, digest);
+            assert_eq!(
+                storage.load_artifact(&digest).unwrap().as_deref(),
+                Some(bytes.as_slice())
+            );
+            assert!(storage.import_artifact(b"not a package").is_err());
+            assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
         }
         // phase: targetless_single_architecture_staging_remains_readable
         {

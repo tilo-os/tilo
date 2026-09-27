@@ -1,21 +1,16 @@
-//! Call state, the call-action permission seam, and join/leave sounds.
+//! Call state and the call-action permission seam.
 //!
-//! The conferencing experience is split into three concerns:
+//! The conferencing experience is split into two concerns:
 //!
 //! * [`CallState`] — the per-peer view state of the current call: which
 //!   voice channel, whether the overlay is expanded, where the user has
 //!   dragged the floating overlay, whether the participant list is expanded,
-//!   and the local mic / deafen / audio-only toggles. (Who is *in* the call
-//!   is shared truth in the CRDT — see [`crate::doc`] — but how this peer
-//!   lays out the overlay is local.)
+//!   and local presentation controls. Current stream state comes from the
+//!   native service; durable voice rows are replayable history.
 //! * [`CallPermissions`] — a small policy seam for isolated call-state tests
 //!   and embedding. Chat's live UI uses [`crate::permissions::ChatPermissions`]
 //!   from the host-provided permission context; this module does not grant
 //!   access or implement an ACL.
-//! * [`SoundEngine`] — short join/leave cues, played through `GStreamer` when
-//!   the `live-media` build feature and an audio sink are available, and a
-//!   silent no-op otherwise (so `--shots` and headless CI never need an
-//!   audio device).
 
 use vello::kurbo::{Rect, Size};
 
@@ -72,46 +67,6 @@ impl CallPermissions for AllowAll {
     }
 }
 
-/// A screen-capture source the host granted: the `PipeWire` node to consume
-/// plus the capture size to encode at. The single value the share flow needs
-/// from the host.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScreenSource {
-    /// `PipeWire` node id to open the capture on.
-    pub node: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl ScreenSource {
-    /// The size a screen share is encoded at: twice the camera's 640×480.
-    pub const SHARE_WIDTH: u32 = 1280;
-    pub const SHARE_HEIGHT: u32 = 960;
-
-    /// The source a host grant describes, encoded at Chat's share size. A
-    /// grant Chat cannot open (a stream kind it does not know) is `None`.
-    pub fn from_grant(grant: &ui::capture::ScreenCaptureGrant) -> Option<Self> {
-        match grant.stream {
-            ui::capture::CaptureStream::PipeWire { node_id } => Some(Self {
-                node: node_id,
-                width: Self::SHARE_WIDTH,
-                height: Self::SHARE_HEIGHT,
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// Why a screen-capture request was made, so its answer finishes the right
-/// flow.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScreenCapturePurpose {
-    /// The person pressed Share screen.
-    Share,
-    /// A continued call is resuming a share the source device had running.
-    Resume { session: String },
-}
-
 /// Per-peer call view state. A fresh app is **not** in a call — the user
 /// joins a voice channel to start one. (The demo screenshot activates a call
 /// explicitly via the shot scenario.)
@@ -121,7 +76,8 @@ pub enum ScreenCapturePurpose {
     reason = "each bool is an independent peer-local call toggle (active/expanded/participants_expanded/muted/deafened/audio_only/sharing) that the UI reads and writes individually — grouping them would just relocate the boolean soup, not remove it"
 )]
 pub struct CallState {
-    /// True while connected to a voice channel.
+    /// The call panel is open for an explicit local join attempt. This is
+    /// view state, never connection readiness or capture authority.
     pub active: bool,
     /// The voice channel id the call is in.
     pub channel: String,
@@ -140,10 +96,9 @@ pub struct CallState {
     pub deafened: bool,
     /// Camera off / audio-only.
     pub audio_only: bool,
-    /// This peer is sharing its screen into the call. Set only once the portal
-    /// grants a source (see `crate::app::ChatApp::request_screen`); mirrored
-    /// into the shared voice membership so remote peers reserve the featured
-    /// tile. Never set speculatively — a share the portal declined stays `false`.
+    /// This peer is sharing its screen into the call. Chat's native voice path
+    /// has no local screen-capture producer, so production never sets it; it
+    /// is cleared on every join/leave and staged only by screenshot scenarios.
     pub sharing: bool,
 }
 
@@ -155,9 +110,9 @@ impl Default for CallState {
             expanded: false,
             placement: ui::floating_surface::FloatingPlacement::attached(Size::new(360.0, 220.0)),
             participants_expanded: true,
-            muted: false,
+            muted: true,
             deafened: false,
-            audio_only: false,
+            audio_only: true,
             sharing: false,
         }
     }
@@ -200,6 +155,8 @@ impl CallState {
         self.expanded = false;
         self.placement.reset_attached();
         self.deafened = false;
+        self.muted = true;
+        self.audio_only = true;
         self.sharing = false;
     }
 
@@ -209,6 +166,8 @@ impl CallState {
         self.expanded = false;
         self.placement.reset_attached();
         self.sharing = false;
+        self.muted = true;
+        self.audio_only = true;
     }
 
     /// Toggle mute. Un-muting also un-deafens (you can't speak while
@@ -235,21 +194,30 @@ impl CallState {
     }
 }
 
-/// A short call cue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cue {
-    Join,
-    Leave,
-}
-
-pub use sound::SoundEngine;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn call_policy_helpers_allow_all_expand_small_rosters_and_map_pipewire_grants() {
+    fn native_voice_starts_unjoined_and_each_join_is_muted_audio_only() {
+        let mut state = CallState::default();
+        assert!(!state.active);
+        assert!(state.muted);
+        assert!(state.audio_only);
+        state.join("first");
+        state.muted = false;
+        state.audio_only = false;
+        state.join("second");
+        assert!(state.muted);
+        assert!(state.audio_only);
+        state.muted = false;
+        state.leave();
+        assert!(!state.active);
+        assert!(state.muted);
+    }
+
+    #[test]
+    fn call_policy_helpers_allow_all_and_expand_small_rosters() {
         // Phase: allow_all_grants_everything.
         {
             let p = AllowAll;
@@ -268,21 +236,6 @@ mod tests {
             assert!(CallState::auto_participants_expanded(3));
             assert!(CallState::auto_participants_expanded(8));
             assert!(!CallState::auto_participants_expanded(9));
-        }
-        // Phase: a_pipewire_grant_becomes_a_share_source.
-        {
-            let grant = ui::capture::ScreenCaptureGrant {
-                stream: ui::capture::CaptureStream::PipeWire { node_id: 9 },
-                size: Some((3840, 2160)),
-            };
-            assert_eq!(
-                ScreenSource::from_grant(&grant),
-                Some(ScreenSource {
-                    node: 9,
-                    width: ScreenSource::SHARE_WIDTH,
-                    height: ScreenSource::SHARE_HEIGHT,
-                })
-            );
         }
     }
 
@@ -364,162 +317,6 @@ mod tests {
                     region,
                 }
             );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Sound engine
-// ---------------------------------------------------------------------------
-
-mod sound {
-    use super::Cue;
-
-    /// Plays short join/leave cues.
-    ///
-    /// With the `live-media` feature and a working `GStreamer` audio sink the
-    /// cue is a tiny synthesised tone played through `autoaudiosink`. Without
-    /// it (the default build, `--shots`, headless CI) every method is a
-    /// silent no-op — the call UX degrades gracefully with no audio device
-    /// required. Whether real output is wired is reported by [`Self::is_live`].
-    pub struct SoundEngine {
-        /// Bookkeeping so callers can show "muted cue" state / tests can
-        /// assert the last cue requested even on the silent backend.
-        last_cue: Option<Cue>,
-        live: bool,
-        initialized: bool,
-    }
-
-    impl SoundEngine {
-        pub fn new() -> Self {
-            SoundEngine {
-                last_cue: None,
-                live: false,
-                initialized: false,
-            }
-        }
-
-        /// Whether real audio output is available in this build + environment.
-        pub fn is_live(&self) -> bool {
-            self.live
-        }
-
-        pub fn last_cue(&self) -> Option<Cue> {
-            self.last_cue
-        }
-
-        /// Play the join cue (a rising two-note blip).
-        pub fn join(&mut self) {
-            self.last_cue = Some(Cue::Join);
-            self.ensure_initialized();
-            play_cue(self.live, Cue::Join);
-        }
-
-        /// Play the leave cue (a falling two-note blip).
-        pub fn leave(&mut self) {
-            self.last_cue = Some(Cue::Leave);
-            self.ensure_initialized();
-            play_cue(self.live, Cue::Leave);
-        }
-
-        fn ensure_initialized(&mut self) {
-            if !self.initialized {
-                self.initialized = true;
-                self.live = init_backend();
-            }
-        }
-    }
-
-    impl Default for SoundEngine {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    #[cfg(all(feature = "live-media", not(test)))]
-    fn init_backend() -> bool {
-        gstreamer::init().is_ok()
-    }
-
-    #[cfg(any(not(feature = "live-media"), test))]
-    fn init_backend() -> bool {
-        // Unit tests exercise cue bookkeeping, not the user's audio device.
-        // Keeping this silent avoids a real `autoaudiosink` pipeline waiting
-        // indefinitely for a desktop audio service during hermetic CI.
-        false
-    }
-
-    /// Frequencies (Hz) for the two notes of each cue. Join rises (connect),
-    /// leave falls (disconnect) — the Discord-like convention.
-    fn cue_tones(cue: Cue) -> (u32, u32) {
-        match cue {
-            Cue::Join => (523, 784),  // C5 → G5
-            Cue::Leave => (784, 523), // G5 → C5
-        }
-    }
-
-    #[cfg(feature = "live-media")]
-    fn play_cue(live: bool, cue: Cue) {
-        use gstreamer::prelude::*;
-        if !live {
-            return;
-        }
-        let (a, b) = cue_tones(cue);
-        // Two short audiotestsrc tones chained into the default sink. We
-        // build a fresh throwaway pipeline per cue and tear it down on EOS so
-        // there's no persistent audio graph to manage.
-        let desc = format!(
-            "audiotestsrc num-buffers=8 freq={a} volume=0.3 ! audioconvert ! autoaudiosink"
-        );
-        if let Ok(pipeline) = gstreamer::parse::launch(&desc) {
-            let _ = pipeline.set_state(gstreamer::State::Playing);
-            // Fire-and-forget: a watchdog thread tears the pipeline down
-            // shortly after the buffers drain so we don't leak elements.
-            let weak = pipeline.downgrade();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(260));
-                if let Some(p) = weak.upgrade() {
-                    let _ = p.set_state(gstreamer::State::Null);
-                }
-            });
-        }
-        let _ = b; // second note reserved for a future richer cue
-    }
-
-    #[cfg(not(feature = "live-media"))]
-    fn play_cue(_live: bool, cue: Cue) {
-        // Silent backend: nothing to play. Touch the tone table so the cue
-        // mapping stays exercised (and a typo there fails to compile).
-        let _ = cue_tones(cue);
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn cues_record_lazily_rise_on_join_and_fall_on_leave() {
-            // Phase: cues_record_and_are_safe_without_audio.
-            {
-                let mut e = SoundEngine::new();
-                assert!(e.last_cue().is_none());
-                assert!(!e.initialized, "constructor must not initialize GStreamer");
-                e.join();
-                assert!(e.initialized, "first cue owns lazy backend initialization");
-                assert_eq!(e.last_cue(), Some(Cue::Join));
-                e.leave();
-                assert_eq!(e.last_cue(), Some(Cue::Leave));
-                // The default test build has no audio sink — engine is not live,
-                // and calling the cues must never panic.
-                assert!(!e.is_live() || cfg!(feature = "live-media"));
-            }
-            // Phase: join_rises_leave_falls.
-            {
-                let (j0, j1) = cue_tones(Cue::Join);
-                let (l0, l1) = cue_tones(Cue::Leave);
-                assert!(j1 > j0, "join cue rises");
-                assert!(l1 < l0, "leave cue falls");
-            }
         }
     }
 }

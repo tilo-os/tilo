@@ -849,14 +849,17 @@ mod tests {
                 &overflow,
                 &[],
                 4096,
-                Duration::from_secs(1),
+                tilo_test_env::hang_bound(),
                 "overflow probe",
             )
             .unwrap_err();
             assert!(error.contains("output exceeds"), "{error}");
 
             let hangs = directory.path().join("hangs");
-            fs::write(&hangs, "#!/bin/sh\nsleep 5\n").unwrap();
+            // The probe outlives the hang bound, so returning within it proves
+            // the 25 ms deadline killed it.
+            let sleep = tilo_test_env::hang_bound().as_secs() * 2;
+            fs::write(&hangs, format!("#!/bin/sh\nsleep {sleep}\n")).unwrap();
             fs::set_permissions(&hangs, fs::Permissions::from_mode(0o755)).unwrap();
             let started = Instant::now();
             let error = bounded_stdout(
@@ -868,7 +871,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(error.contains("timed out"), "{error}");
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < tilo_test_env::hang_bound());
         }
     }
 }

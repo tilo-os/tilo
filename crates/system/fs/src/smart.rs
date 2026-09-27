@@ -340,7 +340,7 @@ mod tests {
             "the admitted prediction is observable and byte-bounded"
         );
 
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tilo_test_env::within("the open-triggered sibling prefetch", async {
             loop {
                 if hydrator.sync_state(sibling_hash).await == crate::syncstate::SyncState::Local
                     && heuristics.pending_work() == (0, 0)
@@ -350,8 +350,7 @@ mod tests {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("open-triggered sibling prefetch must complete");
+        .await;
         assert_eq!(
             hydrator
                 .read(sibling_hash, 0, sibling.len() as u64)

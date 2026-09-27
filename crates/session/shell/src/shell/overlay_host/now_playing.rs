@@ -19,8 +19,8 @@ use ui::theme::Theme;
 use super::{DeviceFabricUiAction, ShellOverlayHost};
 use crate::shell::now_playing::{NowPlayingView, output_targets, resolve_output, tr};
 use crate::shell::quick_settings::QsLevel;
-use crate::shell::quick_settings::drill_in::{PANEL_PAD, SIBLING_GAP};
 use crate::shell::quick_settings::now_playing::CardAction;
+use tilo_desktop::drill_in::{PANEL_PAD, SIBLING_GAP};
 
 /// How often an open card re-reads players and advances its playhead.
 const REFRESH: Duration = Duration::from_secs(1);

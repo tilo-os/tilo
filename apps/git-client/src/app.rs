@@ -1051,7 +1051,7 @@ impl GitClientApp {
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Git", "Git", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
         );
     }
 
@@ -1065,7 +1065,7 @@ impl GitClientApp {
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Git", "Git", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
         );
     }
 
@@ -1167,14 +1167,16 @@ impl GitClientApp {
             );
             let row2 = Rect::new(bar.x0, row1.y1, bar.x1, row1.y1 + m.tab_row_h);
             let tx_start = bar.x0 + APPBAR_GUTTER + 6.0;
+            let (wrapped_widths, wrapped_total) =
+                Self::fit_wrapped_appbar_tabs(&widths, bar.x1, tx_start, theme);
             self.draw_appbar_tab_group(
                 scene,
                 tr,
                 t,
                 theme,
                 row2,
-                &widths,
-                tabs_total,
+                &wrapped_widths,
+                wrapped_total,
                 tx_start,
                 m.control_h,
             );
@@ -1233,6 +1235,46 @@ impl GitClientApp {
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
         (widths, total)
+    }
+
+    /// Fit the wrapped (second-row) tab group between `tx_start` and the
+    /// bar's right gutter at the theme's minimum pointer width.
+    fn fit_wrapped_appbar_tabs(
+        widths: &[f64],
+        bar_x1: f64,
+        tx_start: f64,
+        theme: &Theme,
+    ) -> (Vec<f64>, f64) {
+        let available = (bar_x1 - APPBAR_GUTTER - 6.0 - tx_start).max(0.0);
+        Self::fit_appbar_tabs(
+            widths,
+            available,
+            f64::from(theme.tokens.metrics.min_pointer_target),
+        )
+    }
+
+    /// Compress only the padding/slack of a wrapped tab row. Every semantic
+    /// target keeps the theme's minimum pointer width; labels are elided at
+    /// paint time while accessibility and keyboard routing retain full names.
+    fn fit_appbar_tabs(widths: &[f64], available: f64, minimum: f64) -> (Vec<f64>, f64) {
+        let gaps = TABS.len().saturating_sub(1) as f64 * 6.0;
+        let natural_cells = widths.iter().sum::<f64>();
+        let allowed_cells = (available - gaps).max(minimum * widths.len() as f64);
+        if natural_cells <= allowed_cells {
+            return (widths.to_vec(), natural_cells + gaps);
+        }
+        let slack = widths
+            .iter()
+            .map(|width| (width - minimum).max(0.0))
+            .sum::<f64>();
+        let keep = (slack - (natural_cells - allowed_cells)).max(0.0);
+        let factor = if slack > 0.0 { keep / slack } else { 0.0 };
+        let fitted: Vec<f64> = widths
+            .iter()
+            .map(|width| minimum + (width - minimum).max(0.0) * factor)
+            .collect();
+        let total = fitted.iter().sum::<f64>() + gaps;
+        (fitted, total)
     }
 
     /// Draw the repo name, branch pill and pending-changes/error subtitle,
@@ -1375,13 +1417,22 @@ impl GitClientApp {
                 draw::fill_round(scene, t, trect, 7.0, theme.accent_primary);
             }
             let fg = if active { Color::WHITE } else { c.text_dim };
-            let lw = f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0);
-            let ty_1 = draw::centered_top(tr, label, 13.0, TextWeight::Medium, tab_y, tab_h);
+            let shown = tr.elide_to_width_weighted(
+                label,
+                13.0,
+                (w - 12.0).max(0.0) as f32,
+                TextWeight::Medium,
+            );
+            let lw = f64::from(
+                tr.measure_weighted(&shown, 13.0, None, TextWeight::Medium)
+                    .0,
+            );
+            let ty_1 = draw::centered_top(tr, &shown, 13.0, TextWeight::Medium, tab_y, tab_h);
             draw::text_weighted(
                 scene,
                 tr,
                 t,
-                label,
+                &shown,
                 13.0,
                 fg,
                 tx + (w - lw) / 2.0,
@@ -3841,7 +3892,8 @@ mod tests {
             .unwrap();
         let palette_action = match &spec.input {
             tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
                 panic!("diff-layout is an immediate action")
             }
         };
@@ -3884,11 +3936,18 @@ mod tests {
 
     fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
         let mut text = TextRenderer::new();
+        let theme = Theme::dark();
         for width in [320.0, 460.0, 680.0, 1280.0] {
             for screen in [Screen::Changes, Screen::History, Screen::Panels] {
                 let mut app = app_at(width, screen);
                 let mut scene = Scene::new();
-                app.draw_appbar(&mut scene, &mut text, Affine::IDENTITY, &Theme::dark());
+                app.draw_appbar(&mut scene, &mut text, Affine::IDENTITY, &theme);
+                for (_, rect) in &app.tab_rects {
+                    assert!(
+                        rect.width() + 0.5 >= f64::from(theme.tokens.metrics.min_pointer_target),
+                        "tab target shrank below the theme minimum at {width}px: {rect:?}"
+                    );
+                }
                 let mut controls: Vec<Rect> = app.tab_rects.iter().map(|(_, rect)| *rect).collect();
                 controls.extend([app.settings_seg, app.settings_syn]);
                 if app.hamburger_rect.area() > 0.0 {

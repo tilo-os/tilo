@@ -5,7 +5,7 @@
 //! their signing preimage through the same three-step pipeline:
 //!
 //! 1. Build a view of the struct that omits its `signature` field.
-//! 2. `postcard::to_allocvec` the view.
+//! 2. Encode the view with postcard directly into the hasher.
 //! 3. Prepend a fixed byte-constant "domain tag" (`tilo-devcert-v1\0`
 //!    etc.) and hash the concatenation with BLAKE3-256.
 //!
@@ -51,9 +51,9 @@ pub enum CanonicalError {
 
 /// Serialise a value to its canonical byte form.
 ///
-/// Every signature in the crate flows through this function. Two
-/// peers running the same crate version will produce identical
-/// bytes for the same input.
+/// This uses the same postcard encoding as [`signing_digest`]. Two
+/// peers running the same crate version will produce identical bytes
+/// for the same input.
 ///
 /// # Errors
 ///
@@ -111,10 +111,33 @@ pub fn signing_digest<T: Serialize>(
 ) -> Result<[u8; 32], CanonicalError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain_tag);
-    let body = canonical_bytes(view)?;
-    hasher.update(&body);
-    Ok(*hasher.finalize().as_bytes())
+    postcard::serialize_with_flavor(view, SigningHash(hasher))
+        .map_err(|e| CanonicalError::Serialize(e.to_string()))
 }
+
+/// Consume the canonical encoding without retaining a temporary preimage.
+struct SigningHash(blake3::Hasher);
+
+impl postcard::ser_flavors::Flavor for SigningHash {
+    type Output = [u8; 32];
+
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        self.0.update(&[byte]);
+        Ok(())
+    }
+
+    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+        self.0.update(bytes);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(*self.0.finalize().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests;
 
 #[cfg(test)]
 mod tests {

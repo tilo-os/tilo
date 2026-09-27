@@ -15,7 +15,7 @@ use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 use crate::shell::i18n::t;
 
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, RELATED_GAP, TOGGLE_H, TOGGLE_W,
     centred_text_top, leading_glyph, paint_control, trailing_toggle, type_size,
 };

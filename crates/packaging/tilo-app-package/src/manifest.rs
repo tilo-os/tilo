@@ -50,6 +50,69 @@ pub struct Manifest {
     /// shim. Only meaningful when the entrypoint is `cli` or `both`.
     #[serde(default)]
     pub cli: Option<Cli>,
+    /// `[platform]` block — whether the app is inherently tied to one
+    /// operating system. Signed with the rest of the manifest so a store or
+    /// installer can tell portable apps from platform-specific ones.
+    #[serde(default, skip_serializing_if = "Platform::is_portable")]
+    pub platform: Platform,
+    /// `[target]` block — the non-native execution target this build was
+    /// packed for. Absent for native Tilo OS packages, whose target is
+    /// `[package.isa]`. Written by the packer, never by the app author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+}
+
+/// Portability of an application package.
+///
+/// Apps are portable by default: platform-specific code lives in Tilo's
+/// platform crates and the app calls their portable APIs. An app whose
+/// purpose is itself platform-specific (an OS installer, a PTY terminal)
+/// says so once, with a reason, instead of excusing individual lines:
+///
+/// ```toml
+/// [platform]
+/// native = "Writes OS images to block devices and installs bootloaders."
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Platform {
+    /// One-line reason the app is inherently platform-specific. `None`
+    /// means the app is portable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<String>,
+}
+
+impl Platform {
+    /// Whether the app declares no platform-specific purpose.
+    #[must_use]
+    pub fn is_portable(&self) -> bool {
+        self.native.is_none()
+    }
+}
+
+/// `[target]` — a WebAssembly build of the package.
+///
+/// The first four fields are exactly the registry's signed `RegistryTarget`
+/// (see `registry_types::target` for the canonical spellings):
+///
+/// ```toml
+/// [target]
+/// platform = "web"
+/// architecture = "wasm32"
+/// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
+/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
+/// module = "books.wasm"
+/// ```
+///
+/// For an app, `runtime` is the toolkit core it links against; for
+/// `kind = "runtime"` it is the core the package provides.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    pub platform: String,
+    pub architecture: String,
+    pub isa: String,
+    pub runtime: String,
+    /// Payload path of the WebAssembly module the loader instantiates.
+    pub module: String,
 }
 
 /// Optional accessibility acceptance data for an application package.

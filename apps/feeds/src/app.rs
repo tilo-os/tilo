@@ -1022,7 +1022,7 @@ impl FeedsApp {
             doc,
             actions::FEEDS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Feeds", "Feeds", action),
+            tilo_actions::ActionContext::for_action("so.tilo.feeds", "Feeds", action),
         );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the

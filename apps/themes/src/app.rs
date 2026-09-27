@@ -447,7 +447,7 @@ impl ThemesApp {
             state,
             crate::actions::THEMES_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Themes", "Themes", action),
+            tilo_actions::ActionContext::for_action("so.tilo.themes", "Themes", action),
         );
     }
 
@@ -2713,7 +2713,9 @@ mod tests {
                 .expect("delete spec");
             let from_spec = match &spec.input {
                 ActionInput::Immediate(enc) => enc.clone(),
-                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+                ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                    panic!("delete is an immediate action")
+                }
             };
 
             assert_eq!(from_affordance.type_id, from_spec.type_id);

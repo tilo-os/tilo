@@ -56,7 +56,7 @@ pub enum Placement {
 /// `app_id` may be `None` before `set_app_id`; a synthetic `anon-<surface_id>` placeholder is
 /// recorded until [`rename_tab_for_app_id`] rewrites it. Placement comes from the launch
 /// matching this client's app-id, falling back to
-/// [`crate::shell::placement::placement_for_new_window`] when unrecognised.
+/// [`crate::shell::placement::placement_for`] when unrecognised.
 ///
 /// When the active workspace has no strips, a default strip is synthesized so the tab always
 /// lands visible — otherwise the foreign surface leaks buffer + shm-pool memory until the client tears the toplevel down on its own.
@@ -77,7 +77,13 @@ fn adopt_toplevel_unpersisted(
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
     let placement = pending.map_or_else(
-        || crate::shell::placement::placement_for_new_window(tree, None),
+        || {
+            crate::shell::placement::placement_for(
+                tree,
+                tilo_desktop_model::commands::OpenIntent::Launch,
+                None,
+            )
+        },
         |(placement, _)| placement,
     );
     // If this window is what a document open asked for, record that here — the launch and the window it produced meet at this point.
@@ -194,7 +200,7 @@ fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_
 ///
 /// The sibling of [`adopt_toplevel_at`] for a different tile kind: no client process, so no
 /// toplevel or launch note to correlate — the caller applies
-/// [`crate::shell::placement::placement_for_new_window`] itself. Tile is a
+/// [`crate::shell::placement::placement_for`] itself. Tile is a
 /// [`TileContent::AppPlaceholder`], resolved by [`crate::shell::to_ui_tile`].
 pub fn open_hosted_app(
     tree: &mut WorkspaceTree,
@@ -997,7 +1003,11 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     let removed = group.tabs.remove(tab_idx);
     tree.local_app_records.remove(&tab_id);
     if group.active_tab == tab_id {
-        group.active_tab = group.tabs.last().map_or(0, |tab| tab.id);
+        group.active_tab = group
+            .tabs
+            .get(tab_idx)
+            .or_else(|| group.tabs.last())
+            .map_or(0, |tab| tab.id);
     }
     if remove_group {
         let removed_was_active = tree.desktop.active_group.get(&strip_id) == Some(&group_id);
@@ -1724,7 +1734,11 @@ mod tests {
                 let (strip_id, focused) = focus_lone_window(&mut tree);
                 let groups_before = tree.desktop.workspaces[0].strips[0].window_groups.len();
 
-                let placement = crate::shell::placement::placement_for_new_window(&tree, None);
+                let placement = crate::shell::placement::placement_for(
+                    &tree,
+                    tilo_desktop_model::commands::OpenIntent::Launch,
+                    None,
+                );
                 assert_eq!(
                     placement,
                     Placement::RightOf(focused),
@@ -1998,7 +2012,7 @@ mod tests {
                 "reopening starts one live group, not a live group beside a retained corpse"
             );
             assert!(
-                tree.reorder_group_within_strip(strip_id, reopened, 0),
+                tree.reorder_group_for_tests(strip_id, reopened, 0),
                 "the reopened group can move across the compact live ordering"
             );
             assert_eq!(
@@ -2080,6 +2094,8 @@ mod tests {
                     note: String::new(),
                 };
             persisted.flush_to_disk();
+            // The prior session exits, releasing the state file's single writer.
+            drop(persisted);
 
             let mut restored =
                 crate::shell::persist::load_tree_from(&state_path).expect("restore tree");
@@ -2218,6 +2234,23 @@ mod tests {
             );
             crate::shell::launcher::clear_pending_placements();
         }
+    }
+
+    #[test]
+    fn remove_tab_selects_the_immediate_right_tab_when_the_active_middle_tab_closes() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs.truncate(4);
+        let middle = group.tabs[1].id;
+        let right = group.tabs[2].id;
+        group.active_tab = middle;
+
+        assert!(remove_tab(&mut tree, middle));
+
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab, right,
+            "the tab immediately to the right in visible order remains selected"
+        );
     }
 
     #[test]

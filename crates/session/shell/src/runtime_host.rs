@@ -1,8 +1,9 @@
 //! Compositor-free host of the same services used by the Tilo desktop.
 //!
 //! This module contains lifecycle wiring only. Policy and RPC remain in the
-//! existing brokers. Keeping it in this library initially avoids copying the
-//! workspace model while its dependencies are separated from shell chrome.
+//! existing brokers; the profile, native endpoint, app attachment and MCP
+//! projection are `tilo_runtime`'s, which reaches these services through
+//! [`RuntimeServices`].
 
 use crate::{
     identity_broker,
@@ -17,11 +18,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
 };
-
-pub mod daemon;
-pub mod mcp;
-pub mod mcp_process;
-mod unix;
+use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
+pub use tilo_runtime::{RuntimeServices, daemon, mcp, mcp_process};
 
 /// A single-user service session. Drop applications before dropping the session.
 /// Identity discovery uses the same environment as Tilo; configure it before
@@ -102,15 +100,15 @@ impl Session {
         stage("saving the workspace");
         persist::save_tree_to(&tree, &path)?;
         let tree = tree.shared();
-        let identity_socket = root.join("identity.sock");
+        let identity_socket = root.join(IDENTITY_SOCKET);
         let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
         stage("starting the identity service");
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         stage("starting the collaboration broker");
-        let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
+        let broker = collab_broker::spawn_native(root.join(COLLAB_SOCKET), &None, tree.clone())?;
         channel_keys.set(broker.channel_encryption());
-        let blob_socket = root.join("blobs.sock");
+        let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
@@ -169,6 +167,33 @@ impl Session {
     }
 }
 
+impl RuntimeServices for Session {
+    type ActionHost = crate::shell::remote_actions::BrokerActionHost;
+
+    fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start_reporting(root, stage)
+    }
+
+    fn room(&self) -> &str {
+        &self.room
+    }
+
+    fn actor(&self) -> &str {
+        &self.actor
+    }
+
+    fn action_host(&self) -> io::Result<Self::ActionHost> {
+        self.broker
+            .app_action_broker()
+            .map(crate::shell::remote_actions::BrokerActionHost::new)
+            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))
+    }
+
+    fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
+        Self::launch(self, app_id, command)
+    }
+}
+
 /// Serves the host's apps their document media: the filesystem daemon's
 /// content store and capability, on the host's private profile.
 struct MediaHost {
@@ -218,3 +243,16 @@ impl Drop for MediaHost {
         .join();
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+#[path = "runtime_host/mcp_process_tests.rs"]
+mod mcp_process_tests;
+#[cfg(test)]
+#[path = "runtime_host/mcp_tests.rs"]
+mod mcp_tests;
