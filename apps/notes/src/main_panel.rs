@@ -1056,6 +1056,12 @@ impl MainPanel {
         &mut self.editor
     }
 
+    /// Whether the editor's block `id` is one the page stores.
+    #[must_use]
+    pub fn stores_block(&self, id: &str) -> bool {
+        self.editor.shows_stored(id)
+    }
+
     /// Whether the undo step the body's last edit opened stays open for the
     /// next letters of the word.
     pub fn keeps_undo_step_open(&self) -> bool {
