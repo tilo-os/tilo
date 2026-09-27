@@ -633,17 +633,6 @@ a11y-workspace-name = Name des Arbeitsbereichs
 a11y-workspace-settings-content = Inhalt der Arbeitsbereichseinstellungen
 a11y-at-a-glance = Auf einen Blick
 
-# Barrierefreiheitsbaum: aufbewahrte Benachrichtigungen
-a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
-a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
-a11y-notifications-list = Aufbewahrte Benachrichtigungen
-a11y-notifications-clear = Alle Benachrichtigungen löschen
-a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
-a11y-notifications-cleared = Benachrichtigungen gelöscht
-a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
-a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
-a11y-notifications = Benachrichtigungen
-
 # Barrierefreiheitsbaum: Verlauf der Zwischenablage
 a11y-clipboard-data = Daten der Zwischenablage
 a11y-clipboard-item-description = Von { $source }; { $age }; { $bytes } Byte; { $pinned ->
@@ -814,22 +803,6 @@ follow-stop = Beenden
 # Filterchips der Suche
 search-filter-all = Alle
 
-# Schnelleinstellungen: Benachrichtigungsverlauf
-qs-notifications-title = Benachrichtigungen
-qs-notifications-empty = Keine neuen Benachrichtigungen
-qs-notifications-cleared = Benachrichtigungen gelöscht
-qs-notifications-clear-all = Alle löschen
-qs-notifications-position = Neueste { $first }–{ $last } von { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Neuere
-qs-notifications-at-newest = Neueste erreicht
-qs-notifications-older = ↓ Ältere
-qs-notifications-at-oldest = Älteste erreicht
-
 # Schnelleinstellungen: Zeilen für Geräte und Medien
 qs-devices-mic-other = Mikrofon · von hier aufnehmen
 qs-devices-mic-current = Aktuelles Mikrofon
@@ -996,26 +969,6 @@ qs-wifi-protected = Dieses Netzwerk ist geschützt
 
 # Aufbewahrter Verlauf: Quellen und Schweregrade
 history-this-device = Dieses Gerät
-history-severity-info = Information
-history-severity-warning = Warnung
-history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
-
-# Zeilen der Benachrichtigungszentrale
-notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
-        [yes] Einklappen
-       *[no] Ausklappen
-    }, Entf, um alle zu verwerfen.
-notification-center-dismiss-all = Alle von { $app } verwerfen
-notification-center-dismiss = Verwerfen
-notification-center-hand-to = An { $agent } übergeben
-notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
-notification-center-group-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
 
 # On-screen display for the hardware keys
 osd-play = Wiedergabe
@@ -1057,13 +1010,6 @@ status-other-displays-a11y = Weitere Bildschirme
 
 # Notification toasts
 notification-source-caption = { $app } · Von { $device }
-notification-lock-count = { $count ->
-    [one] 1 Benachrichtigung
-   *[other] { $count } Benachrichtigungen
-}
-notification-dnd-held = { $status } · { $count } zurückgehalten
-notification-stack-a11y = Benachrichtigungen
-notification-group-system = System
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
 notification-remote-input-stopped = Fernsteuerung beendet

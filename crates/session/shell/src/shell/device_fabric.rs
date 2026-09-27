@@ -342,13 +342,13 @@ pub enum PersonalFabricAction {
         notification: crate::notifications::ContinuityNotificationProjection,
     },
     NotificationRetire {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationDismiss {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
     },
     NotificationInvoke {
-        id: crate::notifications::ContinuityNotificationId,
+        id: tilo_desktop::notifications::ContinuityNotificationId,
         action_key: String,
     },
     /// Metadata-only realtime handoff offer. Capture grants, media handles,
@@ -3254,7 +3254,7 @@ mod tests {
             .unwrap();
             assert_eq!(nearby.first(), Some(&13));
             let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-                id: crate::notifications::ContinuityNotificationId {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -3360,7 +3360,7 @@ mod tests {
             let source = id("source");
             let target = id("target");
             let notification = crate::notifications::ContinuityNotificationProjection {
-                id: crate::notifications::ContinuityNotificationId {
+                id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -3388,7 +3388,7 @@ mod tests {
 
             let invalid = PersonalFabricActionEnvelope {
                 action: PersonalFabricAction::NotificationInvoke {
-                    id: crate::notifications::ContinuityNotificationId {
+                    id: tilo_desktop::notifications::ContinuityNotificationId {
                         epoch: [1; 16],
                         token: [2; 16],
                     },

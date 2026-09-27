@@ -20,7 +20,7 @@ use vello::peniko::Fill;
 use crate::shell::now_playing::{
     NowPlayingView, OutputKind, PlaybackStatus, PlayerCommand, PlayerSnapshot, format_time, tr,
 };
-use crate::shell::quick_settings::drill_in::{
+use tilo_desktop::drill_in::{
     CONTROL_INSET, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SIBLING_GAP, TARGET,
     centred_text_top, control_radius, leading_glyph, paint_control, trailing_glyph, type_size,
 };

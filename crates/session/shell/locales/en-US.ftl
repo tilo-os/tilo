@@ -630,17 +630,6 @@ a11y-workspace-name = Workspace name
 a11y-workspace-settings-content = Workspace settings content
 a11y-at-a-glance = At a glance
 
-# Accessibility tree: retained notifications
-a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
-a11y-notifications-list = Retained notifications
-a11y-notifications-clear = Clear all notifications
-a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
-a11y-notifications-cleared = Notifications cleared
-a11y-notifications-undo = Undo clear notifications
-a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications = Notifications
-
 # Accessibility tree: clipboard history
 a11y-clipboard-data = Clipboard data
 a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
@@ -811,22 +800,6 @@ follow-stop = Stop
 # Search filter chips
 search-filter-all = All
 
-# Quick Settings: notification history
-qs-notifications-title = Notifications
-qs-notifications-empty = No recent notifications
-qs-notifications-cleared = Notifications cleared
-qs-notifications-clear-all = Clear all
-qs-notifications-position = Newest { $first }–{ $last } of { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Newer
-qs-notifications-at-newest = At newest
-qs-notifications-older = ↓ Older
-qs-notifications-at-oldest = At oldest
-
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here
 qs-devices-mic-current = Current microphone
@@ -993,26 +966,6 @@ qs-wifi-protected = This network is protected
 
 # Retained history: sources and severities
 history-this-device = This device
-history-severity-info = Information
-history-severity-warning = Warning
-history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
-
-# Notification center rows
-notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
-        [yes] collapse
-       *[no] expand
-    }, Delete to dismiss them all.
-notification-center-dismiss-all = Dismiss all from { $app }
-notification-center-dismiss = Dismiss
-notification-center-hand-to = Hand to { $agent }
-notification-center-hand-to-description = Give this notification to the workspace agent as a task.
-notification-center-group-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
 
 # On-screen display for the hardware keys
 osd-play = Play
@@ -1054,13 +1007,6 @@ status-other-displays-a11y = Other displays
 
 # Notification toasts
 notification-source-caption = { $app } · From { $device }
-notification-lock-count = { $count ->
-    [one] 1 notification
-   *[other] { $count } notifications
-}
-notification-dnd-held = { $status } · { $count } held
-notification-stack-a11y = Notifications
-notification-group-system = System
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
