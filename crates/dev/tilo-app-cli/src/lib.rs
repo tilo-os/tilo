@@ -5049,6 +5049,9 @@ fn rebuild_running_dev_app(
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
+    if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+        return false;
+    }
     loop {
         if let Some(next) = snapshot_restart_sources(roots) {
             *sources = next;
@@ -5124,6 +5127,75 @@ fn rebuild_running_dev_app(
         }
         return false;
     }
+}
+
+/// A running in-place app reads `locales/*.ftl` from disk on every reload, so
+/// an edit to catalogs alone needs a signal, not a build. Returns whether it
+/// was handled that way.
+fn reload_catalogs_without_build(
+    plan: &CargoPlan,
+    child: Option<&Child>,
+    roots: &[PathBuf],
+    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+) -> bool {
+    let Some(running) = child else {
+        return false;
+    };
+    if !app_supports_in_place_reload(&plan.app_dir) {
+        return false;
+    }
+    let Some(next) = snapshot_restart_sources(roots) else {
+        return false;
+    };
+    let app_dir = plan
+        .app_dir
+        .canonicalize()
+        .unwrap_or_else(|_| plan.app_dir.clone());
+    let changed = changed_sources(sources, &next);
+    if changed.is_empty()
+        || !changed.iter().all(|path| is_locale_catalog(&app_dir, path))
+        || !reload_running_dev_app(running)
+    {
+        return false;
+    }
+    *sources = next;
+    eprintln!("[tilo-app] catalogs changed; reloading strings without a build");
+    true
+}
+
+/// Paths added, removed or restamped between two source snapshots.
+fn changed_sources<'a>(
+    before: &'a HashMap<PathBuf, (SystemTime, u64)>,
+    after: &'a HashMap<PathBuf, (SystemTime, u64)>,
+) -> Vec<&'a Path> {
+    let mut changed = after
+        .iter()
+        .filter(|(path, stamp)| before.get(*path) != Some(stamp))
+        .map(|(path, _)| path.as_path())
+        .collect::<Vec<_>>();
+    changed.extend(
+        before
+            .keys()
+            .filter(|path| !after.contains_key(*path))
+            .map(PathBuf::as_path),
+    );
+    changed
+}
+
+/// A Fluent catalog directly under the app's `locales/`.
+fn is_locale_catalog(app_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(app_dir) else {
+        return false;
+    };
+    let mut components = relative.components();
+    components
+        .next()
+        .is_some_and(|first| first.as_os_str() == "locales")
+        && components.next().is_some()
+        && components.next().is_none()
+        && relative
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ftl"))
 }
 
 /// Drain edits queued while Cargo was compiling. Returning `true` makes the
