@@ -1,0 +1,25 @@
+[package]
+name = "tilo-account-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The accounts service a sandboxed app reaches over its launcher-issued descriptor: operations on an online account whose credential stays in custody, such as filing a forge issue."
+
+[lib]
+name = "tilo_account_service"
+path = "src/lib.rs"
+
+# The protocol and the app-side client only: no credential, no network. The
+# service itself is `tilo-account-service` in account-custody, which holds
+# the vault.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wire-frame = { path = "../wire-frame" }
+libc.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

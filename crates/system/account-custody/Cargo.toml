@@ -17,6 +17,13 @@ name = "tilo-account-credential"
 path = "src/bin/tilo-account-credential.rs"
 required-features = ["custody"]
 
+# The accounts service sandboxed apps reach over their launcher-issued
+# descriptor: custody's operations, never its credentials.
+[[bin]]
+name = "tilo-account-service"
+path = "src/bin/tilo-account-service.rs"
+required-features = ["custody"]
+
 [[test]]
 name = "helper"
 path = "tests/helper.rs"
@@ -40,10 +47,18 @@ custody = [
     "dep:cloud-source-onedrive",
     "dep:cloud-source-dropbox",
     "dep:cloud-source-icloud",
+    "dep:libc",
 ]
+# A fake Forgejo repository (`forge::fake`) for tests of code that files
+# issues through custody.
+fake-forge = ["custody", "dep:test-http"]
 
 [dependencies]
 accounts = { path = "../accounts" }
+# The accounts service's protocol, and the issue types it carries.
+tilo-account-service = { path = "../account-service" }
+libc = { workspace = true, optional = true }
+test-http = { path = "../../dev/test-http", optional = true }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true
 tracing.workspace = true

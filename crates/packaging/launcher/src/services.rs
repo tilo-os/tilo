@@ -62,6 +62,10 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// it the connected descriptor, so a same-UID process cannot manufacture a
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
+/// Custody's operations on online accounts (filing a forge issue). Like the
+/// model gateway, the launcher names the consuming package before the app
+/// holds the descriptor; the service holds the credentials and the network.
+pub const ACCOUNTS_SERVICE: &str = tilo_account_service::SERVICE_NAME;
 pub const APP_HOST_SERVICE: &str = "app-host";
 /// Document media. Not declared by manifests: every app is handed a
 /// capability scoped to itself and its room, so a document's images live in
@@ -528,6 +532,27 @@ fn authenticate_service(
         };
     }
 
+    if name == ACCOUNTS_SERVICE {
+        let Some(launch) = context else {
+            let error = ServiceError::OpenFailed {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("the accounts service requires launcher context"),
+            };
+            return handoff_failure(required, error, "optional accounts service skipped");
+        };
+        return match write_accounts_handoff(stream, launch.app_id) {
+            Ok(()) => Ok(HandoffOutcome::Ready),
+            Err(source) => handoff_failure(
+                required,
+                ServiceError::OpenFailed {
+                    path: path.to_path_buf(),
+                    source,
+                },
+                "optional accounts service rejected launch handoff",
+            ),
+        };
+    }
+
     if name == APP_HOST_SERVICE {
         let launch = context.ok_or(ServiceError::AppHostUnauthorized)?;
         write_app_host_handoff(stream, launch.app_id).map_err(|source| {
@@ -688,6 +713,13 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
+    stream.flush()
+}
+
+/// The accounts service's handoff naming the launched app.
+fn write_accounts_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    let bytes = tilo_account_service::handoff(app_id).map_err(std::io::Error::other)?;
+    tilo_account_service::HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 

@@ -61,6 +61,8 @@ pub mod icloud;
 pub mod nextcloud;
 pub mod providers;
 #[cfg(feature = "custody")]
+pub mod service;
+#[cfg(feature = "custody")]
 pub mod storage;
 
 pub use clients::{ClientEntry, ClientTable, Scopes};

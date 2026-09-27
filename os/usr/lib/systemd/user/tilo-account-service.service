@@ -1,0 +1,46 @@
+[Unit]
+Description=Tilo accounts service: custody operations for sandboxed apps
+PartOf=tilo-graphical-session.target
+# Started by tilo-account-service.socket when an app that declares the
+# accounts service is launched. It holds the account vault; apps never do.
+# Network availability is handled by each forge request; activation and
+# local configuration access must remain available offline.
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tilo-account-service serve --socket %t/tilo/services/accounts.sock
+Restart=on-failure
+RestartSec=2
+UMask=0077
+RuntimeDirectory=tilo
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ConfigurationDirectory=tilo
+ConfigurationDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/tilo %t/tilo
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM

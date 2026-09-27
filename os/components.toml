@@ -359,6 +359,21 @@ files = [
   { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
 ]
 
+# The accounts service sandboxed apps reach over their launcher-issued
+# descriptor: custody's operations on an account (filing a forge issue)
+# without its credential ever entering the app.
+[[component]]
+name = "account-service"
+kind = "userspace"
+scope = "session"
+packages = ["account-custody"]
+bins = ["tilo-account-service"]
+user_units = ["tilo-account-service.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-account-service", to = "/usr/libexec/tilo-account-service", mode = "0755" },
+]
+
 [[component]]
 name = "greeter"
 kind = "userspace"

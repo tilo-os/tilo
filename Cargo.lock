@@ -130,11 +130,13 @@ dependencies = [
  "cloud-source-gdrive",
  "cloud-source-icloud",
  "cloud-source-onedrive",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "test-http",
+ "tilo-account-service",
  "tilo-clock",
  "tilo-net",
  "tilo-oauth",
@@ -313,9 +315,9 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "account-custody",
- "accounts",
  "agent-provider-config",
  "anyhow",
+ "atomic-file",
  "automerge",
  "chat",
  "clap",
@@ -331,6 +333,7 @@ dependencies = [
  "serde_json",
  "shell",
  "tempfile",
+ "tilo-account-service",
  "tilo-actions",
  "tilo-app",
  "tilo-automation",
@@ -7357,6 +7360,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-account-service",
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
@@ -14359,6 +14363,18 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
+]
+
+[[package]]
+name = "tilo-account-service"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
