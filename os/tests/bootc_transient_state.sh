@@ -45,7 +45,7 @@ if grep -Fq "target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro" "
    && awk '
       /^RUN rm -f \/etc\/resolv.conf && printf / { placeholder = NR }
       /python3 \/usr\/local\/libexec\/tilo-clean-bootc-transient-state[.]py/ { clean = NR }
-      /^COPY --from=runtime-resolver-link \/out\/resolv.conf \/etc\/resolv.conf$/ { restored = NR }
+      /^COPY --from=runtime-resolver-link \/out\/ \/etc\/$/ { restored = NR }
       /^FROM rootfs AS split$/ { split_line = NR }
       END { exit (placeholder && clean && restored && split_line && placeholder < clean && clean < restored && restored < split_line) ? 0 : 1 }
    ' "$containerfile"; then
