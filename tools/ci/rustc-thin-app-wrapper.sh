@@ -33,9 +33,13 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # wire limit despite the declared thin-app profile using one
         # unit. Keep parallel codegen for the large runtime, but optimize each
         # independently shipped executable as one unit.
+        # Packed relative relocations (DT_RELR, glibc >= 2.36) store the PIE's
+        # ~20k R_X86_64_RELATIVE entries as a bitmap instead of 24 bytes each;
+        # for Settings that is ~490 KB of .rela.dyn per tapp.
         exec "$compiler" "$@" -C prefer-dynamic -C opt-level=z -C codegen-units=1 \
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
+            -C link-arg=-Wl,-z,pack-relative-relocs \
             "${link_map[@]}"
         ;;
 esac
