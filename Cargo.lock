@@ -18848,6 +18848,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-resource",
+ "tilo-rich-text",
  "tilo-test-env",
  "vello",
  "winit",

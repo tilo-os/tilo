@@ -3109,6 +3109,7 @@ mod tests {
                 author: "Scribe".into(),
                 date: "2026-09-08".into(),
                 text: "Done.".into(),
+                body: Vec::new(),
             };
             assert_eq!(
                 word_action_anchor(&reply, "unused-focus"),

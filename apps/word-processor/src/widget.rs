@@ -28,6 +28,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 // Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
 // theme-tinted translucent chrome tones).
+use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitKey};
 use ui::ColorCompat;
 #[cfg(test)]
 use ui::clipboard_copy;
@@ -35,7 +36,7 @@ use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{TextInput, TextInputKind, Widget};
+use ui::widget::{BlockEditor, Embedded, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
 use crate::WpFormat;
@@ -1447,7 +1448,11 @@ pub struct WordProcessorWidget {
     /// A materialized snapshot supplied only by the headless visual scenario.
     /// Interactive threads always resolve their current value from `review`.
     thread_snapshot: Option<qdoc::snapshot::CommentView>,
-    thread_reply: TextInput,
+    /// The reply being written, in the SDK editor: Ctrl+Enter sends it,
+    /// Escape closes the thread.
+    thread_reply: Embedded<RichTextSurface<Draft>>,
+    /// The thread's replies as written, one view each.
+    thread_reply_views: Vec<RichTextView>,
     thread_panel: Rect,
     thread_submit: Rect,
     thread_cancel: Rect,
@@ -1651,11 +1656,17 @@ impl WordProcessorWidget {
             review: ReviewOverlay::default(),
             thread_comment: None,
             thread_snapshot: None,
-            thread_reply: TextInput::local()
-                .with_kind(TextInputKind::Prose)
-                .with_id("word_processor_comment_reply")
-                .with_accessible_name(t("review-reply"))
-                .with_font_size(13.0),
+            thread_reply: Embedded::new(
+                RichTextSurface::over(Draft::new())
+                    .with_editor(
+                        BlockEditor::new()
+                            .with_wrap_lines(true)
+                            .with_compact_paragraph_spacing(true),
+                    )
+                    .with_placeholder(&t("review-reply-placeholder"))
+                    .with_submit(SubmitKey::ModEnter),
+            ),
+            thread_reply_views: Vec::new(),
             thread_panel: Rect::ZERO,
             thread_submit: Rect::ZERO,
             thread_cancel: Rect::ZERO,
@@ -3039,7 +3050,7 @@ impl WordProcessorWidget {
     pub fn stage_comment_thread_for_shot(&mut self, comment: qdoc::snapshot::CommentView) {
         self.thread_comment = Some(comment.id.clone());
         self.thread_snapshot = Some(comment);
-        Widget::set_focus(&mut self.thread_reply, true);
+        self.focus_thread_reply(true);
         self.lifecycle.dirty = true;
     }
 
@@ -4039,9 +4050,6 @@ struct EditorEventCtx<'a> {
     state: &'a mut AutoCommit,
     path: &'a ObjId,
     handled: &'a mut bool,
-    focus_target: &'a mut Option<NodeId>,
-    node_id: NodeId,
-    taffy: &'a TaffyTree<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -10914,9 +10922,6 @@ impl Widget for WordProcessorWidget {
                 state,
                 path,
                 handled,
-                focus_target,
-                node_id,
-                taffy,
             },
         );
         if comment_thread_handled {
@@ -11698,41 +11703,37 @@ impl WordProcessorWidget {
         let field_top = btn_top - tk.s3 - field_h;
         let replies_bottom = field_top - tk.s3;
         let mut y = root_top + f64::from(root_layout.height()) + tk.s3;
-        for reply in comment.replies.iter().take(3) {
-            let text = reply
-                .blocks
-                .iter()
-                .map(|block| block.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
+        let replies: Vec<_> = comment.replies.iter().take(3).collect();
+        self.thread_reply_views
+            .resize_with(replies.len(), RichTextView::new);
+        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
             // A reply bubble is indented `s2` under the root and pads its
-            // text `s2` horizontally, `s1` vertically.
+            // author and body `s2` horizontally, `s1` vertically.
             let bubble_x0 = panel.x0 + pad + tk.s2;
             let bubble_x1 = panel.x1 - pad;
-            let layout = RichTextLayout::shape(
-                &mut tr.font_system,
-                &[RichSpan::new(format!("{}  {}", reply.author, text))],
-                false,
-                THREAD_REPLY_FONT,
-                num::f32_of_f64(bubble_x1 - bubble_x0 - 2.0 * tk.s2),
-                TextAlign::Left,
-                FontFamily::Sans,
-                vec![],
-                vec![],
-                1.0,
+            let (_, author_h) = tr.measure(&reply.author, THREAD_REPLY_FONT, None);
+            let body_top = y + tk.s1 + f64::from(author_h);
+            view.show_views(&reply.blocks);
+            let body_h = view.layout(
+                Rect::new(bubble_x0 + tk.s2, body_top, bubble_x1 - tk.s2, body_top),
+                theme,
+                tr,
             );
-            let h = f64::from(layout.height()) + 2.0 * tk.s1;
+            let h = body_top - y + body_h + tk.s1;
             if y + h > replies_bottom {
                 break;
             }
             let bubble = Rect::new(bubble_x0, y, bubble_x1, y + h);
             ui::surface::card(scene, transform, bubble, tk.radius_sm, cc.chip);
-            tr.draw_rich(
+            tr.draw_text(
                 scene,
-                &layout,
+                &reply.author,
+                THREAD_REPLY_FONT,
+                cc.text_dim,
                 transform * Affine::translate((bubble.x0 + tk.s2, bubble.y0 + tk.s1)),
-                cc.text,
+                None,
             );
+            view.draw(scene, transform, tr, theme);
             y += h + tk.s2;
         }
         let field = Rect::new(
@@ -11741,17 +11742,9 @@ impl WordProcessorWidget {
             panel.x1 - pad,
             field_top + field_h,
         );
+        self.thread_reply.layout(field, theme, tr);
         self.thread_reply
-            .set_placeholder(&t("review-reply-placeholder"));
-        self.thread_reply.apply_layout_external(field);
-        Widget::draw(
-            &mut self.thread_reply,
-            scene,
-            transform,
-            tr,
-            theme,
-            presence,
-        );
+            .draw(scene, transform, tr, theme, presence);
         // Action row: each button is its measured label plus `s3` each side,
         // trailing-aligned, `s2` apart (siblings of one action group).
         let cancel_label = t("review-cancel-reply");
@@ -12726,6 +12719,7 @@ impl WordProcessorWidget {
                 level: None,
                 ordered: None,
                 align: None,
+                attrs: std::collections::BTreeMap::default(),
             })
             .collect();
         self.paste_fragment_via_action(state, blocks);
@@ -13292,8 +13286,9 @@ impl WordProcessorWidget {
         }
         self.thread_comment = Some(comment.to_string());
         self.thread_snapshot = None;
-        self.thread_reply.set_text("");
-        Widget::set_focus(&mut self.thread_reply, true);
+        self.thread_reply.widget_mut().source_mut().clear();
+        self.thread_reply.widget_mut().present_now();
+        self.focus_thread_reply(true);
         self.lifecycle.dirty = true;
     }
 
@@ -13303,21 +13298,39 @@ impl WordProcessorWidget {
         self.thread_panel = Rect::ZERO;
         self.thread_submit = Rect::ZERO;
         self.thread_cancel = Rect::ZERO;
-        Widget::set_focus(&mut self.thread_reply, false);
+        self.focus_thread_reply(false);
         self.lifecycle.dirty = true;
+    }
+
+    /// Put the caret in the reply field, or take it out.
+    fn focus_thread_reply(&mut self, focused: bool) {
+        let surface = self.thread_reply.widget_mut();
+        surface.set_focus(focused);
+        if focused {
+            surface
+                .editor_mut()
+                .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
+        }
     }
 
     fn submit_comment_reply(&mut self, state: &mut AutoCommit) {
         let Some(comment) = self.thread_comment.clone() else {
             return;
         };
-        let text = self.thread_reply.value().trim().to_string();
-        if text.is_empty() {
+        let draft = self.thread_reply.widget().source();
+        if draft.is_empty() {
             return;
         }
-        let action = crate::actions::reply_to_comment_action(&comment, &t("review-you"), "", &text);
+        let action = crate::actions::RichTextAction::ReplyToComment {
+            comment,
+            author: t("review-you"),
+            date: String::new(),
+            text: draft.plain_text().trim().to_owned(),
+            body: draft.clip_blocks(),
+        };
         self.perform_action(state, &action);
-        self.thread_reply.set_text("");
+        self.thread_reply.widget_mut().source_mut().clear();
+        self.thread_reply.widget_mut().present_now();
         self.refresh_blocks(state);
         self.lifecycle.needs_commit = true;
         self.lifecycle.dirty = true;
@@ -13333,42 +13346,8 @@ impl WordProcessorWidget {
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            Widget::handle_event(
-                &mut self.thread_reply,
-                event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.route_thread_reply(event, ctx);
             return false;
-        }
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.close_comment_thread();
-                *ctx.handled = true;
-                return true;
-            }
-            if matches!(logical_key, Key::Named(NamedKey::Enter))
-                && ctx.modifiers.state().control_key()
-            {
-                self.submit_comment_reply(ctx.state);
-                *ctx.handled = true;
-                return true;
-            }
         }
         if matches!(
             event,
@@ -13393,21 +13372,33 @@ impl WordProcessorWidget {
                 *ctx.handled = true;
                 return true;
             }
+            if self.thread_reply.rect().contains(self.pointer) {
+                self.focus_thread_reply(true);
+            }
         }
-        Widget::handle_event(
-            &mut self.thread_reply,
+        self.route_thread_reply(event, ctx);
+        match self.thread_reply.widget_mut().take_outcome() {
+            Some(FieldOutcome::Submit) => self.submit_comment_reply(ctx.state),
+            Some(FieldOutcome::Cancel) => self.close_comment_thread(),
+            None => {}
+        }
+        *ctx.handled = true;
+        true
+    }
+
+    /// Give the reply field one event and bring it up to date.
+    fn route_thread_reply(&mut self, event: &WindowEvent, ctx: &mut EditorEventCtx<'_>) {
+        let mut handled = *ctx.handled;
+        self.thread_reply.handle_event(
             event,
             ctx.scale_factor,
             &ctx.modifiers,
             ctx.state,
             ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut handled,
         );
-        *ctx.handled = true;
-        true
+        self.thread_reply.sync(ctx.state, ctx.path);
+        self.lifecycle.dirty = true;
     }
 
     /// Act on a tracked-change / comment review affordance (from a margin-card

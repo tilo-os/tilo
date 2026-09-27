@@ -2767,6 +2767,8 @@ pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
 };
+mod embedded;
+pub use embedded::Embedded;
 mod manual;
 pub use manual::{
     ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
