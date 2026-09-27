@@ -2342,9 +2342,9 @@ mod tests {
         // The chip families laid out above, by the labels the tree speaks.
         let chip_names: Vec<String> = ActivityView::ALL
             .iter()
-            .map(|view| view.label().to_string())
-            .chain(RoomScope::ALL.iter().map(|scope| scope.label().to_string()))
-            .chain(Period::ALL.iter().map(|period| period.label().to_string()))
+            .map(|view| view.label())
+            .chain(RoomScope::ALL.iter().map(|scope| scope.label()))
+            .chain(Period::ALL.iter().map(|period| period.label()))
             .collect();
         // Only the chips are checked: the timeline list and controls the
         // current view does not paint publish no rect, and rightly so.
