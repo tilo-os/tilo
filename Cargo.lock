@@ -14195,6 +14195,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-resource",
  "tilo-ui",
  "tracing",
