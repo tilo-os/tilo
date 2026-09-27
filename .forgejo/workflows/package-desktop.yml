@@ -50,16 +50,6 @@ env:
   CARGO_TERM_COLOR: never
   # Tags and explicit full-native dispatches use the native-ARM pool.
   TILO_DESKTOP_ARM64_RELEASES: "1"
-  # The compiler cache belongs to this repository: its key is a repository
-  # secret, not runner environment, because the runners serve every repository.
-  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
-  SCCACHE_REGION: us-west-2
-  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
-  SCCACHE_S3_USE_SSL: "true"
-  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   applicability:

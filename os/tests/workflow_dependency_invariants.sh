@@ -27,7 +27,7 @@ cosign_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/tilo-relay.yaml"
+  "$workflows/release-relay.yml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
@@ -40,7 +40,7 @@ release_signed_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/tilo-relay.yaml"
+  "$workflows/release-relay.yml"
   "$workflows/snapshot-rpms.yml"
 )
 
@@ -114,7 +114,7 @@ else
   fail=1
 fi
 
-relay_workflow="$workflows/tilo-relay.yaml"
+relay_workflow="$workflows/release-relay.yml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
    && grep -Fq 'needs: [signing-preflight, applicability, ensure-rpms]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'

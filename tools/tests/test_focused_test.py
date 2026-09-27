@@ -208,12 +208,11 @@ class FocusedTests(unittest.TestCase):
             native = workflow.split('  focused:', 1)[1]
             self.assertEqual(native.count('path: control'), 1)
             self.assertEqual(native.count('path: source'), 1)
-            # Besides the registry token, only the compiler cache key, bound at
-            # workflow level like every cache user's (test_compiler_cache_credentials.py).
-            cache_key = {'  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}',
-                         '  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}'}
+            # Checkout uses the registry token. The compiler cache comes from
+            # the runner, so the workflow binds no cache secret.
+            self.assertNotIn('SCCACHE_', workflow)
             for line in workflow.splitlines():
-                if 'secrets.' in line and line not in cache_key:
+                if 'secrets.' in line:
                     self.assertIn('secrets.REGISTRY_TOKEN', line)
 
 
