@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use os_actions::codec_pack::{CodecPackStatus, MesaState, PackState};
 
 use crate::shell::i18n::{t, t_args};
-use crate::shell::notification::{Notification, NotificationSeverity};
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 
 /// One notification to show.
 #[derive(Clone, Debug, PartialEq, Eq)]

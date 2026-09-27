@@ -33,6 +33,8 @@ use ui::collaboration::{
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -229,9 +231,7 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
     // Publishing is one-way; ask the action host until it offers what
     // was published before a test launches an agent that plans against it.
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
-        .expect("five-second catalogue deadline fits in Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut deferred = Vec::new();
     let mut correlation = 0_u64;
     while std::time::Instant::now() < deadline {

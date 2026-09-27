@@ -75,7 +75,6 @@ pub mod state;
 pub mod transport;
 pub mod util;
 pub mod validate;
-pub mod wysiwyg;
 
 pub use app::MailApp;
 

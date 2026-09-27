@@ -584,7 +584,7 @@ mod publication_tests {
         .await
         .unwrap();
         let session = RelayCoeditSession::join(client, workspace, cert.device_public_key).unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if matches!(session.recv().await, Some(Inbound::Ready { .. })) {
                     break;
@@ -669,7 +669,7 @@ mod publication_tests {
             result
         });
 
-        let address = tokio::time::timeout(Duration::from_secs(10), async {
+        let address = tokio::time::timeout(tilo_test_env::hang_bound(), async {
             tokio::select! {
                 ready = ready_rx => ready.expect("daemon readiness channel closed"),
                 exited = &mut daemon => panic!(
@@ -733,7 +733,7 @@ mod publication_tests {
                     message,
                 })
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 match client.recv_action().await {
                     Some(
                         EnvelopeV2::Delivered { action, .. }
@@ -833,7 +833,7 @@ mod publication_tests {
         );
         drop(store);
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(10), daemon)
+        tokio::time::timeout(tilo_test_env::hang_bound(), daemon)
             .await
             .expect("daemon must shut down its real endpoints")
             .expect("daemon task panicked")
@@ -905,7 +905,7 @@ mod publication_tests {
         for publication in &store.state.outbox {
             publish(&publisher, publication).unwrap();
         }
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             while receiver.rows().len() < 2
                 || receiver.rows().iter().any(|row| {
                     !receiver
@@ -960,7 +960,7 @@ mod publication_tests {
             publish(&publisher, publication).unwrap();
         }
         let expected = store.peer_at(13).unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             while receiver.rows() != expected.rows()
                 || receiver.rows().iter().any(|row| {
                     !receiver
@@ -1381,7 +1381,7 @@ mod durability_runtime_tests {
                 )
                 .await
             });
-            let address = tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            let address = tokio::time::timeout(tilo_test_env::hang_bound(), ready_rx)
                 .await
                 .unwrap()
                 .unwrap();
@@ -1404,7 +1404,7 @@ mod durability_runtime_tests {
             let browser =
                 RelayCoeditSession::join(client, workspace, device.verifying_key().to_bytes())
                     .unwrap();
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 while !matches!(browser.recv().await, Some(Inbound::Ready { .. })) {}
                 loop {
                     let store = Store::open(dir.path(), "durability-runtime").unwrap();

@@ -19,11 +19,87 @@ fn usize_to_f64_lossy(n: usize) -> f64 {
 fn f64_to_f32_lossy(n: f64) -> f32 {
     n as f32
 }
+/// Toggle `kind` in the chip selection. Content kinds combine; the empty
+/// selection means everything shows.
+///
+/// Applications and Host Apps are the exception: they are alternative
+/// launch sources, not additive content facets. A picker opened for a new
+/// window starts with both sources available, and choosing Host Apps must
+/// narrow to host rows rather than toggle that source out and leave the
+/// Tilo-app rows behind.
+pub fn toggle_kind(selected: &mut Vec<ResourceKind>, kind: ResourceKind) {
+    if matches!(
+        kind,
+        ResourceKind::Application | ResourceKind::HostApplication
+    ) {
+        if selected.as_slice() == std::slice::from_ref(&kind) {
+            selected.clear();
+        } else {
+            *selected = vec![kind];
+        }
+        return;
+    }
+    if let Some(pos) = selected.iter().position(|k| k == &kind) {
+        selected.remove(pos);
+    } else {
+        selected.push(kind);
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FilterAction {
     AllKinds,
     ToggleKind(ResourceKind),
     Scope(SearchScope),
+}
+/// One kind chip: the kind it toggles, its label and its accessible name,
+/// in whatever language the host shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KindChip {
+    pub kind: ResourceKind,
+    pub label: String,
+    pub name: String,
+}
+impl KindChip {
+    /// The chip with the kind's stable English label.
+    pub fn english(kind: ResourceKind) -> Self {
+        let label = kind.label().to_owned();
+        let name = format!("Filter: {label}");
+        Self { kind, label, name }
+    }
+}
+/// One scope segment: its scope, label and accessible name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeSegment {
+    pub scope: SearchScope,
+    pub label: String,
+    pub name: String,
+}
+impl ScopeSegment {
+    /// The segment named in English after `label`.
+    pub fn english(scope: SearchScope, label: String) -> Self {
+        let name = format!("Scope: {label}");
+        Self { scope, label, name }
+    }
+}
+/// The band's own copy: the reset chip and the group names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilterText {
+    pub all_label: String,
+    pub all_name: String,
+    pub filters_name: String,
+    pub kinds_name: String,
+    pub scopes_name: String,
+}
+impl Default for FilterText {
+    fn default() -> Self {
+        Self {
+            all_label: "All".into(),
+            all_name: "Filter: All".into(),
+            filters_name: "Search filters".into(),
+            kinds_name: "Result kinds".into(),
+            scopes_name: "Search scope".into(),
+        }
+    }
 }
 #[derive(Clone)]
 pub struct SearchFilters {
@@ -36,10 +112,11 @@ pub struct SearchFilters {
     pub search_band_at_draw: Rect,
     pub search_scope_own_row: bool,
 
-    kinds: Vec<ResourceKind>,
+    kinds: Vec<KindChip>,
     active_kind_filter: Vec<ResourceKind>,
-    scopes: Vec<(SearchScope, String)>,
+    scopes: Vec<ScopeSegment>,
     active_scope: SearchScope,
+    text: FilterText,
     band: Rect,
     row_height: f64,
     reserved_rows: usize,
@@ -53,7 +130,7 @@ impl Default for SearchFilters {
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
             search_scope_segment_w: 0.0,
-            search_pointer_floor_h: 0.0,
+            search_pointer_floor_h: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             search_band_at_draw: Rect::ZERO,
             search_scope_own_row: false,
 
@@ -61,6 +138,7 @@ impl Default for SearchFilters {
             active_kind_filter: Vec::new(),
             scopes: Vec::new(),
             active_scope: SearchScope::default(),
+            text: FilterText::default(),
             band: Rect::ZERO,
             row_height: 36.0,
             reserved_rows: 1,
@@ -71,15 +149,21 @@ impl Default for SearchFilters {
 impl SearchFilters {
     pub fn configure(
         &mut self,
-        kinds: Vec<ResourceKind>,
+        kinds: Vec<KindChip>,
         selected: Vec<ResourceKind>,
-        scopes: Vec<(SearchScope, String)>,
+        scopes: Vec<ScopeSegment>,
         active_scope: SearchScope,
+        text: FilterText,
     ) {
         self.kinds = kinds;
         self.active_kind_filter = selected;
         self.scopes = scopes;
         self.active_scope = active_scope;
+        self.text = text;
+    }
+    /// The kinds the chips toggle, in chip order.
+    pub fn kinds(&self) -> impl Iterator<Item = &ResourceKind> {
+        self.kinds.iter().map(|chip| &chip.kind)
     }
     /// Paint into the CommandPalette host strip. Return the row reservation for the next layout.
     #[allow(
@@ -104,17 +188,17 @@ impl SearchFilters {
         self.draw_search_banner(scene, transform, renderer, theme);
         self.search_chip_rows
     }
-    fn search_banner_rect(&self) -> Rect {
+    pub fn search_banner_rect(&self) -> Rect {
         self.band
     }
     fn search_scope_list(&self) -> Vec<SearchScope> {
-        self.scopes.iter().map(|(scope, _)| *scope).collect()
+        self.scopes.iter().map(|segment| segment.scope).collect()
     }
     fn search_scope_pill_label(&self, scope: SearchScope) -> String {
         self.scopes
             .iter()
-            .find(|(s, _)| *s == scope)
-            .map(|(_, label)| label.clone())
+            .find(|segment| segment.scope == scope)
+            .map(|segment| segment.label.clone())
             .unwrap_or_else(|| scope.label().into())
     }
     pub fn accessibility(&self) -> crate::a11y::AccessNode {
@@ -129,12 +213,11 @@ impl SearchFilters {
             [0, i] => self
                 .kinds
                 .get(i.checked_sub(1)?)
-                .cloned()
-                .map(FilterAction::ToggleKind),
+                .map(|chip| FilterAction::ToggleKind(chip.kind.clone())),
             [1, i] => self
                 .scopes
                 .get(*i)
-                .map(|(scope, _)| FilterAction::Scope(*scope)),
+                .map(|segment| FilterAction::Scope(segment.scope)),
             _ => None,
         }
     }
@@ -202,22 +285,23 @@ impl SearchFilters {
         // Bounds are the pointer targets (`selector_hit_rect`: the painted
         // pill grown to the §9.6 floor), the same rects a press is tested
         // against — what a reader names is exactly what a finger hits.
-        let kinds = self.kinds.clone();
+        let kinds: Vec<ResourceKind> = self.kinds().cloned().collect();
         let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
         chips.push(bounded(
             AccessNode::new(Role::ToggleButton)
-                .with_name("Filter: All")
+                .with_name(self.text.all_name.clone())
                 .with_semantic_key("palette:filter:all")
                 .with_action_target("palette:filter:all")
                 .with_key(0),
             self.search_all_chip_hit_rect(),
             self.active_kind_filter.is_empty(),
         ));
-        for (i, kind) in kinds.iter().enumerate() {
+        for (i, chip) in self.kinds.iter().enumerate() {
+            let kind = &chip.kind;
             let key = Self::search_filter_key(&kinds, i);
             chips.push(bounded(
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(format!("Filter: {}", kind.label()))
+                    .with_name(chip.name.clone())
                     .with_semantic_key(key.clone())
                     .with_action_target(key)
                     .with_key(u64::try_from(i.saturating_add(1)).unwrap_or(u64::MAX)),
@@ -228,15 +312,15 @@ impl SearchFilters {
 
         let active_scope = self.active_scope;
         let scopes = self
-            .search_scope_list()
-            .into_iter()
+            .scopes
+            .iter()
             .enumerate()
-            .map(|(idx, scope)| {
-                let label = self.search_scope_pill_label(scope);
+            .map(|(idx, segment)| {
+                let scope = segment.scope;
                 let key = format!("palette:scope:{}", Self::search_filter_slug(scope.label()));
                 bounded(
                     AccessNode::new(Role::RadioButton)
-                        .with_name(format!("Scope: {label}"))
+                        .with_name(segment.name.clone())
                         .with_semantic_key(key.clone())
                         .with_action_target(key)
                         .with_key(u64::try_from(idx).unwrap_or(u64::MAX)),
@@ -247,14 +331,14 @@ impl SearchFilters {
             .collect();
 
         AccessNode::new(Role::Group)
-            .with_name("Search filters")
+            .with_name(self.text.filters_name.clone())
             .with_semantic_key("palette:filters")
             .with_children(vec![
                 AccessNode::new(Role::Group)
-                    .with_name("Result kinds")
+                    .with_name(self.text.kinds_name.clone())
                     .with_children(chips),
                 AccessNode::new(Role::Group)
-                    .with_name("Search scope")
+                    .with_name(self.text.scopes_name.clone())
                     .with_children(scopes),
             ])
     }
@@ -457,9 +541,8 @@ impl SearchFilters {
         // a new provider gets a chip for free. Empty selection means
         // "everything shows", stated by the leading "All" chip. Every
         // chip is painted regardless of width; see [`lay_out_chip_strip`].
-        let kinds = self.kinds.clone();
-        let labels: Vec<&str> = std::iter::once("All")
-            .chain(kinds.iter().map(ResourceKind::label))
+        let labels: Vec<String> = std::iter::once(self.text.all_label.clone())
+            .chain(self.kinds.iter().map(|chip| chip.label.clone()))
             .collect();
         // Chip padding is `s3` either side — the shared `Chip` primitive's
         // own padding, so a filter chip and a chip anywhere else in the
@@ -510,15 +593,15 @@ impl SearchFilters {
             chip_gap,
         );
 
-        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
+        let mut chip_rects: Vec<Rect> = Vec::with_capacity(self.kinds.len());
         for (i, label) in labels.iter().enumerate() {
             let rect = strip.rects.get(i).copied().unwrap_or(Rect::ZERO);
             let is_active = match i {
                 0 => self.active_kind_filter.is_empty(),
                 _ => i
                     .checked_sub(1)
-                    .and_then(|k| kinds.get(k))
-                    .is_some_and(|kind| self.active_kind_filter.contains(kind)),
+                    .and_then(|k| self.kinds.get(k))
+                    .is_some_and(|chip| self.active_kind_filter.contains(&chip.kind)),
             };
             // Hover is judged on the pointer target, not the pill, so the
             // 2 px of floor above and below a chip light it too.

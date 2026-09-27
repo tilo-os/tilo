@@ -67,14 +67,6 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
 
-# The Alt+Tab window switcher.
-window-switcher-title = Switch windows
-window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
-window-switcher-app-title = Switch windows of this app
-window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
-window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
-
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
 overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click to close it, or drag it onto another workspace to move it there.
@@ -450,7 +442,6 @@ portal-network-cert-system-domain = The network's certificate is checked against
 portal-network-cert-unchecked = The network's certificate is not checked. Only continue on a network you trust.
 
 # Top bar
-topbar-workspace-name-tooltip = Open workspace settings
 topbar-clocks-notification-title = Clocks
 topbar-clocks-notification-body = Time is up
 
@@ -631,17 +622,6 @@ a11y-workspace-name = Workspace name
 a11y-workspace-settings-content = Workspace settings content
 a11y-at-a-glance = At a glance
 
-# Accessibility tree: retained notifications
-a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
-a11y-notifications-list = Retained notifications
-a11y-notifications-clear = Clear all notifications
-a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
-a11y-notifications-cleared = Notifications cleared
-a11y-notifications-undo = Undo clear notifications
-a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications = Notifications
-
 # Accessibility tree: clipboard history
 a11y-clipboard-data = Clipboard data
 a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
@@ -812,22 +792,6 @@ follow-stop = Stop
 # Search filter chips
 search-filter-all = All
 
-# Quick Settings: notification history
-qs-notifications-title = Notifications
-qs-notifications-empty = No recent notifications
-qs-notifications-cleared = Notifications cleared
-qs-notifications-clear-all = Clear all
-qs-notifications-position = Newest { $first }–{ $last } of { $total }
-qs-notifications-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
-qs-notifications-source-system = System
-qs-notifications-newer = ↑ Newer
-qs-notifications-at-newest = At newest
-qs-notifications-older = ↓ Older
-qs-notifications-at-oldest = At oldest
-
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here
 qs-devices-mic-current = Current microphone
@@ -994,26 +958,6 @@ qs-wifi-protected = This network is protected
 
 # Retained history: sources and severities
 history-this-device = This device
-history-severity-info = Information
-history-severity-warning = Warning
-history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
-
-# Notification center rows
-notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
-        [yes] collapse
-       *[no] expand
-    }, Delete to dismiss them all.
-notification-center-dismiss-all = Dismiss all from { $app }
-notification-center-dismiss = Dismiss
-notification-center-hand-to = Hand to { $agent }
-notification-center-hand-to-description = Give this notification to the workspace agent as a task.
-notification-center-group-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
 
 # On-screen display for the hardware keys
 osd-play = Play
@@ -1055,13 +999,6 @@ status-other-displays-a11y = Other displays
 
 # Notification toasts
 notification-source-caption = { $app } · From { $device }
-notification-lock-count = { $count ->
-    [one] 1 notification
-   *[other] { $count } notifications
-}
-notification-dnd-held = { $status } · { $count } held
-notification-stack-a11y = Notifications
-notification-group-system = System
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
@@ -1193,6 +1130,9 @@ bluetooth-prompt-cancel = Cancel
 bluetooth-prompt-accept-match = They match
 bluetooth-prompt-accept-allow = Allow
 bluetooth-prompt-accept-pair = Pair
+bluetooth-prompt-code-label = Code shown on the device
+bluetooth-prompt-pin-label = PIN for the device
+bluetooth-prompt-a11y-code = Code { $code }
 
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
@@ -1204,82 +1144,6 @@ portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
 portal-capture-primary-display = Primary display
 portal-capture-system-audio = System audio
-
-# People panel, as assistive technology reads it
-a11y-shell-people = People
-a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
-a11y-shell-people-screen-visible = Screen visible now: { $exposure }
-a11y-shell-people-here-now = People here now
-a11y-shell-people-agent = Agent
-a11y-shell-people-invited = Invited, not currently present
-a11y-shell-people-present = Present now
-a11y-shell-people-now = Now: { $activity }
-a11y-shell-people-intent = Intent: { $status }
-a11y-shell-people-intent-inferred = Intent, inferred: { $status }
-a11y-shell-status-name = Your collaboration status
-a11y-shell-status-inferred = Inferred on this device from recent semantic actions
-a11y-shell-status-set = Set what you are trying to accomplish
-a11y-shell-status-automatic = Automatic status
-a11y-shell-status-manual = Manual status only
-a11y-shell-status-off = Hide status
-a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
-a11y-shell-status-manual-description = Share only text you enter yourself
-a11y-shell-status-off-description = Publish no status to this workspace
-a11y-shell-follow-collaborator = Follow collaborator
-a11y-shell-follow = Follow { $name }
-a11y-shell-follow-description = Mirror this participant's live workspace view
-a11y-shell-people-previous = Previous people
-a11y-shell-people-previous-description = Show the previous people in this workspace
-a11y-shell-people-next = Next people
-a11y-shell-people-next-description = Show the next people in this workspace
-a11y-shell-invite = Invite people
-a11y-shell-invite-description = Create an authenticated workspace invitation
-a11y-shell-join = Join workspace
-a11y-shell-join-description = Connect using an authenticated invitation
-a11y-shell-workspace-activity = Workspace activity
-a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
-
-# Empty-workspace launchpad
-a11y-shell-launchpad-title = Make something together
-a11y-shell-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
-a11y-shell-launchpad-open-app = Open an app
-a11y-shell-launchpad-discuss = Discuss
-a11y-shell-launchpad-notes = Notes
-a11y-shell-launchpad-tasks = Tasks
-a11y-shell-launchpad-meet = Plan a meeting
-a11y-shell-launchpad-invite = Invite people
-a11y-shell-launchpad-activity = Catch up
-a11y-shell-launchpad-discuss-detail = Open the shared conversation
-a11y-shell-launchpad-notes-detail = Write ideas together
-a11y-shell-launchpad-tasks-detail = Plan work in Calendar
-a11y-shell-launchpad-meet-detail = Open Chat, then start a voice or video call
-a11y-shell-launchpad-invite-detail = Bring someone into this workspace
-a11y-shell-launchpad-activity-detail = See what changed and why
-
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
-
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-hint = Enter inserts · Esc closes
-emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
 
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
 speaker-role-left = left speaker
@@ -1359,7 +1223,6 @@ search-provider-editor = Editor
 search-provider-session = Session
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
-search-provider-desktop-windows = Desktop windows
 search-provider-files = Files
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
@@ -1370,8 +1233,6 @@ search-badge-session = Session
 search-badge-quick-action = Quick action
 search-badge-shortcut = Shortcut
 search-badge-tray = Tray
-search-badge-tab = Tab
-search-badge-window-group = Window group
 
 # Search: media transport for a running player
 search-media-pause = Pause { $player }
@@ -1423,16 +1284,6 @@ search-tray-entry-on = { $item }: { $entry } (on)
 search-tray-entry-off = { $item }: { $entry } (off)
 
 # Search: desktop windows
-search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
-search-window-group-untitled = Window group { $group }
-search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
-search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
 
 # Search: shell actions, as palette rows
 search-action-shortcut-help-toggle = Show desktop help
@@ -1475,6 +1326,8 @@ search-action-display-change-keep = Keep display settings
 search-action-display-change-keep-subtitle = Confirm the display layout that was just applied
 search-action-display-change-revert = Revert display settings
 search-action-display-change-revert-subtitle = Restore the display layout from before the last change
+search-action-bluetooth-pairing-decline = Decline Bluetooth pairing
+search-action-bluetooth-pairing-decline-subtitle = Refuse the pairing request on screen, or stop the pairing whose code it shows
 search-action-capture-open = Capture or float part of the screen
 search-action-capture-open-subtitle = Screenshot, record, or make PiP from one or more regions
 search-action-collaborators-open = Show collaborators
@@ -1539,6 +1392,10 @@ search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one na
 # Search: search sources and workspace governance rows
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
+search-action-workspace-view-subtitle = Local workspace view
+search-action-quick-settings-unavailable = Quick Settings service is unavailable
+# Extra words a search for a workspace view matches; not shown.
+search-action-workspace-view-keywords = workspace activity history
 search-action-provider-enable = Enable { $source } search
 search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
 search-action-provider-disable = Disable { $source } search
@@ -1970,301 +1827,346 @@ peer-sync-token-characters = { $token } · { $count ->
 }
 peer-sync-token-incomplete = Not a whole invite yet
 
-# Workspace settings: permission roles and ownership on the action door
-workspace-settings-roles-resource = { $workspace } permission roles
-workspace-settings-role-save = Create or update permission role
-workspace-settings-role-save-placeholder = Role name
-workspace-settings-role-save-description = Save a reusable least-privilege role made from app, action, file, resource, or workspace capability rules.
-workspace-settings-role-assign = Assign permission role
-workspace-settings-role-assign-placeholder = Role and collaborator
-workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
-workspace-settings-role-assign-named = Assign { $role }
-workspace-settings-role-assign-named-placeholder = Collaborator identity
-workspace-settings-app-action-placeholder = App and action
-workspace-settings-app-action-grant = Let an app use another app's action
-workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
-workspace-settings-app-action-revoke = Stop an app using another app's action
-workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
-workspace-settings-ownership-resource = { $workspace } ownership
-workspace-settings-ownership-propose = Propose ownership transfer
-workspace-settings-ownership-propose-placeholder = Recipient identity
-workspace-settings-ownership-propose-description = Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.
-workspace-settings-ownership-accept = Accept workspace ownership
-workspace-settings-ownership-accept-description = Acceptance immediately transfers ownership; generic role controls cannot perform this action.
-workspace-settings-ownership-accept-phrase = Accept ownership
-workspace-settings-ownership-cancel = Cancel ownership transfer
-workspace-settings-ownership-cancel-description = Cancel the pending offer before the recipient accepts it.
+# Leftover shell notices: document opens, host app provenance, quiet status, collaboration
+doc-open-failed = Couldn't open { $name }
+doc-open-unnamed-file = File
+host-app-source-flatpak = Flatpak
+host-app-source-system = System
+new-document-unavailable = New document unavailable: { $error }
+collab-unavailable-title = Collaboration unavailable
+collab-unavailable-body = Apps in this session cannot share edits. { $reason }
+quiet-status-dnd = Do Not Disturb
+quiet-status-dnd-presenting = Do Not Disturb while presenting
+quiet-status-dnd-sharing = Do Not Disturb while sharing
+quiet-status-focus-until = Focus until { $time }
 
-# Workspace settings: tabs and frame
-workspace-settings-title = Workspace Settings
-workspace-settings-close = Close Settings
-workspace-settings-tab-general = General
-workspace-settings-tab-people = People
-workspace-settings-tab-agents = Agents
-workspace-settings-tab-privacy-security = Privacy & Security
-workspace-settings-tab-privacy = Privacy
-workspace-settings-tab-apps-files = Apps & Files
-workspace-settings-tab-apps = Apps
-workspace-settings-close-hint = Press Esc to close
-workspace-settings-edit-hint = Enter to save · Esc to cancel
+# Saved workspaces that could not be opened at startup
+state-notice-newer-title = Your workspaces were not opened
+state-notice-unreadable-title = Your workspaces could not be read
+state-notice-newer-body = Saved by a newer version of Tilo. Nothing was changed.
+state-notice-unreadable-body = The file could not be read. Nothing was changed.
+state-notice-newer-detail = { $path } was written by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed, and nothing has been written over it — this session runs without saving, so it cannot be. Update again, or roll forward, to get back to your own workspaces.
+state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
 
-# Workspace settings: roles
-workspace-settings-role-owner = Owner
-workspace-settings-role-editor = Editor
-workspace-settings-role-commenter = Commenter
-workspace-settings-role-viewer = Viewer
-workspace-settings-role-blocked = Blocked
-workspace-settings-role-admin = Admin
-workspace-settings-role-guest = Guest
-workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
-workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
-workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
-workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
-workspace-settings-role-blocked-preview = Cannot access this workspace.
-
-# Workspace settings: what a capability covers, on its own
-workspace-settings-scope-workspace = this workspace
-workspace-settings-scope-app = the { $app } app
-workspace-settings-scope-workspace-files = workspace files
-workspace-settings-scope-workspace-folder = “{ $folder }” in this workspace
-workspace-settings-scope-path = files under { $path }
-workspace-settings-scope-record = one shared file ({ $id })
-workspace-settings-scope-camera = the camera
-workspace-settings-scope-microphone = the microphone
-workspace-settings-scope-screencast = screen capture
-workspace-settings-scope-remote-desktop = remote pointer + keyboard
-workspace-settings-scope-any-host = any network host
-workspace-settings-scope-host = network host { $host }
-workspace-settings-scope-action = “{ $action }” in { $app }
-workspace-settings-scope-resource-type = { $kind ->
-    [note] every note
-    [file] every file
-    [cluster] every saved cluster
-    [kanban] every board
-   *[chat-log] every chat log
+# Workspace overview: who is in a room and what it shares
+overview-access-shared-one = Shared with { $name }
+overview-access-shared-two = Shared with { $first } and { $second }
+overview-access-shared-many = { $count ->
+    [one] Shared with { $name } and 1 other
+   *[other] Shared with { $name } and { $count } others
 }
-workspace-settings-scope-resource-instance = one document ({ $id })
-
-# Workspace settings: what a capability covers, as the object of what it allows
-workspace-settings-scope-workspace-object = this workspace
-workspace-settings-scope-app-object = the { $app } app
-workspace-settings-scope-workspace-files-object = workspace files
-workspace-settings-scope-workspace-folder-object = “{ $folder }” in this workspace
-workspace-settings-scope-path-object = files under { $path }
-workspace-settings-scope-record-object = one shared file ({ $id })
-workspace-settings-scope-camera-object = the camera
-workspace-settings-scope-microphone-object = the microphone
-workspace-settings-scope-screencast-object = screen capture
-workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
-workspace-settings-scope-any-host-object = any network host
-workspace-settings-scope-host-object = network host { $host }
-workspace-settings-scope-action-object = “{ $action }” in { $app }
-workspace-settings-scope-resource-type-object = { $kind ->
-    [note] every note
-    [file] every file
-    [cluster] every saved cluster
-    [kanban] every board
-   *[chat-log] every chat log
-}
-workspace-settings-scope-resource-instance-object = one document ({ $id })
-
-# Workspace settings: what a capability allows
-workspace-settings-allows-control = Control { $what }
-workspace-settings-allows-use = Use { $what }
-workspace-settings-allows-reach = Reach { $what }
-workspace-settings-allows-run = Run { $what }
-workspace-settings-allows-administer = Administer { $what }
-workspace-settings-allows-edit = Edit { $what }
-workspace-settings-allows-comment = Comment on { $what }
-workspace-settings-allows-invite = Invite others to { $what }
-workspace-settings-allows-view = View { $what }
-
-# Workspace settings: how long a grant lasts and who made it
-workspace-settings-expiry-once = Once
-workspace-settings-expiry-session = Session
-workspace-settings-expiry-until = Until
-workspace-settings-expiry-always = Always
-workspace-settings-granted-by-person = granted by { $id }
-workspace-settings-granted-by-app = granted by the { $app } app
-workspace-settings-granted-by-agent = granted by agent { $id }
-workspace-settings-granted-by-token = granted by token { $id }
-workspace-settings-granted-by-workspace = granted by workspace { $id }
-workspace-settings-permission-detail = { $allows } · { $grantor }
-
-# Workspace settings: who a permission is for
-workspace-settings-section-apps = Apps
-workspace-settings-section-app-actions = App actions
-workspace-settings-section-people = People
-workspace-settings-section-agents = Agents
-workspace-settings-section-roles = Roles
-workspace-settings-section-other = Other
-workspace-settings-subject-role = everyone with { $role }
-workspace-settings-subject-token = token { $id }
-workspace-settings-subject-workspace = workspace { $id }
-
-# Workspace settings: what the grant composer can allow
-workspace-settings-grant-camera = Camera
-workspace-settings-grant-microphone = Microphone
-workspace-settings-grant-screencast = Screen capture
-workspace-settings-grant-remote-control = Remote control
-workspace-settings-grant-network = Network access
-workspace-settings-grant-read-files = Read workspace files
-workspace-settings-grant-edit-files = Edit workspace files
-workspace-settings-grant-create-roles = Create permission roles
-workspace-settings-grant-assign-roles = Assign permission roles
-
-# Workspace settings: agent profiles
-workspace-settings-preset-observer = Observer
-workspace-settings-preset-contributor = Contributor
-workspace-settings-preset-operator = Operator
-workspace-settings-preset-custom = Custom
-workspace-settings-preset-observer-hint = Read only on surfaces you select
-workspace-settings-preset-contributor-hint = Read/write only on surfaces you select
-workspace-settings-preset-operator-hint = Run only approved app actions
-workspace-settings-preset-custom-hint = Review every scoped permission
-
-# Workspace settings: People tab
-workspace-settings-members-count = { $count ->
-    [one] 1 person shares this workspace
-   *[other] { $count } people share this workspace
-}
-workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
-workspace-settings-ownership = Ownership
-workspace-settings-you-manage = You manage
-workspace-settings-view-only = View only
-workspace-settings-members-empty-title = No one else is in this workspace
-workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
-workspace-settings-people-header = PEOPLE
-workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
-workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
-workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
-workspace-settings-you = You
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · no extra permissions
-    [one] { $role } · 1 extra permission
-   *[other] { $role } · { $count } extra permissions
-}
-workspace-settings-remove = Remove
-workspace-settings-owner-only = Only the workspace owner can change permissions.
-
-# Workspace settings: Agents tab
-workspace-settings-agents-count = { $count ->
-    [one] 1 agent collaborator
-   *[other] { $count } agent collaborators
-}
-workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
-workspace-settings-add-agent = Add agent
-workspace-settings-agents-empty-title = No agents have access
-workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
-workspace-settings-agents-header = AGENTS
-workspace-settings-service-member = Service member · { $access ->
-    [admin] administers
-    [write] reads and edits
-    [comment] reads and comments
-   *[read] reads
-} end-to-end encrypted content · { $until } · device { $device }
-workspace-settings-service-until-removed = until removed
-workspace-settings-service-ends-soon = access ends within a minute
-workspace-settings-service-ends-minutes = access ends in { $minutes } min
-workspace-settings-service-ends-hours = access ends in { $hours } h
-workspace-settings-badge-service = SERVICE
-workspace-settings-badge-agent = AGENT
-workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · no scoped permissions — review required
-    [one] { $admission } · { $profile } profile · 1 scoped permission
-   *[other] { $admission } · { $profile } profile · { $count } scoped permissions
-}
-workspace-settings-admitted = Admitted
-workspace-settings-review-access = Review access
-workspace-settings-revoke = Revoke
-workspace-settings-admission-admin = Admin admission
-workspace-settings-admission-write = Write admission
-workspace-settings-admission-comment = Comment admission
-workspace-settings-admission-read = Read admission
-
-# Workspace settings: Apps & Files tab
-workspace-settings-unavailable-app = Unavailable app
-workspace-settings-apps-empty-title = No file handlers installed
-workspace-settings-apps-empty-detail = Apps appear here after they declare supported file types.
-workspace-settings-apps-intro-title = Defaults without lock-in
-workspace-settings-apps-intro-detail = The workspace supplies a baseline; each person can explicitly choose something else.
-workspace-settings-apps-header = DEFAULT APPLICATIONS
-workspace-settings-workspace-choice = Workspace choice
-workspace-settings-your-choice = Your choice
-workspace-settings-follow-personal = Follow personal defaults
-workspace-settings-use-workspace-choice = Use workspace choice
-workspace-settings-use-personal-default = Use my personal default
-workspace-settings-apps-file-types = { $count ->
-    [one] 1 file type
-   *[other] { $count } file types
-}
-workspace-settings-apps-custom-rules = { $count ->
-    [one] 1 custom rule
-   *[other] { $count } custom rules
+overview-items-shared = { $count ->
+    [one] 1 item shared
+   *[other] { $count } items shared
 }
 
-# Workspace settings: Privacy & Security tab
-workspace-settings-permissions-intro-title = Access is explicit and revocable
-workspace-settings-permissions-intro-detail = Grants are enforced by the app sandbox and stay scoped to this workspace.
-workspace-settings-active-grants = { $count ->
-    [one] 1 active grant
-   *[other] { $count } active grants
-}
-workspace-settings-permissions-empty-title = No permissions granted
-workspace-settings-permissions-empty-detail = Apps get nothing until it is granted here or approved in a prompt.
-workspace-settings-more = +{ $count } more
-workspace-settings-who = Who
-workspace-settings-who-agent = Who · AGENT (only this surface; no ambient workspace access)
-workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
-workspace-settings-what-it-allows = What it allows
-workspace-settings-grant-header = GRANT A PERMISSION
-workspace-settings-saved-roles = { $count ->
-    [one] 1 SAVED ROLE · MANAGE
-   *[other] { $count } SAVED ROLES · MANAGE
-}
-workspace-settings-expiry-caption = Until
-workspace-settings-grant = Grant
+# Windows and documents the shell hosts
+shell-window-restoring = Restoring this window…
+shell-document-unavailable = Document unavailable
+shell-named-document-unavailable = { $name } unavailable
+shell-path-open-failed = Cannot open { $path }: { $error }
+shell-path-read-failed = Cannot read { $path }: { $error }
+editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
+editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
+editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
+editor-hint-click = Click to edit
+notes-empty-title = This note is empty
+notes-empty-body = Jot anything here. Changes are saved as you type.
+notes-empty-action = Start writing
+window-move-unknown-tab = That window is no longer open.
+window-move-unknown-workspace = That workspace is gone.
+window-move-same-workspace = The window is already in that workspace.
+window-move-pinned = This window belongs to its workspace and cannot move.
+window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
 
-# Workspace settings: confirmation sheets
-workspace-settings-role-sheet-title = Choose workspace access
-workspace-settings-role-sheet-description = { $person } is currently { $role }. Choose exactly what they can do.
-workspace-settings-remove-sheet-title = Remove this person?
-workspace-settings-remove-sheet-description = They will stop receiving future sync and edits. Downloaded copies remain on their devices.
-workspace-settings-revoke-sheet-title = Revoke this permission?
-workspace-settings-revoke-sheet-description = The selected capability will stop applying immediately. Review its activity first if you are unsure.
-workspace-settings-keep-access = Keep access
-workspace-settings-review-activity = Review activity first
-workspace-settings-remove-person = Remove person
-workspace-settings-no-changes = No changes are made.
-workspace-settings-open-history = Open workspace history before deciding.
-workspace-settings-remove-person-detail = This removes their workspace capabilities.
-workspace-settings-keep-permission = Keep permission
-workspace-settings-revoke-permission = Revoke permission
-workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
+# Empty-workspace launchpad and the default command list
+global-search-create-workspace = Create Workspace
+global-search-rename-workspace = Rename Workspace
+global-search-switch-workspace = Switch Workspace…
+global-search-open-settings = Open Settings
+global-search-open-file = Open File
 
-# Workspace settings: General tab
-workspace-settings-workspace-fallback = Workspace
-workspace-settings-identity-caption = Workspace · { $role }
-workspace-settings-current-workspace = CURRENT WORKSPACE
-workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
-workspace-settings-identity-title = Workspace identity
-workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
-workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
-workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
-workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
-workspace-settings-invite-create = Create
-workspace-settings-invite-title = Invite people
-workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
-workspace-settings-glance-title = At a glance
-workspace-settings-stat-members = { $count ->
-    [one] member
-   *[other] members
-}
-workspace-settings-stat-grants = { $count ->
-    [one] specific grant
-   *[other] specific grants
-}
-workspace-settings-stat-app-rules = { $count ->
-    [one] app rule
-   *[other] app rules
-}
+# Shortcut steps that ask before they run, and keyboard capture
+shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
+shortcut-step-type-phrase = Type “{ $phrase }” to confirm.
+shortcut-step-confirm-title = { $action }?
+shortcut-step-confirm = Confirm
+shortcut-step-ask-detail = “{ $shortcut }” asks for { $param }.
+shortcut-step-continue = Continue
+shortcut-step-yes = Yes
+shortcut-step-no = No
+shortcut-trigger-failed = The shortcut didn't run
+osd-keys-captured = App receives all keys · { $chord } restores shortcuts
+osd-keys-released = Shortcuts restored
+osd-pad-mode = Tablet mode { $mode } of { $modes }
+pad-map-hint = Shown while the button is held
+pad-map-button = Button { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Strip { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Next mode (now { $mode } of { $modes })
+pad-map-shows-map = Shows this map
+pad-map-app-decides = Up to the app
+pad-map-nothing = Does nothing
+pad-map-dial-scroll = Scroll
+pad-map-dial-zoom = Zoom
+pad-map-dial-brush-size = Brush size
+pad-map-dial-volume = Volume
+pad-map-dial-brightness = Brightness
+
+# Peer views, opening documents, identity backup and invitations
+peer-view-surface-title = Peer surface #{ $id }
+peer-view-awaiting = Awaiting peer surface…
+doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
+doc-open-no-file-type = { $name } has no file type to open it by
+doc-open-no-workspace = there is no active workspace to open it in
+identity-backup-busy = Finish the current identity flow before creating another backup.
+identity-backup-locate-failed = Could not locate the active identity: { $error }
+invite-workspace-verified-identity = Workspace-verified identity
+palette-query-permission-roles = permission role
+
+# Accessibility tree: the hardware-key readout
+a11y-status-readout = Status readout
+
+# Compositor notices: lock screen status, X11 compatibility, collaboration, nearby drops, captures
+lock-screen-status = Lock status
+xwayland-unavailable-title = X11 compatibility unavailable
+xwayland-unavailable-body = Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.
+collab-unavailable-services-root = The service directory could not be created: { $error }
+collab-unavailable-socket-taken = Another session on this machine already owns the collaboration socket.
+collab-unavailable-broker = The broker could not start: { $error }
+fabric-focus-app-for-controller = Focus an app before forwarding a controller
+fabric-focus-app-for-remote-input = Focus an app before using a remote input
+launch-held-network-failed = the desktop's network could not start ({ $error })
+nearby-drop-your-device = your device
+nearby-drop-sending = Sending nearby
+nearby-drop-sending-body = { $file } to { $device }
+nearby-drop-sent = Sent nearby
+nearby-drop-sent-body = { $file } to { $device }
+nearby-drop-failed = Nearby drop failed
+nearby-drop-failed-body = { $file } · { $device }
+nearby-drop-received = Received nearby
+nearby-drop-received-body = { $file } from { $device }
+capture-screenshot-sent = Screenshot sent
+capture-screenshot-not-sent = Screenshot not sent
+capture-recording-audio-lost = Recording continues without audio
+capture-recording-audio-lost-body = { $path } · { $reason }
+capture-recent-audio-lost = Recent capture continues without audio
+capture-failed = Capture failed
+idle-inhibit-unnamed-app = An app
+
+# Sending a screenshot to a device or into the workspace files
+screenshot-send-offered = Offered to { $device }; accept it there to save
+screenshot-send-saved = Saved to workspace files as { $name }
+screenshot-send-gone = The screenshot { $path } is gone
+screenshot-send-device-offline = That device is no longer online
+screenshot-send-create-failed = Cannot create { $path }: { $error }
+screenshot-send-no-file-name = { $path } has no file name
+screenshot-send-read-failed = Cannot read { $path }: { $error }
+screenshot-send-save-failed = Cannot save to workspace files: { $error }
+screenshot-send-too-many = The workspace Screenshots folder has too many files with this name
+screenshot-send-sync-off = Device sync is not running
+screenshot-send-no-folder = { $path } has no folder
+
+# A window whose frames cannot be shown
+foreign-window-unshowable = This window can't be shown.
+foreign-window-not-responding = This app isn't responding.
+
+# Why a speaker-group request failed, as Settings shows it
+speaker-error-too-many-groups = too many speaker groups
+speaker-error-group-exists = that speaker group already exists
+speaker-error-group-gone = that speaker group no longer exists
+speaker-error-not-in-group = that speaker is not in the group
+speaker-error-calibration-range = those calibration values are out of range
+speaker-error-request-expired = that speaker group request expired
+speaker-error-group-changed = that speaker group changed; ask again from its device
+speaker-error-too-many-memberships = this device is already in too many speaker groups
+speaker-error-not-a-member = this device is not in that speaker group
+speaker-error-too-many-sessions = too many speaker group sessions are active
+speaker-error-group-unavailable = that speaker group is not available
+speaker-error-none-ready = no speaker in that group is ready
+speaker-error-session-gone = that speaker group session is no longer active
+speaker-error-name = give the speakers a name of up to 64 characters
+speaker-error-roles = each speaker needs its own output and its own role, and a stereo pair needs both sides
+speaker-error-unavailable = speaker groups are unavailable
+device-fabric-error-no-identity = this device has no certified personal identity
+speaker-error-speaker-unavailable = that speaker is not available right now
+speaker-error-output-disconnected = that output is no longer connected
+speaker-error-already-playing = a speaker is already playing its sound
+speaker-error-speaker-output-gone = that speaker's output is no longer connected
+speaker-error-play-failed = could not play the sound: { $error }
+speaker-error-device-invalid = that device id is not valid
+speaker-error-output-invalid = that output is not valid
+speaker-error-group-invalid = that speaker group is not valid
+speaker-error-media-off = Turn on Media in Devices & Sync to use speakers across your devices
+speaker-error-no-calibration = there is no finished calibration to apply
+speaker-error-no-applied-calibration = there is no applied calibration to revert
+speaker-error-calibration-unavailable = calibration is unavailable
+speaker-error-calibration-gone = that calibration is no longer available
+speaker-error-network-unavailable = the device network is unavailable
+speaker-error-microphone-invalid = that microphone is not valid
+speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
+speaker-error-microphone-unavailable = that microphone is not available
+speaker-error-not-all-ready = every speaker must be ready before calibrating
+speaker-error-request-failed = the speaker request failed
+speaker-error-app-stopped = that application stopped playing
+speaker-error-audio-unavailable = speaker group audio is unavailable
+speaker-error-other-session = another speaker group session is already playing from this device
+
+# Measuring speakers for calibration
+speaker-calibration-reason-remote-microphone = calibrate with a microphone on the device that set up the speakers
+speaker-calibration-reason-microphone-gone = that microphone is no longer connected
+speaker-calibration-reason-output-gone = that speaker's output is no longer connected
+speaker-calibration-reason-play-failed = could not play the sweep: { $error }
+speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-failed = Could not measure { $speaker }: { $reason }
+speaker-calibration-cancelled = Calibration was cancelled
+
+# Wireless display projection
+projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
+projection-service-exited = Projection service exited with { $status }
+projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
+projection-mode-unsupported = { $device } does not support { $mode } mode
+projection-service-unavailable = Projection service is unavailable
+projection-service-stopped = Projection service stopped
+
+# Why an action on your devices failed, as its notification says
+device-fabric-error-nearby-busy = Nearby Send staging is busy; retry when another transfer finishes
+device-fabric-error-bt-identity-invalid = that Bluetooth accessory identity is invalid
+device-fabric-error-bt-not-connected = only a paired accessory currently connected to this device can be handed off
+device-fabric-error-bt-name-invalid = the local Bluetooth accessory name is invalid
+device-fabric-error-bt-already-here = the Bluetooth accessory is already on this device
+device-fabric-error-target-not-enrolled = the target is not an enrolled device
+device-fabric-error-target-offline = the target device is offline
+device-fabric-error-bt-coordinator = Bluetooth handoff coordinator is unavailable
+device-fabric-error-bt-too-many = too many Bluetooth handoffs are already in progress
+device-fabric-error-bt-approval-gone = that Bluetooth handoff approval is no longer pending
+device-fabric-error-bt-inactive = that Bluetooth handoff is no longer active
+device-fabric-error-bt-no-retry = that Bluetooth handoff cannot be retried
+device-fabric-error-media-session-gone = that media session is no longer available
+device-fabric-error-no-route = target has no current authenticated personal route
+device-fabric-error-handoff-gone = that media handoff is no longer available
+device-fabric-error-handoff-not-pending = that media handoff is no longer pending
+device-fabric-error-handoff-no-retry = only a failed or cancelled media handoff can be retried
+device-fabric-error-name-not-portable = file name is not portable
+device-fabric-error-drop-one-item = nearby drop requires one regular file or folder
+device-fabric-error-drop-empty = nearby drop cannot send an empty file
+device-fabric-error-file-changed = file changed while being read
+device-fabric-error-transfer-inactive = nearby transfer is not active
+device-fabric-error-destination-unapproved = Nearby Send requires an approved destination
+device-fabric-error-consent-expired = nearby transfer consent expired
+device-fabric-error-destination-expired = Nearby Send destination expired
+device-fabric-error-transfer-unrecoverable = nearby transfer is no longer recoverable
+device-fabric-error-transfer-no-retry = nearby transfer is no longer retryable
+device-fabric-nearby-device = Nearby device
+device-fabric-error-output-gone = that audio output is no longer connected
+device-fabric-error-input-gone = that input is no longer connected
+device-fabric-error-spatial-unavailable = spatial calibration is unavailable
+device-fabric-error-proposal-stale = that calibration proposal is no longer current
+device-fabric-error-no-applied-calibration = there is no applied calibration to revert
+device-fabric-error-no-placement = this device has no published display placement
+device-fabric-error-target-not-display = the target is not an online controllable display
+device-fabric-error-target-no-display = the target has no published display
+device-fabric-error-side-taken = another enrolled display already occupies that side
+device-fabric-error-controller-not-enrolled = the controller is not an enrolled device
+device-fabric-error-controller-no-input = the controller has no online pointer or keyboard capability
+device-fabric-error-no-lease = that device does not have an active control lease
+device-fabric-error-control-not-granted = that device has not granted control
+device-fabric-error-lease-input = the active lease does not allow that input device
+device-fabric-error-display-local = this display is already local
+device-fabric-error-display-coordinator = personal display coordinator is unavailable
+device-fabric-error-display-busy = that device already has an active display stream
+device-fabric-error-no-video = the certified target cannot receive video
+device-fabric-error-mirror-coordinator = display mirror coordinator is unavailable
+device-fabric-error-mirror-too-many = too many display mirror sessions are active
+device-fabric-error-mirror-consent-gone = that display mirror consent is no longer pending
+device-fabric-error-display-receiving = this display is already receiving another stream
+device-fabric-error-mirror-inactive = that display mirror session is no longer active
+device-fabric-error-gamepad-capacity = typed-gamepad forwarding capacity is exhausted
+device-fabric-error-gamepad-decided = typed-gamepad authorization is unknown or already decided
+device-fabric-error-gamepad-no-lease = typed-gamepad target has not granted a lease
+device-fabric-error-inspect-failed = source cannot be inspected: { $error }
+device-fabric-error-transfer-start = nearby transfer could not start: { $error }
+device-fabric-error-open-failed = file cannot be opened: { $error }
+device-fabric-error-read-failed = file cannot be read: { $error }
+continuity-disabled-clipboard = clipboard continuity is disabled on this device
+continuity-disabled-notifications = notification continuity is disabled on this device
+continuity-disabled-wifi-settings = Wi-Fi/settings continuity is disabled on this device
+continuity-disabled-media = media continuity is disabled on this device
+continuity-disabled-display-input = display/input continuity is disabled on this device
+continuity-disabled-file-transfer = file-transfer continuity is disabled on this device
+continuity-disabled-realtime = realtime-session continuity is disabled on this device
+continuity-disabled-gamepad = typed-gamepad continuity is disabled on this device
+continuity-disabled-app-continuations = app-continuation continuity is disabled on this device
+remote-audio-all-system-audio = All system audio
+remote-audio-error-target-not-output = the target is not an online audio output
+remote-audio-error-unavailable = remote audio service is unavailable
+remote-audio-error-too-many = too many remote audio routes are active
+remote-audio-error-source-expired = that audio source picker entry expired
+remote-audio-error-request-expired = that remote audio request expired
+remote-audio-error-route-inactive = that remote audio route is no longer active
+remote-audio-speaker-group = Speaker group
+remote-audio-error-no-output = no local PipeWire output is available
+remote-audio-error-stream-ended = that application audio stream ended
+remote-capture-error-unavailable = remote capture service is unavailable
+remote-capture-error-busy = remote capture service is busy
+remote-capture-error-capacity = remote capture request capacity is exhausted
+remote-capture-error-receiver-busy = remote capture receiver is busy
+remote-capture-error-cannot-receive = this device cannot receive the requested remote input
+remote-capture-error-unknown-request = unknown remote capture request
+remote-capture-error-unknown-session = unknown remote capture session
+tethering-error-continuity-off = Wi-Fi Continuity is disabled on this device
+tethering-error-choose-phone = choose an online certified phone
+tethering-error-unavailable = tethering coordinator is unavailable
+tethering-error-too-many = too many tethering requests are already active
+tethering-error-history-full = tethering history is temporarily full
+tethering-error-session-inactive = that tethering session is no longer active
+tethering-error-request-gone = that tethering request is no longer pending
+gamepad-error-unavailable = physical gamepad manager is unavailable
+gamepad-error-no-identity = local certified-device identity is unavailable
+gamepad-error-target-unknown = target is not in the certified device fabric
+gamepad-error-target-offline = target device is not an online remote device
+gamepad-error-disconnected = that game controller is no longer connected
+gamepad-error-already-forwarded = that game controller is already being forwarded
+gamepad-error-busy = game controller input was busy while starting; try again
+gamepad-error-unknown = physical gamepad forwarding is unknown
+gamepad-error-open-failed = could not open game controller: { $error }
+gamepad-error-prime-failed = could not prime game controller: { $error }
+
+# Why a Wi-Fi network could not be shared with your devices
+wifi-share-error-enterprise = enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device
+wifi-share-error-no-passphrase = this Wi-Fi security mode has no portable passphrase
+wifi-share-error-unknown-security = unrecognized Wi-Fi security cannot be shared safely
+wifi-share-error-unvalidated = Wi-Fi security could not be validated for sharing
+wifi-share-error-no-presence = this device has not published fabric presence yet
+
+# Why installing an app from the catalogue failed
+catalogue-error-missing = this system has no app catalogue (app is missing)
+catalogue-error-spawn = could not start loading it
+catalogue-error-run = could not run the app catalogue: { $error }
+catalogue-error-exited = the app catalogue exited { $status }
+
+# Why sending to a nearby device failed
+nearby-error-destination-not-folder = Nearby Send destination is not a directory
+nearby-error-too-large = nearby transfer exceeds the size limit
+nearby-error-destination-name = Nearby Send destination name is unavailable
+nearby-error-outside-grant = Nearby Send source is outside this Files grant
+nearby-error-one-item = Nearby Send requires one regular file or folder
+nearby-error-queue-full = nearby transfer queue is full
+nearby-error-quota-full = nearby transfer quota is full
+nearby-error-too-many = too many nearby transfers
+nearby-error-not-regular = source is not a regular file
+nearby-error-folder-too-many = folder contains too many entries
+nearby-error-folder-special = folder contains a link or special file
+nearby-error-folder-too-large = folder exceeds the size limit
+nearby-error-source-changed = nearby transfer source changed while staging
+nearby-error-name-not-portable = source name is not portable
+
+# A document a tab could not restore
+hosted-document-unavailable = { $path } is unavailable: { $error }
+
+# A camera, microphone or scanner shared from another of your devices
+remote-capture-source-label = { $app } on certified device
+
+# Print jobs: the title a print queue shows when the app gave none
+print-untitled-document = Document

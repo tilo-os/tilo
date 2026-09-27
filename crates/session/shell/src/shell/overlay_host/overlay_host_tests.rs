@@ -3,6 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
+use automerge::{ReadDoc as _, ScalarValue, Value};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -469,7 +470,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert_eq!(
             notice.severity,
-            crate::shell::notification::NotificationSeverity::Error
+            tilo_desktop::notifications::NotificationSeverity::Error
         );
         assert_eq!(
             notice.dismiss_after,
@@ -496,6 +497,9 @@ use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
+
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
 #[allow(
@@ -973,7 +977,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 workspace.set_owner(local_user);
             }
             chrome.overlays.ws_settings = true;
-            chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
+            chrome.ws_settings_tab = tilo_desktop::workspace_settings::WsTab::Members;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }
@@ -2145,7 +2149,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // pass, never synchronously by the keystroke/query path. Exercise the
         // real lifecycle here: the first update starts the worker and a later
         // one publishes its immutable snapshot and refreshes the visible rows.
-        for _ in 0..200 {
+        let index_started = std::time::Instant::now();
+        while index_started.elapsed() < HANG_BOUND {
             h.host.update(&mut doc, &automerge::ROOT);
             if h.host
                 .search_results

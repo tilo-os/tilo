@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
-use tilo_clock::{unix_now, unix_now_i64};
+use tilo_clock::unix_now_i64;
 
 mod local_app_records;
 use super::fs_authority::schedule_fs_authority_publication;
@@ -34,7 +34,7 @@ pub use tilo_desktop_model::{
     TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
     WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    compose_id, counter_of, peer_salt_of, role_label,
+    compose_id, counter_of, peer_salt_of, role_from_id, role_id,
 };
 pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
@@ -66,6 +66,9 @@ fn merge_schedule_claims(
 
 #[cfg(test)]
 mod identity_fs_tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
 
     #[test]
@@ -109,7 +112,10 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if started.exists() {
                     break;
                 }
@@ -121,7 +127,10 @@ mod identity_fs_tests {
                 "publication returned while the deliberately blocked publisher was unfinished"
             );
             std::fs::write(&release, b"release").expect("release publisher");
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if log.exists() {
                     break;
                 }
@@ -131,16 +140,20 @@ mod identity_fs_tests {
             assert!(arguments.contains("publish-authority"));
             assert!(arguments.contains(cache.to_str().unwrap()));
             assert!(arguments.contains(acl.to_str().unwrap()));
-            assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
-                "the publisher worker must retire before its fixture is removed"
+            // The released publisher only has to exit; the budget is a
+            // backstop, and a stall reports the worker's attempt history.
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| {
+                    panic!(
+                        "the publisher worker must retire before its fixture is removed: {report}"
+                    )
+                },
             );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
         {
             use std::os::unix::fs::PermissionsExt;
-            use std::time::Duration;
 
             let temp = tempfile::tempdir().expect("temp");
             let publisher = temp.path().join("late-publisher.sh");
@@ -170,9 +183,8 @@ mod identity_fs_tests {
             // retirement is the event to wait on. Four backed-off failures take
             // about 1.5 s of sleeps plus five process spawns; the budget is only
             // a backstop for a worker that never succeeds.
-            assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(60)),
-                "the retry worker never published the queued ACL"
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| panic!("the retry worker never published the queued ACL: {report}"),
             );
             assert!(
                 log.exists(),
@@ -470,177 +482,7 @@ pub struct GovernedPeerIdentity {
 
 /// Former name of [`WorkspaceAuthority`], still imported (`as _`) by
 /// shell modules written against the Cloud-side extension trait.
-pub use self::WorkspaceAuthority as WorkspaceExt;
-
-/// The model's authority questions answered at this machine's clock. The
-/// model takes `now` explicitly; this is the one place the compositor
-/// supplies it.
-pub trait WorkspaceAuthority {
-    /// See [`Workspace::set_default_app_policy_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::set_default_app_policy_as_at`].
-    fn set_default_app_policy_as(
-        &mut self,
-        actor: &UserId,
-        resource: desktop_policy::ResourceKind,
-        policy: desktop_policy::WorkspaceDefaultPolicy,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError>;
-    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride>;
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
-    fn has_app_grants(&self) -> bool;
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
-    /// See [`Workspace::save_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_at`].
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::save_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_actor_at`].
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_at`].
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_actor_at`].
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
-    fn may_administer(&self, user: &UserId) -> bool;
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
-    fn role_of(&self, user: &UserId) -> Option<CapRole>;
-    fn actor_for_person(&self, user: &UserId) -> Actor;
-    fn roster(&self) -> Vec<(UserId, CapRole)>;
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
-    fn agent_members(&self) -> Vec<(String, CapRole)>;
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
-}
-
-impl WorkspaceAuthority for Workspace {
-    fn set_default_app_policy_as(
-        &mut self,
-        actor: &UserId,
-        resource: desktop_policy::ResourceKind,
-        policy: desktop_policy::WorkspaceDefaultPolicy,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError> {
-        self.set_default_app_policy_as_at(actor, resource, policy, resolver, unix_now())
-    }
-    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
-        self.app_capabilities_at(app_id, unix_now())
-    }
-    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        self.app_grants_snapshot_at(unix_now())
-    }
-    fn has_app_grants(&self) -> bool {
-        self.has_app_grants_at(unix_now())
-    }
-    fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        self.app_grant_ids_at(app_id, unix_now())
-    }
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        self.decide_at(actor, resource, verb, unix_now())
-    }
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.allows_at(actor, resource, verb, unix_now())
-    }
-    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        self.grant_as_at(grantor, cap, unix_now())
-    }
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_at(actor, profile, unix_now())
-    }
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor_at(actor, profile, unix_now())
-    }
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, unix_now())
-    }
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, unix_now())
-    }
-    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.revoke_as_at(revoker, id, unix_now())
-    }
-    fn may_administer(&self, user: &UserId) -> bool {
-        self.may_administer_at(user, unix_now())
-    }
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
-        self.transfer_owner_as_at(current_owner, new_owner, unix_now())
-    }
-    fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        self.role_of_at(user, unix_now())
-    }
-    fn actor_for_person(&self, user: &UserId) -> Actor {
-        self.actor_for_person_at(user, unix_now())
-    }
-    fn roster(&self) -> Vec<(UserId, CapRole)> {
-        self.roster_at(unix_now())
-    }
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, unix_now())
-    }
-    fn agent_members(&self) -> Vec<(String, CapRole)> {
-        self.agent_members_at(unix_now())
-    }
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        self.shares_of_at(resource, unix_now())
-    }
-}
+pub use tilo_desktop::authority::{WorkspaceAuthority, WorkspaceAuthority as WorkspaceExt};
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
@@ -4464,51 +4306,148 @@ impl WorkspaceTree {
         }
     }
 
-    /// Reorder the window group `group_id` within `strip_id`; the whole
-    /// group moves as a unit, unlike [`Self::move_tab_across_strips`].
-    /// `new_index` is clamped to the post-removal index space, so a
-    /// caller may pass a raw gap index. `true` only when the order
-    /// actually changed. Mirrors into the doc afterwards, the same
-    /// cache-then-doc shape as `move_tab_across_strips`.
-    pub fn reorder_group_within_strip(
+    /// Commit `command` as this device's topology owner: the shared
+    /// [`tilo_desktop_model::commands::apply_command`] reduction on the
+    /// cache, mirrored into the room document so peer sync ships it, and
+    /// into the restart snapshot. `Ok(false)` when the order did not change.
+    ///
+    /// Only reorders inside one strip commit here; a close runs its own
+    /// lifecycle ([`crate::shell::window_actions::close_tab`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the command no longer matches the tree or
+    /// is not a reorder.
+    pub fn commit_command(
         &mut self,
-        strip_id: StripId,
-        group_id: u64,
-        new_index: usize,
-    ) -> bool {
-        let Some((moved, dest)) = self
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> Result<bool, String> {
+        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        let strip_id = match command {
+            DesktopCommand::ReorderTab { location, .. } => location.strip,
+            DesktopCommand::ReorderGroup { strip, .. } => *strip,
+            _ => return Err("this desktop commits only reorders as commands".into()),
+        };
+        let strip_id = StripId(strip_id);
+        let (ws_idx, strip_idx) = self
             .desktop
-            .reorder_group_within_strip(strip_id, group_id, new_index)
+            .strip_position(strip_id)
+            .ok_or("strip was removed")?;
+        let workspace = self
+            .desktop
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or("workspace was removed")?;
+        let order = |workspace: &Workspace| {
+            workspace.strips.get(strip_idx).map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect::<Vec<(GroupId, Vec<TabId>)>>()
+            })
+        };
+        let before = order(workspace);
+        apply_command(
+            workspace,
+            command,
+            &mut || Err("a reorder mints no identity".into()),
+            &mut |_, _| Err("a reorder creates no record".into()),
+        )?;
+        if order(workspace) == before {
+            return Ok(false);
+        }
+        let groups = &workspace
+            .strips
+            .get(strip_idx)
+            .ok_or("strip was removed")?
+            .window_groups;
+        match command {
+            DesktopCommand::ReorderTab { location, .. } => {
+                let tabs = groups
+                    .iter()
+                    .find(|group| group.id == location.group)
+                    .map(|group| group.tabs.clone())
+                    .unwrap_or_default();
+                tilo_desktop_model::desktop_doc::rewrite_group_tabs(
+                    &mut self.doc,
+                    location.group,
+                    &tabs,
+                );
+            }
+            DesktopCommand::ReorderGroup { group, .. } => {
+                if let Some(dest) = groups.iter().position(|candidate| candidate.id == *group)
+                    && let Some(moved) = groups.get(dest).cloned()
+                {
+                    tilo_desktop_model::desktop_doc::reorder_group(
+                        &mut self.doc,
+                        strip_id,
+                        &moved,
+                        dest,
+                    );
+                }
+            }
+            _ => {}
+        }
+        self.flush_to_disk();
+        Ok(true)
+    }
+
+    /// Bind a group reorder the way the desktop surface reports it (the
+    /// post-removal slot) and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_group_for_tests(
+        &mut self,
+        strip: StripId,
+        group: GroupId,
+        to: usize,
+    ) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderGroup {
+            strip,
+            group,
+            to,
+        })
+    }
+
+    /// Bind an in-group tab reorder the way the desktop surface reports it
+    /// and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_tab_for_tests(&mut self, group: GroupId, from: usize, to: usize) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderTab {
+            group,
+            from,
+            to,
+        })
+    }
+
+    #[cfg(test)]
+    fn commit_intent_for_tests(&mut self, intent: tilo_desktop::intents::SessionIntent) -> bool {
+        let group = match &intent {
+            tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. }
+            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. } => *group,
+            _ => return false,
+        };
+        let Some(room) = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            })
+            .map(|workspace| workspace.room.to_string())
         else {
             return false;
         };
-        // Mirror from the tree's copy, so the document entry carries the
-        // group's full content at the new slot. Tolerant of an unseeded doc.
-        tilo_desktop_model::desktop_doc::reorder_group(&mut self.doc, strip_id, &moved, dest);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Move the tab at `from` to index `to` inside `group_id`'s tab
-    /// list — the persisted half of an intra-group tab drag, mirroring
-    /// what the widget tree already reordered. `to` is clamped to the
-    /// last slot; `true` only when the order actually changed.
-    pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
-        let Some(tabs) = self.desktop.reorder_tab_within_group(group_id, from, to) else {
-            return false;
+        let source = tilo_desktop_model::commands::CommandSource {
+            room,
+            heads: Vec::new(),
         };
-        // Mirror the reordered list into the doc so peer-sync ships the new order.
-        self.doc_rewrite_group_tabs(group_id, &tabs);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order
-    /// — rewrites the whole list to stay in step with
-    /// [`Self::doc_reorder_group_within_strip`]. No-op on an unseeded
-    /// doc.
-    fn doc_rewrite_group_tabs(&mut self, group_id: u64, tabs: &[Tab]) {
-        tilo_desktop_model::desktop_doc::rewrite_group_tabs(&mut self.doc, group_id, tabs);
+        tilo_desktop::session_commands::bind_intent(&self.desktop, source, intent)
+            .and_then(|bound| self.commit_command(&bound.command))
+            .unwrap_or(false)
     }
 }
 
@@ -4516,43 +4455,11 @@ fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
     hex::encode(key.as_bytes())
 }
 
-/// What colour each person on `roster` is drawn in. One function so
-/// cursor and avatar cannot disagree and read as two participants: both
-/// go through [`ui::presence::assign_peer_colors`], which settles the
-/// whole room at once. An explicit [`Collaborator::cursor_color`]
-/// outranks anything computed and is held back from the assignment; the
-/// local user is included in the settled set (never the avatar stack) so
-/// every host computes the same one.
+/// What colour each person on `roster` is drawn in, as this process's
+/// local user sees the room; see
+/// [`tilo_desktop::collaborators::roster_colors_with_local_user`].
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
-    roster_colors_with_local_user(roster, &local_user_id())
-}
-
-pub(crate) fn roster_colors_with_local_user(
-    roster: &[Collaborator],
-    local: &str,
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for c in roster {
-        if let Some(rgb) = c
-            .cursor_color
-            .as_deref()
-            .and_then(ui::presence::parse_hex_color)
-        {
-            explicit.insert(c.id.clone(), rgb);
-        }
-    }
-    let mut ids: Vec<&str> = roster
-        .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !explicit.contains_key(local) {
-        ids.push(local);
-    }
-    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
-    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
-    assigned.extend(explicit);
-    assigned
+    tilo_desktop::collaborators::roster_colors_with_local_user(roster, &local_user_id())
 }
 
 /// Present collaborator count for the active workspace, excluding the local
@@ -7229,7 +7136,7 @@ mod active_group_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn reordering_tabs_and_groups_persists_and_mirrors_into_the_doc() {
-        // Phase `reorder_tab_within_group_persists_and_mirrors_into_the_doc`.
+        // Phase `reorder_tab_persists_and_mirrors_into_the_doc`.
         // Dragging a tab to a new slot must persist into the tree and
         // mirror into the doc, or the reorder resets on the next restart.
         {
@@ -7265,13 +7172,13 @@ mod active_group_tests {
             assert_eq!(tab_order(&tree), vec![10, 11, 12]);
 
             // Drag the first tab to the last slot → [11, 12, 10].
-            let changed = tree.reorder_tab_within_group(group_id, 0, 2);
+            let changed = tree.reorder_tab_for_tests(group_id, 0, 2);
             assert!(changed, "moving a tab to a new slot reports a change");
             assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
 
             // Same slot is a no-op; unknown group is a no-op.
-            assert!(!tree.reorder_tab_within_group(group_id, 1, 1));
-            assert!(!tree.reorder_tab_within_group(999, 0, 1));
+            assert!(!tree.reorder_tab_for_tests(group_id, 1, 1));
+            assert!(!tree.reorder_tab_for_tests(999, 0, 1));
             assert_eq!(tab_order(&tree), vec![11, 12, 10]);
 
             // The doc must carry the new order too, so peers/persistence agree.
@@ -7309,7 +7216,7 @@ mod active_group_tests {
             // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[0], 2);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[0], 2);
             assert!(changed, "moving group 1 to a new slot must report a change");
             assert_eq!(
                 group_order(&tree, strip_id),
@@ -7322,17 +7229,17 @@ mod active_group_tests {
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
             // Move last group (4) to the front.
-            assert!(tree.reorder_group_within_strip(strip_id, ids[3], 0));
+            assert!(tree.reorder_group_for_tests(strip_id, ids[3], 0));
             assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
-            // Move it back to the end (index >= len clamps to last slot).
-            assert!(tree.reorder_group_within_strip(strip_id, 4, 99));
+            // Move it back to the last slot.
+            assert!(tree.reorder_group_for_tests(strip_id, 4, 3));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
         }
 
         // Phase `reorder_group_to_same_index_is_a_noop`.
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[1], 1);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[1], 1);
             assert!(!changed, "moving a group to its own slot reports no change");
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
         }
@@ -7340,7 +7247,7 @@ mod active_group_tests {
         // Phase `reorder_group_unknown_group_is_a_noop`.
         {
             let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
-            assert!(!tree.reorder_group_within_strip(strip_id, 999, 0));
+            assert!(!tree.reorder_group_for_tests(strip_id, 999, 0));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
         }
 
@@ -7366,7 +7273,7 @@ mod active_group_tests {
             tree.seed_doc_from_cache();
             let state_dir = tempfile::tempdir().expect("state dir");
             tree.persist_path = Some(state_dir.path().join("state.json"));
-            tree.reorder_group_within_strip(strip_id, ids[0], 2); // [2,3,1]
+            tree.reorder_group_for_tests(strip_id, ids[0], 2); // [2,3,1]
 
             let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
             let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
@@ -7456,7 +7363,7 @@ mod active_group_tests {
             .active_group_for(second_strip)
             .expect("second group");
 
-        assert!(tree.reorder_group_within_strip(second_strip, second_group, 0));
+        assert!(tree.reorder_group_for_tests(second_strip, second_group, 0));
         let reloaded = load_tree_from(&state_path).expect("group reorder persisted");
         assert_eq!(
             group_order(&reloaded, second_strip),

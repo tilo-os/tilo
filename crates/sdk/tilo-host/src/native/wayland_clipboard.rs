@@ -1022,7 +1022,7 @@ mod tests {
 
             let finished = std::thread::spawn(|| {});
             assert!(
-                join_bounded(finished, crate::time::Duration::from_secs(30)),
+                join_bounded(finished, tilo_test_env::hang_bound()),
                 "a worker that exits is joined within the budget"
             );
         }

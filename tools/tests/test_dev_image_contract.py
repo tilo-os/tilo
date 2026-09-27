@@ -119,8 +119,8 @@ class DevImageContractTests(unittest.TestCase):
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "--bin tilo-projector ",
-                      "--bin tilo-projector --features shell/dev-overrides ")
-            self.assertIn("dev feature 'shell/dev-overrides'", "\n".join(self.findings(root)))
+                      "--bin tilo-projector --features dev-overrides ")
+            self.assertIn("dev feature 'dev-overrides'", "\n".join(self.findings(root)))
         with self.subTest(phase='production policy must reject dev repository'):
             root = self.fixture()
             path = root / "os/etc/containers/policy.json"

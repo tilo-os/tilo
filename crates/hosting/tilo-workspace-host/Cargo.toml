@@ -62,6 +62,7 @@ workspace-hack = { version = "0.1" }
 moq-net.workspace = true
 atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
 hyper = { version = "1.8.1", features = ["client"] }
 rcgen.workspace = true
 tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }

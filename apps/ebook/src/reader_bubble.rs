@@ -4,7 +4,7 @@
 //! and hit-testing. The app remains responsible only for applying the emitted
 //! previous/next-page command to its document-backed reading position.
 
-use std::time::Instant;
+use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -56,7 +56,7 @@ impl ReaderBubble {
     /// Keep the otherwise transient bubble visible in deterministic screenshots.
     pub(crate) fn arm_for_shots(&mut self) {
         self.force_open = true;
-        self.animation.poke(Instant::now());
+        self.animation.poke(ui::time::now());
     }
 
     pub(crate) fn needs_frame(&self, now: Instant) -> bool {
@@ -105,7 +105,7 @@ impl ReaderBubble {
         self.previous_rect = Rect::ZERO;
         self.next_rect = Rect::ZERO;
 
-        let now = Instant::now();
+        let now = ui::time::now();
         let current = (position.chapter, position.page);
         if self
             .shown_position

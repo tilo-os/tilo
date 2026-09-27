@@ -127,6 +127,7 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         "PasteFragment",
         "InsertParagraph",
         "RemoveBlocks",
+        "MoveBlocks",
         "ReplaceBody",
         "AcceptChanges",
         "RejectChanges",

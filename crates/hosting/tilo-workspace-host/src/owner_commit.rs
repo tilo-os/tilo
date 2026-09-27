@@ -1030,9 +1030,8 @@ mod desktop_mailbox_tests {
         drop(pending);
         drop(mailbox);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            tilo_test_env::within("the commit to fail once its mailbox is dropped", waiting)
                 .await
-                .unwrap()
                 .unwrap()
                 .is_err()
         );

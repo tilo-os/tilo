@@ -360,6 +360,12 @@ impl RichTextLine {
         &self.author_runs
     }
 
+    /// Show who wrote which run of an unbound line: byte ranges and the
+    /// writer's id, as the model owning the text records them.
+    pub fn set_author_runs(&mut self, runs: Vec<(usize, usize, String)>) {
+        self.author_runs = runs;
+    }
+
     /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
         self.inner.set_text(s);

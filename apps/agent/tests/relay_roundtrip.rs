@@ -261,7 +261,7 @@ fn drive_peer_to_table(
     mut replica: AutoCommit,
 ) -> (UnixStream, AutoCommit, bool, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = tilo_test_env::hang_deadline();
     let mut saw_scribe_presence = false;
     let mut done = false;
     let mut invocation_actor = None;
@@ -443,7 +443,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         };
         let agent = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).expect("agent connects");
-            s.run_until(Instant::now() + Duration::from_secs(15))
+            s.run_until(tilo_test_env::hang_deadline())
                 .expect("agent session")
         });
 
@@ -467,7 +467,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         // real document stream. Keep consuming after the visible table result:
         // history evidence must arrive even though the user-facing work already
         // looks complete.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
             let Some(event) = recv(&mut peer) else {
                 continue;
@@ -555,7 +555,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         };
         let agent = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).expect("agent connects");
-            s.run_until(Instant::now() + Duration::from_secs(20))
+            s.run_until(tilo_test_env::hang_deadline())
                 .expect("the agent must survive another app's document")
         });
 
@@ -664,7 +664,7 @@ fn connect_files_and_word_processor(
         ready_tx.send(()).unwrap();
         drive_files_peer(files_peer, seed_foreign(), &stop_rx);
     });
-    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
 
     // The word processor, holding the page with the instruction on it.
     let mut wp_peer = UnixStream::connect(sock);
@@ -691,7 +691,7 @@ fn drive_files_peer(
     stop: &std::sync::mpsc::Receiver<()>,
 ) {
     files_peer.set_read_timeout(Some(Duration::from_millis(50)));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline
         && matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
     {
@@ -712,7 +712,7 @@ fn drive_word_processor_to_table(
     mut replica: AutoCommit,
 ) -> (AutoCommit, bool) {
     wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     let mut answered = false;
     while Instant::now() < deadline && !done {
@@ -885,12 +885,12 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         };
         let agent = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).expect("agent connects");
-            s.run_until(Instant::now() + Duration::from_secs(15))
+            s.run_until(tilo_test_env::hang_deadline())
                 .expect("agent session")
         });
 
         peer.set_read_timeout(Some(Duration::from_millis(200)));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
         while Instant::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {
@@ -1020,12 +1020,12 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         };
         let agent = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).expect("agent connects");
-            s.run_until(Instant::now() + Duration::from_secs(15))
+            s.run_until(tilo_test_env::hang_deadline())
                 .expect("agent session")
         });
 
         peer.set_read_timeout(Some(Duration::from_millis(200)));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
         while Instant::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {

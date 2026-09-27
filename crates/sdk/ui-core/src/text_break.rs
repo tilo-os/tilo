@@ -21,9 +21,15 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
 
     use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
     // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar,
-    // and Thai. The borrowed segmenter only references baked static data.
+    // and Thai. The borrowed segmenter only references baked static data. In
+    // the browser those models (about 2 MB) would be downloaded before
+    // anything runs, so it uses the rules alone there.
+    #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
         LazyLock::new(|| LineSegmenter::new_auto(Default::default()));
+    #[cfg(target_arch = "wasm32")]
+    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
+        LazyLock::new(|| LineSegmenter::new_for_non_complex_scripts(Default::default()));
 
     let mut breaks = BTreeMap::new();
     for (byte, kind) in unicode_linebreak::linebreaks(text) {
@@ -357,8 +363,13 @@ pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
 /// Uses the same ICU segmentation as toolkit word selection and movement.
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
+    // As for lines: no dictionary/LSTM models in the browser.
+    #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
         LazyLock::new(|| WordSegmenter::new_auto(Default::default()));
+    #[cfg(target_arch = "wasm32")]
+    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
+        LazyLock::new(|| WordSegmenter::new_for_non_complex_scripts(Default::default()));
     let boundaries: Vec<_> = SEGMENTER.segment_str(text).iter_with_word_type().collect();
     boundaries
         .windows(2)

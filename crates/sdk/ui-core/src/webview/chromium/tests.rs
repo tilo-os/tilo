@@ -350,10 +350,7 @@ fn private_root() -> PathBuf {
 
 #[cfg(unix)]
 fn wait_until_removed(root: &Path) {
-    let deadline = crate::time::now() + Duration::from_secs(5);
-    while root.exists() && crate::time::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the profile root to be removed", || !root.exists());
 }
 
 #[test]
@@ -842,14 +839,9 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         );
         assert_eq!(first.runtime.routes.lock().unwrap().len(), 32);
         std::fs::write(profile.join("ack-close"), b"ack").unwrap();
-        let deadline = crate::time::now() + Duration::from_secs(2);
-        while first.runtime.routes.lock().unwrap().contains_key(&32) {
-            assert!(
-                crate::time::now() < deadline,
-                "closed event releases native reservation"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the closed event to release the native reservation", || {
+            !first.runtime.routes.lock().unwrap().contains_key(&32)
+        });
         assert!(first.create_tab().is_ok());
     }
     // phase: hiding_retains_last_frame_for_recomposed_tab_until_next_paint
@@ -884,7 +876,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         let detached = first.create_tab().unwrap();
         let routes = first.runtime.routes.clone();
         std::fs::write(dir.path().join("profile/detach-ready"), b"ready").unwrap();
-        let deadline = crate::time::now() + Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         let mut saw_detach = false;
         while !saw_detach {
             saw_detach = detached.drain_events().contains(&WebViewEvent::TabDetached);
@@ -924,11 +916,9 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             let tab = first.create_tab().unwrap();
             assert!(!tab.request_close());
             std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
-            let deadline = crate::time::now() + Duration::from_secs(2);
-            while first.runtime.routes.lock().unwrap().contains_key(&id) {
-                assert!(crate::time::now() < deadline, "native close acknowledgment");
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            tilo_test_env::wait_until("the native close acknowledgment", || {
+                !first.runtime.routes.lock().unwrap().contains_key(&id)
+            });
             assert!(tab.drain_events().contains(&WebViewEvent::TabClosed));
             drop(tab);
             let count = first.runtime.routes.lock().unwrap().len();

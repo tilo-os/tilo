@@ -5,7 +5,9 @@ use super::{
     PresenceCtx, Rect, TaffyTree, Theme, Widget, WindowEvent,
 };
 use crate::CommandPalette;
-use crate::search::system::filters::{FilterAction, SearchFilters};
+use crate::search::system::filters::{
+    FilterAction, FilterText, KindChip, ScopeSegment, SearchFilters, toggle_kind,
+};
 use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
     SearchScope,
@@ -604,8 +606,8 @@ impl FrameHarness {
         let mut entries = system::command_entries(&groups);
         let rows: Vec<_> = groups.into_iter().flat_map(|group| group.results).collect();
         let mut scopes = vec![
-            (SearchScope::Workspace, "Workspace".into()),
-            (SearchScope::All, "Everywhere".into()),
+            ScopeSegment::english(SearchScope::Workspace, "Workspace".into()),
+            ScopeSegment::english(SearchScope::All, "Everywhere".into()),
         ];
         if let Some(tab) = self
             .system_search
@@ -614,14 +616,25 @@ impl FrameHarness {
             .iter()
             .find(|tab| Some(tab.instance_id) == self.system_search.data.active_instance_id)
         {
-            scopes.insert(0, (SearchScope::ActiveApp, format!("Only {}", tab.title)));
+            scopes.insert(
+                0,
+                ScopeSegment::english(SearchScope::ActiveApp, format!("Only {}", tab.title)),
+            );
         }
         let Some(overlay) = self.system_search.overlay.as_mut() else {
             return;
         };
-        overlay
-            .filters
-            .configure(registry.registered_kinds(), wanted, scopes, scope);
+        overlay.filters.configure(
+            registry
+                .registered_kinds()
+                .into_iter()
+                .map(KindChip::english)
+                .collect(),
+            wanted,
+            scopes,
+            scope,
+            FilterText::default(),
+        );
         // A layout/wake refresh must preserve keyboard selection and semantic
         // identity when the complete displayed projection is unchanged.
         let previous = overlay.palette.visible_entries();
@@ -688,13 +701,7 @@ impl FrameHarness {
         };
         match action {
             FilterAction::AllKinds => overlay.wanted.clear(),
-            FilterAction::ToggleKind(kind) => {
-                if let Some(i) = overlay.wanted.iter().position(|k| k == &kind) {
-                    overlay.wanted.remove(i);
-                } else {
-                    overlay.wanted.push(kind);
-                }
-            }
+            FilterAction::ToggleKind(kind) => toggle_kind(&mut overlay.wanted, kind),
             FilterAction::Scope(scope) => overlay.scope = scope,
         }
         self.refresh_system_search();

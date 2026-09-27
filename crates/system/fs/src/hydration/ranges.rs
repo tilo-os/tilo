@@ -672,6 +672,7 @@ impl Hydrator {
 )]
 mod tests {
     use super::*;
+
     use crate::content::{ChunkRef, ChunkTier};
 
     fn manifest(lens: &[u32]) -> Manifest {
@@ -893,9 +894,8 @@ mod tests {
             "backfill waits for the reader"
         );
         drop(reader);
-        tokio::time::timeout(Duration::from_secs(2), waiting)
+        tilo_test_env::within("the backfill after the reader drops", waiting)
             .await
-            .unwrap()
             .unwrap();
     }
 }
