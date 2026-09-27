@@ -288,9 +288,10 @@ mod tests {
     ];
 
     #[test]
-    fn every_implementation_file_is_catalogued() -> std::io::Result<()> {
+    fn every_implementation_file_is_catalogued() {
         let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-        let actual: BTreeSet<String> = std::fs::read_dir(examples)?
+        let actual: BTreeSet<String> = std::fs::read_dir(examples)
+            .expect("examples directory")
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
@@ -308,6 +309,5 @@ mod tests {
             .map(|source| (*source).to_owned())
             .collect();
         assert_eq!(actual, catalogued);
-        Ok(())
     }
 }

@@ -45,6 +45,26 @@ pub fn handle(
     }
 }
 
+pub fn publish(
+    session: &tilo_relay::RelayCoeditSession,
+    messages: Vec<NeighbourMsg>,
+) -> Result<()> {
+    use tilo_peer_state::transport::{Retention, retention};
+    for message in messages {
+        let body = postcard::to_stdvec(&message)?;
+        match retention(&message, true) {
+            Some((channel, Retention::Checkpoint)) => session.publish_checkpoint(channel, body)?,
+            Some((channel, Retention::Delta)) => session.publish_retained_delta(channel, body)?,
+            None => session.publish_presence(body)?,
+        }
+    }
+    Ok(())
+}
+
+pub fn status(peer: &StatePeer, error: Option<&str>) -> serde_json::Value {
+    serde_json::json!({"application_state":if error.is_some(){"incomplete"}else{"admitted"}, "room":peer.room(), "records":peer.rows(), "error":error})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,7 +78,7 @@ mod tests {
         let authority = enrol(&root, "native", DeviceCapabilities::primary()).unwrap();
         let browser = enrol(&root, "browser", DeviceCapabilities::member()).unwrap();
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let roster = vec![authority.cert.clone(), browser.cert.clone()];
+        let roster = vec![authority.cert.clone(), browser.cert];
         let native = seeded(room, &authority.cert, &roster, &authority.key).unwrap();
         assert_eq!(native.rows().len(), 2);
         assert!(native.has_governance());
@@ -155,24 +175,4 @@ mod tests {
             .is_empty()
         );
     }
-}
-
-pub fn publish(
-    session: &tilo_relay::RelayCoeditSession,
-    messages: Vec<NeighbourMsg>,
-) -> Result<()> {
-    use tilo_peer_state::transport::{Retention, retention};
-    for message in messages {
-        let body = postcard::to_stdvec(&message)?;
-        match retention(&message, true) {
-            Some((channel, Retention::Checkpoint)) => session.publish_checkpoint(channel, body)?,
-            Some((channel, Retention::Delta)) => session.publish_retained_delta(channel, body)?,
-            None => session.publish_presence(body)?,
-        }
-    }
-    Ok(())
-}
-
-pub fn status(peer: &StatePeer, error: Option<&str>) -> serde_json::Value {
-    serde_json::json!({"application_state":if error.is_some(){"incomplete"}else{"admitted"}, "room":peer.room(), "records":peer.rows(), "error":error})
 }
