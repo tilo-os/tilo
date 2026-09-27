@@ -41,6 +41,7 @@
     )
 )]
 
+mod blocks;
 mod convert;
 mod edit;
 mod source;
@@ -52,6 +53,7 @@ use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};
 use ui::widget::Element;
 
+pub use blocks::{blocks_under, fill_under};
 pub use source::{Hosted, RichTextField, RichTextSource};
 pub use surface::RichTextSurface;
 
