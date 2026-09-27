@@ -3260,13 +3260,12 @@ mod tests {
             };
             // The refresh task rereads the bundle on its own period; wait for it
             // to apply rather than sleeping for one period and hoping.
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tilo_test_env::within("the refreshed authority admitted the collaborator", async {
                 while !admitted().await.contains(&collaborator) {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             })
-            .await
-            .expect("the refreshed authority admitted the collaborator");
+            .await;
 
             let revoked = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
@@ -3282,13 +3281,15 @@ mod tests {
             )
             .unwrap();
             let only_governor = std::collections::HashSet::from([revoked.governor]);
-            tokio::time::timeout(Duration::from_secs(10), async {
-                while admitted().await != only_governor {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("the revoked authority left only its governor admitted");
+            tilo_test_env::within(
+                "the revoked authority left only its governor admitted",
+                async {
+                    while admitted().await != only_governor {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                },
+            )
+            .await;
             task.abort();
         }
         // Phase `authority_refresh_rechecks_expiry_without_a_source_change`.
