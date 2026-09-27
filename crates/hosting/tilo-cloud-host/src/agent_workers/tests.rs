@@ -1706,12 +1706,20 @@ async fn pump_until(
     }
 }
 
-/// Workers follow open windows: 90 open/close cycles of Notes (each opening
-/// a new record, as "Open Notes" does) never leave more workers than open
-/// windows plus records inside their unmount grace, and the open latency
-/// (command committed to the record's worker mounted) stays flat.
+/// Open/close cycles of the worker-set test, and the cycles at each end whose
+/// cost is compared. Every cycle leaves one more closed record; the records
+/// each refresh validates are counted exactly, so a closed record that costs
+/// work shows from the first cycle after it closed.
+const CYCLES: usize = 12;
+const WINDOW: usize = 4;
+
+/// Workers follow open windows: repeated open/close cycles of Notes (each
+/// opening a new record, as "Open Notes" does) never leave more workers than
+/// open windows plus records inside their unmount grace, each refresh
+/// validates only records with a window or a worker (never the closed ones),
+/// and the worker set's own cost per open stays flat.
 #[tokio::test(flavor = "current_thread")]
-async fn cloud_worker_set_follows_open_windows_over_ninety_cycles() {
+async fn cloud_worker_set_follows_open_windows_over_repeated_cycles() {
     let (directory, owner) = selected();
     let _guard =
         TestMountGuard::with_grace(std::time::Duration::MAX, &[], std::time::Duration::ZERO);
@@ -1730,7 +1738,7 @@ async fn cloud_worker_set_follows_open_windows_over_ninety_cycles() {
     let mut worker_times = vec![];
     let mut mount_times = vec![];
     let mut seen = std::collections::BTreeSet::new();
-    for cycle in 0..90 {
+    for cycle in 0..CYCLES {
         let before = tab_locations(&owner);
         let began = std::time::Instant::now();
         desktop(
@@ -1753,6 +1761,12 @@ async fn cloud_worker_set_follows_open_windows_over_ninety_cycles() {
             .find(|r| !seen.contains(r))
             .unwrap();
         seen.insert(record);
+        assert!(
+            workers.refreshed <= windows + 1,
+            "cycle {cycle}: refresh validated {} records for {} windows",
+            workers.refreshed,
+            windows + 1
+        );
         assert!(
             workers.workers.len() <= baseline + 1,
             "cycle {cycle}: {} workers for {} windows",
@@ -1777,19 +1791,23 @@ async fn cloud_worker_set_follows_open_windows_over_ninety_cycles() {
         while network.try_recv().is_ok() {}
         relay_delivers_outbox(&mut owner.store().unwrap());
     }
-    assert_eq!(seen.len(), 90, "every cycle opened a new record");
+    assert_eq!(seen.len(), CYCLES, "every cycle opened a new record");
     let mean = |slice: &[std::time::Duration]| {
         slice.iter().sum::<std::time::Duration>() / slice.len() as u32
     };
-    let (first, last) = (mean(&latencies[..10]), mean(&latencies[80..]));
+    let (head, tail) = (..WINDOW, CYCLES - WINDOW..);
+    let (first, last) = (mean(&latencies[head]), mean(&latencies[tail.clone()]));
     // Compare the cheapest cycle of each window: growth with closed records
     // raises every cycle's cost, while a loaded runner only adds spikes.
     let floor = |slice: &[std::time::Duration]| slice.iter().min().copied().unwrap_or_default();
-    let (set_first, set_last) = (floor(&worker_times[..10]), floor(&worker_times[80..]));
-    let (mount_first, mount_last) = (mean(&mount_times[..10]), mean(&mount_times[80..]));
+    let (set_first, set_last) = (
+        floor(&worker_times[head]),
+        floor(&worker_times[tail.clone()]),
+    );
+    let (mount_first, mount_last) = (mean(&mount_times[head]), mean(&mount_times[tail]));
     let state = std::fs::metadata(directory.path().join("state.json")).map_or(0, |m| m.len());
     eprintln!(
-        "open latency: first 10 mean {first:?}, last 10 mean {last:?} (state now {state} B); \
+        "open latency: first {WINDOW} mean {first:?}, last {WINDOW} mean {last:?} (state now {state} B); \
          worker-set bookkeeping {set_first:?} -> {set_last:?}; mount {mount_first:?} -> {mount_last:?}"
     );
     // The worker set's own cost per open must not grow with closed records.

@@ -923,13 +923,21 @@ fn browser_writer_incremental_survives_host_restart_and_fresh_checkpoints() {
     assert_eq!(browser.rows(), heads);
 }
 
+/// Enrolled devices of the compact-bootstrap test, and how far one reply may
+/// drift from the first (numbers and timestamps change its JSON length by a
+/// few bytes). A reply that carried a roster entry per enrolled device grows
+/// by a whole certificate for each and leaves this slack within a few
+/// enrollments.
+const COMPACT_DEVICES: u8 = 16;
+const COMPACT_SLACK: usize = 256;
+
 #[test]
-fn compact_bootstrap_stays_small_beyond_sixty_four_devices() {
+fn compact_bootstrap_stays_flat_as_devices_enroll() {
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[7; 32]);
     let mut store = Store::open(dir.path(), "many-clients").unwrap();
     let mut first = None;
-    for index in 0..70u8 {
+    for index in 0..COMPACT_DEVICES {
         let device = SigningKey::from_bytes(&[index + 20; 32]);
         let request = approved(
             store.inspect(100 + u64::from(index) * 2).unwrap(),
@@ -937,9 +945,11 @@ fn compact_bootstrap_stays_small_beyond_sixty_four_devices() {
             &device,
         );
         let result = store.apply(&request, 101 + u64::from(index) * 2).unwrap();
+        let length = serde_json::to_vec(&result).unwrap().len();
+        let first_length = *first.get_or_insert(length);
         assert!(
-            serde_json::to_vec(&result).unwrap().len() < 20_000,
-            "bootstrap grew with client count at {index}"
+            length < 20_000 && length <= first_length + COMPACT_SLACK,
+            "bootstrap grew with client count at {index}: {first_length} -> {length} bytes"
         );
         assert_eq!(
             result["bootstrap"]["certified_roster"]
@@ -948,11 +958,13 @@ fn compact_bootstrap_stays_small_beyond_sixty_four_devices() {
                 .len(),
             2
         );
-        if first.is_none() {
-            first = Some(store.peer().unwrap());
+        if index == 0 {
+            // The first enrolled Store restores its peer.
+            store.peer().unwrap();
         }
     }
-    assert_eq!(store.state.bound.as_ref().unwrap().roster.len(), 71);
+    let enrolled = usize::from(COMPACT_DEVICES) + 1;
+    assert_eq!(store.state.bound.as_ref().unwrap().roster.len(), enrolled);
     let directory = WorkspaceDirectory::load(
         root.verifying_key().to_bytes(),
         store.key().verifying_key().to_bytes(),
@@ -967,9 +979,8 @@ fn compact_bootstrap_stays_small_beyond_sixty_four_devices() {
             .unwrap()
             .member_devices
             .len(),
-        71
+        enrolled
     );
-    assert!(first.is_some());
 }
 
 #[test]

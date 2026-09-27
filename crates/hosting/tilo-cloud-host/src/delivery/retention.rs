@@ -55,6 +55,38 @@ pub(crate) const HISTORY_COMMITS: usize = 1024;
 /// Live snapshot pins defer rotation until this fraction of a budget.
 const CRITICAL: (usize, usize) = (9, 10);
 
+/// The history budget in force: (`HISTORY_BYTES`, `HISTORY_COMMITS`), or a
+/// test's smaller one so rotation is reached within tens of commits.
+fn history_budget() -> (usize, usize) {
+    #[cfg(test)]
+    if let Some(budget) = TEST_HISTORY_BUDGET.with(std::cell::Cell::get) {
+        return budget;
+    }
+    (HISTORY_BYTES, HISTORY_COMMITS)
+}
+#[cfg(test)]
+std::thread_local! {
+    static TEST_HISTORY_BUDGET: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+/// Test only: a smaller history budget for the current thread, restored on
+/// drop.
+#[cfg(test)]
+pub(crate) struct TestHistoryBudget;
+#[cfg(test)]
+impl TestHistoryBudget {
+    pub(crate) fn set(bytes: usize, commits: usize) -> Self {
+        TEST_HISTORY_BUDGET.with(|budget| budget.set(Some((bytes, commits))));
+        Self
+    }
+}
+#[cfg(test)]
+impl Drop for TestHistoryBudget {
+    fn drop(&mut self) {
+        TEST_HISTORY_BUDGET.with(|budget| budget.set(None));
+    }
+}
+
 /// Observed budget use of one delivery state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pressure {
@@ -131,8 +163,9 @@ impl Pressure {
         // large workspace would rotate (resetting every consumer) repeatedly.
         // The history budget is likewise never below the baseline itself.
         let history = self.pool_bytes.saturating_sub(self.baseline_bytes);
-        let history_budget = HISTORY_BYTES.max(self.baseline_bytes).saturating_mul(2);
-        let commits = MAX_REFERENCES.min(HISTORY_COMMITS * 2);
+        let (history_bytes, history_commits) = history_budget();
+        let history_budget = history_bytes.max(self.baseline_bytes).saturating_mul(2);
+        let commits = MAX_REFERENCES.min(history_commits * 2);
         (over(self.pool_bytes, schema::POOL_LIMIT, fraction)
             && self.pool_bytes >= self.baseline_bytes.saturating_mul(2))
             || over(history, history_budget, fraction)

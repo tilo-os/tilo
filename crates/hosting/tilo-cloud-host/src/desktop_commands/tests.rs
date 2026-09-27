@@ -652,12 +652,17 @@ fn every_openable_application_opens_and_closes_once() {
     }
 }
 
-/// The Cloud catalogue does not grow with opens: after 50 open/close cycles
-/// of Chat and Notes it is exactly as large as before (a closed
+/// Open/close cycles of Chat and Notes in the catalogue test. The catalogue
+/// must come back to exactly its size before, so a single action left behind
+/// by any closed record fails it; the cycles only repeat that exact check.
+const CATALOGUE_CYCLES: usize = 20;
+
+/// The Cloud catalogue does not grow with opens: after repeated open/close
+/// cycles of Chat and Notes it is exactly as large as before (a closed
 /// record leaves no actions behind), so replies stay far under the 256 KiB
 /// native action reply limit.
 #[tokio::test(flavor = "current_thread")]
-async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
+async fn repeated_open_close_cycles_keep_the_catalogue_bounded() {
     use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     let (directory, owner, store, caller) = owner_store();
     let room: uuid::Uuid = store.state.room.parse().unwrap();
@@ -702,7 +707,7 @@ async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
         }
     };
     let before = catalogue_len().await;
-    for _ in 0..50 {
+    for _ in 0..CATALOGUE_CYCLES {
         let mut store = owner.store().unwrap();
         // Chat and Notes: of the apps measured on the native desktop, Chat grew
         // the catalogue the most.
@@ -723,6 +728,9 @@ async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
             );
             succeeded(store.desktop_command_update(&close, None).unwrap());
         }
+        // A connected relay publishes and retires the outbox, so the Store
+        // each command re-saves holds the workspace, not every past publication.
+        crate::agent_workers::tests::relay_delivers_outbox(&mut store);
     }
     let after = catalogue_len().await;
     assert_eq!(after, before, "the catalogue does not grow with opens");

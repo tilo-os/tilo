@@ -264,6 +264,9 @@ pub(crate) struct AgentWorkers {
     /// Test only: cumulative (worker-set bookkeeping, mounting) time.
     #[cfg(test)]
     timing: (std::time::Duration, std::time::Duration),
+    /// Test only: records the last `refresh` validated.
+    #[cfg(test)]
+    refreshed: usize,
     #[cfg(test)]
     step_service: Arc<crate::agent_sender::CloudStepService>,
     _socket: SocketDirectory,
@@ -413,6 +416,8 @@ impl AgentWorkers {
             unmount_grace: TEST_MOUNT.with(|test| test.borrow().2),
             #[cfg(test)]
             timing: Default::default(),
+            #[cfg(test)]
+            refreshed: 0,
             #[cfg(test)]
             step_service,
             _socket: socket,
@@ -748,9 +753,17 @@ impl AgentWorkers {
         let validation = PortableStorage::new("cloud-worker-validation", &self.room)?;
         let mut validators = RecordOwners::portable(validation.clone());
         let mut plans = vec![];
+        #[cfg(test)]
+        {
+            self.refreshed = 0;
+        }
         for row in snapshot.peer.rows() {
             if !needed.contains(&(row.app_id.clone(), row.record_id.clone())) {
                 continue;
+            }
+            #[cfg(test)]
+            {
+                self.refreshed += 1;
             }
             // Every application with an installed checked record factory runs
             // headless here (Writer, Chat, Notes, Calculator, ...): a record a
