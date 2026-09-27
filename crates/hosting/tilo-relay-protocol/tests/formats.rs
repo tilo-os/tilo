@@ -273,6 +273,7 @@ fn toml_encodings_are_pinned() {
         full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
         home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
         iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
+        metrics_listen: None,
         trust_policy: TrustPolicy::AllowList {
             users: vec!["ab".repeat(32)],
         },

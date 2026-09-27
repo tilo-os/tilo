@@ -258,6 +258,18 @@ impl Relay {
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
 
+        let live_connections = Arc::new(AtomicUsize::new(0));
+        // Bound before anything is served, so an unusable metrics address
+        // fails the start instead of leaving a relay nobody can observe.
+        let metrics_listener = match cfg.metrics_listen {
+            Some(addr) => Some(tokio::net::TcpListener::bind(addr).await.map_err(|error| {
+                RelayError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("bind metrics_listen {addr}: {error}"),
+                ))
+            })?),
+            None => None,
+        };
         let live_trust_policy = Arc::new(std::sync::RwLock::new(cfg.trust_policy.clone()));
         let bound: Vec<u64> = cfg.workspaces.iter().map(|binding| binding.id).collect();
         let direct_rooms = Arc::new(
@@ -280,7 +292,7 @@ impl Relay {
             direct_rooms,
             app_serving,
             limits: cfg.limits,
-            live_connections: Arc::new(AtomicUsize::new(0)),
+            live_connections: Arc::clone(&live_connections),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -332,6 +344,19 @@ impl Relay {
             &metrics,
             revocations,
         );
+        if let Some(listener) = metrics_listener {
+            if let Ok(addr) = listener.local_addr() {
+                tracing::info!(%addr, "serving Prometheus metrics on /metrics");
+            }
+            push_peer_relay_task(
+                &peer_relay_tasks,
+                tokio::spawn(crate::metrics::serve_prometheus(
+                    listener,
+                    metrics.clone(),
+                    live_connections,
+                )),
+            );
+        }
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
                 workspace
