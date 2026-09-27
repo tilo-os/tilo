@@ -315,6 +315,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     created: annotation.created_ms,
                     resolved: false,
                     replies: Vec::new(),
+                    blocks: Vec::new(),
                 });
             }
             plan.adopted.push(AdoptedEntry {
@@ -364,6 +365,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     created: 0,
                     resolved: false,
                     replies: Vec::new(),
+                    blocks: Vec::new(),
                 });
                 plan.comments.len() - 1
             };
@@ -373,6 +375,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     id: reply_id.clone(),
                     author: info.author.clone(),
                     body: info.contents.clone(),
+                    blocks: Vec::new(),
                 });
             }
             plan.adopted.push(AdoptedEntry {

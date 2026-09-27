@@ -28,6 +28,8 @@ pub struct Embedded<W: Widget> {
     bindings: BoundNodeMap,
     root: Option<NodeId>,
     rect: Rect,
+    /// The widget's type relative to the theme it is drawn with.
+    text_scale: f32,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -40,7 +42,43 @@ impl<W: Widget + 'static> Embedded<W> {
             bindings: BoundNodeMap::new(),
             root: None,
             rect: Rect::ZERO,
+            text_scale: 1.0,
         }
+    }
+
+    /// Set the widget's type `factor` times the theme's: smaller for a
+    /// comment or a message row, larger for a caption.
+    #[must_use]
+    pub fn with_text_scale(mut self, factor: f32) -> Self {
+        self.set_text_scale(factor);
+        self
+    }
+
+    /// Change the widget's type relative to the theme's.
+    pub fn set_text_scale(&mut self, factor: f32) {
+        if (self.text_scale - factor).abs() > f32::EPSILON {
+            self.text_scale = factor;
+            // Every size the tree measured is stale.
+            self.root = None;
+        }
+    }
+
+    /// Run `run` with `theme` and `text` at the widget's type scale.
+    fn scaled<T>(
+        &mut self,
+        theme: &Theme,
+        text: &mut TextRenderer,
+        run: impl FnOnce(&mut Self, &Theme, &mut TextRenderer) -> T,
+    ) -> T {
+        if (self.text_scale - 1.0).abs() <= f32::EPSILON {
+            return run(self, theme, text);
+        }
+        let scaled = theme.scaled_by(self.text_scale);
+        let before = text.text_scale();
+        text.set_text_scale(scaled.text_scale);
+        let result = run(self, &scaled, text);
+        text.set_text_scale(before);
+        result
     }
 
     /// The hosted widget.
@@ -76,11 +114,17 @@ impl<W: Widget + 'static> Embedded<W> {
 
     /// Lay the widget out at `rect`'s width and origin, as tall as its
     /// content wants (at least `rect`'s height); returns that height.
+    pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        self.scaled(theme, text, |host, theme, text| {
+            host.layout_at(rect, theme, text)
+        })
+    }
+
     #[allow(
         clippy::cast_possible_truncation,
         reason = "logical pixel sizes narrow to Taffy's f32"
     )]
-    pub fn layout(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
+    fn layout_at(&mut self, rect: Rect, theme: &Theme, text: &mut TextRenderer) -> f64 {
         if self.root.is_none() || self.widget.take_structure_dirty() {
             self.rebuild(theme);
         }
@@ -126,8 +170,10 @@ impl<W: Widget + 'static> Embedded<W> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.widget.draw(scene, transform, text, theme, presence);
-        self.widget.mark_drawn();
+        self.scaled(theme, text, |host, theme, text| {
+            host.widget.draw(scene, transform, text, theme, presence);
+            host.widget.mark_drawn();
+        });
     }
 
     /// Route one window event to the widget.
