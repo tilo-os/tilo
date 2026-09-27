@@ -58,11 +58,15 @@ Create a new empty work directory and an input JSON file outside it:
 The run numbers identify a successful paired `release-imager.yml` run and the
 two successful `build-image.yml` runs. The wrapper checks their source commits
 and binds the signed OCI provenance invocation IDs to the selected OS runs.
-The imager identities bind both medium archives, their verified qcow2 bytes,
-native CI guest proofs, exact source revision, live base, and one imager run
-attempt. The verified qcow2 and signed sidecars are retained in the work
-directory; the downloaded ZIPs are removed after verification. There is no
-raw media conversion.
+The v2 imager identities bind both medium archives, their verified qcow2
+bytes, exact source revision, live base, and one imager run attempt. They
+require backend-derived Windows WHPX proof v2 after download: a complete
+generic first boot and a Lenovo install with ESP readback. The copy gate
+checks both WHPX proofs against the signed media and signed OS manifests.
+Earlier v1 identities remain readable with their native CI guest proofs.
+The verified qcow2 and signed sidecars are retained in the work directory;
+the downloaded ZIPs are removed after verification. There is no raw media
+conversion.
 
 Run `prepare` only after the realized plan has been reviewed and allocation
 has completed. The `source_raw` path may be new or may name an existing **empty**

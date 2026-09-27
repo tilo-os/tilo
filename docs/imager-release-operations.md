@@ -12,14 +12,18 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
-Manual installer-only rehearsals do not need those release labels: dispatch
-`release-imager.yml` with `installer_only=true` and `full_native=true`. The
-workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64`
-large-disk lanes for erase, prepared-alongside, and guided-alongside cycles. Their isolated
-job containers use QEMU's slower TCG accelerator and capturable software
-framebuffer because host KVM/DRI devices are intentionally not exposed. Tagged
-releases still require hardware KVM/DRI and the dedicated six-platform fleet
-above; installer-only rehearsals skip host packaging and every publication job.
+Manual installer-only rehearsals with a signed offline ARM64 target use the
+existing `runner-disk-100g-arm64` lane to build the medium and sign its exact
+qcow2 bytes, target digest, live base, and source revision. The lane does not
+run QEMU: its Kata container has no KVM or DRI. The Windows-direct orchestrator
+downloads that immutable medium once and requires a backend-derived Windows
+WHPX guided-install proof for each target. The generic proof includes first
+boot; the Lenovo proof checks install and ESP readback because its board DTB
+cannot boot under QEMU virt. The physical copy gate binds both WHPX proofs to
+the paired CI-signed media and CI-signed OS manifests. It rejects an unsigned
+medium, a mismatched source revision, a different installed target, or a
+different medium hash. Tagged releases retain native KVM/DRI VM cycles and
+their existing release-host requirements.
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`tilo/tilo`), select ephemeral mode, expose exactly one of
