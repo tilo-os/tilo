@@ -8556,11 +8556,15 @@ pub fn run() {
                         &view,
                     )
                 });
+                if frame_builder.narrator_enabled() {
+                    frame_builder.narrate(&lock_screen::narration_tree(&view));
+                }
             } else {
                 native_accessibility.update_if_active(|| {
                     frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
                 });
                 frame_builder.note_keyboard_focus(test_control_ctx.focus);
+                frame_builder.narrate_chrome();
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
