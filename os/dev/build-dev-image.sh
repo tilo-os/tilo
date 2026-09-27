@@ -41,14 +41,12 @@
 #   TILO_CARGO_FRESHNESS  content (default here): the dev binaries' compile keeps
 #                     its target cache and rebuilds only changed crates
 #                     (os/scripts/cargo-freshness.sh); clean: CI's clean compile
-#   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
-#                     job, as far as memory holds out at 4 GiB a thin-LTO job)
 #   TILO_TARGET_IMGREF, TILO_DISK_SIZE, TILO_ACCOUNT  passed to the disk step
 set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
@@ -159,13 +157,12 @@ rpms_ref="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
 
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
-podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
+podman build -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
   --build-arg "RPMS_REF=$rpms_ref" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \
-  --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
