@@ -71,8 +71,9 @@ pub enum EventOutcome {
     AddAgent,
     /// Allows or forbids the room's members' session recorders.
     ToggleRecordingDelegates,
-    /// Add the feedback triage agent through the same admission flow.
-    AddTriageAgent,
+    /// The triage agent's entry: add it through the same admission flow, or,
+    /// once it is here, flip whether it joins reporters' direct rooms.
+    TriageAgent,
     /// Opens Privacy & Security with this agent preselected as the subject.
     ReviewAgent(String),
     RemoveAgent(String),
@@ -639,7 +640,7 @@ impl WorkspaceSettingsOverlay {
                 self.recording_delegates_rect,
                 EventOutcome::ToggleRecordingDelegates,
             ),
-            (self.agent_add_triage_rect, EventOutcome::AddTriageAgent),
+            (self.agent_add_triage_rect, EventOutcome::TriageAgent),
         ]
         .into_iter()
         .find(|(rect, _)| rect.area() > 0.0 && rect.contains(point))

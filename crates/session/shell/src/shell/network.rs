@@ -3406,7 +3406,28 @@ impl ShellNetwork {
         let room = crate::shell::community::team_direct_room(&me, &team).ok_or_else(|| {
             "this session is the Tilo team; it has no direct room with itself".to_string()
         })?;
-        self.open_direct_room(room, &team.person_id(), &team.label, true, &hosts)
+        // The team's choice, read from the community room's governance: its
+        // triage agent joins this room too, operated by the team.
+        let triage = config
+            .invite
+            .as_deref()
+            .and_then(|invite| crate::network::invite::validate_invite_token(invite).ok())
+            .and_then(|parsed| crate::shell::state::RoomId::parse(&parsed.room_id))
+            .is_some_and(|community| {
+                self.tree_handle().is_ok_and(|tree| {
+                    crate::shell::community::team_triages_direct_rooms(&tree.read(), community)
+                })
+            });
+        self.open_direct_room(
+            crate::shell::community::DirectRoomSetup {
+                room,
+                other: &team.person_id(),
+                label: &team.label,
+                governing: true,
+                triage,
+            },
+            &hosts,
+        )
     }
 
     /// The team's end of [`Self::open_team_direct_room`]: the direct room
@@ -3428,66 +3449,28 @@ impl ShellNetwork {
             .lock()
             .map(|hosts| hosts.clone())
             .unwrap_or_default();
-        self.open_direct_room(room, person, label, false, &hosts)
+        self.open_direct_room(
+            crate::shell::community::DirectRoomSetup {
+                room,
+                other: person,
+                label,
+                governing: false,
+                triage: false,
+            },
+            &hosts,
+        )
     }
 
     fn open_direct_room(
         &self,
-        room: crate::shell::state::RoomId,
-        other: &str,
-        label: &str,
-        governing: bool,
+        setup: crate::shell::community::DirectRoomSetup<'_>,
         hosts: &[iroh::EndpointAddr],
     ) -> Result<RoomStatus, String> {
+        let room = setup.room;
         let tree_handle = self.tree_handle()?;
         {
             let mut tree = tree_handle.write();
-            let held = tree
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room);
-            if !held {
-                let local = tree.append_empty_workspace(label);
-                tree.set_room(local, room);
-                if governing {
-                    // Joining a derived room surrenders governance by
-                    // default; this end creates it, so it governs it.
-                    tree.room_authority.remove(&room);
-                    let me = crate::shell::state::local_user_id_for_room(&room);
-                    if let Some(workspace) =
-                        tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local)
-                    {
-                        workspace.set_owner(me);
-                    }
-                }
-                // Otherwise the other end created and governs it: `set_room`
-                // left the authority unpinned, and only the other member of
-                // the derived pair may supply its first governance.
-            }
-            // Idempotent: the creating end makes sure the other member holds
-            // Editor, whether the room is new or was opened before.
-            if governing && tree.governs_room(room) {
-                let me = crate::shell::state::local_user_id_for_room(&room);
-                let workspace = tree
-                    .desktop
-                    .workspaces
-                    .iter_mut()
-                    .find(|ws| ws.room == room)
-                    .ok_or_else(|| format!("no workspace holds room {room}"))?;
-                if workspace.role_of(&other.to_string()).is_none() {
-                    workspace
-                        .grant_as(
-                            &me,
-                            crate::shell::state::CapOverride::membership(
-                                crate::shell::state::Subject::person(other.to_string()),
-                                room.to_string(),
-                                crate::shell::state::Verb::Write,
-                            ),
-                        )
-                        .ok_or_else(|| format!("{me} may not administer room {room}"))?;
-                }
-            }
+            crate::shell::community::prepare_direct_room(&mut tree, &setup)?;
             tree.sync_room_doc(room);
             tree.seed_doc_from_cache();
             tree.flush_to_disk();

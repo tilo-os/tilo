@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::shell::state::WorkspaceAuthority as _;
+
 /// Where the OS image ships the community configuration.
 pub const DEFAULT_COMMUNITY_CONFIG: &str = "/usr/share/tilo/community.toml";
 /// Names a community configuration to use instead of the shipped one.
@@ -366,8 +368,192 @@ impl AutoJoin {
     }
 }
 
+/// How a direct room is set up on this end.
+#[derive(Clone, Copy)]
+pub struct DirectRoomSetup<'a> {
+    pub room: crate::shell::state::RoomId,
+    /// The other member of the pair: the team, from a reporter's end.
+    pub other: &'a str,
+    pub label: &'a str,
+    /// This end creates and governs the room (the reporter's end).
+    pub governing: bool,
+    /// Admit the team's triage agent, operated by the team, when the room is
+    /// created here. Once only: a room that already exists is left as its
+    /// owner made it, so an agent the reporter removed stays removed.
+    pub triage: bool,
+}
+
+/// Whether the team has its triage agent join reporters' direct rooms, as
+/// the community room `community` says: its governance turns it on, and the
+/// agent is admitted there.
+pub fn team_triages_direct_rooms(
+    tree: &crate::shell::state::WorkspaceTree,
+    community: crate::shell::state::RoomId,
+) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == community)
+        .is_some_and(|workspace| {
+            workspace.triage_in_direct_rooms
+                && workspace
+                    .role_of_agent(crate::shell::workspace_settings::TRIAGE_AGENT)
+                    .is_some_and(|role| role != collab_types::role::Role::Denied)
+        })
+}
+
+/// Hold the direct room in `tree`, as [`DirectRoomSetup`] says: a new room
+/// is created, and on the governing end owned here, with the other member an
+/// Editor and, when asked, the team's triage agent admitted with the team as
+/// its operator.
+///
+/// # Errors
+///
+/// When this end governs the room and may not administer it.
+pub fn prepare_direct_room(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    setup: &DirectRoomSetup<'_>,
+) -> Result<(), String> {
+    use crate::shell::state::{CapOverride, Subject, Verb};
+    let room = setup.room;
+    let held = tree
+        .desktop
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.room == room);
+    let me = crate::shell::state::local_user_id_for_room(&room);
+    if !held {
+        let local = tree.append_empty_workspace(setup.label);
+        tree.set_room(local, room);
+        if setup.governing {
+            // Joining a derived room surrenders governance by default; this
+            // end creates it, so it governs it.
+            tree.room_authority.remove(&room);
+            if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|ws| ws.id == local) {
+                workspace.set_owner(me.clone());
+                if setup.triage {
+                    let room_id = room.to_string();
+                    let agent = crate::shell::workspace_settings::TRIAGE_AGENT;
+                    for cap in
+                        crate::shell::workspace_settings::triage_agent_grants(&room_id, agent)
+                            .into_iter()
+                            .chain(std::iter::once(
+                                crate::shell::workspace_settings::triage_operator_grant(
+                                    &room_id,
+                                    agent,
+                                    setup.other,
+                                ),
+                            ))
+                    {
+                        workspace
+                            .grant_as(&me, cap)
+                            .ok_or_else(|| format!("{me} may not administer room {room}"))?;
+                    }
+                }
+            }
+        }
+        // Otherwise the other end created and governs it: `set_room` left the
+        // authority unpinned, and only the other member of the derived pair
+        // may supply its first governance.
+    }
+    // Idempotent: the creating end makes sure the other member holds Editor,
+    // whether the room is new or was opened before.
+    if setup.governing && tree.governs_room(room) {
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .ok_or_else(|| format!("no workspace holds room {room}"))?;
+        if workspace.role_of(&setup.other.to_string()).is_none() {
+            workspace
+                .grant_as(
+                    &me,
+                    CapOverride::membership(
+                        Subject::person(setup.other.to_string()),
+                        room.to_string(),
+                        Verb::Write,
+                    ),
+                )
+                .ok_or_else(|| format!("{me} may not administer room {room}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    /// With the team's choice on, a reporter's new direct room admits the
+    /// triage agent with the team as its operator; the team may launch it
+    /// there; the reporter removes it, and opening the room again does not
+    /// bring it back.
+    #[test]
+    fn a_reporters_direct_room_admits_the_team_triage_agent_once() {
+        use crate::shell::state::{RoomId, WorkspaceTree};
+        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
+        const TEAM: &str = "team-person";
+        let room = RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d1").expect("room id");
+        let setup = super::DirectRoomSetup {
+            room,
+            other: TEAM,
+            label: "Tilo team",
+            governing: true,
+            triage: true,
+        };
+        let mut tree = WorkspaceTree::default();
+        super::prepare_direct_room(&mut tree, &setup).expect("the room is created");
+        let me = crate::shell::state::local_user_id_for_room(&room);
+        let now = tilo_clock::unix_now();
+        {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|ws| ws.room == room)
+                .expect("the room is held");
+            assert_eq!(
+                ws.role_of_agent(TRIAGE_AGENT),
+                Some(collab_types::role::Role::Commenter)
+            );
+            assert!(ws.may_operate_agent_at(&TEAM.to_string(), TRIAGE_AGENT, now));
+            assert!(
+                !ws.may_operate_agent_at(&TEAM.to_string(), "recorder", now),
+                "the operator grant names exactly the triage agent"
+            );
+            assert!(
+                !ws.may_administer(&TEAM.to_string()),
+                "the team operates its agent without governing the room"
+            );
+        }
+
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .expect("the room is held");
+        let removed = remove_agent(ws, &me, TRIAGE_AGENT);
+        assert_eq!(
+            removed.revoked.len(),
+            3,
+            "membership, Chat and the operator grant"
+        );
+        assert!(!ws.may_operate_agent_at(&TEAM.to_string(), TRIAGE_AGENT, now));
+
+        super::prepare_direct_room(&mut tree, &setup).expect("opened again");
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room == room)
+            .expect("the room is held");
+        assert_eq!(ws.role_of_agent(TRIAGE_AGENT), None, "a removal sticks");
+        assert!(
+            ws.role_of(&TEAM.to_string()).is_some(),
+            "the team is still a member"
+        );
+    }
+
     use super::*;
 
     #[test]

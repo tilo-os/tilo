@@ -785,8 +785,13 @@ fn admit_agent_delegation(
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if !workspace.may_administer(&admitted.principal_id) {
-        return Err("only a workspace administrator may launch a delegated agent session".into());
+    // An administrator launches any agent the room admitted; anyone else only
+    // an agent the room let them operate by name (`Scope::Agent`).
+    if !workspace.may_operate_agent_at(&admitted.principal_id, agent_id, tilo_clock::unix_now()) {
+        return Err(
+            "only a workspace administrator or the agent's operator may launch a delegated agent session"
+                .into(),
+        );
     }
     let role = workspace
         .role_of_agent(agent_id)
@@ -12222,6 +12227,55 @@ pub(crate) mod tests {
         // A connection that closed runs for nobody.
         state.remove_connection(7);
         assert!(!state.performs_for(7, &BrokerActor::person("owner")));
+    }
+
+    /// The team is an Editor of a reporter's direct room, not its
+    /// administrator, yet launches its triage agent there because the room
+    /// named it the agent's operator; no other agent, and not after the
+    /// reporter removed it.
+    #[test]
+    fn the_team_launches_its_triage_agent_in_a_reporters_room_as_its_operator() {
+        use crate::shell::workspace_settings::{TRIAGE_AGENT, remove_agent};
+        let team_root = SigningKey::from_bytes(&[45; 32]);
+        let team = principal_id_for_root(team_root.verifying_key().to_bytes());
+        let room =
+            crate::shell::state::RoomId::parse("7a1a9e00-0000-4c0d-9a11-0000000000d2").expect("id");
+        let mut tree = WorkspaceTree::default();
+        crate::shell::community::prepare_direct_room(
+            &mut tree,
+            &crate::shell::community::DirectRoomSetup {
+                room,
+                other: &team,
+                label: "Tilo team",
+                governing: true,
+                triage: true,
+            },
+        )
+        .expect("the reporter's end creates the room");
+        let route = CrdtRoute::cluster(room.to_string());
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&team_root))
+            .expect("the team is a member");
+        assert!(
+            admit_agent_delegation(&tree, &route, &mut admitted.clone(), "scribe").is_err(),
+            "only the agent it operates"
+        );
+        admit_agent_delegation(&tree, &route, &mut admitted, TRIAGE_AGENT)
+            .expect("the operator launches the triage agent");
+
+        let reporter = crate::shell::state::local_user_id_for_room(&room);
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .expect("the room");
+        remove_agent(workspace, &reporter, TRIAGE_AGENT);
+        let mut again = admit_verified_join(&tree, &route, verified_device(&team_root))
+            .expect("the team stays a member");
+        assert!(
+            admit_agent_delegation(&tree, &route, &mut again, TRIAGE_AGENT).is_err(),
+            "a removed agent cannot be launched"
+        );
     }
 
     fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {

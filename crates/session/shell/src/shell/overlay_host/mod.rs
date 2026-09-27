@@ -16089,8 +16089,23 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
-            WorkspaceSettingsOutcome::AddTriageAgent => {
-                if is_owner {
+            WorkspaceSettingsOutcome::TriageAgent => {
+                let admitted = self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome
+                        .borrow()
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .is_some_and(crate::shell::workspace_settings::triage_agent_admitted)
+                });
+                if is_owner
+                    && admitted
+                    && let Some(chrome) = self.chrome.as_ref()
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.toggle_triage_in_direct_rooms();
+                    st.bump();
+                } else if is_owner {
                     // The same typed palette flow as any agent: one action,
                     // reviewable and invocable by keyboard or automation.
                     self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);

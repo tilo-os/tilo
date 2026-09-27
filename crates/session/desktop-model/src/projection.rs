@@ -88,6 +88,41 @@ pub fn recording_delegates_forbidden_of(doc: &AutoCommit) -> Option<bool> {
     }
 }
 
+/// Key a room document stores whether the team's triage agent joins
+/// reporters' direct rooms under. Governance: only the room's authority
+/// writes it.
+pub const ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY: &str = "triage_in_direct_rooms";
+
+/// Record whether the team's triage agent joins reporters' direct rooms (see
+/// [`crate::Workspace::triage_in_direct_rooms`]). Written by the governing
+/// machine on every projection.
+pub fn project_triage_in_direct_rooms(doc: &mut AutoCommit, on: bool) {
+    put_str_if_changed(
+        doc,
+        &automerge::ROOT,
+        ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY,
+        if on { "on" } else { "off" },
+    );
+}
+
+/// Whether a room document has the triage agent join reporters' direct
+/// rooms. `None` when it states nothing this build knows.
+pub fn triage_in_direct_rooms_of(doc: &AutoCommit) -> Option<bool> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc
+        .get(&ROOT, ROOM_TRIAGE_IN_DIRECT_ROOMS_KEY)
+        .ok()
+        .flatten()
+    {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(name) if name.as_str() == "on" => Some(true),
+            ScalarValue::Str(name) if name.as_str() == "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Key a room document stores its delegated hosts under (a JSON array of
 /// Iroh endpoint addresses). Governance, like the channel class.
 pub const ROOM_DELEGATED_HOSTS_KEY: &str = "delegated_hosts_v1";

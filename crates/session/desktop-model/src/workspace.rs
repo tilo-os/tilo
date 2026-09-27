@@ -21,6 +21,10 @@ use crate::shared_surfaces::SharedSurfaces;
 use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent governance or view fact of the room (recording delegates, triage in direct rooms, hidden), serialised on its own"
+)]
 pub struct Workspace {
     pub id: WorkspaceId,
     /// Durable identity of this workspace as a collaboration room — the
@@ -94,6 +98,12 @@ pub struct Workspace {
     /// every member lists a recorder while it records either way.
     #[serde(default)]
     pub recording_delegates_forbidden: bool,
+    /// Whether the team's feedback triage agent also joins each reporter's
+    /// direct room with the team. Room governance of the community room,
+    /// set by its administrators; reporters' devices read it when they
+    /// create their direct room with the team.
+    #[serde(default)]
+    pub triage_in_direct_rooms: bool,
     /// Shortcuts saved in this workspace: a person's own in their personal
     /// workspace, shared ones in a collaborative one. Projected as a CRDT
     /// map keyed by shortcut id, so they reach every desktop the workspace
@@ -575,6 +585,26 @@ impl Workspace {
         )
     }
 
+    /// Whether `user` may operate `agent` here — launch its sessions: they
+    /// administer the room, or hold a live, explicit `Write` grant on that
+    /// agent ([`Scope::Agent`]). A role never implies it: operating an agent
+    /// is always a grant naming the agent.
+    pub fn may_operate_agent_at(&self, user: &UserId, agent: &str, now: u64) -> bool {
+        if self.may_administer_at(user, now) {
+            return true;
+        }
+        let actor = self.actor_for_person_at(user, now);
+        self.capabilities.iter().any(|cap| {
+            matches!(&cap.scope, Scope::Agent(operated) if operated == agent)
+                && cap.subject.matches_actor(&actor)
+        }) && self.allows_at(
+            &actor,
+            &ResourceRef::Agent(agent.to_string()),
+            Verb::Write,
+            now,
+        )
+    }
+
     /// Install `user` as owner, and record the membership capability
     /// that makes them `Admin` — `owner` survives an empty capability
     /// list, and the capability is what replicates and what `decide` reads.
@@ -835,6 +865,7 @@ impl Workspace {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),
@@ -910,6 +941,7 @@ impl Default for Workspace {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),

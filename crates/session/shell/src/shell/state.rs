@@ -1150,6 +1150,7 @@ type RoomGovernance = (
     std::collections::BTreeMap<String, Vec<u8>>,
     Option<collab_types::ChannelClass>,
     Option<bool>,
+    Option<bool>,
     Vec<String>,
 );
 
@@ -1756,6 +1757,7 @@ impl WorkspaceTree {
         let owner = ws.owner.clone();
         let channel_class = ws.channel_class;
         let recording_delegates_forbidden = ws.recording_delegates_forbidden;
+        let triage_in_direct_rooms = ws.triage_in_direct_rooms;
         let delegated_hosts = ws.delegated_hosts.clone();
         // Admissions held outside governance are not the room's to carry:
         // a delegated admission is a record of its own, and projecting them
@@ -1921,6 +1923,7 @@ impl WorkspaceTree {
         }
         projection::project_channel_class(doc, channel_class);
         projection::project_recording_delegates(doc, recording_delegates_forbidden);
+        projection::project_triage_in_direct_rooms(doc, triage_in_direct_rooms);
         projection::project_delegated_hosts(doc, &delegated_hosts);
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
@@ -2246,6 +2249,7 @@ impl WorkspaceTree {
                 std::collections::BTreeMap::new(),
                 None,
                 None,
+                None,
                 Vec::new(),
             );
         };
@@ -2302,6 +2306,7 @@ impl WorkspaceTree {
             identities,
             projection::channel_class_of(doc),
             projection::recording_delegates_forbidden_of(doc),
+            projection::triage_in_direct_rooms_of(doc),
             projection::delegated_hosts_of(doc),
         )
     }
@@ -2882,6 +2887,7 @@ impl WorkspaceTree {
         let channel_class = projection::channel_class_of(&candidate);
         let recording_delegates_forbidden =
             projection::recording_delegates_forbidden_of(&candidate);
+        let triage_in_direct_rooms = projection::triage_in_direct_rooms_of(&candidate);
         let delegated_hosts = projection::delegated_hosts_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
@@ -2940,6 +2946,12 @@ impl WorkspaceTree {
             && ws.recording_delegates_forbidden != forbidden
         {
             ws.recording_delegates_forbidden = forbidden;
+            fields_changed = true;
+        }
+        if let Some(on) = triage_in_direct_rooms
+            && ws.triage_in_direct_rooms != on
+        {
+            ws.triage_in_direct_rooms = on;
             fields_changed = true;
         }
         // Governance: the document's list is the room's, replaced whole.
@@ -3421,6 +3433,41 @@ impl WorkspaceTree {
         if !ws.revoke_capability(cap_id) {
             return false;
         }
+        self.flush_to_disk();
+        true
+    }
+
+    /// Have the team's triage agent join reporters' direct rooms, or not, in
+    /// the community room `workspace_id`, as `actor`, one of its
+    /// administrators, on the machine that governs the room. Room
+    /// governance, projected into the room document so every reporter's
+    /// device reads it. `false` when `actor` may not, or nothing changed.
+    pub fn set_triage_in_direct_rooms(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        on: bool,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
+            return false;
+        };
+        if !ws.may_administer(actor) || ws.triage_in_direct_rooms == on {
+            return false;
+        }
+        ws.triage_in_direct_rooms = on;
+        self.sync_room_doc(room);
+        self.seed_doc_from_cache();
         self.flush_to_disk();
         true
     }
@@ -4247,6 +4294,7 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),
@@ -4429,6 +4477,7 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             channel_class,
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),
@@ -8374,6 +8423,7 @@ mod active_group_tests {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),
@@ -8867,6 +8917,7 @@ mod active_workspace_peer_count_tests {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             recording_delegates_forbidden: false,
+            triage_in_direct_rooms: false,
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
             delegated_hosts: Vec::new(),

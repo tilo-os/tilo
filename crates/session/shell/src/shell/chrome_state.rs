@@ -1371,6 +1371,22 @@ impl ChromeState {
         tree.set_recording_delegates_allowed(workspace_id, &actor, forbidden)
     }
 
+    /// Have the team's triage agent join reporters' direct rooms if it does
+    /// not, or stop if it does, as the community room's administrator.
+    /// `false` when this person may not change it here.
+    pub fn toggle_triage_in_direct_rooms(&mut self) -> bool {
+        let actor = self.active_local_user();
+        let mut tree = self.tree_mut();
+        let Some((workspace_id, on)) = tree
+            .desktop
+            .active_workspace()
+            .map(|ws| (ws.id, ws.triage_in_direct_rooms))
+        else {
+            return false;
+        };
+        tree.set_triage_in_direct_rooms(workspace_id, &actor, !on)
+    }
+
     /// Empty buffers are a cancel — never overwrite the name with "". A
     /// guest can never turn an inline field into an apparent local rename.
     pub fn commit_workspace_name(&mut self) {

@@ -328,6 +328,11 @@ pub enum Scope {
     /// One stable collaborative-file record. Unlike [`Scope::FsPath`], this
     /// authority follows renames and moves and can safely key replication.
     FsRecord(String),
+    /// One agent principal of this room, by its id. `Write` on it lets its
+    /// subject operate the agent here — launch its sessions — without
+    /// administering the room: how a reporter's direct room lets the team run
+    /// the team's triage agent in it.
+    Agent(String),
 }
 
 impl Scope {
@@ -390,6 +395,7 @@ impl Scope {
             // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
             (Scope::FsRecord(r), ResourceRef::FsRecord(s)) => r == s,
+            (Scope::Agent(a), ResourceRef::Agent(b)) => a == b,
 
             // Every scope variant is paired with its own condition above; a
             // resource shape that doesn't match the scope's own kind is never
@@ -403,7 +409,8 @@ impl Scope {
                 | Scope::NetHost(_)
                 | Scope::Action { .. }
                 | Scope::Room(_)
-                | Scope::FsRecord(_),
+                | Scope::FsRecord(_)
+                | Scope::Agent(_),
                 _,
             ) => false,
         }
@@ -476,6 +483,8 @@ pub enum ResourceRef {
     Room(String),
     /// A stable collaborative-file record id.
     FsRecord(String),
+    /// An agent principal of the room, as the thing operated.
+    Agent(String),
 }
 
 /// The resource context an op carries, used to match [`Scope`]s. Built by
@@ -868,10 +877,13 @@ pub fn role_base_applies(resource: &ResourceRef) -> bool {
         | ResourceRef::Artifact { .. }
         | ResourceRef::Action { .. }
         | ResourceRef::Room(_) => true,
+        // Operating an agent is always a grant naming it: an Editor of a
+        // room does not thereby run the agents admitted to it.
         ResourceRef::FsPath(_)
         | ResourceRef::FsRecord(_)
         | ResourceRef::Device(_)
-        | ResourceRef::NetHost(_) => false,
+        | ResourceRef::NetHost(_)
+        | ResourceRef::Agent(_) => false,
     }
 }
 

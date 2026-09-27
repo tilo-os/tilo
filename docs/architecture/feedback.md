@@ -376,6 +376,18 @@ It is not a backend:
   every channel, so the agent's replies are its own records, in `#feedback`
   and in a direct room alike. The broker checks them like any member's, and
   the agent can never write the conversation: no status, no approval.
+- **In direct rooms.** The team decides in the community room's governance,
+  with a switch its administrators set beside the agent ("Triage in direct
+  rooms"). The switch is on once the agent is added. A reporter's device
+  reads the setting when it first creates its direct room with the team. If
+  the switch is on, the device admits the triage agent there, with the same
+  Contributor grants. It also gives the team an operator grant: `Write` on
+  exactly that agent in exactly that room (`Scope::Agent`). With that grant
+  the team may launch the agent without administering the room. The reporter
+  owns the room, so the agent shows with its `AGENT` label and the note "The
+  Tilo team's triage agent helps sort reports here". The reporter can remove
+  it like any agent, and removing it also revokes the operator grant. The
+  agent is only admitted when the room is created, so a removal sticks.
 - **Nobody speaks through its Chat.** Chat's posting actions carry the
   participant tag (`ActionSpec::as_participant`). The broker delivers such an
   action only when the caller is the participant the app runs for, so a

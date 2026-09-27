@@ -1609,6 +1609,10 @@ fn scope_phrase(scope: &Scope, object: bool) -> String {
             "workspace-settings-scope-record",
             vec![("id", short_id(record).into())],
         ),
+        Scope::Agent(agent) => (
+            "workspace-settings-scope-agent",
+            vec![("agent", agent.as_str().into())],
+        ),
         Scope::Device(device) => match device_scope_key(device) {
             Some(key) => (key, Vec::new()),
             None => return device.clone(),
@@ -2196,7 +2200,8 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> CapEdit 
         .capabilities
         .iter()
         .filter(|cap| {
-            subject_is_agent(&cap.subject, agent)
+            (subject_is_agent(&cap.subject, agent)
+                || matches!(&cap.scope, Scope::Agent(operated) if operated == agent))
                 && !crate::shell::state::held_outside_governance(cap)
         })
         .map(|cap| cap.id.clone())
@@ -2245,6 +2250,9 @@ pub struct AgentRow {
     /// which the room controls with "Members may record", not per row:
     /// such a row offers no Review or Remove.
     pub delegated: bool,
+    /// Someone the room lets operate this agent (`Scope::Agent`): the team,
+    /// for its triage agent in a reporter's direct room.
+    pub operated: bool,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2454,6 +2462,19 @@ pub fn triage_agent_grants(room: &str, agent: &str) -> Vec<CapOverride> {
     ]
 }
 
+/// What a reporter's direct room grants the team so it can run its triage
+/// agent there without administering the room: `Write` on exactly that
+/// agent in exactly that room. The reporter sees it with the room's other
+/// grants and can revoke it; removing the agent revokes it too.
+pub fn triage_operator_grant(room: &str, agent: &str, team: &str) -> CapOverride {
+    CapOverride::grant(
+        Subject::person(team),
+        Scope::Agent(agent.to_string()),
+        Verb::Write,
+    )
+    .with_id(format!("agent-operator:{agent}:{team}@{room}"))
+}
+
 /// Geometry for the always-visible entry point into the guided setup.
 pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     Rect::new(
@@ -2497,10 +2518,35 @@ fn draw_recording_delegates_switch(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    draw_room_switch(
+        scene,
+        transform,
+        row,
+        (
+            &t("workspace-settings-recording-toggle"),
+            !ws.recording_delegates_forbidden,
+        ),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+/// A labelled room-governance switch filling `row`: the label, and the
+/// shared switch at the trailing edge. Only an administrator may flip it.
+fn draw_room_switch(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    (label, on): (&str, bool),
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     let tokens = &theme.tokens;
     let size = tokens.typography.scale.sm;
     let label = elide(
-        &t("workspace-settings-recording-toggle"),
+        label,
         size,
         (row.width() - RECORDING_SWITCH_WIDTH - 10.0).max(0.0),
         text_renderer,
@@ -2521,20 +2567,17 @@ fn draw_recording_delegates_switch(
         scene,
         transform,
         theme,
-        &ui::widget::ToggleFace::new(
-            recording_delegates_switch_rect(row),
-            !ws.recording_delegates_forbidden,
-        )
-        .disabled(!is_owner),
+        &ui::widget::ToggleFace::new(recording_delegates_switch_rect(row), on).disabled(!is_owner),
     );
 }
 
-/// The Agents pane's entry points: the guided setup, and adding the feedback
-/// triage agent through the same admission flow.
+/// The Agents pane's entry points: the guided setup, and the feedback triage
+/// agent — adding it through the same admission flow, or once it is here,
+/// the team's choice whether it also joins reporters' direct rooms.
 fn draw_agent_add_buttons(
     scene: &mut Scene,
     transform: Affine,
-    pane_rect: Rect,
+    (pane_rect, ws): (Rect, &Workspace),
     is_owner: bool,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -2548,15 +2591,36 @@ fn draw_agent_add_buttons(
         text_renderer,
         theme,
     );
-    draw_primary_button(
-        scene,
-        transform,
-        agents_add_triage_rect(pane_rect),
-        &t("workspace-settings-add-triage-agent"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
+    if triage_agent_admitted(ws) {
+        draw_room_switch(
+            scene,
+            transform,
+            agents_add_triage_rect(pane_rect),
+            (
+                &t("workspace-settings-triage-direct-rooms"),
+                ws.triage_in_direct_rooms,
+            ),
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    } else {
+        draw_primary_button(
+            scene,
+            transform,
+            agents_add_triage_rect(pane_rect),
+            &t("workspace-settings-add-triage-agent"),
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// Whether the room admits the team's triage agent.
+pub fn triage_agent_admitted(ws: &Workspace) -> bool {
+    ws.role_of_agent(TRIAGE_AGENT)
+        .is_some_and(|role| role != CapRole::Denied)
 }
 
 /// Geometry for adding the feedback triage agent, after the room's
@@ -2635,6 +2699,10 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
         } else {
             (review_rect, remove_rect)
         };
+        let operated = ws
+            .capabilities
+            .iter()
+            .any(|cap| matches!(&cap.scope, Scope::Agent(operated) if *operated == agent));
         rows.push(AgentRow {
             agent,
             role,
@@ -2642,6 +2710,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             preset,
             service,
             delegated,
+            operated,
             row_rect,
             role_rect,
             review_rect,
@@ -3153,7 +3222,14 @@ pub fn draw_agents_pane(
         theme,
     );
     if rows.is_empty() {
-        draw_agent_add_buttons(scene, transform, pane_rect, is_owner, text_renderer, theme);
+        draw_agent_add_buttons(
+            scene,
+            transform,
+            (pane_rect, ws),
+            is_owner,
+            text_renderer,
+            theme,
+        );
         let empty = Rect::new(
             pane_rect.x0,
             pane_rect.y0
@@ -3194,7 +3270,14 @@ pub fn draw_agents_pane(
         text_renderer,
         theme,
     );
-    draw_agent_add_buttons(scene, transform, pane_rect, is_owner, text_renderer, theme);
+    draw_agent_add_buttons(
+        scene,
+        transform,
+        (pane_rect, ws),
+        is_owner,
+        text_renderer,
+        theme,
+    );
     for row in &rows {
         draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
     }
@@ -3343,6 +3426,8 @@ fn agent_row_detail(row: &AgentRow) -> String {
         service_member_detail(service)
     } else if row.delegated {
         t("workspace-settings-agent-delegated")
+    } else if row.operated && row.agent == TRIAGE_AGENT {
+        t("workspace-settings-agent-triage-note")
     } else {
         t_args(
             "workspace-settings-agent-detail",

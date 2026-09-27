@@ -1684,6 +1684,12 @@ impl Action {
                     let admitted = triage_agent_grants(&room, TRIAGE_AGENT)
                         .into_iter()
                         .all(|cap| tree.grant_in_workspace(ws_id, &user, cap).is_some());
+                    // On by default once added: the team's triage agent also
+                    // joins reporters' direct rooms until an administrator
+                    // turns that off.
+                    if admitted {
+                        tree.set_triage_in_direct_rooms(ws_id, &user, true);
+                    }
                     drop(tree);
                     admitted
                 };

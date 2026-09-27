@@ -39,6 +39,7 @@ const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const CHANNEL_CLASS_KEY: &str = "channel_class";
 const RECORDING_DELEGATES_FORBIDDEN_KEY: &str = "recording_delegates_forbidden";
+const TRIAGE_IN_DIRECT_ROOMS_KEY: &str = "triage_in_direct_rooms";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
@@ -235,6 +236,11 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
             RECORDING_DELEGATES_FORBIDDEN_KEY,
             ws.recording_delegates_forbidden,
         );
+        let _ = doc.put(
+            &entry,
+            TRIAGE_IN_DIRECT_ROOMS_KEY,
+            ws.triage_in_direct_rooms,
+        );
         put_blob_map(
             doc,
             &entry,
@@ -416,6 +422,12 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             && let ScalarValue::Boolean(forbidden) = value.as_ref()
         {
             ws.recording_delegates_forbidden = *forbidden;
+        }
+        if let Some((Value::Scalar(value), _)) =
+            doc.get(entry, TRIAGE_IN_DIRECT_ROOMS_KEY).ok().flatten()
+            && let ScalarValue::Boolean(on) = value.as_ref()
+        {
+            ws.triage_in_direct_rooms = *on;
         }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
