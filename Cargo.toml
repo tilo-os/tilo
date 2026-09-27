@@ -31,7 +31,6 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",

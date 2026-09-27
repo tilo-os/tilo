@@ -75,7 +75,6 @@
 
 mod app;
 mod controls;
-pub mod dev_reload;
 mod dispatch;
 mod each;
 mod live;
