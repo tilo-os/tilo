@@ -227,6 +227,7 @@ pub enum InputOperation {
     SetScrollSpeed { value: f64 },
     SetAccelerationProfile { profile: String },
     SetComposeKey { key: String },
+    SetCapsLock { behavior: String },
     SetActiveSource { label: String },
 }
 
@@ -3552,6 +3553,15 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ],
         |choice| InputOperation::SetComposeKey { key: choice },
     ));
+    sec = sec.with_action(input_choice_spec(
+        "caps-lock",
+        "Set what Caps Lock does",
+        &crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetCapsLock { behavior: choice },
+    ));
     // Text assistance is portable user text preference rather than a hardware
     // command, and therefore intentionally remains in SettingsAction.
     for (id, key, label) in [
@@ -6022,6 +6032,7 @@ mod tests {
                 "auto-correct",
                 "acceleration-profile",
                 "compose-key",
+                "caps-lock",
             ] {
                 assert!(
                     input_ids.contains(id),

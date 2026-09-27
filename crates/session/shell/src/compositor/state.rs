@@ -598,6 +598,10 @@ pub struct State {
     output_presentation_focus: Option<SurfaceId>,
     output_presentation_sequences: HashMap<SurfaceId, u64>,
     pub(crate) fullscreen_target: Option<FullscreenTarget>,
+    /// The XKB sources the seat keymap was compiled from, so a settings
+    /// reload that only moves the active source switches groups instead of
+    /// recompiling and re-sending the keymap to every client.
+    applied_keyboard: crate::compositor::backend::drm::input_config::KeyboardSettings,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -923,7 +927,8 @@ impl State {
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
         seat.add_pointer();
-        let initial_keyboard_index = Self::init_seat_keyboard(&mut seat);
+        let applied_keyboard = Self::init_seat_keyboard(&mut seat);
+        let initial_keyboard_index = applied_keyboard.active_index;
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
@@ -1021,6 +1026,7 @@ impl State {
             output_presentation_focus: None,
             output_presentation_sequences: HashMap::new(),
             fullscreen_target: None,
+            applied_keyboard,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
@@ -1134,9 +1140,11 @@ impl State {
 
     /// Add a keyboard device to `seat` from the persisted XKB settings,
     /// falling back to a bare "us" layout if the saved sources fail to
-    /// compile. Returns the settings' `active_index` (or `0` on fallback)
-    /// for [`Self::activate_keyboard_source`]. Split out of [`Self::new`] to keep that constructor under the line-count budget.
-    fn init_seat_keyboard(seat: &mut Seat<Self>) -> usize {
+    /// compile. Returns the settings the keymap was compiled from (the US
+    /// fallback when the saved sources failed). Split out of [`Self::new`] to keep that constructor under the line-count budget.
+    fn init_seat_keyboard(
+        seat: &mut Seat<Self>,
+    ) -> crate::compositor::backend::drm::input_config::KeyboardSettings {
         // A keyboard on the seat is required for the on-screen keyboard's
         // `virtual-keyboard-v1` client (and any future IME) to deliver keys
         // to the focused surface. Guarded so a keymap-load failure degrades
@@ -1159,7 +1167,7 @@ impl State {
             repeat_delay_ms,
             repeat_rate_hz,
         ) {
-            Ok(_) => keyboard_settings.active_index,
+            Ok(_) => keyboard_settings,
             Err(error) => {
                 tracing::warn!(?error, "seat: saved XKB sources failed; falling back to US");
                 if let Err(fallback_error) = seat.add_keyboard(
@@ -1175,12 +1183,14 @@ impl State {
                         "seat: fallback keymap failed (text injection disabled)"
                     );
                 }
-                0
+                crate::compositor::backend::drm::input_config::KeyboardSettings::default()
             }
         }
     }
 
-    fn activate_keyboard_source(&mut self, index: usize) {
+    /// Switch the seat to input source `index`; clients learn the new group
+    /// through the ordinary modifiers event.
+    pub(crate) fn activate_keyboard_source(&mut self, index: usize) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -1197,13 +1207,24 @@ impl State {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let config = XkbConfig {
-            layout: &settings.layouts,
-            variant: &settings.variants,
-            options: settings.options.clone(),
-            ..Default::default()
+        let same_keymap = self.applied_keyboard.layouts == settings.layouts
+            && self.applied_keyboard.variants == settings.variants
+            && self.applied_keyboard.options == settings.options;
+        let compiled = if same_keymap {
+            // Only the active source moved: no keymap to re-send.
+            Ok(())
+        } else {
+            keyboard.set_xkb_config(
+                self,
+                XkbConfig {
+                    layout: &settings.layouts,
+                    variant: &settings.variants,
+                    options: settings.options.clone(),
+                    ..Default::default()
+                },
+            )
         };
-        match keyboard.set_xkb_config(self, config) {
+        match compiled {
             Ok(()) => {
                 self.activate_keyboard_source(settings.active_index);
                 let (delay, rate) =
@@ -1219,6 +1240,7 @@ impl State {
                     active = settings.active_index,
                     "Wayland seat: applied per-user XKB sources"
                 );
+                self.applied_keyboard = settings;
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,

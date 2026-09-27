@@ -165,6 +165,18 @@ concurrency:
   group: tilo-relay-image-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
+env:
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -274,7 +286,7 @@ jobs:
             case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
           done
           case "${SCCACHE_ENDPOINT:-}" in https://s3.*.amazonaws.com) ;; *) available=0 ;; esac
-          case "${SCCACHE_BUCKET:-}" in podesta-agent-sccache-*) ;; *) available=0 ;; esac
+          case "${SCCACHE_BUCKET:-}" in tilo-ci-sccache-*) ;; *) available=0 ;; esac
           case "${SCCACHE_S3_KEY_PREFIX:-}" in forgejo-runners/v[0-9]*) ;; *) available=0 ;; esac
           test "${SCCACHE_S3_USE_SSL:-}" = true || available=0
           printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
@@ -340,6 +352,10 @@ jobs:
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
+          # Pull requests and main builds keep their layers and the compile
+          # step's target/ cache mount on the runner slot, each trust class in
+          # its own builder; publications start from a fresh one.
+          persistent: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
       - name: Verify the frozen RPM package set
         env:

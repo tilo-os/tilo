@@ -645,6 +645,10 @@ mod tests {
     use crate::setup::model::FolderMode;
     use std::fs;
 
+    /// Durable copies can take many seconds on a loaded disk; this bound only
+    /// catches a worker that never finishes.
+    const WORKER_HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
     fn fixture() -> (tempfile::TempDir, MigrationStore, Vec<FolderChoice>) {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
@@ -825,13 +829,16 @@ mod tests {
                 .set_times(fs::FileTimes::new().set_modified(modified))
                 .unwrap();
             let mut worker = MigrationWorker::start(job).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + WORKER_HANG_BOUND;
             let outcome = loop {
                 if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
                     break outcome;
                 }
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             };
             assert!(matches!(outcome, WorkerOutcome::Failed(_)), "{outcome:?}");
             assert!(!op.journal().unwrap().exists());
@@ -841,14 +848,17 @@ mod tests {
             c.resolve(0, &parent, true).unwrap();
             let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
             let mut worker = MigrationWorker::start(job).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + WORKER_HANG_BOUND;
             loop {
                 if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
                     assert!(matches!(outcome, WorkerOutcome::Complete(_)), "{outcome:?}");
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             assert_eq!(
                 fs::read(parent.join("Documents/existing.txt")).unwrap(),
@@ -874,7 +884,7 @@ mod tests {
             .unwrap();
             fs::create_dir(&choices[0].scan.source).unwrap();
             let mut worker = MigrationWorker::start(job).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + WORKER_HANG_BOUND;
             loop {
                 if let Some(event) = worker.try_next() {
                     assert!(matches!(
@@ -883,8 +893,11 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             assert!(!op.journal().unwrap().exists());
             assert!(!parent.join("Documents").exists());
@@ -904,7 +917,7 @@ mod tests {
             fs::rename(&parent, parent.with_extension("old")).unwrap();
             fs::create_dir(&parent).unwrap();
             let mut worker = MigrationWorker::start(job).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + WORKER_HANG_BOUND;
             loop {
                 if let Some(event) = worker.try_next() {
                     assert!(matches!(
@@ -913,8 +926,11 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             assert!(!op.journal().unwrap().exists());
             assert!(!parent.join("Documents").exists());

@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::RevocationList;
 use uuid::Uuid;
+use wire_frame::Framing;
 
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
 
@@ -643,19 +645,27 @@ impl NamedShareDeliveryClient {
     }
 }
 
+/// Each delivery request and response: a big-endian `u32` length, then the
+/// canonical encoding. Empty frames are invalid.
+const NAMED_SHARE_DELIVERY_FRAMING: Framing =
+    Framing::big_endian(MAX_NAMED_SHARE_ENVELOPE_BYTES).reject_empty();
+
+impl From<CanonicalFrameError> for NamedShareDeliveryError {
+    fn from(error: CanonicalFrameError) -> Self {
+        match error {
+            CanonicalFrameError::Io(error) => Self::Io(error),
+            CanonicalFrameError::Empty | CanonicalFrameError::TooLarge(_) => Self::EnvelopeTooLarge,
+            CanonicalFrameError::Encode(_) | CanonicalFrameError::Decode(_) => Self::MalformedWire,
+        }
+    }
+}
+
 async fn write_wire<W: tokio::io::AsyncWrite + Unpin, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> Result<(), NamedShareDeliveryError> {
     use tokio::io::AsyncWriteExt;
-    let bytes = canonical_bytes(value).map_err(|_| NamedShareDeliveryError::MalformedWire)?;
-    if bytes.len() > MAX_NAMED_SHARE_ENVELOPE_BYTES {
-        return Err(NamedShareDeliveryError::EnvelopeTooLarge);
-    }
-    let length =
-        u32::try_from(bytes.len()).map_err(|_| NamedShareDeliveryError::EnvelopeTooLarge)?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
+    canonical_frame::write(NAMED_SHARE_DELIVERY_FRAMING, writer, value).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -663,17 +673,7 @@ async fn write_wire<W: tokio::io::AsyncWrite + Unpin, T: Serialize + Sync>(
 async fn read_wire<R: tokio::io::AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<T, NamedShareDeliveryError> {
-    use tokio::io::AsyncReadExt;
-    let mut length = [0; 4];
-    reader.read_exact(&mut length).await?;
-    let length = u32::from_be_bytes(length) as usize;
-    if length == 0 || length > MAX_NAMED_SHARE_ENVELOPE_BYTES {
-        return Err(NamedShareDeliveryError::EnvelopeTooLarge);
-    }
-    let mut bytes = vec![0; length];
-    reader.read_exact(&mut bytes).await?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map_err(|_| NamedShareDeliveryError::MalformedWire)
+    Ok(canonical_frame::read_required(NAMED_SHARE_DELIVERY_FRAMING, reader).await?)
 }
 
 #[derive(Debug, Error)]
@@ -899,6 +899,59 @@ mod tests {
     };
 
     const NOW: u64 = 10_000;
+
+    #[tokio::test]
+    async fn delivery_frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_wire(&mut wire, &DeliveryResponseV1::Refused)
+            .await
+            .unwrap();
+        assert_eq!(wire, [0, 0, 0, 1, 1]);
+
+        let mut wire: Vec<u8> = vec![0, 0, 0, 19, 0, 16];
+        wire.extend_from_slice(&[0x22; 16]);
+        wire.push(1);
+        let response: DeliveryResponseV1 = read_wire(&mut wire.as_slice()).await.unwrap();
+        assert_eq!(
+            response,
+            DeliveryResponseV1::Accepted {
+                grant_id: Uuid::from_bytes([0x22; 16]),
+                inserted: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_frames_reject_empty_oversized_and_truncated_wire() {
+        let limit = u32::try_from(MAX_NAMED_SHARE_ENVELOPE_BYTES).unwrap();
+        for prefix in [0, limit + 1] {
+            let wire = prefix.to_be_bytes();
+            let result: Result<DeliveryResponseV1, _> = read_wire(&mut &wire[..]).await;
+            assert!(matches!(
+                result,
+                Err(NamedShareDeliveryError::EnvelopeTooLarge)
+            ));
+        }
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 2, 0][..]] {
+            let result: Result<DeliveryResponseV1, _> = read_wire(&mut &wire[..]).await;
+            assert!(
+                matches!(result, Err(NamedShareDeliveryError::Io(ref error)) if error.kind() == std::io::ErrorKind::UnexpectedEof),
+                "{wire:?}"
+            );
+        }
+        let result: Result<DeliveryResponseV1, _> = read_wire(&mut &[0, 0, 0, 1, 9][..]).await;
+        assert!(matches!(
+            result,
+            Err(NamedShareDeliveryError::MalformedWire)
+        ));
+        let mut wire = Vec::new();
+        let oversized = vec![0_u8; MAX_NAMED_SHARE_ENVELOPE_BYTES];
+        assert!(matches!(
+            write_wire(&mut wire, &oversized).await,
+            Err(NamedShareDeliveryError::EnvelopeTooLarge)
+        ));
+        assert!(wire.is_empty());
+    }
 
     fn envelope(person: Ed25519PublicKey, id_seed: u128) -> NamedShareEnvelopeV1 {
         let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);

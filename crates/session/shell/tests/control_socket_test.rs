@@ -31,6 +31,7 @@ use std::time::Duration;
 /// The socket lives in a private per-test directory, returned so it
 /// outlives the child; a shared `/tmp` name could be bound by anyone first.
 fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
+    tilo_test_env::require_isolated_desktop();
     let control_dir = tempfile::tempdir().expect("control socket directory");
     let socket_path = control_dir.path().join("control.sock");
 

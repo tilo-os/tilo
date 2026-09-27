@@ -295,7 +295,9 @@ a `WIP` title. If a landed PR breaks main, it is reverted automatically and the
 PR gets a comment on how to reland. Review is optional and informational and never
 blocks integration. See `DEVELOPMENT.md`.
 
-Keep check/lint results for every main commit. Affected Tilo/Linux apps package
+Keep a lint result for every main commit, and cover every main commit with a green
+check run of itself or of a later commit: queued main check runs coalesce to the
+newest, which selects everything since the last started one. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS
 and desktop distribution builds remain explicit or scheduled; do not restore
 broad per-push full builds to obtain a development artifact. Use the existing workflow's
