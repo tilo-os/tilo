@@ -37,13 +37,17 @@ COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \
-    --mount=type=secret,id=aws_access_key_id,required=true \
-    --mount=type=secret,id=aws_secret_access_key,required=true \
-    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id)" \
-    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key)" \
-    && sccache --start-server \
+    --mount=type=secret,id=aws_access_key_id,required=false \
+    --mount=type=secret,id=aws_secret_access_key,required=false \
+    if [ -s /run/secrets/aws_access_key_id ] && [ -s /run/secrets/aws_secret_access_key ]; then \
+      export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id)"; \
+      export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key)"; \
+      sccache --start-server; \
+    else \
+      unset RUSTC_WRAPPER; \
+    fi \
     && cargo build --locked --release -p registry-server --bin tilo-registry-server \
-    && sccache --show-stats \
+    && if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi \
     && install -D -m 0755 target/release/tilo-registry-server /out/tilo-registry-server \
     && install -d -m 0750 -o 65532 -g 65532 /out/state
 

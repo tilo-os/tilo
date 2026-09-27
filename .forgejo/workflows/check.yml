@@ -61,6 +61,8 @@ env:
     (package(fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
 
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
     runs-on: runner-quality

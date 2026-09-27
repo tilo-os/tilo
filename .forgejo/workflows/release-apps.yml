@@ -495,7 +495,13 @@ jobs:
       # and the runner's cache credentials are removed before compiling.
       - name: Prepare compiler cache
         if: needs.plan.outputs.publish != 'true'
-        run: bash tools/ci/sccache.sh prepare
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+        run: |
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          bash tools/ci/sccache.sh prepare
       - name: Build and verify selected tapps once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}

@@ -9,6 +9,10 @@ concurrency:
   group: security-fuzz
   cancel-in-progress: false
 
+env:
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   builder:
     runs-on: runner-quality

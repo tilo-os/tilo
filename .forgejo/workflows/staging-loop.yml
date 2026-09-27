@@ -42,6 +42,8 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
 
+  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
     runs-on: runner-quality
