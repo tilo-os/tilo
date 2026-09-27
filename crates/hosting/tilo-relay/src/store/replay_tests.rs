@@ -29,6 +29,16 @@ fn raw_generation(store: &WorkspaceStore, author: u8, channel: u8) -> PathBuf {
     fs::write(lineage.join("CURRENT"), name).unwrap();
     lineage.join(name)
 }
+/// A pending entry at the exact path `enqueue_pending` names, written without
+/// its per-entry durability barrier: backlog fixtures of thousands of entries
+/// test replay bounds, not the fsync cost of building them.
+fn raw_pending(store: &WorkspaceStore, device: &[u8; 32], seq: u64, bytes: &[u8]) -> PathBuf {
+    let directory = store.pending_dir_for(device);
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex()));
+    fs::write(&path, bytes).unwrap();
+    path
+}
 fn snapshot(store: &WorkspaceStore) -> ReplaySnapshot {
     let mut build = store
         .start_replay_capture(ReplayId(rand::random()), [2; 32])
@@ -68,7 +78,7 @@ fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
         fs::write(retained.join(format!("{i:016x}.delta")), frame(1, 2048, i)).unwrap();
     }
     for i in 0..1500 {
-        store.enqueue_pending(&[2; 32], i, &[0]).unwrap();
+        raw_pending(&store, &[2; 32], i, &[0]);
     }
     let pending = store
         .enqueue_pending(&[2; 32], 2000, &frame(2, 2048, 2000))

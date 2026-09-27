@@ -1390,6 +1390,10 @@ fn rejected_checkpoint_fixture(serial: bool) {
 
 #[test]
 fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
+    // The relay caps a checkpoint prefix at a fixed frame count; selection
+    // treats every prefix size alike, so a small prefix exposes the same
+    // cutoff at a fraction of the signing and retention work.
+    const PREFIX: usize = 4;
     fn outcome(document_count: usize) -> BatchSelectionOutcome {
         let key =
             ed25519_dalek::SigningKey::from_bytes(&[u8::try_from(document_count).unwrap(); 32]);
@@ -1444,13 +1448,13 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             &store,
             next.iter()
                 .skip(1)
-                .take(32)
+                .take(PREFIX)
                 .map(|message| synthetic_frame(&authority, message, true)),
             None,
         );
         let mut selector = projected_selection(&store, &root, incoming, &stages);
         let outcome = finish(|| selector.step_projection(WorkLimit::default()).unwrap());
-        if document_count > 32 {
+        if document_count > PREFIX {
             assert_eq!(
                 selector.snapshot_verifications.1, 0,
                 "a proved newer Original needs no repeated signature proof against the older fallback room"
@@ -1459,7 +1463,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
         outcome
     }
 
-    let complete = outcome(32);
+    let complete = outcome(PREFIX);
     assert_eq!(complete.reason, BatchProjectionReason::Represented);
     assert!(
         complete
@@ -1467,12 +1471,12 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             .iter()
             .all(|value| *value != IncomingDisposition::Original)
     );
-    for document_count in [33, 34] {
+    for document_count in [PREFIX + 1, PREFIX + 2] {
         let truncated = outcome(document_count);
         assert_eq!(
             truncated.reason,
             BatchProjectionReason::FinalBasisOmission,
-            "{document_count} records unexpectedly fit in the 32-frame projection"
+            "{document_count} records unexpectedly fit in the {PREFIX}-frame projection"
         );
         assert!(
             truncated
