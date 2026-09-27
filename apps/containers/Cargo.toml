@@ -19,7 +19,6 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-test-support = ["ui/test-support"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -37,7 +36,6 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-containers = { path = ".", default-features = false, features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
