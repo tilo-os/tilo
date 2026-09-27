@@ -2,6 +2,29 @@ use super::*;
 use tilo_actions::Action;
 
 pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
+    let directory = selected_store();
+    let owner = Arc::new(RuntimeOwner::open(directory.path(), "agent-admission").unwrap());
+    (directory, owner)
+}
+
+/// [`selected`] with an owner policy clock the test advances itself, for
+/// time budgets checked without waiting them out on the wall clock.
+pub(crate) fn selected_with_clock() -> (
+    tempfile::TempDir,
+    Arc<RuntimeOwner>,
+    tilo_action_broker::peer_actions::PolicyClockTestControl,
+) {
+    let directory = selected_store();
+    let (clock, control) = tilo_action_broker::peer_actions::OwnerPolicyClock::for_test(
+        tilo_delivery_protocol::clock::now_ns(),
+    );
+    let owner = Arc::new(
+        RuntimeOwner::open_with_clock(directory.path(), "agent-admission", clock).unwrap(),
+    );
+    (directory, owner, control)
+}
+
+fn selected_store() -> tempfile::TempDir {
     // The workers install the managed sender under the Store root.
     let (directory, mut store, _) = crate::agent_owner_tests::enrolled_admitted();
     let mut peer = store.peer().unwrap();
@@ -10,8 +33,7 @@ pub(crate) fn selected() -> (tempfile::TempDir, Arc<RuntimeOwner>) {
     state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
     store.commit(state).unwrap();
     drop(store);
-    let owner = Arc::new(RuntimeOwner::open(directory.path(), "agent-admission").unwrap());
-    (directory, owner)
+    directory
 }
 
 // A second host/owner or a legacy/no-owner broker must not stand in for the

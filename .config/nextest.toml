@@ -36,6 +36,7 @@ compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
+cloud-host-workers = { max-threads = 4 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
@@ -126,6 +127,19 @@ test-group = "imager-durable-disk"
 [[profile.ci.overrides]]
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
+
+# Each of these runs a whole Cloud agent host in-process: the certified
+# broker, the Writer, Chat and Notes workers and an enrolled Agent client, each
+# on its own threads. Started together at the head of a shard they starve each
+# other until the product's own handshake bounds (the SDK's primary route
+# timeout, the owner's turn budget) expire, so a few run at a time.
+[[profile.default.overrides]]
+filter = 'package(tilo-cloud-host) and (test(/^agent_workers::enrolled_handoff_tests::/) or test(/_with_actual_agent_runtime_/))'
+test-group = "cloud-host-workers"
+
+[[profile.ci.overrides]]
+filter = 'package(tilo-cloud-host) and (test(/^agent_workers::enrolled_handoff_tests::/) or test(/_with_actual_agent_runtime_/))'
+test-group = "cloud-host-workers"
 
 # The longest tests (15-180 s each in CI) start right after the pool-wide ones.
 [[profile.default.overrides]]

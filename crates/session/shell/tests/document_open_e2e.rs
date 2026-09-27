@@ -216,7 +216,10 @@ fn install_recording_launcher(dir: &Path) -> PathBuf {
 }
 
 fn launched_commands(log: &Path, want: usize) -> Vec<String> {
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         if let Ok(s) = std::fs::read_to_string(log) {
             let lines: Vec<String> = s.lines().map(str::to_string).collect();
             if lines.len() >= want {

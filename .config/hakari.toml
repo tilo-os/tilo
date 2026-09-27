@@ -45,6 +45,13 @@ third-party = [
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
     # bundled sources and wayland-sys is dlopen-only, so both may stay.
     { name = "smithay-client-toolkit" },
+    # The peer transport belongs to the hosts: tilo-desktop is managed and
+    # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
+    { name = "iroh" },
+    { name = "iroh-base" },
+    { name = "iroh-dns" },
+    { name = "iroh-metrics" },
+    { name = "iroh-relay" },
     # A git-pinned YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
     { name = "rustypipe", git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },

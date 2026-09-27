@@ -28,7 +28,7 @@ fn large_frame_survives_split_reads() {
     let big = vec![0xABu8; 256 * 1024];
     a.send(CollabRequest::document_snapshot(big.clone()));
 
-    // Poll B for up to ~2s, accumulating the frame across reads.
+    // Poll B until the frame arrives, accumulating it across reads.
     let mut got: Option<Vec<u8>> = None;
     tilo_test_env::wait_until("the large snapshot at B", || {
         for e in b.poll() {
