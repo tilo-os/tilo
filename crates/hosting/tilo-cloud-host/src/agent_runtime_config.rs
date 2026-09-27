@@ -384,10 +384,11 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(15));
             }
         });
-        let (runtime, config) = (runtime(), configuration(&path));
         let start = std::time::Instant::now();
-        let result = runtime
-            .block_on(config.configured_for_plan_until(Instant::now() + Duration::from_millis(90)));
+        let result = runtime().block_on(
+            configuration(&path)
+                .configured_for_plan_until(Instant::now() + Duration::from_millis(90)),
+        );
         let elapsed = start.elapsed();
         server.join().unwrap();
         assert!(
@@ -439,7 +440,7 @@ mod tests {
                 );
             })
         });
-        let alive = rx.recv_timeout(tilo_test_env::hang_bound()).is_ok();
+        let alive = rx.recv_timeout(Duration::from_millis(250)).is_ok();
         drop(listener);
         drop(fillers);
         let joined = worker.join();
@@ -476,11 +477,14 @@ mod tests {
         runtime().block_on(async {
             let config = configuration(&path);
             let task = tokio::spawn(async move { config.configured_for_plan().await });
-            tilo_test_env::within("the gateway to receive the probe", pending)
+            tokio::time::timeout(tilo_test_env::hang_bound(), pending)
                 .await
+                .unwrap()
                 .unwrap();
             task.abort();
-            let result = tilo_test_env::within("the aborted probe task to finish", task).await;
+            let result = tokio::time::timeout(Duration::from_millis(200), task)
+                .await
+                .unwrap();
             assert!(result.unwrap_err().is_cancelled());
         });
         server.join().unwrap();
