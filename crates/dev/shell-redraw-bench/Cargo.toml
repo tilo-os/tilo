@@ -1,0 +1,33 @@
+[package]
+name = "shell-redraw-bench"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Native-resolution shell redraw acceptance bench and cold retained-scene probe"
+autoexamples = false
+autotests = false
+
+[dependencies]
+# Used to live as [[example]] targets of shell and therefore inherited its
+# dependency graph. Keep the same direct crates the harnesses `use`.
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shell = { path = "../../session/shell" }
+tempfile.workspace = true
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+vello.workspace = true
+vello_encoding.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "redraw_bench"
+path = "examples/redraw_bench.rs"
+
+[[example]]
+name = "retained_scene_probe"
+path = "examples/retained_scene_probe.rs"
