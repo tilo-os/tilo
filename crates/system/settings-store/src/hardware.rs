@@ -374,6 +374,111 @@ pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
+/// What kind of input device libinput reports, as far as Settings cares:
+/// each kind has its own section, shown only while one is attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDeviceKind {
+    Touchpad,
+    /// Any relative pointer that is not a touchpad: mice, trackballs,
+    /// pointing sticks.
+    Mouse,
+    Keyboard,
+    Touchscreen,
+    /// A drawing tablet's pen digitiser.
+    Tablet,
+    /// The button pad on a drawing tablet.
+    TabletPad,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+/// The identity input preferences are keyed by: USB vendor and product id
+/// plus the kernel's device name, so two identical tablets share settings
+/// while a tablet's pen and pad (same ids, different names) do not.
+pub fn input_device_key(vendor: u32, product: u32, name: &str) -> String {
+    format!("{vendor:04x}:{product:04x}:{}", name.trim())
+}
+
+/// One attached input device, as the compositor sees it right now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputDeviceSnapshot {
+    /// [`input_device_key`] of the device.
+    pub key: String,
+    pub name: String,
+    pub kind: InputDeviceKind,
+    /// Physical buttons on a tablet pad; zero for every other kind.
+    pub pad_buttons: u32,
+}
+
+/// Read-only state written atomically by the compositor in the private user
+/// runtime directory: the input devices attached right now. Like
+/// [`DisplayHardwareSnapshot`] it is separate from durable intent, so
+/// unplugging a device hides its section without forgetting its settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputHardwareSnapshot {
+    pub publisher_pid: u32,
+    /// Paired with the PID so a stale file cannot outlive its compositor.
+    pub publisher_start_ticks: u64,
+    pub devices: Vec<InputDeviceSnapshot>,
+}
+
+impl InputHardwareSnapshot {
+    /// The live snapshot, or `None` when no running compositor published one.
+    pub fn load() -> Option<Self> {
+        Self::load_at(&input_snapshot_path()?)
+    }
+
+    pub fn load_at(path: &std::path::Path) -> Option<Self> {
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let live_start = process_start_ticks(snapshot.publisher_pid)?;
+        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
+            .then_some(snapshot)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, or the
+    /// snapshot file can't be written.
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = input_snapshot_path()
+            .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        self.save_at(&path)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or written to `path`.
+    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        body.push(b'\n');
+        atomic_file::write_creating_parent(path, &body)
+    }
+
+    /// Whether at least one device of `kind` is attached.
+    pub fn has(&self, kind: InputDeviceKind) -> bool {
+        self.devices.iter().any(|device| device.kind == kind)
+    }
+
+    /// The attached devices of `kind`, one entry per identity.
+    pub fn of_kind(&self, kind: InputDeviceKind) -> Vec<&InputDeviceSnapshot> {
+        let mut seen = BTreeSet::new();
+        self.devices
+            .iter()
+            .filter(|device| device.kind == kind && seen.insert(device.key.as_str()))
+            .collect()
+    }
+}
+
+/// Private session state path for [`InputHardwareSnapshot`]; like
+/// [`display_snapshot_path`] it never falls back to a shared directory.
+pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
+    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
+}
+
 // Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state
 // machine — and this document's JSON shape and field names are load-bearing across
 // `apps/settings` and `shell`, so folding them into a bitflags type ripples well
@@ -729,6 +834,8 @@ pub struct RichInputConfig {
     pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     pub tap_drag: bool,
+    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
@@ -771,6 +878,7 @@ impl Default for RichInputConfig {
             mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
@@ -2650,6 +2758,45 @@ mod tests {
         assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
         assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
         assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn input_snapshot_is_trusted_only_from_its_live_publisher() {
+        let dir = std::env::temp_dir().join(format!("tilo-input-state-{}", std::process::id()));
+        let path = dir.join("input-state.json");
+        let pen = InputDeviceSnapshot {
+            key: input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen"),
+            name: "Wacom Intuos S Pen".into(),
+            kind: InputDeviceKind::Tablet,
+            pad_buttons: 0,
+        };
+        assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
+        let pid = std::process::id();
+        let live = InputHardwareSnapshot {
+            publisher_pid: pid,
+            publisher_start_ticks: process_start_ticks(pid).unwrap_or_default(),
+            devices: vec![pen.clone(), pen],
+        };
+        live.save_at(&path).unwrap();
+        let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");
+        assert!(back.has(InputDeviceKind::Tablet));
+        assert!(!back.has(InputDeviceKind::Touchpad));
+        assert_eq!(
+            back.of_kind(InputDeviceKind::Tablet).len(),
+            1,
+            "one section per identity, however many handles libinput opened"
+        );
+
+        let stale = InputHardwareSnapshot {
+            publisher_start_ticks: live.publisher_start_ticks.wrapping_add(1),
+            ..live
+        };
+        stale.save_at(&path).unwrap();
+        assert!(
+            InputHardwareSnapshot::load_at(&path).is_none(),
+            "a reused PID must not resurrect a dead compositor's devices"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

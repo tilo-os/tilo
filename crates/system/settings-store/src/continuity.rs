@@ -109,6 +109,7 @@ policies! {
         "tilo.input.key_repeat_rate_hz",
         "tilo.input.keyboard_layout",
         "tilo.input.tap_drag",
+        "tilo.input.tap_drag_lock",
         "tilo.input.disable_while_typing",
         "tilo.input.middle_emulation",
         "tilo.input.left_handed",

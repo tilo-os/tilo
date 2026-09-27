@@ -218,6 +218,7 @@ pub enum InputOperation {
     SetMousePointerSpeed { value: f64 },
     SetKeyRepeat { value: f64 },
     SetTapDrag { enabled: bool },
+    SetTapDragLock { enabled: bool },
     SetDisableWhileTyping { enabled: bool },
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
@@ -853,6 +854,7 @@ fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperat
         }
         InputOperation::SetTapToClick { .. } => InputOperation::SetTapToClick { enabled },
         InputOperation::SetTapDrag { .. } => InputOperation::SetTapDrag { enabled },
+        InputOperation::SetTapDragLock { .. } => InputOperation::SetTapDragLock { enabled },
         InputOperation::SetDisableWhileTyping { .. } => {
             InputOperation::SetDisableWhileTyping { enabled }
         }
@@ -3442,6 +3444,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             InputOperation::SetTapDrag { enabled: false },
         ),
         (
+            "tap-drag-lock",
+            "Set tap-and-drag lock",
+            InputOperation::SetTapDragLock { enabled: false },
+        ),
+        (
             "disable-while-typing",
             "Set disable while typing",
             InputOperation::SetDisableWhileTyping { enabled: false },
@@ -3537,7 +3544,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Set touchpad click method",
         &crate::panes::mouse_keyboard::CLICK_METHOD_CHOICES
             .iter()
-            .map(|(label, _)| (*label).to_string())
+            .map(|(id, _, _)| (*id).to_string())
             .collect::<Vec<_>>(),
         |choice| InputOperation::SetTouchpadClickMethod { method: choice },
     ));
@@ -3546,7 +3553,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Set touchpad scroll method",
         &crate::panes::mouse_keyboard::SCROLL_METHOD_CHOICES
             .iter()
-            .map(|(label, _)| (*label).to_string())
+            .map(|(id, _, _)| (*id).to_string())
             .collect::<Vec<_>>(),
         |choice| InputOperation::SetTouchpadScrollMethod { method: choice },
     ));
@@ -6042,10 +6049,13 @@ mod tests {
                 "mouse-speed",
                 "key-repeat",
                 "tap-drag",
+                "tap-drag-lock",
                 "disable-while-typing",
                 "middle-emulation",
                 "left-handed",
                 "touchpad-gestures",
+                "touchpad-click-method",
+                "touchpad-scroll-method",
                 "spell-checking",
                 "auto-correct",
                 "acceleration-profile",

@@ -103,6 +103,8 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "input_device_settings.rs"]
+mod input_device_settings;
 #[path = "input_method_wire.rs"]
 mod input_method_wire;
 #[path = "interaction_test.rs"]
