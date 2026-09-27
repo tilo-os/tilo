@@ -366,15 +366,7 @@ fn btrfs_fsid(sb: &[u8]) -> Option<String> {
         return None;
     }
     let id: [u8; 16] = sb.get(0x20..0x30)?.try_into().ok()?;
-    let u = u128::from_be_bytes(id);
-    Some(format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        u >> 96,
-        (u >> 80) & 0xffff,
-        (u >> 64) & 0xffff,
-        (u >> 48) & 0xffff,
-        u & 0xffff_ffff_ffff
-    ))
+    Some(uuid::Uuid::from_bytes(id).to_string())
 }
 
 fn sha_hex(bytes: &[u8]) -> String {
