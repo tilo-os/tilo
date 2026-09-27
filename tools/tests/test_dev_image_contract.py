@@ -26,7 +26,7 @@ class DevImageContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for name in ("os/Containerfile", "os/Containerfile.dev", "os/rpms-snapshot.env", "os/components.toml",
+        for name in ("os/Containerfile", "os/Containerfile.dev", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
                      "os/scripts/install-components.py", "os/etc/containers/policy.json",
                      "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
                      "os/dev/derive-rpm-package-set.py"):

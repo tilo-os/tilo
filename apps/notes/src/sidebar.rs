@@ -383,6 +383,7 @@ impl PageSidebar {
         reason = "one builder chain wires every tree signal to its page command"
     )]
     pub fn new() -> Self {
+        crate::metadata::register_messages();
         let keys = SharedKeys::default();
         let outbox = SharedOutbox::default();
         let model = PageTree::build(&Workspace::default(), &keys);
@@ -788,6 +789,22 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn heading_resolves_before_any_other_notes_widget_registers_the_catalog() {
+        // The catalog is per thread; a fresh one has seen no Notes widget yet.
+        let (name, catalog) = std::thread::spawn(|| {
+            let tree = PageSidebar::new();
+            let name = Widget::accessibility(tree.tree())
+                .and_then(|node| node.name)
+                .expect("the page tree is named by its heading");
+            (name, ui::i18n!("notes-title"))
+        })
+        .join()
+        .expect("sidebar thread");
+        assert_ne!(name, "notes-title");
+        assert_eq!(name, catalog);
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]

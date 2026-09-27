@@ -27,6 +27,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "accesskit_android"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "929aff36b0d3dd22ddb59191989d5293ed958294d7728bd6c2ec9778f73414aa"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer",
+ "jni 0.21.1",
+ "log",
+]
+
+[[package]]
 name = "accesskit_atspi_common"
 version = "0.20.0"
 source = "git+ssh://git@code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4c36c03de8109ded02bd42a305fb1d569"
@@ -8879,6 +8891,8 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
+ "qdoc",
+ "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8888,6 +8902,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-rich-text",
  "tilo-test-env",
  "tracing",
  "url",
@@ -14992,8 +15007,10 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "jni 0.21.1",
  "libc",
  "mime_guess",
+ "ndk-context",
  "open",
  "smithay-client-toolkit",
  "smithay-clipboard",
@@ -15534,6 +15551,7 @@ name = "tilo-ui"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "accesskit_android",
  "accesskit_winit",
  "adblock",
  "advisory-lock",
@@ -15561,8 +15579,11 @@ dependencies = [
  "hypher",
  "icu_segmenter",
  "image",
+ "jni 0.21.1",
  "libc",
  "media",
+ "ndk",
+ "ndk-context",
  "percent-encoding",
  "pkg-config",
  "pollster",

@@ -52,6 +52,7 @@ use super::input_config;
 use super::input_config::{
     AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
 };
+use super::output_signal::{HdrRequest, OutputSignalStatus};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
@@ -312,6 +313,14 @@ pub struct DrmDispatchState {
     /// already be inside a page flip when the libseat callback returns; the
     /// callback must not drop DRM master until that presentation has retired.
     pub present_gate: Option<Arc<Mutex<()>>>,
+    /// The output showing a fullscreen client, which is where adaptive sync
+    /// may engage.
+    pub fullscreen_output: Option<OutputId>,
+    /// Runtime signalling facts from the presenter, keyed by the output's
+    /// configuration key so they survive a replug of the same connector.
+    pub signal_status: BTreeMap<String, OutputSignalStatus>,
+    /// Receiving end of the presenter's signalling reports.
+    pub signal_reports: Option<Receiver<SignalReport>>,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -657,6 +666,11 @@ fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 }
 
 /// One output the backend is currently driving, from the loop thread's view — the scanout itself lives on the render thread; this is the identity, geometry and crtc needed to reconcile a hotplug.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one output (adaptive sync support, the user's allowance, \
+              its engagement, HDR driver readiness), each read on its own"
+)]
 pub struct LiveEntry {
     pub key: DrmOutputKey,
     pub id: OutputId,
@@ -677,6 +691,51 @@ pub struct LiveEntry {
     pub transform: settings_store::hardware::OutputTransform,
     /// This output's presentation interval, captured when brought up — kept here rather than read from the scanout, since scanouts move to the render thread and would start returning `None`.
     pub refresh: Option<std::time::Duration>,
+    /// Sink and driver both support adaptive sync, captured at bring-up.
+    pub adaptive_sync_supported: bool,
+    /// The user allows adaptive sync on this output (on unless turned off).
+    pub adaptive_sync_allowed: bool,
+    /// Adaptive sync was last asked for on this output's CRTC.
+    pub adaptive_sync_engaged: bool,
+    /// The sink's HDR description, when its EDID advertises PQ.
+    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    /// The connector has every property HDR signalling needs.
+    pub hdr_driver_ready: bool,
+    /// HDR as the user configured it: SDR white in cd/m² when on.
+    pub hdr_setting: Option<f32>,
+    /// The HDR request last sent to the scanout owner.
+    pub hdr_requested: Option<HdrRequest>,
+}
+
+/// HDR is requested only for a sink whose EDID advertises PQ, on a connector
+/// with the HDR properties, when the user turned it on and no earlier attempt
+/// failed on this output.
+pub(crate) fn hdr_request_for(
+    display: Option<&crate::wayland::edid::HdrDisplayInfo>,
+    driver_ready: bool,
+    setting: Option<f32>,
+    failed: bool,
+) -> Option<HdrRequest> {
+    let display = display?;
+    let sdr_white_nits = setting?;
+    (driver_ready && !failed).then(|| HdrRequest {
+        display: display.clone(),
+        sdr_white_nits,
+    })
+}
+
+/// Adaptive sync engages only for fullscreen content on an output that allows
+/// and supports it. The desktop stays at the fixed rate: uneven UI frame times
+/// make many panels flicker in brightness when the refresh rate follows them.
+pub(crate) fn adaptive_sync_wanted(supported: bool, allowed: bool, fullscreen_here: bool) -> bool {
+    supported && allowed && fullscreen_here
+}
+
+/// What the presenter reports about one output's signalling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignalReport {
+    pub output: OutputId,
+    pub status: OutputSignalStatus,
 }
 
 /// What the loop thread asks the owner of the scanouts to do.
@@ -708,6 +767,16 @@ pub enum ScanoutCommand {
     SetOutputPower {
         output: OutputId,
         on: bool,
+    },
+    /// Turn adaptive sync on or off on one output's CRTC.
+    SetAdaptiveSync {
+        output: OutputId,
+        on: bool,
+    },
+    /// Drive one output in HDR with this request, or in SDR.
+    SetHdr {
+        output: OutputId,
+        request: Option<HdrRequest>,
     },
 }
 
@@ -922,6 +991,7 @@ fn configured_connectors(
 fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     profiles: &BTreeMap<String, String>,
+    signal_status: &BTreeMap<String, OutputSignalStatus>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
     let (snapshots, _) = configured_connectors(cards);
     let mut outputs: Vec<_> = cards
@@ -930,6 +1000,7 @@ fn display_capabilities(
             card.display_capabilities(
                 snapshots.get(&device_id).map_or(&[], Vec::as_slice),
                 profiles,
+                signal_status,
             )
         })
         .collect();
@@ -1058,6 +1129,9 @@ impl DrmDispatchState {
             tablets: TabletRuntime::load(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
+            fullscreen_output: None,
+            signal_status: BTreeMap::new(),
+            signal_reports: None,
         }
     }
 
@@ -1129,7 +1203,7 @@ impl DrmDispatchState {
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
     fn publish_display_snapshot(&mut self) {
-        let outputs = display_capabilities(&self.cards, &self.color_profiles);
+        let outputs = display_capabilities(&self.cards, &self.color_profiles, &self.signal_status);
         let layout = self
             .live
             .iter()
@@ -1377,6 +1451,9 @@ impl DrmDispatchState {
                 self.hw_cursor
                     .insert(CursorPlanes::output_cursor(id, (0, 0, w, h), mover));
             }
+            // A replugged or rebuilt output gets a fresh chance at what an
+            // earlier generation of it failed to drive.
+            self.signal_status.remove(&build.config_key);
             self.live.push(LiveEntry {
                 key,
                 id,
@@ -1391,6 +1468,13 @@ impl DrmDispatchState {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 refresh: build.scanout.refresh_interval(),
+                adaptive_sync_supported: build.scanout.adaptive_sync_supported(),
+                adaptive_sync_allowed: true,
+                adaptive_sync_engaged: false,
+                hdr_driver_ready: build.scanout.hdr_driver_missing().is_none(),
+                hdr_display: build.hdr_display,
+                hdr_setting: None,
+                hdr_requested: None,
             });
             entries.push(ScanoutEntry {
                 id,
@@ -1402,7 +1486,10 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                hdr_direct_unavailable: None,
+                hdr_failure: None,
                 powered_off: false,
+                signal_reported: OutputSignalStatus::default(),
                 scanout: build.scanout,
             });
         }
@@ -1480,8 +1567,127 @@ impl DrmDispatchState {
         let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
         self.set_pointer_logical(logical_pointer);
 
+        for entry in &mut self.live {
+            let output = config.outputs.get(&entry.config_key);
+            entry.adaptive_sync_allowed = output.is_none_or(|output| output.vrr);
+            entry.hdr_setting = output
+                .filter(|output| output.hdr)
+                .map(|output| f32::from(output.sdr_brightness_nits));
+        }
         self.output_meta = self.output_meta_for(config);
         self.rebuild_cursor_routing();
+        self.reconcile_adaptive_sync();
+        self.reconcile_hdr();
+    }
+
+    /// Tell the scanout owner about every output whose HDR request changed.
+    /// An output whose HDR attempt failed is not asked again until it is
+    /// rebuilt.
+    fn reconcile_hdr(&mut self) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let failed = self
+                .signal_status
+                .get(&entry.config_key)
+                .is_some_and(|status| status.hdr_failure.is_some());
+            let request = hdr_request_for(
+                entry.hdr_display.as_ref(),
+                entry.hdr_driver_ready,
+                entry.hdr_setting,
+                failed,
+            );
+            if request != entry.hdr_requested {
+                entry.hdr_requested.clone_from(&request);
+                changes.push((entry.id, request));
+            }
+        }
+        for (output, request) in changes {
+            self.command(ScanoutCommand::SetHdr { output, request });
+        }
+    }
+
+    /// Record which output shows a fullscreen client and engage or release
+    /// adaptive sync to match.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        if self.fullscreen_output != output {
+            self.fullscreen_output = output;
+            self.reconcile_adaptive_sync();
+        }
+    }
+
+    /// Tell the scanout owner about every output whose adaptive-sync wish
+    /// changed. An output the driver refused is not asked again.
+    fn reconcile_adaptive_sync(&mut self) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let refused = self
+                .signal_status
+                .get(&entry.config_key)
+                .is_some_and(|status| status.adaptive_sync_rejected);
+            let wanted = adaptive_sync_wanted(
+                entry.adaptive_sync_supported && !refused,
+                entry.adaptive_sync_allowed,
+                self.fullscreen_output == Some(entry.id),
+            );
+            if wanted != entry.adaptive_sync_engaged {
+                entry.adaptive_sync_engaged = wanted;
+                changes.push((entry.id, wanted));
+            }
+        }
+        for (output, on) in changes {
+            self.command(ScanoutCommand::SetAdaptiveSync { output, on });
+        }
+    }
+
+    /// The HDR signal `output` is driven with: the request the presenter
+    /// reports active.
+    pub fn output_hdr(&self, output: OutputId) -> Option<crate::compositor::backend::OutputHdr> {
+        let entry = self.live.iter().find(|entry| entry.id == output)?;
+        let active = self
+            .signal_status
+            .get(&entry.config_key)
+            .is_some_and(|status| status.hdr_active);
+        let request = entry.hdr_requested.as_ref().filter(|_| active)?;
+        Some(crate::compositor::backend::OutputHdr {
+            display: request.display.clone(),
+            sdr_white_nits: request.sdr_white_nits,
+        })
+    }
+
+    /// Adaptive sync is engaged on at least one output, so frames should be
+    /// paced by content rather than by a fixed refresh deadline.
+    pub fn adaptive_sync_engaged(&self) -> bool {
+        self.live.iter().any(|entry| entry.adaptive_sync_engaged)
+    }
+
+    /// Fold the presenter's signalling reports into the runtime status.
+    /// Returns whether anything changed, so the caller republishes the
+    /// Settings snapshot.
+    fn drain_signal_reports(&mut self) -> bool {
+        let Some(reports) = self.signal_reports.as_ref() else {
+            return false;
+        };
+        let reports: Vec<SignalReport> = reports.try_iter().collect();
+        let mut changed = false;
+        for report in reports {
+            let Some(key) = self
+                .live
+                .iter()
+                .find(|entry| entry.id == report.output)
+                .map(|entry| entry.config_key.clone())
+            else {
+                continue;
+            };
+            if self.signal_status.get(&key) != Some(&report.status) {
+                self.signal_status.insert(key, report.status);
+                changed = true;
+            }
+        }
+        if changed {
+            self.reconcile_adaptive_sync();
+            self.reconcile_hdr();
+        }
+        changed
     }
 
     /// Where each live output sits in the logical layout: its configured
@@ -3086,6 +3292,8 @@ pub struct DrmRuntime {
     pub scanouts: Vec<ScanoutEntry>,
     /// Receiving end of the reconfiguration channel — held here while the backend owns the scanouts inline; moved into the presenter along with them by [`super::Backend::take_presenter`].
     pub commands: Option<Receiver<ScanoutCommand>>,
+    /// Sending end of the signalling reports, travelling with the scanouts.
+    pub signal_reports: Option<Sender<SignalReport>>,
     /// Bounded watchdog for unconfirmed display changes. It lives in the
     /// compositor rather than Settings so closing/crashing the app cannot
     /// strand the session on a blank mode.
@@ -3112,13 +3320,88 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// HDR direct targets could not be made; HDR uses the readback path.
+    pub hdr_direct_unavailable: Option<String>,
+    /// HDR could not be driven at all; the output fell back to SDR.
+    pub hdr_failure: Option<settings_store::hardware::HdrUnavailable>,
     /// An output-power client switched this panel off. It is neither
     /// painted nor lit by a session wake until switched back on.
     pub powered_off: bool,
+    /// Signalling status last reported to the loop thread.
+    pub signal_reported: OutputSignalStatus,
     pub scanout: DrmScanout,
 }
 
 impl ScanoutEntry {
+    /// The signalling facts this output would report now.
+    pub fn signal_status(&self) -> OutputSignalStatus {
+        OutputSignalStatus {
+            adaptive_sync_rejected: self.scanout.adaptive_sync_rejected(),
+            hdr_active: self.scanout.hdr_active(),
+            hdr_failure: self.hdr_failure,
+        }
+    }
+
+    /// HDR is requested and has not failed on this output.
+    pub fn hdr_wanted(&self) -> bool {
+        self.scanout.hdr_request().is_some() && self.hdr_failure.is_none()
+    }
+
+    /// Adopt the loop thread's HDR request. Direct targets in the wrong
+    /// format are released first, after the CRTC is back on the dumb front.
+    pub fn set_hdr_request(&mut self, request: Option<HdrRequest>) {
+        if self
+            .direct_targets
+            .as_ref()
+            .is_some_and(|targets| targets.format().is_hdr() != request.is_some())
+        {
+            self.scanout.restore_legacy_front();
+            self.direct_targets = None;
+        }
+        if request.is_some() {
+            self.hdr_direct_unavailable = None;
+        }
+        self.scanout.set_hdr_request(request);
+    }
+
+    /// HDR could not be shown: return to 8-bit SDR and remember why, for
+    /// Settings.
+    pub fn fail_hdr(&mut self, reason: settings_store::hardware::HdrUnavailable, detail: &str) {
+        tracing::warn!(?reason, detail, "DRM HDR failed; falling back to 8-bit SDR");
+        eprintln!(
+            "tilo compositor: DRM HDR failed output={} reason={reason:?} detail={detail:?}",
+            self.id.0,
+        );
+        if self
+            .direct_targets
+            .as_ref()
+            .is_some_and(|targets| targets.format().is_hdr())
+        {
+            self.scanout.restore_legacy_front();
+            self.direct_targets = None;
+        }
+        self.hdr_failure = Some(reason);
+        self.scanout.set_hdr_request(None);
+    }
+
+    /// Put the readback path's dumb buffers in the format HDR needs, or back
+    /// in SDR. Returns whether the readback path presents HDR now.
+    pub fn sync_hdr_readback(&mut self) -> bool {
+        if self.hdr_wanted() {
+            if !self.scanout.format().is_hdr() {
+                match self.scanout.enter_hdr_readback() {
+                    // The CRTC moved onto the 10-bit dumb pair, so direct
+                    // targets are no longer what it shows.
+                    Ok(()) => self.direct_targets = None,
+                    Err((reason, detail)) => self.fail_hdr(reason, &detail),
+                }
+            }
+        } else if self.scanout.format().is_hdr() {
+            self.scanout.leave_hdr();
+        }
+        self.scanout.format().is_hdr()
+    }
+
     pub fn set_color_profile(&mut self, profile: Option<String>) {
         if self.color_profile == profile {
             return;
@@ -3422,6 +3705,7 @@ impl DrmRuntime {
 
         // The scanout side and the loop side talk over one channel, so a reconfiguration is ordered against the frames around it.
         let (tx, rx) = channel::<ScanoutCommand>();
+        let (signal_tx, signal_rx) = channel::<SignalReport>();
         let icc_profiles = IccProfileWorker::new()?;
         icc_profiles.request_refresh();
 
@@ -3436,6 +3720,7 @@ impl DrmRuntime {
             keyboard,
         );
         dispatch.display_set = display_set;
+        dispatch.signal_reports = Some(signal_rx);
         // Tablet pads are read from a context of their own; see `PadInput`.
         let pads = PadInput::new(session.clone());
         handle
@@ -3464,6 +3749,7 @@ impl DrmRuntime {
             primary_gpu,
             scanouts,
             commands: Some(rx),
+            signal_reports: Some(signal_tx),
             last_display_transaction_check: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
@@ -3637,6 +3923,9 @@ impl DrmRuntime {
     /// connector, and doing that periodically on this input-thread path can
     /// stall pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
+        if self.dispatch.drain_signal_reports() {
+            self.dispatch.publish_display_snapshot();
+        }
         let now = std::time::Instant::now();
         if now.duration_since(self.last_display_transaction_check)
             < std::time::Duration::from_millis(250)
@@ -3688,11 +3977,14 @@ impl DrmRuntime {
         }
         match transaction.state {
             DisplayTransactionState::Requested => {
-                let descriptors: Vec<_> =
-                    display_capabilities(&self.dispatch.cards, &self.dispatch.color_profiles)
-                        .into_iter()
-                        .map(|output| output.descriptor)
-                        .collect();
+                let descriptors: Vec<_> = display_capabilities(
+                    &self.dispatch.cards,
+                    &self.dispatch.color_profiles,
+                    &self.dispatch.signal_status,
+                )
+                .into_iter()
+                .map(|output| output.descriptor)
+                .collect();
                 if descriptors.is_empty() {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -3797,6 +4089,10 @@ impl DrmRuntime {
     }
 
     /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
+        self.dispatch.set_fullscreen_output(output);
+    }
+
     pub fn set_output_power(&self, output: OutputId, on: bool) {
         self.dispatch
             .command(ScanoutCommand::SetOutputPower { output, on });
@@ -5553,6 +5849,13 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
+            adaptive_sync_supported: false,
+            adaptive_sync_allowed: true,
+            adaptive_sync_engaged: false,
+            hdr_display: None,
+            hdr_driver_ready: false,
+            hdr_setting: None,
+            hdr_requested: None,
         }
     }
 
@@ -5716,6 +6019,152 @@ mod tests {
             ..Default::default()
         };
         (state, rx)
+    }
+
+    fn adaptive_sync_commands(rx: &Receiver<ScanoutCommand>) -> Vec<(u32, bool)> {
+        rx.try_iter()
+            .filter_map(|command| match command {
+                ScanoutCommand::SetAdaptiveSync { output, on } => Some((output.0, on)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn hdr_commands(rx: &Receiver<ScanoutCommand>) -> Vec<(u32, Option<f32>)> {
+        rx.try_iter()
+            .filter_map(|command| match command {
+                ScanoutCommand::SetHdr { output, request } => {
+                    Some((output.0, request.map(|request| request.sdr_white_nits)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hdr_is_requested_only_where_sink_driver_and_setting_agree() {
+        let hdr_sink = crate::wayland::edid::HdrDisplayInfo {
+            supported_transfers: vec![
+                crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084,
+            ],
+            ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+        };
+        // Phase `each_missing_piece_withholds_the_request`.
+        assert!(hdr_request_for(None, true, Some(203.0), false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), false, Some(203.0), false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), true, None, false).is_none());
+        assert!(hdr_request_for(Some(&hdr_sink), true, Some(203.0), true).is_none());
+        assert_eq!(
+            hdr_request_for(Some(&hdr_sink), true, Some(250.0), false)
+                .map(|request| request.sdr_white_nits),
+            Some(250.0)
+        );
+
+        let (mut state, rx) = dispatch_with_channel();
+        let mut monitor = entry(0, 10, (3840, 2160), None);
+        monitor.hdr_display = Some(hdr_sink);
+        monitor.hdr_driver_ready = true;
+        state.live = vec![monitor, entry(1, 11, (1920, 1080), None)];
+
+        // Phase `turning_hdr_on_requests_it_once_and_brightness_resends`.
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "off by default");
+        for live in &mut state.live {
+            live.hdr_setting = Some(203.0);
+        }
+        state.reconcile_hdr();
+        assert_eq!(
+            hdr_commands(&rx),
+            vec![(0, Some(203.0))],
+            "SDR sink ignored"
+        );
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "no repeat");
+        if let Some(first) = state.live.first_mut() {
+            first.hdr_setting = Some(320.0);
+        }
+        state.reconcile_hdr();
+        assert_eq!(hdr_commands(&rx), vec![(0, Some(320.0))]);
+
+        // Phase `a_failure_report_returns_the_output_to_sdr_for_good`.
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        report_tx
+            .send(SignalReport {
+                output: OutputId(0),
+                status: OutputSignalStatus {
+                    hdr_failure: Some(settings_store::hardware::HdrUnavailable::DriverRejected),
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report channel open");
+        assert!(state.drain_signal_reports());
+        assert_eq!(hdr_commands(&rx), vec![(0, None)]);
+        state.reconcile_hdr();
+        assert!(hdr_commands(&rx).is_empty(), "not retried");
+    }
+
+    #[test]
+    fn adaptive_sync_follows_the_fullscreen_output_and_respects_refusals() {
+        let (mut state, rx) = dispatch_with_channel();
+        let mut capable = entry(0, 10, (2560, 1440), None);
+        capable.adaptive_sync_supported = true;
+        let plain = entry(1, 11, (1920, 1080), None);
+        state.live = vec![capable, plain];
+
+        // Phase `desktop_content_keeps_the_fixed_rate`.
+        state.reconcile_adaptive_sync();
+        assert!(adaptive_sync_commands(&rx).is_empty());
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `fullscreen_on_a_capable_output_engages_it_once`.
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        assert!(state.adaptive_sync_engaged());
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty(), "no repeat");
+
+        // Phase `moving_fullscreen_to_an_output_without_vrr_releases_it`.
+        state.set_fullscreen_output(Some(OutputId(1)));
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert!(!state.adaptive_sync_engaged());
+
+        // Phase `turning_it_off_in_settings_wins`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = false;
+        }
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
+
+        // Phase `a_driver_refusal_releases_and_is_not_retried`.
+        if let Some(first) = state.live.first_mut() {
+            first.adaptive_sync_allowed = true;
+        }
+        state.reconcile_adaptive_sync();
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, true)]);
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        report_tx
+            .send(SignalReport {
+                output: OutputId(0),
+                status: OutputSignalStatus {
+                    adaptive_sync_rejected: true,
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report channel open");
+        assert!(state.drain_signal_reports());
+        assert_eq!(adaptive_sync_commands(&rx), vec![(0, false)]);
+        assert_eq!(
+            state
+                .signal_status
+                .get("TEST-10")
+                .map(|status| status.adaptive_sync_rejected),
+            Some(true)
+        );
+        state.set_fullscreen_output(None);
+        state.set_fullscreen_output(Some(OutputId(0)));
+        assert!(adaptive_sync_commands(&rx).is_empty());
     }
 
     #[derive(Clone)]

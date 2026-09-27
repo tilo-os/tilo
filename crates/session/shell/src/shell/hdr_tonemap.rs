@@ -170,6 +170,30 @@ pub fn tonemap_p010_to_rgba8(
     out
 }
 
+/// Tone-map one transfer-encoded RGB pixel (`[0,1]` signal in
+/// `colorimetry`'s primaries) to sRGB bytes. An HDR signal is linearised by
+/// its EOTF, gamut-mapped to BT.709 and compressed against the source peak;
+/// an SDR signal passes through at 8 bits.
+pub fn tonemap_rgb_signal_to_srgb8(
+    rgb: [f32; 3],
+    colorimetry: Colorimetry,
+    cfg: HdrTonemapConfig,
+) -> [u8; 3] {
+    let [r, g, b] = rgb;
+    let eotf: fn(f32) -> f32 = match colorimetry.transfer {
+        TransferCharacteristics::SmpteSt2084 => pq_eotf,
+        TransferCharacteristics::AribStdB67 => hlg_eotf,
+        _ => return [r, g, b].map(|c| clamped_f32_to_u8((c * 255.0).round().clamp(0.0, 255.0))),
+    };
+    let (r709, g709, b709) = bt2020_to_bt709(eotf(r), eotf(g), eotf(b));
+    let scale = if cfg.source_peak_nits > 0.0 {
+        1.0 / cfg.source_peak_nits
+    } else {
+        1.0
+    };
+    [r709, g709, b709].map(|c| to_srgb_u8(hable(c * scale)))
+}
+
 /// Row-major linear index into a stride-`stride` plane at (`row`,
 /// `col`). Computed in `u64` so a large `row`/`stride`/`col` combination
 /// saturates instead of wrapping, then saturated into `usize` — an
