@@ -216,8 +216,10 @@ pub struct RouteSnapshot {
     pub frames: Vec<SignedOp>,
 }
 
-/// One signed document op, verbatim as the broker fanned it out. MLS
-/// ciphertext stays ciphertext.
+/// One signed document op as the broker fanned it out. The recorder keeps an
+/// op of an encrypted channel opened with the channel's keys, so its
+/// signature covers the sealed form it arrived in; one it could not open
+/// stays ciphertext.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DocumentOp {
     pub route: Route,

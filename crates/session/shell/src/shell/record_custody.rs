@@ -22,6 +22,14 @@
 //! What may be served is enforced here: a `session` record leaves only as a
 //! reviewed, redacted duplicate (one naming its origin with
 //! [`session_trace::REDACTED_FROM_RELATION`]), never as a recording.
+//!
+//! A record's route is an encrypted channel like any route of its room.
+//! Custody takes part there as this device's person, the identity its
+//! signer's certificate names, and reaches the channel's content keys the
+//! way every participant of the shell does
+//! ([`crate::shell::participant_keys`]): it seals what it publishes and
+//! answers in the rooms it serves in, and opens what it fetches. Without a
+//! signer it has no identity in a room, so it serves and opens nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -34,6 +42,7 @@ use ui::collaboration::CollabEvent;
 use ui::record::{RecordId, RecordKind};
 
 use crate::shell::collab_broker::{CrdtRoute, FanoutState, LocalParticipant, RoomSubscription};
+use crate::shell::participant_keys::{ChannelOpener, ChannelSealer, Participant, ParticipantKeys};
 use crate::shell::room_records::SHELL_PACKAGE_ID;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
@@ -50,6 +59,18 @@ pub trait DeviceSigner: Send + Sync {
     ///
     /// When the op cannot be signed.
     fn sign(&self, op: &mut SignedOp) -> Result<(), String>;
+}
+
+type SignerSlot = Arc<Mutex<Option<Arc<dyn DeviceSigner>>>>;
+
+/// Who custody takes part in a room as: the person `signer`'s certificate
+/// names.
+fn custodian(signer: &SignerSlot) -> Option<Participant> {
+    lock(signer).as_ref().map(|signer| {
+        Participant::Person(crate::shell::collab_broker_capnp::principal_id_for_root(
+            signer.person(),
+        ))
+    })
 }
 
 /// Why custody refused a record.
@@ -107,7 +128,8 @@ struct State {
 pub struct RecordCustody {
     tree: WorkspaceTreeHandle,
     fanout: Weak<FanoutState>,
-    signer: Mutex<Option<Arc<dyn DeviceSigner>>>,
+    signer: SignerSlot,
+    keys: ParticipantKeys,
     state: Arc<Mutex<State>>,
     subscription: Arc<RoomSubscription>,
 }
@@ -123,31 +145,57 @@ impl std::fmt::Debug for RecordCustody {
 impl RecordCustody {
     pub fn attach(fanout: &Arc<FanoutState>, tree: WorkspaceTreeHandle) -> Arc<Self> {
         let state: Arc<Mutex<State>> = Arc::default();
+        let signer: SignerSlot = Arc::default();
+        let keys = ParticipantKeys::new(
+            crate::shell::channel_encryption::ChannelKeyProvider::default(),
+            Arc::clone(&tree),
+        );
         let sink_state = Arc::clone(&state);
+        let (sink_signer, sink_keys) = (Arc::clone(&signer), keys.clone());
         let holder_state = Arc::clone(&state);
         let holder_fanout = Arc::downgrade(fanout);
+        let (holder_signer, holder_keys) = (Arc::clone(&signer), keys.clone());
         let subscription = fanout.subscribe_rooms_holding(
             LocalParticipant {
                 agent: CUSTODY_AGENT.into(),
                 label: "Shared records".into(),
             },
             Vec::new(),
-            Box::new(move |event, route| observe(&sink_state, event, route)),
-            Box::new(move |route| answer(&holder_state, &holder_fanout, route)),
+            Box::new(move |event, route| {
+                let opener = custodian(&sink_signer).map(|who| sink_keys.opener(who));
+                observe(&sink_state, opener.as_ref(), event, route);
+            }),
+            Box::new(move |route| {
+                let Some(who) = custodian(&holder_signer) else {
+                    return false;
+                };
+                let sealer = holder_keys.sealer(who, &route.cluster_id);
+                answer(&holder_state, &holder_fanout, &sealer, route)
+            }),
         );
         Arc::new(Self {
             tree,
             fanout: Arc::downgrade(fanout),
-            signer: Mutex::new(None),
+            signer,
+            keys,
             state,
             subscription,
         })
     }
 
-    /// The device signer published records are signed with. Without one,
-    /// records are served to this device's own apps only.
+    /// The device signer published records are signed with, whose person
+    /// custody takes part in rooms as. Without one, nothing is served.
     pub fn set_signer(&self, signer: Arc<dyn DeviceSigner>) {
         *lock(&self.signer) = Some(signer);
+    }
+
+    /// The channel service whose content keys custody seals and opens
+    /// records with: its broker's.
+    pub fn set_channel_keys(
+        &self,
+        access: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
+    ) {
+        self.keys.set_channels(access);
     }
 
     /// Whether `doc` may be served to a room that references it.
@@ -292,7 +340,11 @@ impl RecordCustody {
             return false;
         };
         let route = record_route(room, id);
-        let frames = match signed_frames(&*signer, &route, &doc, &self.state) {
+        let Some(who) = custodian(&self.signer) else {
+            return false;
+        };
+        let sealer = self.keys.sealer(who, room);
+        let frames = match signed_frames(&*signer, &sealer, &route, &doc, &self.state) {
             Ok(frames) => frames,
             Err(error) => {
                 tracing::warn!(record = %id, %error, "custody: the record could not be signed");
@@ -387,6 +439,7 @@ impl RecordCustody {
             return false;
         };
         let mut finished = false;
+        let opener = custodian(&self.signer).map(|who| self.keys.opener(who));
         let pending: Vec<(RecordId, Vec<CrdtRoute>, bool)> = lock(&self.state)
             .fetching
             .iter()
@@ -396,7 +449,7 @@ impl RecordCustody {
         for (id, routes, asked) in pending {
             let mut history: Vec<SignedOp> = Vec::new();
             for route in &routes {
-                history.extend(fanout.route_history(route));
+                history.extend(opened(opener.as_ref(), route, fanout.route_history(route)));
             }
             let mut state = lock(&self.state);
             let Some(fetch) = state.fetching.get_mut(&id) else {
@@ -445,9 +498,11 @@ fn signer_id(signer: &dyn DeviceSigner) -> String {
     hex::encode(signer.author().as_bytes())
 }
 
-/// The signed frames carrying `doc` as a snapshot on `route`.
+/// The signed frames carrying `doc` as a snapshot on `route`, sealed for its
+/// channel.
 fn signed_frames(
     signer: &dyn DeviceSigner,
+    sealer: &ChannelSealer,
     route: &CrdtRoute,
     doc: &[u8],
     state: &Mutex<State>,
@@ -474,23 +529,67 @@ fn signed_frames(
             state.seq = state.seq.saturating_add(1).max(clock);
             state.seq
         };
-        let mut op = SignedOp::new_unsigned(
-            payload,
-            artifact,
+        let mut op = sealed_op(
+            sealer,
+            route,
+            (artifact, attestation),
             signer.author(),
-            attestation,
             class,
-            now,
-            seq,
-        );
+            (now, seq),
+            &payload,
+        )?;
         signer.sign(&mut op)?;
         frames.push(op);
     }
     Ok(frames)
 }
 
+/// An unsigned op carrying `cleartext` on `route`, sealed for its channel.
+fn sealed_op(
+    sealer: &ChannelSealer,
+    route: &CrdtRoute,
+    (artifact, attestation): (collab_types::ArtifactId, collab_types::AttestationId),
+    author: collab_types::Ed25519PublicKey,
+    class: collab_types::OpClass,
+    (now, seq): (SystemTime, u64),
+    cleartext: &[u8],
+) -> Result<SignedOp, String> {
+    let (payload, encryption) = sealer
+        .seal(route, artifact, cleartext)
+        .map_err(|error| error.to_string())?;
+    Ok(match encryption {
+        Some(encryption) => SignedOp::new_unsigned_with_encryption(
+            payload,
+            artifact,
+            author,
+            attestation,
+            class,
+            now,
+            seq,
+            encryption,
+        ),
+        None => SignedOp::new_unsigned(payload, artifact, author, attestation, class, now, seq),
+    })
+}
+
+/// `ops` of `route`, opened where `opener` can: what custody assembles a
+/// fetched record from.
+fn opened(opener: Option<&ChannelOpener>, route: &CrdtRoute, ops: Vec<SignedOp>) -> Vec<SignedOp> {
+    ops.into_iter()
+        .map(|op| match opener {
+            Some(opener) if op.encryption.is_some() => opener.opened(route, &op).unwrap_or(op),
+            _ => op,
+        })
+        .collect()
+}
+
 /// A late joiner on one of custody's routes: answer with the held record.
-fn answer(state: &Mutex<State>, fanout: &Weak<FanoutState>, route: &CrdtRoute) -> bool {
+fn answer(
+    state: &Mutex<State>,
+    fanout: &Weak<FanoutState>,
+    sealer: &ChannelSealer,
+    route: &CrdtRoute,
+) -> bool {
     if route.app_id != SHELL_PACKAGE_ID {
         return false;
     }
@@ -522,15 +621,21 @@ fn answer(state: &Mutex<State>, fanout: &Weak<FanoutState>, route: &CrdtRoute) -
     let attestation =
         collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
     for (seq, payload) in (1_u64..).zip(frames) {
-        let envelope = SignedOp::new_unsigned(
-            payload,
-            artifact,
+        let envelope = match sealed_op(
+            sealer,
+            route,
+            (artifact, attestation),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-            attestation,
             collab_types::document_op_class_for_record(&route.record_id),
-            SystemTime::now(),
-            seq,
-        );
+            (SystemTime::now(), seq),
+            &payload,
+        ) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                tracing::debug!(%error, "custody: a record could not be sealed for its route");
+                return false;
+            }
+        };
         fanout.fanout_to_route(
             &CollabEvent::Document {
                 envelope: Box::new(envelope),
@@ -544,8 +649,13 @@ fn answer(state: &Mutex<State>, fanout: &Weak<FanoutState>, route: &CrdtRoute) -
     true
 }
 
-/// What arrives on a route custody is fetching.
-fn observe(state: &Mutex<State>, event: &CollabEvent, route: &CrdtRoute) {
+/// What arrives on a route custody is fetching, opened by `opener`.
+fn observe(
+    state: &Mutex<State>,
+    opener: Option<&ChannelOpener>,
+    event: &CollabEvent,
+    route: &CrdtRoute,
+) {
     let ops: Vec<SignedOp> = match event {
         CollabEvent::Document { envelope, .. } => vec![(**envelope).clone()],
         CollabEvent::ScrollbackBatch { ops, .. } => ops.iter().map(|op| (**op).clone()).collect(),
@@ -554,11 +664,18 @@ fn observe(state: &Mutex<State>, event: &CollabEvent, route: &CrdtRoute) {
     let Some(id) = RecordId::parse(&route.record_id) else {
         return;
     };
+    let fetching = lock(state).fetching.get(&id).is_some_and(|fetch| {
+        fetch.done.is_none() && fetch.routes.contains(route)
+    });
+    if !fetching {
+        return;
+    }
+    let ops = opened(opener, route, ops);
     let mut state = lock(state);
     let Some(fetch) = state.fetching.get_mut(&id) else {
         return;
     };
-    if fetch.done.is_some() || !fetch.routes.contains(route) {
+    if fetch.done.is_some() {
         return;
     }
     fetch.frames.extend(ops);
@@ -648,6 +765,54 @@ mod tests {
             RecordCustody::check_servable(&AutoCommit::new()),
             Err(CustodyError::NotARecord)
         );
+    }
+
+    /// Signs as the fixture's device.
+    struct Device;
+
+    impl DeviceSigner for Device {
+        fn author(&self) -> collab_types::Ed25519PublicKey {
+            crate::shell::channel_encryption::tests::public(
+                crate::shell::participant_keys::tests::DEVICE,
+            )
+        }
+        fn person(&self) -> [u8; 32] {
+            *self.author().as_bytes()
+        }
+        fn sign(&self, op: &mut SignedOp) -> Result<(), String> {
+            let key = crate::shell::channel_encryption::tests::key(
+                crate::shell::participant_keys::tests::DEVICE,
+            );
+            collab_types::sign_op(op, &key).map_err(|error| error.to_string())
+        }
+    }
+
+    /// A record custody publishes in an encrypted room is sealed for its
+    /// route, and custody reassembles it from what it fetches back.
+    #[test]
+    fn a_record_round_trips_sealed_through_an_encrypted_room() {
+        use crate::shell::participant_keys::tests::Fixture;
+
+        let fixture = Fixture::new(collab_types::ChannelClass::Encrypted);
+        let signer: SignerSlot = Arc::new(Mutex::new(Some(Arc::new(Device) as _)));
+        let who = custodian(&signer).expect("custody takes part as the device's person");
+        assert_eq!(who, fixture.person());
+        let id = RecordId::minted();
+        let route = record_route(&fixture.room, &id);
+        let doc = vec![3_u8; collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES + 9];
+        let frames = signed_frames(
+            &Device,
+            &fixture.keys.sealer(who.clone(), &fixture.room),
+            &route,
+            &doc,
+            &Mutex::new(State::default()),
+        )
+        .expect("signed");
+        assert!(frames.len() > 1);
+        assert!(frames.iter().all(|frame| frame.encryption.is_some()));
+        assert_eq!(assemble(&frames), None, "sealed frames are not a document");
+        let opened = opened(Some(&fixture.keys.opener(who)), &route, frames);
+        assert_eq!(assemble(&opened), Some(doc));
     }
 
     #[test]

@@ -13868,6 +13868,7 @@ impl ShellOverlayHost {
         };
         let tree = chrome.borrow().tree_handle();
         let custody = crate::shell::record_custody::RecordCustody::attach(&broker.fanout(), tree);
+        custody.set_channel_keys(broker.channel_encryption());
         chrome.borrow_mut().set_custody(custody);
     }
 

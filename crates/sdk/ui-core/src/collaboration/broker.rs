@@ -3555,21 +3555,10 @@ fn signer_public_key(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
     }
 }
 
-/// Storage class of one cleartext document frame: a snapshot (or its first
-/// segment) starts a new retained baseline, everything else follows it.
+/// Storage class of one cleartext document frame; see
+/// [`collab_types::DocumentFrame::retention`].
 fn document_frame_retention(cleartext: &[u8]) -> collab_types::ContentRetention {
-    match collab_types::DocumentFrame::decode(cleartext) {
-        Ok(collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(_))) => {
-            collab_types::ContentRetention::Checkpoint
-        }
-        Ok(collab_types::DocumentFrame::Segment(segment))
-            if segment.kind == collab_types::DocumentMutationKind::Snapshot
-                && segment.index == 0 =>
-        {
-            collab_types::ContentRetention::Checkpoint
-        }
-        _ => collab_types::ContentRetention::Delta,
-    }
+    collab_types::DocumentFrame::retention(cleartext)
 }
 
 /// Seal one frame under the route's current channel content key, so every

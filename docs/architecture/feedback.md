@@ -76,6 +76,27 @@ revokes it. That is the recording indicator, the consent boundary and the
 revocation path, all existing ones. It is admitted only to rooms the user
 chose to record.
 
+A room's app routes are encrypted channels, so what the recorder sees is
+ciphertext until it is opened. The shell's participants (the recorder, a
+replay peer, record custody) reach a channel's content keys the way an app
+does, through this device's channel service, and within the same bounds
+(`shell::participant_keys`):
+
+- Keys reach only a participant admitted to the room, only for that room's
+  channels, and never leave the device.
+- Reading and writing are separate handles. The recorder, an Observer, holds
+  an open-only handle and can never write in a room it records. Sealing goes
+  only to a replay peer, for its own replay room, and to record custody, for
+  the rooms it serves a record in.
+- Nothing is cached. Every open and seal asks again whether the participant
+  is admitted, so revoking the recorder's admission drops its keys at once.
+- A public room keeps no group key. Its content is plaintext, and that is
+  what the recorder keeps and a replay peer or custody writes there.
+
+The recorder keeps what it opens. The trace therefore holds the plaintext the
+user saw, and it stays on the device like everything else in it until review
+redacts it.
+
 Two gaps were real, and both are fixed in the toolkit because follow mode and
 freeze/thaw have them too:
 
@@ -155,6 +176,18 @@ and the viewer's app follows that participant. Replay is therefore the
 production follow path, fed from a record instead of the network. Scrubbing
 reloads the snapshot and fast-forwards. Inspect works on the replayed app like
 on any other, so the team can pick an element inside a report.
+
+The replay room's routes are encrypted channels like any room's. This device
+governs the room, the peer seals what it publishes for each channel, and the
+replayed app opens it with the keys it is handed for its own launch. When the
+room closes, its channels and their state are forgotten.
+
+A replayed app does not show a seek all at once: presence reaches it at once,
+a document change once the app has opened and merged it. The offscreen check
+therefore captures each frame the app draws after a seek and settles on the
+first that matches the recorded one. If none matches within the settle
+window, it takes what the app shows then. A replay diverges only when it
+never reaches what was recorded.
 
 The same trace format is what headless tests and agents consume. A test can
 record a real session and assert against its replay.

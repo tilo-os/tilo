@@ -111,6 +111,7 @@ mod projection_overlay;
 pub mod quick_settings;
 pub mod realtime_session;
 pub mod recent_files;
+pub mod participant_keys;
 pub mod record_custody;
 pub mod recorder;
 pub mod remark;

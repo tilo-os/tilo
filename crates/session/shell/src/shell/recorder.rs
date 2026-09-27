@@ -479,6 +479,8 @@ pub struct Recorder {
     tree: WorkspaceTreeHandle,
     fanout: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
+    /// Opens what the recorded rooms carry; it cannot write there.
+    opener: crate::shell::participant_keys::ChannelOpener,
     /// Typed participant id for snapshot requests, so the broker never picks
     /// the recorder itself as a snapshot holder.
     peer_id: u64,
@@ -507,6 +509,16 @@ impl Recorder {
         let fanout = broker.fanout();
         let capture: Arc<Mutex<Capture>> = Arc::new(Mutex::new(Capture::default()));
         let sink_capture = Arc::clone(&capture);
+        // The recorder is an Observer: it opens what the rooms it records
+        // carry, and holds nothing that could write there.
+        let opener = crate::shell::participant_keys::ParticipantKeys::for_broker(
+            broker,
+            Arc::clone(&tree),
+        )
+        .opener(crate::shell::participant_keys::Participant::Agent(
+            RECORDER_AGENT.into(),
+        ));
+        let sink_opener = opener.clone();
         let subscription = fanout.subscribe_rooms_as(
             LocalParticipant {
                 agent: RECORDER_AGENT.into(),
@@ -514,7 +526,13 @@ impl Recorder {
             },
             Vec::new(),
             Box::new(move |event, route| {
-                observe(&mut lock(&sink_capture), Instant::now(), event, route);
+                let readable = opened_event(&sink_opener, event, route);
+                observe(
+                    &mut lock(&sink_capture),
+                    Instant::now(),
+                    readable.as_ref().unwrap_or(event),
+                    route,
+                );
             }),
         );
         let peer_id = fanout.next_peer_id();
@@ -522,6 +540,7 @@ impl Recorder {
             tree,
             fanout,
             channels: broker.channels(),
+            opener,
             peer_id,
             capture,
             subscription,
@@ -1084,8 +1103,9 @@ impl Recorder {
             return Err(RecorderError::NothingRecent);
         }
         let channels = Arc::clone(&self.channels);
+        let opener = self.opener.clone();
         let mut builder = recent.capture(now, SystemTime::now(), self.limits, |reference| {
-            resolve_op(&channels, reference)
+            resolve_op(&channels, &opener, reference)
         });
         builder.set_environment(environment());
         for (room, surface) in &capture.surfaces {
@@ -1480,15 +1500,54 @@ fn trace_route(route: &CrdtRoute) -> Route {
     )
 }
 
-/// Serve a referenced op from the broker's validated history. Redacted ops
-/// come back as their redaction marker, as they would to any reader.
+/// Serve a referenced op from the broker's validated history, opened as the
+/// recording keeps it. Redacted ops come back as their redaction marker, as
+/// they would to any reader.
 fn resolve_op(
     channels: &Mutex<BrokerChannels>,
+    opener: &crate::shell::participant_keys::ChannelOpener,
     reference: &OpReference,
 ) -> Option<collab_types::SignedOp> {
     let (page, _) =
         lock(channels).scrollback_page(reference.artifact, reference.seq.saturating_add(1), 64);
-    page.into_iter().find(|op| reference.names(op))
+    let op = page.into_iter().find(|op| reference.names(op))?;
+    let route = CrdtRoute {
+        app_id: reference.route.app_id.clone(),
+        cluster_id: reference.route.room.clone(),
+        record_id: reference.route.record_id.clone(),
+    };
+    Some(opener.opened(&route, &op).unwrap_or(op))
+}
+
+/// A document event opened for the recording: what was said on an
+/// encrypted route, kept on this device like everything else it records
+/// until review redacts it. `None` when there is nothing to open, or it
+/// could not be opened (the recording then keeps what arrived).
+fn opened_event(
+    opener: &crate::shell::participant_keys::ChannelOpener,
+    event: &CollabEvent,
+    route: &CrdtRoute,
+) -> Option<CollabEvent> {
+    let CollabEvent::Document {
+        envelope,
+        from_user_id,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    envelope.encryption?;
+    match opener.opened(route, envelope) {
+        Ok(clear) => Some(CollabEvent::Document {
+            envelope: Box::new(clear),
+            from_user_id: from_user_id.clone(),
+            decrypted_payload: None,
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "recorder: a recorded op could not be opened");
+            None
+        }
+    }
 }
 
 fn presence_change(key: &PresenceKey, payload: &PresencePayload) -> PresenceChange {
