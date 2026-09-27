@@ -244,12 +244,7 @@ impl HandoffStore {
     }
 
     fn file(&self, id: &AccountId) -> PathBuf {
-        use std::fmt::Write as _;
-        let mut name = String::with_capacity(id.as_str().len().saturating_mul(2));
-        for byte in id.as_str().bytes() {
-            let _ = write!(name, "{byte:02x}");
-        }
-        self.dir.join(format!("{name}.enc"))
+        self.dir.join(format!("{}.enc", hex::encode(id.as_str())))
     }
 
     /// Replace the account's handoff credential.

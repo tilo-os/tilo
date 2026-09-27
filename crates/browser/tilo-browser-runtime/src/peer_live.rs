@@ -31,18 +31,13 @@ fn fail(message: impl ToString) -> String {
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(bytes)
 }
 fn unhex(text: &str, max: usize) -> Result<Vec<u8>, String> {
-    if text.is_empty() || !text.len().is_multiple_of(2) || text.len() / 2 > max {
+    if text.is_empty() || text.len() / 2 > max {
         return Err("invalid live hex bytes".into());
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| "invalid live hex bytes".into())
-        })
-        .collect()
+    hex::decode(text).map_err(|_| "invalid live hex bytes".into())
 }
 
 /// Exact expected grant binding captured when the request was prepared.

@@ -10,6 +10,7 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
+hex.workspace = true
 advisory-lock = { path = "../advisory-lock" }
 tilo-clock = { path = "../tilo-clock" }
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
