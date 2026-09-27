@@ -112,7 +112,7 @@ jobs:
                 "Cargo.lock",
                 "keys/cosign.pub",
                 "os/base-snapshot.env",
-                "os/rpms-snapshot.env",
+                "os/dev/rpm-snapshot-fingerprint.py",
                 "os/dev/verify-rpm-snapshot-package-set.sh",
             }
             for index, block in enumerate(workflow_path_blocks(relay_text), start=1):

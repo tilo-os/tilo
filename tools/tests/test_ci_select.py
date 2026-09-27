@@ -73,25 +73,24 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='a pin only pull request takes the pins path'):
             self.setUp()
             (self.root / "os").mkdir(exist_ok=True)
-            for pin in ("os/rpms-snapshot.env", "os/kernel-snapshot.env"):
-                (self.root / pin).write_text("PIN=x\n")
+            (self.root / "os/kernel-snapshot.env").write_text("PIN=x\n")
             manifest = ci_select.path_suites.parse(
                 '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n')
             def plan(changes, **options):
                 return ci_select.make_plan(self.metadata, self.root, changes, 2,
                                            suite_manifest=manifest, **options)
-            pins = plan(["os/rpms-snapshot.env", "os/kernel-snapshot.env"], allow_security_skip=True)
+            pins = plan(["os/kernel-snapshot.env"], allow_security_skip=True)
             self.assertTrue(pins["pins_required"])
-            self.assertEqual(pins["pins"], ["os/kernel-snapshot.env", "os/rpms-snapshot.env"])
+            self.assertEqual(pins["pins"], ["os/kernel-snapshot.env"])
             self.assertFalse(pins["rust_required"])
             self.assertFalse(pins["security_required"])
             self.assertFalse(pins["suites_required"])
             self.assertEqual(pins["matrix"], {"include": []})
             # Pushes, full runs and mixed changes keep every check.
             for changes, options in (
-                (["os/rpms-snapshot.env"], {}),
-                (["os/rpms-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
-                (["os/rpms-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
+                (["os/kernel-snapshot.env"], {}),
+                (["os/kernel-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
+                (["os/kernel-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
                 (["os/deleted-pin.env"], {"allow_security_skip": True}),
             ):
                 with self.subTest(changes=changes, options=options):
@@ -104,7 +103,7 @@ class SelectorTests(unittest.TestCase):
                 ci_select.emit_github(pins, output)
                 lines = output.read_text().splitlines()
             self.assertIn("pins_required=true", lines)
-            self.assertIn("pins=os/kernel-snapshot.env os/rpms-snapshot.env", lines)
+            self.assertIn("pins=os/kernel-snapshot.env", lines)
         with self.subTest(phase='cross package readers are checked and tested when their inputs change'):
             self.setUp()
             # "base" reads leaf's sources and a shipped OS file from outside itself,
@@ -918,20 +917,20 @@ class SelectorTests(unittest.TestCase):
                         plan = ci_select.make_plan(
                             self.metadata, self.root, [mapped_source], 2)
                         self.assertTrue(plan["rust_required"])
-        with self.subTest(phase='rpm pin only runs mandatory policy and security checks'):
+        with self.subTest(phase='rpm fingerprint helpers run mandatory policy and security checks'):
             self.setUp()
             self.install_control_inputs()
-            pin = "os/rpms-snapshot.env"
-            observer = "tools/tests/test_rpm_pin_contract.py"
-            plan = ci_select.make_plan(self.metadata, self.root, [pin], 2)
+            source = "os/dev/rpm-snapshot-fingerprint.py"
+            observer = "os/tests/test_rpm_snapshot_fingerprint.py"
+            plan = ci_select.make_plan(self.metadata, self.root, [source], 2)
             self.assertFalse(plan["rust_required"])
             self.assertEqual(plan["selected"], [])
             self.assertTrue(plan["security_required"])
             (self.root / observer).unlink()
-            self.assertTrue(ci_select.make_plan(self.metadata, self.root, [pin], 2)["rust_required"])
+            self.assertTrue(ci_select.make_plan(self.metadata, self.root, [source], 2)["rust_required"])
             self.install_control_inputs()
             self.assertTrue(ci_select.make_plan(
-                self.metadata, self.root, [pin, "leaf/src/lib.rs"], 2)["rust_required"])
+                self.metadata, self.root, [source, "leaf/src/lib.rs"], 2)["rust_required"])
 
     def install_quality_helpers(self) -> None:
         for source, test in ci_select.QUALITY_ONLY_HELPERS.items():

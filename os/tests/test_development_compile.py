@@ -58,8 +58,11 @@ class CompileBoundaries(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 repo = Path(temporary)
                 (repo / 'os').mkdir()
-                for name, filename in (('BASE_REF', 'base-snapshot.env'), ('RPMS_REF', 'rpms-snapshot.env')):
-                    (repo / 'os' / filename).write_text(name + '=' + WPE + '\n')
+                (repo / 'os' / 'base-snapshot.env').write_text('BASE_REF=' + WPE + '\n')
+                (repo / 'os' / 'dev').mkdir(parents=True, exist_ok=True)
+                resolve = repo / 'os/dev/resolve-rpm-snapshot.sh'
+                resolve.write_text('#!/bin/bash\nprintf \'%s\\n\' \'' + WPE + '\'\n')
+                resolve.chmod(0o755)
                 # No kernel-snapshot.env exists, reproducing the real missing ARM
                 # input without mocking the pin reader that previously hid it.
                 with patch.object(driver, 'REPO', repo):

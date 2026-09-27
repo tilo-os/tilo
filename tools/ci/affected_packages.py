@@ -43,11 +43,12 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
-# Snapshot pins CI publishes and signs. A pull request that changes only these
-# changes no code: check.yml's `pins` job proves each changed pin is the signed
-# snapshot published for this source (os/dev/verify-snapshot-pins.sh) instead
-# of the Rust and security suites, which main runs after the merge.
-PIN_FILES = ("os/rpms-snapshot.env", "os/kernel-snapshot.env")
+# Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
+# fingerprint). A pull request that changes only these changes no code:
+# check.yml's `pins` job proves each changed pin is the signed snapshot
+# published for this source (os/dev/verify-snapshot-pins.sh) instead of the
+# Rust and security suites, which main runs after the merge.
+PIN_FILES = ("os/kernel-snapshot.env",)
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
@@ -100,7 +101,12 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
-    "os/rpms-snapshot.env": (
+    "os/dev/rpm-snapshot-fingerprint.py": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
+        "tools/tests/test_rpm_pin_contract.py",
+    ),
+    "os/dev/resolve-rpm-snapshot.sh": (
+        "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
     ),
     ".forgejo/workflows/build-builder-image.yml": (
