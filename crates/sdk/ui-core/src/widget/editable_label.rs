@@ -41,6 +41,8 @@ pub enum EditOutcome {
 
 pub struct EditableLabel {
     id: String,
+    accessible_name: Option<String>,
+    semantic_target: Option<String>,
     value: String,
     /// Live only while editing; owns the caret/selection and every
     /// editing affordance.
@@ -60,6 +62,8 @@ impl EditableLabel {
     pub fn new(value: &str) -> Self {
         Self {
             id: String::new(),
+            accessible_name: None,
+            semantic_target: None,
             value: value.to_string(),
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
@@ -106,6 +110,18 @@ impl EditableLabel {
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
+    }
+
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// Bind the editable surface to its current model identity. Changing the
+    /// target retires semantic routes from the previously displayed model.
+    pub fn set_semantic_target(&mut self, target: Option<String>) {
+        self.semantic_target = target;
     }
 
     pub fn value(&self) -> &str {
@@ -427,20 +443,33 @@ impl Widget for EditableLabel {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        if self.editing {
-            return self.input.accessibility();
-        }
-        if self.value.is_empty() {
-            return None;
-        }
-        Some(
+        let mut node = if self.editing {
+            self.input.accessibility()?
+        } else {
+            if self.value.is_empty() && self.accessible_name.is_none() {
+                return None;
+            }
             AccessNode::new(Role::TextInput)
                 .with_optional_value(Some(self.value.clone()))
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        )
+                .with_state(AccessState::new().focusable(true))
+        };
+        node.name.clone_from(&self.accessible_name);
+        if let Some(target) = &self.semantic_target {
+            node = node
+                .with_semantic_key(target.clone())
+                .with_action_target(target.clone());
+        }
+        Some(node)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
     }
 
     fn perform_action(
@@ -451,6 +480,12 @@ impl Widget for EditableLabel {
     ) -> bool {
         use crate::a11y::Action;
 
+        if matches!(action, Action::Focus | Action::Activate) {
+            if !self.editing {
+                self.begin_edit();
+            }
+            return true;
+        }
         if !self.editing {
             match action {
                 Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
