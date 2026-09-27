@@ -46,15 +46,31 @@ impl ActionCx {
         }
     }
 
-    /// A context whose ids come from `seed` alone: for a write that already
-    /// knows what makes it unique (the object it fills), and must not read
-    /// the heads, which would close the change it is part of.
+    /// A context for ids minted part-way through an action that has already
+    /// written: seeded like [`Self::for_apply`] but from the heads the action
+    /// started from, so reading them does not commit its writes so far as a
+    /// separate change.
     #[must_use]
-    pub fn from_seed(seed: [u8; 32], now_ms: i64) -> Self {
+    pub fn for_write(doc: &Doc, payload: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-resource/write-seed/v1");
+        if let Some((group, position)) = crate::group::current_member() {
+            hasher.update(b"member");
+            hasher.update(&group);
+            hasher.update(&position.to_le_bytes());
+        } else {
+            hasher.update(doc.get_actor().to_bytes());
+            let mut heads = automerge::transaction::Transactable::base_heads(doc);
+            heads.sort();
+            for head in heads {
+                hasher.update(&head.0);
+            }
+        }
+        hasher.update(payload);
         Self {
-            seed,
+            seed: *hasher.finalize().as_bytes(),
             minted: 0,
-            now_ms,
+            now_ms: 0,
         }
     }
 

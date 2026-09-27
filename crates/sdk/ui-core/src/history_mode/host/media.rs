@@ -90,7 +90,9 @@ impl HistoryHost {
                         heads: snapshot.heads().to_vec(),
                     };
                     *expected = Some(key.clone());
-                    canvas.set_status(Some("Loading historical media".into()));
+                    canvas.set_status(Some(crate::i18n::I18nManager::lookup_plain(
+                        "history-mode-loading-media",
+                    )));
                     provider.request(
                         HistoricalAssetRequest {
                             resource: resource.clone(),

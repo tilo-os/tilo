@@ -17,8 +17,6 @@ qdoc-rich-text = { path = "../../doc/qdoc-rich-text" }
 tracing.workspace = true
 # The owning resource's action a field edit travels in is serialized for replay.
 serde.workspace = true
-# Ids of paragraphs a fill writes, derived from the field they fill.
-blake3.workspace = true
 
 # The workspace-hack's native feature set does not build for wasm32.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -1,4 +1,4 @@
-name: Operations / Copy images to registry.tilo.so
+name: Operations / registry image copy
 
 # Operator-dispatched: copies every image this tree references from the
 # forge's registry to registry.tilo.so with the same digests

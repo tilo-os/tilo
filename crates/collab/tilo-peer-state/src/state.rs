@@ -953,7 +953,7 @@ impl StatePeer {
     ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
-        let caps = self
+        let mut caps = self
             .core
             .room_doc
             .as_ref()
@@ -962,6 +962,7 @@ impl StatePeer {
             .caps
             .clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, now);
         Ok((role, caps, person.id().to_owned()))
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
@@ -1175,10 +1176,11 @@ impl StatePeer {
     ) -> Result<Role, String> {
         let role = self.role(source, authorization_time)?;
         let cert = self.certificate(source, authorization_time)?;
-        let (_, _, caps) = room::extract_governed_fields(
+        let (_, _, mut caps) = room::extract_governed_fields(
             self.core.room_doc.as_deref().ok_or("missing governance")?,
         );
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, authorization_time);
         let actor = Actor::person(Some(role), person.id())
             .with_principal(Principal::App(app_id.to_owned()))
             .in_room(self.core.room.clone());

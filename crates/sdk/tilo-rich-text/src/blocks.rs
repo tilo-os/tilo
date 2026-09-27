@@ -121,8 +121,9 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
 
 /// What a fill writes with: the field's containers, the id of the empty
 /// paragraph the new blocks replace, and ids unique to this field and this
-/// content (the same on a replica replaying the write, clear of every id
-/// elsewhere). `None` when there is nothing to write.
+/// content at this version of the document (the same on a replica replaying
+/// the write, clear of every id elsewhere). `None` when there is nothing to
+/// write.
 fn prepare_fill(
     doc: &Doc,
     root: &ObjId,
@@ -142,17 +143,12 @@ fn prepare_fill(
     }
     let containers = qdoc::model::open(doc, root)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
-    // The field's object id is unique in the document and the same on a
-    // replica replaying the write. Not the heads: reading them would close
-    // the change this write is part of.
-    let mut seed = blake3::Hasher::new();
-    seed.update(b"tilo-rich-text/fill/v1");
-    seed.update(root.to_string().as_bytes());
+    let mut seed = root.to_string().into_bytes();
     for text in texts {
-        seed.update(text.as_bytes());
-        seed.update(&[0]);
+        seed.extend_from_slice(text.as_bytes());
+        seed.push(0);
     }
-    let cx = ui::tilo_resource::ActionCx::from_seed(*seed.finalize().as_bytes(), 0);
+    let cx = ui::tilo_resource::ActionCx::for_write(doc, &seed);
     Ok(Some((
         containers,
         empty.id.clone(),

@@ -238,6 +238,25 @@ mod tests {
     }
 
     #[test]
+    fn an_assistive_technology_sets_the_text_as_edits() {
+        let mut field = Field::new(SubmitKey::Enter);
+        field.type_text("old");
+        let surface = field.host.widget_mut();
+        assert!(surface.perform_action(
+            &ui::a11y::Action::SetValue("first\nsecond".into()),
+            &mut field.doc,
+            &ROOT,
+        ));
+        assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
+        assert!(field.host.widget_mut().perform_action(
+            &ui::a11y::Action::SetValue("one".into()),
+            &mut field.doc,
+            &ROOT,
+        ));
+        assert_eq!(field.host.widget().source().plain_text(), "one");
+    }
+
+    #[test]
     fn a_mention_and_an_emoji_go_through_the_field_as_edits() {
         let mut field = Field::new(SubmitKey::Enter);
         field.type_text("hi ");

@@ -224,7 +224,7 @@ them to the slot's target tree.
   when the store passes 75%. Checkout gives files new mtimes; the helper
   restores them for blobs a sealed previous job built from, and an unsealed job
   leaves nothing to restore.
-- `tilo-relay.yaml` and `registry-server-image.yml` keep a persistent BuildKit
+- `release-relay.yml` and `registry-server-image.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.
   Publications start from a fresh builder.

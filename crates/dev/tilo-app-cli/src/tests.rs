@@ -4516,10 +4516,20 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         "vello",
         "wayland-backend",
         "rustls-native-certs",
-        "accesskit",
-        "atspi",
-        "rustypipe",
     ];
+    // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
+    let git_forks = ["accesskit", "atspi", "rustypipe"];
+    let pinned_as_workspace = |patches: &toml::Table| {
+        for name in git_forks {
+            assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
+            assert!(
+                workspace_patches[name]["git"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("https://")),
+                "{name}"
+            );
+        }
+    };
 
     // Phase: a checkout nearby is used in place, by relative path.
     {
@@ -4547,6 +4557,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
                 "{name} -> {path}"
             );
         }
+        pinned_as_workspace(patches);
         assert!(!patches.contains_key("workspace-hack"));
         assert!(
             patches
@@ -4622,6 +4633,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         for name in forks {
             assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
         }
+        pinned_as_workspace(patches);
         assert!(patches.values().all(|patch| patch.get("path").is_none()));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());

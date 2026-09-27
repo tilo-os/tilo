@@ -21,11 +21,12 @@ pub fn installed(app_id: &str) -> ActionAccess {
         .unwrap_or_default()
         .into_iter()
         .find(|app| app.package_id == app_id)
-        .and_then(|app| std::fs::read_to_string(&app.manifest_path).ok())
-        .and_then(|source| tilo_app_package::manifest::Manifest::from_toml_str(&source).ok())
-        .map(|manifest| ActionAccess {
-            query: manifest.actions.query,
-            invoke: manifest.actions.invoke,
+        .map(|app| {
+            let declared = app.declared_actions();
+            ActionAccess {
+                query: declared.query,
+                invoke: declared.invoke,
+            }
         })
         .unwrap_or_default()
 }

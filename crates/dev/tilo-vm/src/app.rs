@@ -20,9 +20,9 @@ use crate::appsets;
 use crate::build;
 use crate::ci;
 use crate::cli::{
-    Builder, Command, CreateArgs, GamepadCommand, ImageCommand, InputCommand, PenCommand,
-    ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand, UpgradeArgs,
-    VmCommand,
+    Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand, InputCommand,
+    PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand,
+    UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -44,6 +44,199 @@ use crate::vmbuild;
 
 mod kernel;
 mod scenario;
+
+#[derive(Debug, Clone, Copy)]
+struct ForeignRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl ForeignRect {
+    fn center_x(self) -> f64 {
+        self.x + self.w / 2.0
+    }
+
+    fn center_y(self) -> f64 {
+        self.y + self.h / 2.0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForeignFrame {
+    surface_id: u64,
+    frame_seq: u64,
+    rect: Option<ForeignRect>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartConnectDisposition {
+    Ready,
+    NoDaemon,
+    Retry,
+    Fail,
+}
+
+#[cfg(test)]
+fn start_connect_disposition(result: &Result<Remote, CliError>) -> StartConnectDisposition {
+    match result {
+        Ok(_) => StartConnectDisposition::Ready,
+        Err(CliError::DaemonMissing { .. }) => StartConnectDisposition::NoDaemon,
+        Err(CliError::Unreachable { .. }) => StartConnectDisposition::Retry,
+        Err(_) => StartConnectDisposition::Fail,
+    }
+}
+
+fn foreign_frames_args() -> &'static [String] {
+    static ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ARGS.get_or_init(|| {
+        vec![
+            "raw".into(),
+            serde_json::json!({ "op": "foreign_frames" }).to_string(),
+        ]
+    })
+}
+
+fn control_json(
+    remote: &mut Remote,
+    slot: &str,
+    args: &[String],
+    worst: &mut Duration,
+) -> Result<Value, CliError> {
+    let started = Instant::now();
+    let result = remote.call(Control {
+        slot: slot.to_owned(),
+        args: args.to_vec(),
+    })?;
+    *worst = (*worst).max(started.elapsed());
+    if result.exit_code != 0 {
+        return Err(CliError::CommandFailed {
+            command: format!("tilo-control {}", args.join(" ")),
+            status: format!("exit {}", result.exit_code),
+            stderr: result.stderr.trim().to_owned(),
+        });
+    }
+    serde_json::from_str(result.stdout.trim()).map_err(|error| CliError::CommandFailed {
+        command: format!("tilo-control {}", args.join(" ")),
+        status: "invalid JSON response".into(),
+        stderr: error.to_string(),
+    })
+}
+
+fn foreign_rows(value: &Value) -> impl Iterator<Item = &Value> {
+    value
+        .get("foreign_frames")
+        .and_then(|frames| frames.get("frames"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+}
+
+fn foreign_surface_ids(value: &Value) -> std::collections::HashSet<u64> {
+    foreign_rows(value)
+        .filter_map(|frame| frame.get("surface_id").and_then(Value::as_u64))
+        .collect()
+}
+
+fn parse_foreign_frame(value: &Value) -> Option<ForeignFrame> {
+    let rect = value.get("rect").and_then(|rect| {
+        Some(ForeignRect {
+            x: rect.get("x")?.as_f64()?,
+            y: rect.get("y")?.as_f64()?,
+            w: rect.get("w")?.as_f64()?,
+            h: rect.get("h")?.as_f64()?,
+        })
+    });
+    Some(ForeignFrame {
+        surface_id: value.get("surface_id")?.as_u64()?,
+        frame_seq: value.get("frame_seq")?.as_u64()?,
+        rect,
+    })
+}
+
+fn matching_presented_frame(
+    value: &Value,
+    app_id: &str,
+    baseline_ids: &std::collections::HashSet<u64>,
+) -> Option<ForeignFrame> {
+    foreign_rows(value).find_map(|frame| {
+        let parsed = parse_foreign_frame(frame)?;
+        (frame.get("app_id").and_then(Value::as_str) == Some(app_id)
+            && frame.get("presented").and_then(Value::as_bool) == Some(true)
+            && parsed.frame_seq > 0
+            && !baseline_ids.contains(&parsed.surface_id))
+        .then_some(parsed)
+    })
+}
+
+fn matching_surface(value: &Value, surface_id: u64) -> Option<ForeignFrame> {
+    foreign_rows(value).find_map(|frame| {
+        let parsed = parse_foreign_frame(frame)?;
+        (parsed.surface_id == surface_id).then_some(parsed)
+    })
+}
+
+fn ensure_before(deadline: Instant, message: &str) -> Result<(), CliError> {
+    (Instant::now() < deadline)
+        .then_some(())
+        .ok_or_else(|| flight_failure(message))
+}
+
+fn flight_failure(message: impl Into<String>) -> CliError {
+    CliError::CommandFailed {
+        command: "tilo-vm flight app".into(),
+        status: "acceptance invariant failed".into(),
+        stderr: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod flight_tests {
+    use super::*;
+
+    fn frames(rows: &Value) -> Value {
+        json!({ "foreign_frames": { "frames": rows } })
+    }
+
+    #[test]
+    fn presented_flight_surface_must_be_new_matching_and_real() {
+        let baseline = frames(&json!([
+            { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 8, "presented": true }
+        ]));
+        let ids = foreign_surface_ids(&baseline);
+        let current = frames(&json!([
+            { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 9, "presented": true },
+            { "surface_id": 5, "app_id": "other", "frame_seq": 1, "presented": true },
+            { "surface_id": 6, "app_id": "chatgpt", "frame_seq": 0, "presented": false },
+            {
+                "surface_id": 7,
+                "app_id": "chatgpt",
+                "frame_seq": 2,
+                "presented": true,
+                "rect": { "x": 10.0, "y": 20.0, "w": 300.0, "h": 200.0 }
+            }
+        ]));
+
+        let selected = matching_presented_frame(&current, "chatgpt", &ids).expect("new frame");
+        assert_eq!(selected.surface_id, 7);
+        assert_eq!(selected.frame_seq, 2);
+        let rect = selected.rect.expect("placement");
+        assert_eq!((rect.center_x(), rect.center_y()), (160.0, 120.0));
+    }
+
+    #[test]
+    fn frame_lookup_tracks_the_same_surface_after_input() {
+        let value = frames(&json!([
+            { "surface_id": 12, "app_id": "chatgpt", "frame_seq": 41, "presented": true },
+            { "surface_id": 13, "app_id": "chatgpt", "frame_seq": 99, "presented": true }
+        ]));
+
+        assert_eq!(matching_surface(&value, 12).expect("surface").frame_seq, 41);
+        assert!(matching_surface(&value, 14).is_none());
+    }
+}
 
 pub struct Outcome {
     pub text: String,
@@ -596,6 +789,7 @@ impl App {
             Some(Command::Seat(command)) => self.seat(command),
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
+            Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
@@ -1768,7 +1962,9 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
-        run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
+        if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
+            run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
+        }
         let started = Instant::now();
         let mut reachable = false;
         let mut no_daemon = None;
@@ -1780,15 +1976,17 @@ impl App {
                     remote = Some(connected);
                     break;
                 }
-                // sshd is up and says no: waiting will not change that.
-                Err(error @ CliError::RootKeyRefused { .. }) => return Err(error),
                 // SSH works; the image just has no daemon, and never will.
                 Err(error @ CliError::DaemonMissing { .. }) => {
                     reachable = true;
                     no_daemon = Some(error);
                     break;
                 }
-                Err(_) => std::thread::sleep(Duration::from_secs(2)),
+                // Connection transport failures can resolve while the VM boots.
+                Err(CliError::Unreachable { .. }) => std::thread::sleep(Duration::from_secs(2)),
+                // SSH and tilo-vmd already answered. Waiting cannot fix a refused
+                // key, incompatible protocol, or any other semantic failure.
+                Err(error) => return Err(error),
             }
         }
         self.receipt.record("boot", started.elapsed().as_secs_f64());
@@ -3570,6 +3768,168 @@ impl App {
         Ok(Outcome::new(result.stdout.trim_end(), json!(result)))
     }
 
+    fn flight(&mut self, command: FlightCommand) -> Result<Outcome, CliError> {
+        match command {
+            FlightCommand::App {
+                desktop_id,
+                app_id,
+                slot,
+                type_text,
+                maximum_launch_ms,
+                maximum_control_ms,
+                timeout_seconds,
+                ..
+            } => self.app_flight(
+                slot,
+                &desktop_id,
+                &app_id,
+                &type_text,
+                Duration::from_millis(maximum_launch_ms),
+                Duration::from_millis(maximum_control_ms),
+                Duration::from_secs(timeout_seconds),
+            ),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one linear acceptance flight keeps every measured phase and failure invariant visible"
+    )]
+    fn app_flight(
+        &mut self,
+        slot: Option<String>,
+        desktop_id: &str,
+        app_id: &str,
+        type_text: &str,
+        maximum_launch: Duration,
+        maximum_control: Duration,
+        timeout: Duration,
+    ) -> Result<Outcome, CliError> {
+        let slot = self.slot_name(slot)?;
+        let vm = self.resolve_vm(None)?;
+        let mut remote = self.connect(&vm)?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| flight_failure("flight timeout is too large"))?;
+        let mut worst_control = Duration::ZERO;
+        let baseline = control_json(
+            &mut remote,
+            &slot,
+            foreign_frames_args(),
+            &mut worst_control,
+        )?;
+        let baseline_ids = foreign_surface_ids(&baseline);
+
+        let launched_at = Instant::now();
+        control_json(
+            &mut remote,
+            &slot,
+            &[
+                "actions".into(),
+                "invoke".into(),
+                "host-applications".into(),
+                desktop_id.into(),
+            ],
+            &mut worst_control,
+        )?;
+
+        let (surface_id, initial_frame_seq) = loop {
+            ensure_before(deadline, "app did not present before the flight deadline")?;
+            let value = control_json(
+                &mut remote,
+                &slot,
+                foreign_frames_args(),
+                &mut worst_control,
+            )?;
+            if let Some(frame) = matching_presented_frame(&value, app_id, &baseline_ids) {
+                break (frame.surface_id, frame.frame_seq);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        let launch_time = launched_at.elapsed();
+        if launch_time > maximum_launch {
+            return Err(flight_failure(format!(
+                "{desktop_id} presented after {:.1} ms, over the {:.1} ms launch ceiling",
+                launch_time.as_secs_f64() * 1000.0,
+                maximum_launch.as_secs_f64() * 1000.0
+            )));
+        }
+
+        let value = control_json(
+            &mut remote,
+            &slot,
+            foreign_frames_args(),
+            &mut worst_control,
+        )?;
+        let rect = matching_surface(&value, surface_id)
+            .and_then(|frame| frame.rect)
+            .ok_or_else(|| flight_failure(format!("surface {surface_id} has no focusable rect")))?;
+        control_json(
+            &mut remote,
+            &slot,
+            &[
+                "click-at".into(),
+                rect.center_x().to_string(),
+                rect.center_y().to_string(),
+            ],
+            &mut worst_control,
+        )?;
+        control_json(
+            &mut remote,
+            &slot,
+            &["type".into(), type_text.into()],
+            &mut worst_control,
+        )?;
+
+        let final_frame_seq = loop {
+            ensure_before(
+                deadline,
+                "focused app did not present a frame after injected input",
+            )?;
+            let value = control_json(
+                &mut remote,
+                &slot,
+                foreign_frames_args(),
+                &mut worst_control,
+            )?;
+            if let Some(frame) = matching_surface(&value, surface_id)
+                && frame.frame_seq > initial_frame_seq
+            {
+                break frame.frame_seq;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        if worst_control > maximum_control {
+            return Err(flight_failure(format!(
+                "worst compositor control round trip was {:.1} ms, over the {:.1} ms ceiling",
+                worst_control.as_secs_f64() * 1000.0,
+                maximum_control.as_secs_f64() * 1000.0
+            )));
+        }
+
+        let data = json!({
+            "slot": slot,
+            "desktop_id": desktop_id,
+            "app_id": app_id,
+            "surface_id": surface_id,
+            "initial_frame_seq": initial_frame_seq,
+            "final_frame_seq": final_frame_seq,
+            "request_to_presented_ms": launch_time.as_secs_f64() * 1000.0,
+            "worst_control_ms": worst_control.as_secs_f64() * 1000.0,
+            "typed": type_text,
+        });
+        Ok(Outcome::new(
+            format!(
+                "PASS {desktop_id}: surface {surface_id} presented in {:.1} ms, accepted input (frame {initial_frame_seq} -> {final_frame_seq}); worst control round trip {:.1} ms",
+                launch_time.as_secs_f64() * 1000.0,
+                worst_control.as_secs_f64() * 1000.0
+            ),
+            data,
+        )
+        .next(&["tilo-vm shot", "tilo-vm logs"]))
+    }
+
     fn input(&mut self, slot: Option<String>, command: InputCommand) -> Result<Outcome, CliError> {
         let actions = input_actions(command)?;
         let slot = self.slot_name(slot)?;
@@ -4276,6 +4636,7 @@ fn named_slot(command: &Command) -> Option<String> {
         Command::Swap { slot, .. }
         | Command::Input { slot, .. }
         | Command::Control { slot, .. }
+        | Command::Flight(FlightCommand::App { slot, .. })
         | Command::Rollback { slot, .. }
         | Command::Logs { slot, .. }
         | Command::Shot { slot, .. }
@@ -5059,6 +5420,47 @@ mod tests {
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn status_and_errors_explain_what_is_wrong_and_what_to_do() {
+        // Phase: vm_start_retries_only_transport_failures.
+        {
+            let unreachable = Err(CliError::Unreachable {
+                vm: "dev".into(),
+                detail: "connection refused".into(),
+                debug: Vec::new(),
+            });
+            assert_eq!(
+                start_connect_disposition(&unreachable),
+                StartConnectDisposition::Retry
+            );
+            let missing = Err(CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(false),
+            });
+            assert_eq!(
+                start_connect_disposition(&missing),
+                StartConnectDisposition::NoDaemon
+            );
+            let mismatch = Err(CliError::ProtocolMismatch {
+                vm: "dev".into(),
+                client: 5,
+                daemon: 3,
+                bootc: Some(false),
+            });
+            assert_eq!(
+                start_connect_disposition(&mismatch),
+                StartConnectDisposition::Fail
+            );
+            let refused = Err(CliError::RootKeyRefused {
+                vm: "dev".into(),
+                key: "/tmp/key".into(),
+                install: "install key".into(),
+                credentials: false,
+            });
+            assert_eq!(
+                start_connect_disposition(&refused),
+                StartConnectDisposition::Fail
+            );
+        }
+
         // Phase: status_tells_off_from_silent_from_missing_from_incompatible.
         {
             let debug = [

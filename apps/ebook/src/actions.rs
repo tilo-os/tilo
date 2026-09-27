@@ -245,6 +245,12 @@ pub enum EbookAction {
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
+    /// One edit of an annotation's note as its editor writes it: typing,
+    /// formatting, a new paragraph, applied to the note's rich text.
+    EditNoteText {
+        id: String,
+        edit: qdoc_rich_text::RichTextAction,
+    },
     /// Mark an annotation as finished at an author-supplied timestamp. Draft
     /// editors create their row first and then use this action on Save/Escape;
     /// carrying the timestamp keeps the lifecycle replayable and avoids a
@@ -358,6 +364,7 @@ impl SerializedNote<'_> {
             color: HiColor::from_str(self.color),
             created: 0,
             group,
+            blocks: Vec::new(),
         }
     }
 }
@@ -530,7 +537,8 @@ impl EbookAction {
                     return Err(Self::refused("annotation timestamp is invalid"));
                 }
             }
-            Self::DeleteAnnotation { id } => {
+            // A note edit is checked against the note's text when it applies.
+            Self::DeleteAnnotation { id } | Self::EditNoteText { id, .. } => {
                 Self::parse_uuid(id, "annotation")?;
             }
             Self::AddNote {
@@ -722,6 +730,17 @@ impl EbookAction {
             .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 
+    fn apply_edit_note_text(
+        doc: &mut Doc,
+        id: &str,
+        edit: &qdoc_rich_text::RichTextAction,
+    ) -> Result<(), ActionError> {
+        let id = Self::require_live_annotation(doc, id)?;
+        let root = BooksDoc::annotation_text(doc, id)
+            .ok_or_else(|| Self::refused("annotation has no note text"))?;
+        edit.apply_under(doc, &root)
+    }
+
     fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
         let id = Self::require_live_annotation(doc, id)?;
         BooksDoc::write_annotation_created(doc, id, created)
@@ -789,6 +808,7 @@ impl EbookAction {
                     color: HiColor::Yellow,
                     created: 0,
                     group: uuid,
+                    blocks: Vec::new(),
                 },
             );
         }
@@ -848,6 +868,7 @@ impl EbookAction {
                     color: col,
                     created: 0,
                     group: group_uuid,
+                    blocks: Vec::new(),
                 };
                 BooksDoc::upsert_annotation(doc, &anno);
             }
@@ -998,6 +1019,7 @@ impl Action for EbookAction {
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::EditNoteText { id, edit } => Self::apply_edit_note_text(doc, id, edit),
             EbookAction::FinalizeAnnotation { id, created } => {
                 Self::apply_finalize_annotation(doc, id, *created)
             }
@@ -1192,6 +1214,14 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     EbookAction::EditAnnotationNote {
         id: id.to_string(),
         note: note.to_string(),
+    }
+}
+
+/// One edit of an annotation's note, as its SDK editor writes it.
+pub fn edit_note_text_action(id: Uuid, edit: qdoc_rich_text::RichTextAction) -> EbookAction {
+    EbookAction::EditNoteText {
+        id: id.to_string(),
+        edit,
     }
 }
 
@@ -1953,6 +1983,7 @@ mod tests {
             color: HiColor::Green,
             created: 1,
             group,
+            blocks: Vec::new(),
         };
         BooksDoc::upsert_annotation(&mut doc, &hl);
         // Two comments on it.
@@ -1970,6 +2001,7 @@ mod tests {
                 color: HiColor::Green,
                 created: 10 + i as u64,
                 group,
+                blocks: Vec::new(),
             };
             BooksDoc::upsert_annotation(&mut doc, &cm);
         }
