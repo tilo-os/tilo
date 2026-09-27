@@ -1461,6 +1461,7 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
                     level: None,
                     ordered: None,
                     align: None,
+                    attrs: std::collections::BTreeMap::default(),
                 })
                 .collect())
         }
@@ -1524,6 +1525,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                 level: int("level"),
                 ordered: flag("ordered"),
                 align: None,
+                attrs: std::collections::BTreeMap::default(),
                 text: block.text,
             }
         })
@@ -2462,6 +2464,7 @@ mod tests {
                 level: None,
                 ordered: None,
                 align: None,
+                attrs: std::collections::BTreeMap::default(),
             })
             .collect();
         let caret = m.caret().clone();

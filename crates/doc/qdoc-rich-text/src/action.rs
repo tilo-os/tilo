@@ -396,12 +396,16 @@ pub enum RichTextAction {
         text: String,
     },
     /// Append a durable reply below an existing comment thread. Parent ids are
-    /// stable resources; stale/deleted parents refuse atomically.
+    /// stable resources; stale/deleted parents refuse atomically. `body`, when
+    /// given, is the reply as written (paragraphs, their kinds and marks);
+    /// `text` is its plain text, and the whole reply when `body` is empty.
     ReplyToComment {
         comment: String,
         author: String,
         date: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        body: Vec<ClipBlock>,
     },
 }
 
@@ -626,6 +630,14 @@ impl<'a> ActionValidator<'a> {
         }
     }
 
+    fn valid_clip_attrs(block: &crate::ClipBlock) -> bool {
+        block.attrs.len() <= 16
+            && block
+                .attrs
+                .iter()
+                .all(|(key, value)| Self::valid_attr(key, &clip_attr(value)))
+    }
+
     /// Attributes whose absence is their default, so an edit may remove them.
     fn clearable_attr(key: &str) -> bool {
         matches!(
@@ -746,6 +758,7 @@ impl<'a> ActionValidator<'a> {
                         Self::safe_text(&block.text)
                             && Self::safe_name(&block.kind)
                             && block.level.is_none_or(|level| (0..=9).contains(&level))
+                            && Self::valid_clip_attrs(block)
                             && block.marks.iter().all(|mark| {
                                 Self::safe_name(&mark.name)
                                     && mark.start < mark.end
@@ -1072,6 +1085,7 @@ impl<'a> ActionValidator<'a> {
                 author,
                 date,
                 text,
+                body,
             } => {
                 self.snapshot()
                     .comments
@@ -1081,6 +1095,18 @@ impl<'a> ActionValidator<'a> {
                     && author.chars().count() <= 256
                     && date.chars().count() <= 128
                     && Self::safe_text(text)
+                    && body.len() <= 1_000
+                    && body.iter().all(|block| {
+                        Self::safe_name(&block.kind)
+                            && Self::safe_text(&block.text)
+                            && block.level.is_none_or(|level| (0..=9).contains(&level))
+                            && Self::valid_clip_attrs(block)
+                            && block.marks.iter().all(|mark| {
+                                Self::safe_name(&mark.name)
+                                    && mark.start < mark.end
+                                    && mark.end <= block.text.chars().count()
+                            })
+                    })
             }
             _ => false,
         }
@@ -1687,6 +1713,9 @@ fn apply_paste_fragment(
             if let Some(align) = &fragment.align {
                 set_attr_region(dm, region, &current, "align", &AttrVal::Str(align.clone()));
             }
+            for (key, value) in &fragment.attrs {
+                set_attr_region(dm, region, &current, key, &clip_attr(value));
+            }
         }
         offset = offset.saturating_add(fragment.text.chars().count());
     }
@@ -2135,8 +2164,13 @@ fn apply_review_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             author,
             date,
             text,
+            body,
         } => {
-            let _ = dm.add_comment_reply(comment, author, date, text);
+            if body.is_empty() {
+                let _ = dm.add_comment_reply(comment, author, date, text);
+            } else {
+                apply_reply_body(dm, comment, author, date, body);
+            }
         }
         _ => {}
     }
@@ -2665,5 +2699,75 @@ pub fn reply_to_comment_action(
         author: author.to_string(),
         date: date.to_string(),
         text: text.to_string(),
+        body: Vec::new(),
+    }
+}
+
+/// A clipped block attribute as the action vocabulary writes it.
+fn clip_attr(value: &crate::ClipAttr) -> AttrVal {
+    match value {
+        crate::ClipAttr::Bool(value) => AttrVal::Bool(*value),
+        crate::ClipAttr::Int(value) => AttrVal::Int(*value),
+        crate::ClipAttr::Str(value) => AttrVal::Str(value.clone()),
+    }
+}
+
+/// Write a reply as its paragraphs: each block's kind, text, attributes and
+/// marks, in order.
+fn apply_reply_body(
+    dm: &mut DocMut<'_>,
+    comment: &str,
+    author: &str,
+    date: &str,
+    body: &[ClipBlock],
+) {
+    let Some(reply) = dm.insert_comment_reply(comment, author, date) else {
+        return;
+    };
+    let mut previous: Option<String> = None;
+    for block in body {
+        let Some(id) =
+            dm.insert_comment_reply_block(comment, &reply, previous.as_deref(), &block.kind)
+        else {
+            return;
+        };
+        if let Some(level) = block.level {
+            dm.set_comment_reply_block_attr(comment, &reply, &id, "level", level);
+        }
+        if let Some(ordered) = block.ordered {
+            dm.set_comment_reply_block_attr(comment, &reply, &id, "ordered", ordered);
+        }
+        if let Some(align) = &block.align {
+            dm.set_comment_reply_block_attr(comment, &reply, &id, "align", align.as_str());
+        }
+        for (key, value) in &block.attrs {
+            let value = match value {
+                crate::ClipAttr::Bool(value) => automerge::ScalarValue::Boolean(*value),
+                crate::ClipAttr::Int(value) => automerge::ScalarValue::Int(*value),
+                crate::ClipAttr::Str(value) => automerge::ScalarValue::Str(value.as_str().into()),
+            };
+            dm.set_comment_reply_block_attr(comment, &reply, &id, key, value);
+        }
+        dm.splice_comment_reply_text(comment, &reply, &id, 0, 0, &block.text);
+        for mark in &block.marks {
+            dm.add_comment_reply_mark(
+                comment,
+                &reply,
+                &id,
+                mark.start,
+                mark.end,
+                &mark.name,
+                match &mark.value {
+                    qdoc::document::MarkValue::Bool(value) => {
+                        automerge::ScalarValue::Boolean(*value)
+                    }
+                    qdoc::document::MarkValue::Int(value) => automerge::ScalarValue::Int(*value),
+                    qdoc::document::MarkValue::Str(value) => {
+                        automerge::ScalarValue::Str(value.as_str().into())
+                    }
+                },
+            );
+        }
+        previous = Some(id);
     }
 }

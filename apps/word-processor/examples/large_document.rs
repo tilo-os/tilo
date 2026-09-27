@@ -167,6 +167,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
             marks: block.marks,
             ordered: None,
             align: None,
+            attrs: std::collections::BTreeMap::default(),
         })
         .collect();
 

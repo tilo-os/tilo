@@ -2697,6 +2697,7 @@ mod tests {
                 level: Some(2),
                 ordered: None,
                 align: Some("center".into()),
+                attrs: std::collections::BTreeMap::default(),
             };
             let actions = [
                 generate_toc_action(vec![TocTarget {
