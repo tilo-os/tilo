@@ -9,7 +9,7 @@
 use std::time::Duration;
 use ui::collaboration::CollabRequest;
 
-mod typed_peer;
+use crate::typed_peer;
 
 const APP: &str = "dev.tilo.word-processor";
 
