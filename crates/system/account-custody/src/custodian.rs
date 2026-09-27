@@ -251,14 +251,14 @@ impl Custodian {
         self.config_root.as_deref()
     }
 
-    fn vault(&self) -> SecretVault {
+    pub(crate) fn vault(&self) -> SecretVault {
         match &self.config_root {
             Some(root) => SecretVault::open_in(root),
             None => SecretVault::open(),
         }
     }
 
-    fn store(&self) -> accounts::AccountStore {
+    pub(crate) fn store(&self) -> accounts::AccountStore {
         match &self.config_root {
             Some(root) => accounts::AccountStore::load_in(root),
             None => accounts::AccountStore::load(),
@@ -426,7 +426,7 @@ impl Custodian {
 
     /// Report the health a token request found, when it differs from what
     /// the account last reported.
-    fn report_health<T>(&self, id: &AccountId, result: &Result<T, CustodyError>) {
+    pub(crate) fn report_health<T>(&self, id: &AccountId, result: &Result<T, CustodyError>) {
         use accounts::AccountSyncHealth as Health;
         let health = match result {
             Ok(_) => Health::Healthy,
