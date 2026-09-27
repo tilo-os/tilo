@@ -333,10 +333,13 @@ How the pieces fit:
   Settings > Users and as `tilo-control community leave|join`.
 
 The real community is stood up and run by `scripts/community-ops/tilo-community`
-on the team's own release desktop. The governance acts are that desktop's
-admin-gated palette actions (create the public room, mint and revoke its
-standing invitation, make someone an Editor), which the tool names and then
-checks. It does the pairing, delegation and deployment bundle itself, with the
+on the team's own release desktop. The governance acts are admin-gated actions
+of that desktop, offered in the palette and, for agents and peers holding
+Admin, through the action broker: create the public room, delegate it to its
+host, mint and revoke its standing invitation, and make someone an Editor.
+The tool names each act and then checks what it produced. The delegated
+host is room governance (`delegated_hosts_v1`, written only by the room's
+authority), and every invitation the room mints names it. It does the pairing, delegation and deployment bundle itself, with the
 release binaries, and the team's root never leaves the desktop. The relay
 (`os/containers/tilo-relay/community`) receives only its paired room-host
 identity and a public record of what it hosts (`tilo-relay-admin community

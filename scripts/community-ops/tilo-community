@@ -98,8 +98,11 @@ checkout of this repository (it writes os/usr/share/tilo/community.toml).
   2. Pair the relay, derive its public endpoint, wait for the room:
        tilo-community up --public-addr IP:4433
      It prints the palette actions to run in this desktop (Ctrl+K):
-     "Create a public room" and, in it, "Mint this public room's standing
-     invitation" (which copies the invitation).
+     "Create a public room"; in it, "Delegate this public room to its host"
+     (the room records the relay, so every invitation names it) and "Mint
+     this public room's standing invitation" (which copies the invitation).
+     Agents and peers with Admin in the room reach the same actions through
+     the action broker.
   3. Hand it the invitation (it checks the room, owner and relay in it,
      signs the relay's delegation and writes community.toml + the bundle):
        tilo-community up --invite "$(wl-paste)"
@@ -283,7 +286,7 @@ def check_invite(token: str, team: str, endpoint: dict) -> dict:
     if endpoint["id"] not in hosts:
         raise Fix(
             "that invitation does not name the relay, so nobody could join while this desktop is away",
-            "start this desktop's session with TILO_COLLAB_HOSTS as `up` printed, then mint again",
+            "run \"Delegate this public room to its host\" as `up` printed, then mint again",
         )
     return data
 
@@ -457,14 +460,12 @@ def cmd_up(args: argparse.Namespace) -> None:
     endpoint = ensure_endpoint(args.public_addr or [])
     state = load_state()
     if not args.invite and not state.get("invite"):
-        hosts = json.dumps([endpoint])
-        say(f"the relay is paired; its endpoint is {json.dumps(endpoint)}")
-        print(f"""
-This desktop's session must name the relay, so the invitation carries it:
-  mkdir -p ~/.config/environment.d
-  printf 'TILO_COLLAB_HOSTS=%s\\n' {shlex.quote(hosts)} > ~/.config/environment.d/60-tilo-community.conf
-then sign out and back in.""")
-        palette("Create a public room", f"name: {ROOM_NAME}", "(copies the new room's id)")
+        say("the relay is paired")
+        palette("Create a public room", f"name: {ROOM_NAME}; confirm", "(copies the new room's id)")
+        palette("Delegate this public room to its host",
+                f"in the {ROOM_NAME} workspace; confirm; endpoint:",
+                json.dumps(endpoint, separators=(",", ":")),
+                "(the room records its relay; every invitation it mints names it)")
         palette("Mint this public room's standing invitation",
                 f"in the {ROOM_NAME} workspace; role commenter; confirm",
                 "(copies the invitation)")

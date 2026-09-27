@@ -79,15 +79,20 @@ tilo-community revoke-invite ID  # then redeploy the records
 lists what only the team can decide: whose identity owns the room, where its
 root lives, where this relay runs and its public address.
 
-The governance acts are the team desktop's own palette actions, in a release
-build: "Create a public room", "Mint this public room's standing
-invitation", "Revoke a standing invitation" and "Make someone an Editor of
-this public room" (Admin, confirmation required, re-checked when they run).
-`tilo-community` names each one when it is due, then checks what it produced
-— the invitation's room, owner and relay, the relay's record — before going
-on. It never drives the desktop itself.
+The governance acts are actions of the team desktop, in a release build:
+"Create a public room", "Delegate this public room to its host", "Mint this
+public room's standing invitation", "Revoke a standing invitation" and "Make
+someone an Editor of this public room" (Admin, confirmation required,
+re-checked when they run; `shell::public_room_governance`). The palette
+offers them to the team, and the action broker offers the same actions to
+agents and peers holding Admin in the room. Delegating records the relay's
+endpoint in the room's own governance, so every invitation the room mints
+names its host without any session configuration. `tilo-community` names
+each act when it is due, then checks what it produced — the invitation's
+room, owner and relay, the relay's record — before going on.
 
-Two ways to automate those acts later, each needing a decision first:
+Two ways for the operator tool itself to perform those acts later, each
+needing a decision first:
 
 - **(A)** The compositor serves the MCP projection of its own action broker
   (`runtime_host::mcp::McpServer` over the session's `BrokerActionHost`) on an
