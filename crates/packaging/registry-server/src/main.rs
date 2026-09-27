@@ -81,6 +81,18 @@ enum Cmd {
         /// private signing remains in the reviewer's identity service.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Let pages on this exact origin (`https://host[:port]`) read GET
+        /// responses cross-origin, e.g. a browser runtime resolving apps.
+        /// Repeatable. POST and credentials are never allowed cross-origin.
+        #[arg(long = "cors-origin")]
+        cors_origins: Vec<String>,
+    },
+    /// Store a full .tapp under its BLAKE3 so `serve` hosts it at
+    /// `/artifacts/<blake3>.tapp`, and print that URL. Importing publishes
+    /// nothing: a version must still be submitted, reviewed and signed.
+    ImportArtifact {
+        /// The full .tapp to host.
+        file: PathBuf,
     },
     /// Bootstrap a fresh data-dir with a `handshake.toml`.
     /// Idempotent — writing over an existing file is not the
@@ -281,7 +293,9 @@ async fn serve_cli() -> anyhow::Result<()> {
             port,
             bind,
             identity: _,
-        } => cmd_serve(storage, bind, port).await,
+            cors_origins,
+        } => cmd_serve(storage, bind, port, cors_origins).await,
+        Cmd::ImportArtifact { file } => cmd_import_artifact(&storage, &file),
         Cmd::Init {
             owner_pubkey,
             name,
@@ -1255,9 +1269,14 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let _inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let reviewed = fetch_for_decision(&pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
+            // Serve the reviewed bytes as blobs and thin packages, so clients
+            // fetch only what they lack.
+            for (_inspection, bytes) in &reviewed {
+                storage.save_payload_blobs(bytes)?;
+            }
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
@@ -1318,8 +1337,43 @@ fn inspect_for_decision(
     inspect_entry(&pending.change.entry, policy).map_err(Into::into)
 }
 
+fn fetch_for_decision(
+    pending: &registry_server::PendingSubmission,
+    allow_insecure_local: bool,
+) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
+    if pending.change.action == EntryAction::Delete {
+        return Ok(Vec::new());
+    }
+    let policy = InspectionPolicy {
+        allow_insecure_local,
+        ..InspectionPolicy::default()
+    };
+    registry_server::fetch_entry_bytes(&pending.change.entry, policy).map_err(Into::into)
+}
+
+fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
+    let bytes = std::fs::read(file).map_err(|e| anyhow::anyhow!("read {}: {e}", file.display()))?;
+    let digest = storage.import_artifact(&bytes)?;
+    let base = storage.load_identity()?.base_url;
+    println!("{}/artifacts/{digest}.tapp", base.trim_end_matches('/'));
+    Ok(())
+}
+
 /// `Cmd::Serve` — load the identity + allowlist and serve until ctrl-c.
-async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<()> {
+async fn cmd_serve(
+    storage: Storage,
+    bind: IpAddr,
+    port: u16,
+    cors_origins: Vec<String>,
+) -> anyhow::Result<()> {
+    if let Some(invalid) = cors_origins
+        .iter()
+        .find(|origin| !registry_server::serve::valid_cors_origin(origin))
+    {
+        anyhow::bail!(
+            "--cors-origin {invalid:?} is not an exact origin like https://tilo.so or http://localhost:4321"
+        );
+    }
     let ident: ServerIdentity = storage
         .load_identity()
         .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;
@@ -1337,7 +1391,14 @@ async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<
         allow.publishers.len(),
         storage.publishers_path().display()
     );
-    let state = AppState::new(storage, ident);
+    if !cors_origins.is_empty() {
+        info!("cross-origin GET reads allowed for {cors_origins:?}");
+    }
+    let state = AppState::with_options(
+        storage,
+        ident,
+        registry_server::serve::ServeOptions { cors_origins },
+    );
     let addr = SocketAddr::new(bind, port);
     run_server(addr, state).await?;
     Ok(())
