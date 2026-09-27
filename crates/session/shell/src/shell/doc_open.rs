@@ -105,12 +105,18 @@ impl OpenError {
                     |n| n.to_string_lossy().to_string(),
                 );
                 match ext {
-                    Some(ext) => format!("no app on this desktop opens .{ext} files ({name})"),
-                    None => format!("{name} has no file type to open it by"),
+                    Some(ext) => crate::shell::i18n::t_args(
+                        "doc-open-no-handler",
+                        &[("ext", ext.as_str().into()), ("name", name.into())],
+                    ),
+                    None => crate::shell::i18n::t_args(
+                        "doc-open-no-file-type",
+                        &[("name", name.into())],
+                    ),
                 }
             }
             OpenError::Launch(e) => e.user_message(),
-            OpenError::NoWorkspace => "there is no active workspace to open it in".to_string(),
+            OpenError::NoWorkspace => crate::shell::i18n::t("doc-open-no-workspace"),
         }
     }
 }

@@ -142,7 +142,10 @@ impl PeerView {
         metrics: PeerSurfaceMetrics,
     ) -> Self {
         Self {
-            title: format!("Peer surface #{surface_id}"),
+            title: crate::shell::i18n::t_args(
+                "peer-view-surface-title",
+                &[("id", surface_id.to_string().into())],
+            ),
             surface_id,
             local_peer,
             decoder: {
@@ -209,7 +212,10 @@ impl PeerView {
             | SurfaceColorOp::TranscodeHdrTransfer => None,
         };
         Self {
-            title: format!("Peer surface #{surface_id}"),
+            title: crate::shell::i18n::t_args(
+                "peer-view-surface-title",
+                &[("id", surface_id.to_string().into())],
+            ),
             surface_id,
             local_peer,
             decoder,
@@ -534,14 +540,14 @@ impl Widget for PeerView {
                 scene.draw_image(image, placement);
             }
         } else {
-            let label = "Awaiting peer surface…";
+            let label = crate::shell::i18n::t("peer-view-awaiting");
             let size = tokens.typography.scale.base;
-            let (lw, lh) = text_renderer.measure(label, size, None);
+            let (lw, lh) = text_renderer.measure(&label, size, None);
             let cx = rect.center().x - f64::from(lw) / 2.0;
             let cy = rect.center().y - f64::from(lh) / 2.0;
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 size,
                 tokens.colors.text_dim,
                 transform.pre_translate((cx, cy).into()),

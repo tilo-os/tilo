@@ -340,3 +340,7 @@ mod tests {
         assert_eq!(german, "Rückgängig");
     }
 }
+
+#[cfg(test)]
+#[path = "i18n_copy_lint_tests.rs"]
+mod copy_lint_tests;

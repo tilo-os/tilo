@@ -323,11 +323,14 @@ impl Osd {
             OsdKind::MouseKeys { enabled: true } => t("osd-mouse-keys-on"),
             OsdKind::MouseKeys { enabled: false } => t("osd-mouse-keys-off"),
             OsdKind::InputSource(name) => name.as_str().to_string(),
-            OsdKind::KeysCaptured { captured: true } => format!(
-                "App receives all keys · {} restores shortcuts",
-                crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
+            OsdKind::KeysCaptured { captured: true } => t_args(
+                "osd-keys-captured",
+                &[(
+                    "chord",
+                    crate::compositor::pointer_lock::RELEASE_CHORD_LABEL.into(),
+                )],
             ),
-            OsdKind::KeysCaptured { captured: false } => "Shortcuts restored".to_string(),
+            OsdKind::KeysCaptured { captured: false } => t("osd-keys-released"),
         }
     }
 
