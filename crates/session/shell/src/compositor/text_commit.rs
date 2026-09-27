@@ -303,7 +303,9 @@ impl State {
         Some(sensitive)
     }
 
-    fn active_field_content_type(&self) -> ContentType {
+    /// The content type of the focused field's enabled text input; the
+    /// default (nothing secret) when no field takes text.
+    pub(crate) fn active_field_content_type(&self) -> ContentType {
         let mut target = None;
         self.seat
             .text_input()

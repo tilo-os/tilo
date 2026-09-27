@@ -7723,7 +7723,7 @@ pub fn run() {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
-        state.sync_popup_capture_protection();
+        state.sync_capture_protection();
         state.set_capture_placeholder_fill(
             crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
         );
