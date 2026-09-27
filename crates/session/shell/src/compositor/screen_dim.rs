@@ -31,16 +31,34 @@ pub trait Backlight {
     fn set_brightness(&self, fraction: f32) -> bool;
 }
 
-/// The real backlight under `/sys/class/backlight`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SysBacklight;
+/// The machine's real backlight, under `/sys/class/backlight` or over DDC,
+/// when this compositor owns the displays it drives. One that does not — a
+/// nested window, a headless session — has no backlight of its own, and
+/// dims with the overlay.
+#[derive(Debug, Clone, Copy)]
+pub struct SysBacklight {
+    owned: bool,
+}
+
+impl SysBacklight {
+    /// The backlight, as held by a compositor that `owned` the displays.
+    pub const fn owned(owned: bool) -> Self {
+        Self { owned }
+    }
+}
 
 impl Backlight for SysBacklight {
     fn brightness(&self) -> Option<f32> {
+        if !self.owned {
+            return None;
+        }
         os_actions::get_brightness().ok()
     }
 
     fn set_brightness(&self, fraction: f32) -> bool {
+        if !self.owned {
+            return false;
+        }
         match os_actions::set_brightness(fraction * 100.0) {
             Ok(()) => true,
             Err(error) => {
@@ -67,12 +85,6 @@ enum Dim {
 pub struct ScreenDimmer<B: Backlight = SysBacklight> {
     backlight: B,
     dim: Dim,
-}
-
-impl Default for ScreenDimmer<SysBacklight> {
-    fn default() -> Self {
-        Self::new(SysBacklight)
-    }
 }
 
 impl<B: Backlight> ScreenDimmer<B> {
@@ -157,6 +169,15 @@ mod tests {
             self.writes.borrow_mut().push(fraction);
             true
         }
+    }
+
+    #[test]
+    fn a_compositor_without_its_own_displays_dims_with_the_overlay() {
+        let mut dimmer = ScreenDimmer::new(SysBacklight::owned(false));
+        dimmer.dim();
+        assert_eq!(dimmer.overlay_alpha(), Some(OVERLAY_ALPHA));
+        dimmer.restore();
+        assert_eq!(dimmer.overlay_alpha(), None);
     }
 
     #[test]
