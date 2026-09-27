@@ -3,7 +3,7 @@
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
-use crate::search::list_filter::ListFilter;
+use crate::search::ListIndex;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -415,9 +415,9 @@ type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 )]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
-    /// Labels and descriptions of `entries`, indexed on the first query
-    /// after they change.
-    entry_filter: Option<ListFilter>,
+    /// Labels and descriptions of `entries`, indexed while they stay the
+    /// same.
+    entry_index: ListIndex,
     query: String,
     /// Hint shown while the main query is empty. Hosts use this to name the
     /// resource being searched (files, commands, applications, ...).
@@ -488,7 +488,7 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            entry_filter: None,
+            entry_index: ListIndex::default(),
             query: String::new(),
             query_placeholder: "Search\u{2026}".to_string(),
             query_selection: crate::text_selection::Selection::collapsed(0),
@@ -544,7 +544,6 @@ impl CommandPalette {
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.entry_filter = None;
         self.visible.clear();
         self.cursor = 0;
     }
@@ -910,14 +909,12 @@ impl CommandPalette {
 
     pub fn push(&mut self, e: CommandEntry) {
         self.entries.push(e);
-        self.entry_filter = None;
         self.rebuild();
     }
 
     /// Resets the cursor to 0.
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         self.entries = entries;
-        self.entry_filter = None;
         self.cursor = 0;
         self.rebuild();
     }
@@ -1983,24 +1980,20 @@ impl CommandPalette {
 
     fn rebuild(&mut self) {
         self.visible.clear();
-        let matching = if self.bypass_fuzzy || self.query.trim().is_empty() {
-            None
-        } else {
-            let entries = &self.entries;
-            self.entry_filter
-                .get_or_insert_with(|| {
-                    ListFilter::new(entries.iter().map(|entry| {
-                        [
-                            (entry.label.as_str(), FieldWeight::TITLE),
-                            (
-                                entry.description.as_deref().unwrap_or_default(),
-                                FieldWeight::SUBTITLE,
-                            ),
-                        ]
-                    }))
-                })
-                .matching(&self.query)
-        };
+        let matching = (!self.bypass_fuzzy).then(|| {
+            self.entry_index.ranks(
+                &self.query,
+                self.entries.iter().map(|entry| {
+                    [
+                        (entry.label.as_str(), FieldWeight::TITLE),
+                        (
+                            entry.description.as_deref().unwrap_or_default(),
+                            FieldWeight::SUBTITLE,
+                        ),
+                    ]
+                }),
+            )
+        });
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(f) = &self.filter
                 && !f(e)
@@ -2009,7 +2002,7 @@ impl CommandPalette {
             }
             if matching
                 .as_ref()
-                .is_some_and(|matching| !matching.contains(&i))
+                .is_some_and(|ranks| ranks.get(i).is_none_or(Option::is_none))
             {
                 continue;
             }

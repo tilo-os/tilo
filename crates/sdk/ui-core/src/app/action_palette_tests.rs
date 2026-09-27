@@ -29,7 +29,9 @@ impl crate::search::SearchProvider for PeopleProvider {
     fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
         ["Ada Lovelace", "Grace Hopper"]
             .into_iter()
-            .filter(|n| crate::search::fuzzy_score(query, n).is_some())
+            .filter(|n| {
+                crate::search::fold_search_text(n).contains(&crate::search::fold_search_text(query))
+            })
             .map(|n| crate::search::SearchResult::new("People", n, format!("person:{n}")))
             .collect()
     }

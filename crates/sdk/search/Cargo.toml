@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo's search layer: tantivy with Tilo's folding, tiers and ranking"
 
+[features]
+# `DiskIndex`, a persistent index in an mmap'ed directory. Native only.
+disk = ["tantivy/mmap"]
+
 [dependencies]
 # The engine. Default features add on-disk compression, mmap and the
 # stemmers, none of which an in-memory index of short fields uses.
@@ -15,6 +19,11 @@ icu_segmenter = "2.3"
 # Compatibility decomposition behind folding: `ｃａｆé` finds `cafe`.
 unicode-normalization = "0.1.25"
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The tests cover `DiskIndex` too.
+tilo-search = { path = ".", features = ["disk"] }
 
 [lints]
 workspace = true
