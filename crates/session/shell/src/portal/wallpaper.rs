@@ -130,18 +130,21 @@ impl WallpaperBackend {
                 .discard_staged_wallpaper(&request, &staged);
             return 2;
         }
-        let preview = if request.show_preview {
-            "A preview will be shown before this private workspace setting is applied."
+        let preview = crate::shell::i18n::t(if request.show_preview {
+            "portal-wallpaper-preview"
         } else {
-            "This changes only this device's private workspace backdrop."
-        };
+            "portal-wallpaper-private"
+        });
         let review = match self.dialogs.enqueue_review(ReviewRequest {
             handle: path.clone(),
             app_id: request.app_id.clone(),
-            title: "Set workspace wallpaper?".into(),
-            reason: preview.into(),
-            resource: format!("Apply to {}\nPrivate imported image", request.set_on),
-            confirm_label: "Set wallpaper".into(),
+            title: crate::shell::i18n::t("portal-wallpaper-title"),
+            reason: preview,
+            resource: crate::shell::i18n::t_args(
+                "portal-wallpaper-resource",
+                &[("target", request.set_on.as_str().into())],
+            ),
+            confirm_label: crate::shell::i18n::t("portal-wallpaper-confirm"),
         }) {
             Ok(review) => review,
             Err(_) => {

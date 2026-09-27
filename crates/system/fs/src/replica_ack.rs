@@ -14,10 +14,12 @@ use collab_types::{
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
+use wire_frame::Framing;
 
 use crate::availability::ReplicaObservation;
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::peer_auth::AuthenticatedFsPeer;
 
 pub const REPLICA_ACK_PROTOCOL_VERSION: u16 = 1;
@@ -277,32 +279,34 @@ pub enum ReplicaAckError {
     Io(#[from] std::io::Error),
 }
 
+/// Each receipt request and response: a big-endian `u32` length, then the
+/// canonical encoding. Empty frames are invalid.
+const REPLICA_ACK_FRAMING: Framing =
+    Framing::big_endian(MAX_REPLICA_ACK_FRAME_BYTES).reject_empty();
+
+impl From<CanonicalFrameError> for ReplicaAckError {
+    fn from(error: CanonicalFrameError) -> Self {
+        match error {
+            CanonicalFrameError::Io(error) => Self::Io(error),
+            CanonicalFrameError::Empty | CanonicalFrameError::TooLarge(_) => Self::FrameTooLarge,
+            CanonicalFrameError::Encode(error) | CanonicalFrameError::Decode(error) => {
+                Self::Canonical(error)
+            }
+        }
+    }
+}
+
 pub(crate) async fn write_frame<W: AsyncWrite + Unpin, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> Result<(), ReplicaAckError> {
-    let bytes = collab_types::canonical::canonical_bytes(value)?;
-    if bytes.len() > MAX_REPLICA_ACK_FRAME_BYTES {
-        return Err(ReplicaAckError::FrameTooLarge);
-    }
-    let length = u32::try_from(bytes.len()).map_err(|_| ReplicaAckError::FrameTooLarge)?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
-    Ok(())
+    Ok(canonical_frame::write(REPLICA_ACK_FRAMING, writer, value).await?)
 }
 
 pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<T, ReplicaAckError> {
-    let mut len = [0_u8; 4];
-    reader.read_exact(&mut len).await?;
-    let len = u32::from_be_bytes(len) as usize;
-    if len == 0 || len > MAX_REPLICA_ACK_FRAME_BYTES {
-        return Err(ReplicaAckError::FrameTooLarge);
-    }
-    let mut bytes = vec![0_u8; len];
-    reader.read_exact(&mut bytes).await?;
-    Ok(collab_types::canonical::from_canonical_bytes(&bytes)?)
+    Ok(canonical_frame::read_required(REPLICA_ACK_FRAMING, reader).await?)
 }
 
 #[cfg(test)]
@@ -392,7 +396,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &ReplicaAckResponseV1::Denied)
+            .await
+            .unwrap();
+        assert_eq!(wire, [0, 0, 0, 1, 1]);
+
+        let response: ReplicaAckResponseV1 = read_frame(&mut &[0, 0, 0, 1, 2][..]).await.unwrap();
+        assert!(matches!(response, ReplicaAckResponseV1::Unavailable));
+    }
+
+    #[tokio::test]
+    async fn framed_decoder_rejects_empty_oversized_and_truncated_frames() {
+        let limit = u32::try_from(MAX_REPLICA_ACK_FRAME_BYTES).unwrap();
+        for prefix in [0, limit + 1] {
+            let wire = prefix.to_be_bytes();
+            let result: Result<ReplicaAckResponseV1, _> = read_frame(&mut &wire[..]).await;
+            assert!(matches!(result, Err(ReplicaAckError::FrameTooLarge)));
+        }
+        for wire in [&[][..], &[0, 0][..], &[0, 0, 0, 2, 0][..]] {
+            let result: Result<ReplicaAckResponseV1, _> = read_frame(&mut &wire[..]).await;
+            assert!(
+                matches!(result, Err(ReplicaAckError::Io(ref error)) if error.kind() == std::io::ErrorKind::UnexpectedEof),
+                "{wire:?}"
+            );
+        }
+        let mut wire = Vec::new();
+        let oversized = vec![0_u8; MAX_REPLICA_ACK_FRAME_BYTES];
+        assert!(matches!(
+            write_frame(&mut wire, &oversized).await,
+            Err(ReplicaAckError::FrameTooLarge)
+        ));
+        assert!(wire.is_empty());
+    }
+
+    #[tokio::test]
     async fn framed_decoder_rejects_trailing_noncanonical_bytes() {
+        use tokio::io::AsyncWriteExt;
         let request = ReplicaAckRequestV1::new(Uuid::new_v4(), revision()).unwrap();
         let mut encoded = collab_types::canonical::canonical_bytes(&request).unwrap();
         encoded.push(0xff);

@@ -38,6 +38,7 @@ const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
 /// Spawn the compositor headless and wait for its control socket.
 fn spawn_headless_locking() -> (Child, PathBuf) {
+    tilo_test_env::require_isolated_desktop();
     // Use the same short, host/container-shared runtime root as the full
     // compositor protocol fixture. Besides crossing the build namespace,
     // this keeps every Wayland Unix socket safely below SUN_LEN.

@@ -8,21 +8,21 @@ use std::path::Path;
 use std::sync::Arc;
 
 use collab_types::{
-    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
-    MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,
-    RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode, RecipientControlOperationV1,
-    RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
-    RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1, RecipientSubscriptionKeyV1,
+    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION,
+    MAX_RECIPIENT_MOUNT_PATH_BYTES, RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION,
+    RecipientControlErrorCode, RecipientControlOperationV1, RecipientControlRequestV1,
+    RecipientControlResponseV1, RecipientControlResultV1, RecipientFailureCodeV1,
+    RecipientFailureV1, RecipientMountStatusV1, RecipientSubscriptionKeyV1,
     RecipientSubscriptionStatusV1,
 };
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
 use crate::RecipientMountSupervisor;
+use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::record_subscription::{
     MAX_RECORD_SUBSCRIPTION_URI_BYTES, RecordSubscription, RecordSubscriptionFailure,
     RecordSubscriptionKey, RecordSubscriptionStore, RecordSubscriptionStoreError,
@@ -157,10 +157,15 @@ impl RecipientControlServer {
 
     async fn handle_connection(self: Arc<Self>, mut stream: UnixStream) -> std::io::Result<()> {
         for _ in 0..MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION {
-            let request = match read_frame::<_, RecipientControlRequestV1>(&mut stream).await {
+            let request = match canonical_frame::read::<_, RecipientControlRequestV1>(
+                RECIPIENT_CONTROL_FRAMING,
+                &mut stream,
+            )
+            .await
+            {
                 Ok(Some(request)) => request,
                 Ok(None) => return Ok(()),
-                Err(FrameError::TooLarge) => {
+                Err(CanonicalFrameError::TooLarge(_)) => {
                     let _ = write_frame(
                         &mut stream,
                         &error_response(RecipientControlErrorCode::FrameTooLarge),
@@ -168,7 +173,11 @@ impl RecipientControlServer {
                     .await;
                     return Ok(());
                 }
-                Err(FrameError::Decode) => {
+                Err(
+                    CanonicalFrameError::Empty
+                    | CanonicalFrameError::Decode(_)
+                    | CanonicalFrameError::Encode(_),
+                ) => {
                     let _ = write_frame(
                         &mut stream,
                         &error_response(RecipientControlErrorCode::InvalidRequest),
@@ -176,7 +185,7 @@ impl RecipientControlServer {
                     .await;
                     return Ok(());
                 }
-                Err(FrameError::Io(error)) => return Err(error),
+                Err(CanonicalFrameError::Io(error)) => return Err(error),
             };
             let server = Arc::clone(&self);
             let response = tokio::task::spawn_blocking(move || server.apply(request))
@@ -310,55 +319,22 @@ fn error_response(code: RecipientControlErrorCode) -> RecipientControlResponseV1
     }
 }
 
-enum FrameError {
-    Io(std::io::Error),
-    TooLarge,
-    Decode,
-}
-
-async fn read_frame<R, T>(reader: &mut R) -> Result<Option<T>, FrameError>
-where
-    R: AsyncRead + Unpin,
-    T: DeserializeOwned,
-{
-    let mut prefix = [0u8; 4];
-    match reader.read_exact(&mut prefix).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(FrameError::Io(error)),
-    }
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length > MAX_RECIPIENT_CONTROL_FRAME_BYTES {
-        return Err(FrameError::TooLarge);
-    }
-    if length == 0 {
-        return Err(FrameError::Decode);
-    }
-    let mut bytes = vec![0u8; length];
-    reader
-        .read_exact(&mut bytes)
-        .await
-        .map_err(FrameError::Io)?;
-    collab_types::canonical::from_canonical_bytes(&bytes)
-        .map(Some)
-        .map_err(|_| FrameError::Decode)
-}
-
 async fn write_frame<W, T>(writer: &mut W, value: &T) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin,
     T: Serialize + Sync,
 {
-    let bytes = collab_types::canonical_bytes(value).map_err(std::io::Error::other)?;
-    if bytes.len() > MAX_RECIPIENT_CONTROL_FRAME_BYTES {
-        return Err(std::io::Error::other(
-            "recipient control response exceeds its bound",
-        ));
-    }
-    let length = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("recipient control response exceeds its bound"))?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&bytes).await?;
+    canonical_frame::write(RECIPIENT_CONTROL_FRAMING, writer, value)
+        .await
+        .map_err(|error| match error {
+            CanonicalFrameError::Io(error) => error,
+            CanonicalFrameError::Encode(error) => std::io::Error::other(error),
+            CanonicalFrameError::Empty
+            | CanonicalFrameError::TooLarge(_)
+            | CanonicalFrameError::Decode(_) => {
+                std::io::Error::other("recipient control response exceeds its bound")
+            }
+        })?;
     writer.flush().await
 }
 
@@ -383,12 +359,18 @@ pub async fn write_recipient_control_request(
 pub async fn read_recipient_control_response(
     stream: &mut UnixStream,
 ) -> std::io::Result<RecipientControlResponseV1> {
-    read_frame(stream)
+    canonical_frame::read(RECIPIENT_CONTROL_FRAMING, stream)
         .await
         .map_err(|error| match error {
-            FrameError::Io(error) => error,
-            FrameError::TooLarge => std::io::Error::other("recipient control response too large"),
-            FrameError::Decode => std::io::Error::other("invalid recipient control response"),
+            CanonicalFrameError::Io(error) => error,
+            CanonicalFrameError::TooLarge(_) => {
+                std::io::Error::other("recipient control response too large")
+            }
+            CanonicalFrameError::Empty
+            | CanonicalFrameError::Decode(_)
+            | CanonicalFrameError::Encode(_) => {
+                std::io::Error::other("invalid recipient control response")
+            }
         })?
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
 }
@@ -419,7 +401,8 @@ pub enum RecipientControlServerError {
 mod tests {
     use super::*;
     use collab_types::{
-        FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
+        FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId,
+        MAX_RECIPIENT_CONTROL_FRAME_BYTES, mint_bearer_file_invite,
     };
     use rand::{SeedableRng, rngs::StdRng};
     use uuid::Uuid;
@@ -634,6 +617,51 @@ mod tests {
             );
             drop(client);
             task.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn frames_are_big_endian_length_then_canonical_bytes() {
+        let mut wire = Vec::new();
+        write_frame(
+            &mut wire,
+            &error_response(RecipientControlErrorCode::FrameTooLarge),
+        )
+        .await
+        .unwrap();
+        assert_eq!(wire, [0, 0, 0, 3, 1, 2, 6]);
+
+        let wire = [0, 0, 0, 5, 1, 0, 2, b'a', b'b'];
+        let request: RecipientControlRequestV1 =
+            canonical_frame::read(RECIPIENT_CONTROL_FRAMING, &mut &wire[..])
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            request,
+            RecipientControlRequestV1 {
+                protocol_version: RECIPIENT_CONTROL_VERSION,
+                operation: RecipientControlOperationV1::AdmitV2 { uri: "ab".into() },
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn client_reads_empty_truncated_and_closed_responses_as_errors() {
+        for (wire, kind) in [
+            (&[][..], std::io::ErrorKind::UnexpectedEof),
+            // A stream closed inside the prefix is a close, not a frame.
+            (&[0, 0][..], std::io::ErrorKind::UnexpectedEof),
+            (&[0, 0, 0, 3, 1][..], std::io::ErrorKind::UnexpectedEof),
+            (&[0, 0, 0, 0][..], std::io::ErrorKind::Other),
+        ] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            server.write_all(wire).await.unwrap();
+            drop(server);
+            let error = read_recipient_control_response(&mut client)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), kind, "{wire:?}");
         }
     }
 

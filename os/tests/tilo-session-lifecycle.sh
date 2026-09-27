@@ -5,6 +5,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+. "$repo/tools/desktop-isolation.sh"
+tilo_test_isolate "$@"
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
@@ -172,16 +174,12 @@ fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
 chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
-sed \
-  -e "s|readonly SYSTEMCTL=/usr/bin/systemctl|readonly SYSTEMCTL=$fake_systemctl|" \
-  -e "s|readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|readonly DBUS_UPDATE=$fake_dbus_update|" \
-  -e "s|readonly SHELL_BIN=/usr/bin/shell|readonly SHELL_BIN=$fake_shell|" \
-  "$wrapper" >"$test_wrapper"
-chmod 0755 "$test_wrapper"
+tilo_stage_script "$wrapper" "$test_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
-! grep -Fq '/usr/bin/systemctl' "$test_wrapper"
-! grep -Fq '/usr/bin/shell' "$test_wrapper"
 
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.

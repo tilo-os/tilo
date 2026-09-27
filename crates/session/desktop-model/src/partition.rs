@@ -9,6 +9,13 @@
 //! the device's whole-desktop document: a collaborator has their own
 //! monitors and their own partition of the same strip.
 //!
+//! Groups belong to a physical monitor, not to the port or output number it
+//! happened to get: everything the partition remembers is keyed by
+//! [`Display::monitor`], so a restart or a port swap that renumbers the
+//! outputs puts every group back on the monitor it was on. Its API speaks
+//! the backend's current output ids, which it maps through the displays
+//! last reconciled.
+//!
 //! Group order stays the strip's: a display's sub-row is the strip's groups
 //! that belong to it, in strip order. Moving a group onto a display places
 //! it after the group last focused there, which is a reorder of the strip
@@ -23,11 +30,17 @@ use crate::layout::Strip;
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::workspace::Workspace;
 
-/// A display as the partition knows it: the backend's stable output id and
-/// where it sits in the logical desktop.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// A display as the partition knows it: which monitor it is, the backend's
+/// output id for it right now, and where it sits in the logical desktop.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Display {
+    /// The backend's output id. Only meaningful until the outputs are next
+    /// enumerated, so nothing remembered is keyed by it.
     pub id: u32,
+    /// The physical monitor: its EDID identity, told apart from an
+    /// identical monitor by its connector, or the connector alone for a
+    /// sink without a readable EDID. Stable across restarts and port swaps.
+    pub monitor: String,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -52,28 +65,28 @@ impl Display {
     }
 }
 
-/// The per-device assignment of window groups to displays.
+/// The per-device assignment of window groups to monitors.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputPartition {
-    /// The display each group is shown on.
+    /// The monitor each group is shown on.
     #[serde(default, deserialize_with = "deserialize_id_btree_map")]
-    pub home: BTreeMap<GroupId, u32>,
-    /// Groups moved off a display that went away, and that display. They
+    pub home: BTreeMap<GroupId, String>,
+    /// Groups moved off a monitor that went away, and that monitor. They
     /// return when it comes back, unless they were moved since.
     #[serde(default, deserialize_with = "deserialize_id_btree_map")]
-    pub origin: BTreeMap<GroupId, u32>,
+    pub origin: BTreeMap<GroupId, String>,
     /// The displays last reconciled against, primary first. Remembered so a
-    /// display missing at the next start still has a position to find the
+    /// monitor missing at the next start still has a position to find the
     /// nearest remaining one from.
     #[serde(default)]
     pub displays: Vec<Display>,
-    /// The display the person is working on. Follows the pointer and
+    /// The monitor the person is working on. Follows the pointer and
     /// keyboard focus; not persisted.
     #[serde(skip)]
-    pub focused: Option<u32>,
-    /// The group last focused on each display, per strip; not persisted.
+    pub focused: Option<String>,
+    /// The group last focused on each monitor, per strip; not persisted.
     #[serde(skip)]
-    pub last_active: BTreeMap<(u32, StripId), GroupId>,
+    pub last_active: BTreeMap<(String, StripId), GroupId>,
 }
 
 impl OutputPartition {
@@ -86,32 +99,51 @@ impl OutputPartition {
         self.displays.first().map(|d| d.id)
     }
 
-    fn is_live(&self, id: u32) -> bool {
-        self.displays.iter().any(|d| d.id == id)
+    /// The monitor output `id` shows, while it is connected.
+    pub fn monitor_of(&self, id: u32) -> Option<&str> {
+        self.displays
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.monitor.as_str())
     }
 
-    /// The display `group` is shown on: its home while that is connected,
-    /// else the primary.
+    /// The output `monitor` is connected as, if it is.
+    fn output_of(&self, monitor: &str) -> Option<u32> {
+        self.displays
+            .iter()
+            .find(|d| d.monitor == monitor)
+            .map(|d| d.id)
+    }
+
+    /// The display `group` is shown on: its home while that monitor is
+    /// connected, else the primary.
     pub fn display_of(&self, group: GroupId) -> Option<u32> {
         self.home
             .get(&group)
-            .copied()
-            .filter(|id| self.is_live(*id))
+            .and_then(|monitor| self.output_of(monitor))
             .or_else(|| self.primary())
     }
 
     /// The display the person is working on, else the primary.
     pub fn focused_display(&self) -> Option<u32> {
         self.focused
-            .filter(|id| self.is_live(*id))
+            .as_deref()
+            .and_then(|monitor| self.output_of(monitor))
             .or_else(|| self.primary())
+    }
+
+    /// Make display `id` the one the person is working on.
+    pub fn set_focused(&mut self, id: u32) {
+        if let Some(monitor) = self.monitor_of(id) {
+            self.focused = Some(monitor.to_owned());
+        }
     }
 
     /// Displays in reading order: left to right, top to bottom by centre.
     /// This is the order sub-rows are laid out in and the order
     /// left/right movement between displays follows.
     pub fn reading_order(&self) -> Vec<u32> {
-        let mut displays = self.displays.clone();
+        let mut displays: Vec<&Display> = self.displays.iter().collect();
         displays.sort_by(|a, b| {
             let (ax, ay) = a.center();
             let (bx, by) = b.center();
@@ -148,19 +180,28 @@ impl OutputPartition {
     /// Record that `group` on `strip` has keyboard focus: it becomes its
     /// display's last focused group and that display the focused one.
     pub fn note_focus(&mut self, strip: StripId, group: GroupId) {
-        if let Some(display) = self.display_of(group) {
-            self.last_active.insert((display, strip), group);
-            self.focused = Some(display);
-        }
+        let Some(monitor) = self
+            .display_of(group)
+            .and_then(|d| self.monitor_of(d))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        self.last_active.insert((monitor.clone(), strip), group);
+        self.focused = Some(monitor);
+    }
+
+    /// The group last focused on `display` in `strip`.
+    fn last_active_on(&self, display: u32, strip: StripId) -> Option<GroupId> {
+        let monitor = self.monitor_of(display)?;
+        self.last_active.get(&(monitor.to_owned(), strip)).copied()
     }
 
     /// The group of `strip` to focus when focus arrives on `display`: the
     /// one last focused there, else its first.
     pub fn focus_target(&self, strip: &Strip, display: u32) -> Option<GroupId> {
         let on = self.groups_on(strip, display);
-        self.last_active
-            .get(&(display, strip.id))
-            .copied()
+        self.last_active_on(display, strip.id)
             .filter(|g| on.contains(g))
             .or_else(|| on.first().copied())
     }
@@ -177,9 +218,7 @@ impl OutputPartition {
             .filter(|g| !ids.contains(g))
             .collect();
         let anchor = self
-            .last_active
-            .get(&(display, strip.id))
-            .copied()
+            .last_active_on(display, strip.id)
             .filter(|g| others.contains(g))
             .or_else(|| others.last().copied());
         let Some(anchor) = anchor else {
@@ -200,10 +239,14 @@ impl OutputPartition {
         strip.window_groups.iter().map(|g| g.id).ne(before)
     }
 
-    /// Give every group that has no connected home one: the focused
-    /// display. Returns whether anything changed.
+    /// Give every group that has no home one: the focused display. Returns
+    /// whether anything changed.
     pub fn place_unhomed(&mut self, workspaces: &[Workspace]) -> bool {
-        let Some(target) = self.focused_display() else {
+        let Some(target) = self
+            .focused_display()
+            .and_then(|d| self.monitor_of(d))
+            .map(str::to_owned)
+        else {
             return false;
         };
         let mut changed = false;
@@ -213,16 +256,46 @@ impl OutputPartition {
             .flat_map(|s| &s.window_groups)
         {
             if let std::collections::btree_map::Entry::Vacant(slot) = self.home.entry(group.id) {
-                slot.insert(target);
+                slot.insert(target.clone());
                 changed = true;
             }
         }
         changed
     }
 
-    /// Show `group` on `display` from now on. It forgets where it came from,
-    /// so a display coming back no longer reclaims it, and lands after the
-    /// group last focused on `display`. Returns the strip whose order
+    /// Home a group that has none yet on `display`, where it was created.
+    /// Returns whether it was placed.
+    pub fn place_new(&mut self, group: GroupId, display: u32) -> bool {
+        let Some(monitor) = self.monitor_of(display).map(str::to_owned) else {
+            return false;
+        };
+        match self.home.entry(group) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(monitor);
+                true
+            }
+            std::collections::btree_map::Entry::Occupied(_) => false,
+        }
+    }
+
+    /// Show `group` on `display` from now on, leaving the strip's order to
+    /// the caller. It forgets where it came from, so a monitor coming back
+    /// no longer reclaims it, and becomes `display`'s last focused group in
+    /// `strip`, with `display` the focused one. Returns whether `display` is
+    /// connected.
+    pub fn rehome(&mut self, strip: StripId, group: GroupId, display: u32) -> bool {
+        let Some(monitor) = self.monitor_of(display).map(str::to_owned) else {
+            return false;
+        };
+        self.home.insert(group, monitor.clone());
+        self.origin.remove(&group);
+        self.last_active.insert((monitor.clone(), strip), group);
+        self.focused = Some(monitor);
+        true
+    }
+
+    /// Show `group` on `display` from now on (see [`Self::rehome`]), after
+    /// the group last focused on `display`. Returns the strip whose order
     /// changed, if one did.
     pub fn move_group(
         &mut self,
@@ -230,10 +303,8 @@ impl OutputPartition {
         group: GroupId,
         display: u32,
     ) -> Option<StripId> {
-        if !self.is_live(display) {
-            return None;
-        }
-        self.home.insert(group, display);
+        let monitor = self.monitor_of(display)?.to_owned();
+        self.home.insert(group, monitor);
         self.origin.remove(&group);
         let strip = workspaces
             .iter_mut()
@@ -241,36 +312,35 @@ impl OutputPartition {
             .find(|s| s.window_groups.iter().any(|g| g.id == group))?;
         let reordered = self.place_after_focus(strip, display, &[group]);
         let strip_id = strip.id;
-        self.last_active.insert((display, strip_id), group);
-        self.focused = Some(display);
+        self.rehome(strip_id, group, display);
         reordered.then_some(strip_id)
     }
 
     /// Bring the partition in line with the displays now connected,
-    /// primary first. Groups whose display went away move to the nearest
+    /// primary first. Groups whose monitor went away move to the nearest
     /// remaining one, after its focused group, remembering where they came
-    /// from; groups whose display came back return to it. Returns the
-    /// strips whose order changed.
+    /// from; groups whose monitor came back return to it, whatever output
+    /// it is connected as now. Returns the strips whose order changed.
     pub fn reconcile(&mut self, workspaces: &mut [Workspace], now: &[Display]) -> Vec<StripId> {
         let previous = std::mem::replace(&mut self.displays, now.to_vec());
-        let live: BTreeSet<u32> = now.iter().map(|d| d.id).collect();
+        let live: BTreeSet<&str> = now.iter().map(|d| d.monitor.as_str()).collect();
         if live.is_empty() {
             return Vec::new();
         }
-        // Back home: a display that returned reclaims what left it.
-        let returning: Vec<(GroupId, u32)> = self
+        // Back home: a monitor that returned reclaims what left it.
+        let returning: Vec<(GroupId, String)> = self
             .origin
             .iter()
-            .filter(|(_, display)| live.contains(display))
-            .map(|(g, d)| (*g, *d))
+            .filter(|(_, monitor)| live.contains(monitor.as_str()))
+            .map(|(g, m)| (*g, m.clone()))
             .collect();
-        for (group, display) in returning {
-            self.home.insert(group, display);
+        for (group, monitor) in returning {
+            self.home.insert(group, monitor);
             self.origin.remove(&group);
         }
-        // Stranded: a display that went away hands its groups on.
-        let nearest = |gone: u32| -> Option<u32> {
-            let was = previous.iter().find(|d| d.id == gone)?;
+        // Stranded: a monitor that went away hands its groups on.
+        let nearest = |gone: &str| -> Option<u32> {
+            let was = previous.iter().find(|d| d.monitor == gone)?;
             now.iter()
                 .min_by(|a, b| {
                     a.gap_sq(was)
@@ -284,22 +354,25 @@ impl OutputPartition {
         for strip in workspaces.iter_mut().flat_map(|w| w.strips.iter_mut()) {
             let mut by_target: BTreeMap<u32, Vec<GroupId>> = BTreeMap::new();
             for group in &strip.window_groups {
-                let Some(&home) = self.home.get(&group.id) else {
+                let Some(home) = self.home.get(&group.id) else {
                     continue;
                 };
-                if live.contains(&home) {
+                if live.contains(home.as_str()) {
                     continue;
                 }
                 let Some(target) = nearest(home).or(primary) else {
                     continue;
                 };
-                self.origin.entry(group.id).or_insert(home);
+                self.origin.entry(group.id).or_insert_with(|| home.clone());
                 by_target.entry(target).or_default().push(group.id);
             }
             let mut changed = false;
             for (target, ids) in by_target {
+                let Some(monitor) = self.monitor_of(target).map(str::to_owned) else {
+                    continue;
+                };
                 for id in &ids {
-                    self.home.insert(*id, target);
+                    self.home.insert(*id, monitor.clone());
                 }
                 changed |= self.place_after_focus(strip, target, &ids);
             }
@@ -317,8 +390,8 @@ impl OutputPartition {
         self.home.retain(|g, _| present.contains(g));
         self.origin.retain(|g, _| present.contains(g));
         self.last_active
-            .retain(|(display, _), g| live.contains(display) && present.contains(g));
-        if self.focused.is_some_and(|f| !live.contains(&f)) {
+            .retain(|(monitor, _), g| live.contains(monitor.as_str()) && present.contains(g));
+        if self.focused.as_deref().is_some_and(|f| !live.contains(f)) {
             self.focused = None;
         }
         reordered
@@ -365,11 +438,15 @@ mod tests {
             .collect()
     }
 
-    /// A laptop panel with a monitor to its right.
+    const PANEL: &str = "edid:Acme|Panel|1";
+    const MONITOR: &str = "edid:Dell|U2720Q|CN0";
+
+    /// A laptop panel (output 0) with a monitor (output 1) to its right.
     fn docked() -> Vec<Display> {
         vec![
             Display {
                 id: 0,
+                monitor: PANEL.into(),
                 x: 0.0,
                 y: 0.0,
                 width: 1280.0,
@@ -377,6 +454,7 @@ mod tests {
             },
             Display {
                 id: 1,
+                monitor: MONITOR.into(),
                 x: 1280.0,
                 y: 0.0,
                 width: 2560.0,
@@ -385,14 +463,19 @@ mod tests {
         ]
     }
 
+    fn home(p: &mut OutputPartition, pairs: &[(GroupId, u32)]) {
+        for &(g, d) in pairs {
+            let monitor = p.monitor_of(d).expect("connected").to_owned();
+            p.home.insert(g, monitor);
+        }
+    }
+
     #[test]
     fn unplugging_moves_a_displays_groups_after_the_focused_one_and_replugging_returns_them() {
         let mut ws = workspace(&[1, 2, 3, 4, 5]);
         let mut p = OutputPartition::default();
         assert!(p.reconcile(&mut ws, &docked()).is_empty());
-        for (g, d) in [(1, 0), (2, 1), (3, 0), (4, 1), (5, 0)] {
-            p.home.insert(g, d);
-        }
+        home(&mut p, &[(1, 0), (2, 1), (3, 0), (4, 1), (5, 0)]);
         p.note_focus(StripId(1), 3);
 
         let changed = p.reconcile(&mut ws, &docked()[..1]);
@@ -403,7 +486,7 @@ mod tests {
             "after the focused group, in order"
         );
         assert_eq!(p.display_of(2), Some(0));
-        assert_eq!(p.origin.get(&4), Some(&1));
+        assert_eq!(p.origin.get(&4).map(String::as_str), Some(MONITOR));
 
         p.reconcile(&mut ws, &docked());
         assert_eq!(p.display_of(2), Some(1));
@@ -418,8 +501,7 @@ mod tests {
         let mut ws = workspace(&[1, 2]);
         let mut p = OutputPartition::default();
         p.reconcile(&mut ws, &docked());
-        p.home.insert(1, 0);
-        p.home.insert(2, 1);
+        home(&mut p, &[(1, 0), (2, 1)]);
         p.reconcile(&mut ws, &docked()[..1]);
         // The person moves it again on the one remaining display.
         p.move_group(&mut ws, 2, 0);
@@ -432,15 +514,36 @@ mod tests {
         let mut ws = workspace(&[1, 2, 3]);
         let mut p = OutputPartition::default();
         p.reconcile(&mut ws, &docked());
-        p.focused = Some(1);
+        p.set_focused(1);
         assert!(p.place_unhomed(&ws));
         assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![1, 2, 3]);
         p.note_focus(StripId(1), 1);
         assert_eq!(p.move_group(&mut ws, 3, 0), None);
         assert_eq!(p.display_of(3), Some(0));
-        assert_eq!(p.focused, Some(0));
+        assert_eq!(p.focused_display(), Some(0));
         assert_eq!(p.neighbour(0, 1), Some(1));
         assert_eq!(p.neighbour(0, -1), None);
+    }
+
+    #[test]
+    fn renumbered_outputs_keep_every_group_on_its_monitor() {
+        let mut ws = workspace(&[1, 2, 3]);
+        let mut p = OutputPartition::default();
+        p.reconcile(&mut ws, &docked());
+        home(&mut p, &[(1, 0), (2, 1), (3, 1)]);
+        // Unplugged, then back on other ports: the monitor is output 0 now
+        // and the panel output 1.
+        p.reconcile(&mut ws, &docked()[..1]);
+        let mut swapped = docked();
+        swapped[0].id = 1;
+        swapped[1].id = 0;
+        swapped.reverse();
+        assert!(p.reconcile(&mut ws, &swapped).is_empty());
+        assert_eq!(p.display_of(1), Some(1), "the panel's group");
+        assert_eq!(p.display_of(2), Some(0), "the monitor's groups");
+        assert_eq!(p.display_of(3), Some(0));
+        assert!(p.origin.is_empty());
+        assert_eq!(order(&ws), vec![1, 2, 3], "nothing reordered");
     }
 
     #[test]
@@ -455,9 +558,8 @@ mod tests {
         let mut ws = workspace(&[1, 2]);
         let mut p = OutputPartition::default();
         p.reconcile(&mut ws, &docked());
-        p.home.insert(1, 0);
-        p.home.insert(2, 1);
-        p.origin.insert(2, 0);
+        home(&mut p, &[(1, 0), (2, 1)]);
+        p.origin.insert(2, PANEL.into());
         let json = serde_json::to_string(&Saved {
             partition: p.clone(),
         })

@@ -566,30 +566,27 @@ impl LaunchError {
     /// Concise recovery copy for fixed-height desktop notifications. Detailed
     /// ids, paths, and backend errors belong in the session log and in the
     /// fallible caller's error, not in top-right chrome.
-    pub(crate) fn notification_message(&self) -> &'static str {
+    pub(crate) fn notification_message(&self) -> String {
+        use crate::shell::i18n::t;
         match self {
-            Self::ProviderUnavailable { .. } => {
-                "The required app execution service is unavailable. Try again when it is available."
-            }
+            Self::ProviderUnavailable { .. } => t("launch-error-provider-unavailable"),
             Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
-                "This app is no longer installed. Refresh the app list and try again."
+                t("launch-error-not-installed")
             }
-            Self::NotAGuiApp { .. } => "This app does not provide a window.",
-            Self::NotAManagedService { .. } => "This service cannot be opened as an app.",
+            Self::NotAGuiApp { .. } => t("launch-error-not-gui-app"),
+            Self::NotAManagedService { .. } => t("launch-error-not-managed-service"),
             Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
-                "You do not have permission to start this workspace service."
+                t("launch-error-not-authorized")
             }
             Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
-                "The app launcher is unavailable. Try again."
+                t("launch-error-launcher-unavailable")
             }
-            Self::NoDisplay => "The desktop is still starting. Try again in a moment.",
-            Self::NoWorkspace => "Choose a workspace, then try again.",
-            Self::ShellOwnedIntent => "Open this destination from the desktop controls.",
-            Self::IdentityUnavailable { .. } => {
-                "The workspace identity could not be loaded. Try again."
-            }
-            Self::RegistryUnreadable { .. } => "The app list could not be read. Try again.",
-            Self::HostAppRefused { .. } => "This app's desktop entry cannot be started.",
+            Self::NoDisplay => t("launch-error-no-display"),
+            Self::NoWorkspace => t("launch-error-no-workspace"),
+            Self::ShellOwnedIntent => t("launch-error-shell-owned-intent"),
+            Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
+            Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
+            Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
         }
     }
 }
@@ -638,7 +635,7 @@ pub enum LaunchEventKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LaunchFailureNotice {
     pub title: String,
-    pub body: &'static str,
+    pub body: String,
 }
 
 /// Long enough to read and act on, but not a persistent alarm for a
@@ -653,11 +650,9 @@ impl LaunchEvent {
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
         let body = match &self.kind {
             LaunchEventKind::SpawnFailed { .. } => {
-                "The app launcher is unavailable. Open Applications and try again."
+                crate::shell::i18n::t("launch-failed-launcher-unavailable")
             }
-            LaunchEventKind::Failed { .. } => {
-                "The app stopped before opening. Open Applications and try again."
-            }
+            LaunchEventKind::Failed { .. } => crate::shell::i18n::t("launch-failed-stopped"),
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
         Some(LaunchFailureNotice {
@@ -701,8 +696,10 @@ impl LaunchEvent {
 fn compact_notice_name(name: &str) -> String {
     const MAX_CHARS: usize = 32;
     let normalised = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fallback;
     let normalised = if normalised.is_empty() {
-        "application"
+        fallback = crate::shell::i18n::t("launch-unnamed-app");
+        &fallback
     } else {
         &normalised
     };
@@ -716,7 +713,10 @@ fn compact_notice_name(name: &str) -> String {
 }
 
 pub(crate) fn launch_failure_title(display_name: &str) -> String {
-    format!("Couldn't open {}", compact_notice_name(display_name))
+    crate::shell::i18n::t_args(
+        "launch-failure-title",
+        &[("app", compact_notice_name(display_name).into())],
+    )
 }
 
 /// Who a running launch is, for the event stream — a package id for a
