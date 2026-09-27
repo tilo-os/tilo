@@ -64,7 +64,11 @@ pub trait EffectGate: Send + 'static {
 }
 
 use std::fs::File;
-#[cfg(any(all(feature = "portal", not(target_os = "android")), test))]
+#[cfg(any(
+    all(feature = "portal", not(target_os = "android")),
+    all(feature = "native", target_os = "android"),
+    test
+))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -274,7 +278,8 @@ impl OpenedFile {
 #[derive(Debug)]
 pub enum OpenFileOutcome {
     /// The portal worker opened a regular local file without following the
-    /// final path component, and retained its display name separately.
+    /// final path component, and retained its display name separately. From
+    /// [`PickRequest::send_save_file`] the file is open for writing.
     Opened(OpenedFile),
     /// The user dismissed the picker without choosing anything.
     Cancelled,
@@ -547,6 +552,15 @@ impl PickRequest {
         crate::host::current().files.open_file(self)
     }
 
+    /// Save counterpart of [`send_open_file`](Self::send_open_file): the
+    /// destination the user chose, created and open for writing. Android's
+    /// chooser creates a document with no path the app may write, so a Save
+    /// there must come through here; hosts that answer Save with a path
+    /// refuse it. Valid only for a Save request.
+    pub fn send_save_file(self) -> OpenFileChannel {
+        crate::host::current().files.save_file(self)
+    }
+
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
         crate::host::current().files.pick_multiple(self)
@@ -582,11 +596,7 @@ fn scoped_pick_worker(
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
-#[cfg(all(
-    feature = "native",
-    not(target_os = "android"),
-    not(all(feature = "portal", freedesktop))
-))]
+#[cfg(all(feature = "native", not(all(feature = "portal", freedesktop))))]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())
@@ -730,7 +740,14 @@ fn display_name(path: &Path) -> String {
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
 /// what is handed to the caller.
-#[cfg(all(any(all(feature = "portal", not(target_os = "android")), test), unix))]
+#[cfg(all(
+    any(
+        all(feature = "portal", not(target_os = "android")),
+        all(feature = "native", target_os = "android"),
+        test
+    ),
+    unix
+))]
 pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
