@@ -111,6 +111,14 @@ pub trait Resource: Sized + 'static {
         false
     }
 
+    /// Whether `action` only annotates what the action before it in the
+    /// same event wrote (who wrote the text just typed): it joins that
+    /// step, and the next action continues the one it annotates.
+    fn annotates(action: &Self::Action) -> bool {
+        let _ = action;
+        false
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {

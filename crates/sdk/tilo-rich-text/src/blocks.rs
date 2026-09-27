@@ -125,6 +125,13 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
                 dm.add_mark(&id, start, end, name, mark_scalar(value));
             }
         }
+        for (range, author) in &block.authors {
+            let start = char_of_byte(&block.text, range.start);
+            let end = char_of_byte(&block.text, range.end);
+            if start < end && !author.is_empty() {
+                dm.add_mark(&id, start, end, qdoc::schema::MARK_AUTHOR, author.as_str());
+            }
+        }
         previous = Some(id);
     }
     // The paragraph the new blocks were written after the start of.
@@ -194,6 +201,12 @@ mod tests {
                 )];
                 old
             },
+            {
+                // Who wrote what comes across with the text.
+                let mut authored = block(BlockKind::Paragraph, "éλ and more");
+                authored.authors = vec![(0..4, "ada".into()), (4..13, "grace".into())];
+                authored
+            },
         ];
         fill_under(&mut doc, &root, &blocks).unwrap();
         let shown = blocks_under(&mut doc, &root).unwrap();
@@ -209,7 +222,7 @@ mod tests {
         assert_eq!(strip(&shown), strip(&blocks));
         assert_eq!(
             RichText::plain_text_under(&doc, &root).unwrap(),
-            "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted\n| a | b |\n| - | - |\n| c |\nsoft\nbreak\nold site"
+            "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted\n| a | b |\n| - | - |\n| c |\nsoft\nbreak\nold site\néλ and more"
         );
     }
 

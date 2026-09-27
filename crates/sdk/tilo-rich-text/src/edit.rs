@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use qdoc::snapshot::BlockView;
-use qdoc_rich_text::action::{RegionKind, Span};
+use qdoc_rich_text::action::{MarkVal, RegionKind, Span};
 use qdoc_rich_text::{RichTextAction, RichTextState};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
@@ -39,6 +39,26 @@ pub(crate) trait Host {
 
     /// Read the state as of `doc`, after the edits applied so far.
     fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
+
+    /// Whom the text this host writes is attributed to.
+    fn author(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Mark `len` characters of `block` from `start` as written by `author`.
+pub(crate) fn authorship(block: String, start: usize, len: usize, author: &str) -> RichTextAction {
+    RichTextAction::SetMark {
+        region: RegionKind::Body,
+        spans: vec![Span {
+            block,
+            start,
+            end: start.saturating_add(len),
+        }],
+        name: qdoc::schema::MARK_AUTHOR.to_owned(),
+        value: Some(MarkVal::Str(author.to_owned())),
+        also_clear: Vec::new(),
+    }
 }
 
 /// `(at, removed, inserted)` in characters: the one splice turning `before`
@@ -123,8 +143,36 @@ struct Commit<'a, H: Host> {
 }
 
 impl<H: Host> Commit<'_, H> {
+    /// Apply `action`, and attribute the text it writes to the host's
+    /// author.
     fn apply(&mut self, action: &RichTextAction) -> Result<(), ActionError> {
-        self.host.apply(self.doc, action)
+        self.host.apply(self.doc, action)?;
+        let Some(author) = self.host.author().map(str::to_owned) else {
+            return Ok(());
+        };
+        let written = match action {
+            RichTextAction::SpliceText { block, at, ins, .. } => {
+                Some((block.clone(), *at, chars(ins)))
+            }
+            RichTextAction::ReplaceSelection {
+                start_block,
+                start,
+                ins,
+                ..
+            } => Some((start_block.clone(), *start, chars(ins))),
+            RichTextAction::InsertParagraph { after, text } => {
+                self.after(after).map(|block| (block, 0, chars(text)))
+            }
+            _ => None,
+        };
+        if let Some((block, start, len)) = written.filter(|(_, _, len)| *len > 0)
+            && let Err(error) = self
+                .host
+                .apply(self.doc, &authorship(block, start, len, &author))
+        {
+            tracing::debug!(%error, "text written without attribution");
+        }
+        Ok(())
     }
 
     /// The paragraph right after `id` in the document now.
