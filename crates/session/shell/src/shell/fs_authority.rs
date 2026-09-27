@@ -1,11 +1,18 @@
 //! Asynchronous publication of workspace file capabilities to `quick-fs`.
 
+use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Instant;
 
 const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Recent publisher attempts kept so a stalled publication can say why.
+const MAX_RECORDED_FS_AUTHORITY_ATTEMPTS: usize = 16;
+/// Tail of the publisher's stderr kept per recorded attempt.
+const MAX_RECORDED_FS_AUTHORITY_STDERR: usize = 2048;
 
 pub fn permission_profile_document_key(name: &str) -> String {
     blake3::hash(name.trim().to_lowercase().as_bytes())
@@ -20,10 +27,65 @@ struct FsAuthorityPublication {
     publisher: PathBuf,
 }
 
+#[derive(Debug)]
+struct FsAuthorityPublicationAttempt {
+    at: Instant,
+    acl: PathBuf,
+    outcome: String,
+}
+
 #[derive(Default)]
 struct FsAuthorityPublicationQueue {
     pending: Option<FsAuthorityPublication>,
     running: bool,
+    attempts: VecDeque<FsAuthorityPublicationAttempt>,
+}
+
+impl FsAuthorityPublicationQueue {
+    fn record(&mut self, acl: PathBuf, outcome: String) {
+        if self.attempts.len() == MAX_RECORDED_FS_AUTHORITY_ATTEMPTS {
+            self.attempts.pop_front();
+        }
+        self.attempts.push_back(FsAuthorityPublicationAttempt {
+            at: Instant::now(),
+            acl,
+            outcome,
+        });
+    }
+
+    fn report(&self) -> String {
+        let now = Instant::now();
+        let mut report = format!(
+            "running={} pending={}; recent publisher attempts (oldest first):",
+            self.running,
+            self.pending.as_ref().map_or_else(
+                || "none".to_string(),
+                |pending| pending.acl.display().to_string()
+            ),
+        );
+        if self.attempts.is_empty() {
+            report.push_str(" none");
+        }
+        for attempt in &self.attempts {
+            let _ = write!(
+                report,
+                "\n  {:?} ago, acl {}: {}",
+                now.saturating_duration_since(attempt.at),
+                attempt.acl.display(),
+                attempt.outcome
+            );
+        }
+        report
+    }
+}
+
+fn stderr_tail(stderr: &[u8]) -> String {
+    let start = stderr
+        .len()
+        .saturating_sub(MAX_RECORDED_FS_AUTHORITY_STDERR);
+    String::from_utf8_lossy(stderr.get(start..).unwrap_or_default())
+        .trim()
+        .to_string()
 }
 
 fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueue> {
@@ -108,25 +170,50 @@ fn run_fs_authority_publication_queue() {
         };
         let mut retry_delay = std::time::Duration::from_millis(100);
         loop {
+            // Capture stderr so a failing publisher explains itself in the
+            // journal and in the attempt history, not only by exit status.
             let result = std::process::Command::new(&publication.publisher)
                 .arg("publish-authority")
                 .arg("--cache-dir")
                 .arg(&publication.cache_dir)
                 .arg("--acl")
                 .arg(&publication.acl)
-                .status();
-            match result {
-                Ok(status) if status.success() => break,
-                Ok(status) => tracing::warn!(
-                    ?status,
-                    acl = %publication.acl.display(),
-                    "filesystem authority publication failed; will retry"
-                ),
-                Err(error) => tracing::warn!(
-                    %error,
-                    publisher = %publication.publisher.display(),
-                    "filesystem authority publisher could not start; will retry"
-                ),
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            let (succeeded, outcome) = match result {
+                Ok(output) if output.status.success() => (true, "published".to_string()),
+                Ok(output) => {
+                    let stderr = stderr_tail(&output.stderr);
+                    tracing::warn!(
+                        status = ?output.status,
+                        %stderr,
+                        acl = %publication.acl.display(),
+                        "filesystem authority publication failed; will retry"
+                    );
+                    (false, format!("{}; stderr: {stderr:?}", output.status))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        publisher = %publication.publisher.display(),
+                        "filesystem authority publisher could not start; will retry"
+                    );
+                    (
+                        false,
+                        format!(
+                            "publisher {} could not start: {error}",
+                            publication.publisher.display()
+                        ),
+                    )
+                }
+            };
+            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
+                queue.record(publication.acl.clone(), outcome);
+            }
+            if succeeded {
+                break;
             }
             // A new mutation supersedes the failed projection immediately;
             // otherwise retain this exact latest ACL until the daemon is
@@ -147,14 +234,29 @@ fn run_fs_authority_publication_queue() {
 }
 
 /// Block until the publication worker has retired with nothing queued, or
-/// `timeout` passes. Returns whether it retired.
-pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
+/// `timeout` passes. The worker's retirement is signalled, so this returns as
+/// soon as publication settles.
+///
+/// # Errors
+///
+/// On timeout, or if the queue is poisoned, returns a report of the queue
+/// state and the recent publisher attempts, including their stderr.
+pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> Result<(), String> {
     let Ok(queue) = fs_authority_publication_queue().lock() else {
-        return false;
+        return Err("filesystem authority publication queue is poisoned".into());
     };
-    fs_authority_publication_retired()
-        .wait_timeout_while(queue, timeout, |queue| {
+    let Ok((queue, _)) =
+        fs_authority_publication_retired().wait_timeout_while(queue, timeout, |queue| {
             queue.running || queue.pending.is_some()
         })
-        .is_ok_and(|(queue, _)| !queue.running && queue.pending.is_none())
+    else {
+        return Err("filesystem authority publication queue is poisoned".into());
+    };
+    if queue.running || queue.pending.is_some() {
+        return Err(format!(
+            "filesystem authority publication did not settle within {timeout:?}: {}",
+            queue.report()
+        ));
+    }
+    Ok(())
 }
