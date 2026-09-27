@@ -15,11 +15,12 @@
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::{AppKind, GroupId, TabId, TileContent};
 use crate::shell::tab_binding::{self, Placement};
+use tilo_desktop_model::commands::OpenIntent;
 
 /// Where a newly-created window should go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
-    /// Follow [`crate::shell::placement::placement_for_new_window`] — to
+    /// Follow [`crate::shell::placement::placement_for`] — to
     /// the right of the active window, or into its group when that group
     /// is already tabbed.
     Beside,
@@ -60,7 +61,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
         Destination::Beside => rule_placement(st),
         Destination::Search => {
             let tree = st.tree();
-            crate::shell::placement::placement_for_search_result(&tree, st.strip_viewport())
+            crate::shell::placement::placement_for(&tree, OpenIntent::Search, st.strip_viewport())
         }
     }
 }
@@ -69,7 +70,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
 /// currently looking at.
 fn rule_placement(st: &ChromeState) -> Placement {
     let tree = st.tree();
-    crate::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+    crate::shell::placement::placement_for(&tree, OpenIntent::Launch, st.strip_viewport())
 }
 
 /// Hosted in-process, so this is a tree splice rather than a launch — a
