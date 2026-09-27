@@ -2155,6 +2155,22 @@ mod tests {
     }
 
     #[test]
+    fn a_live_chat_takes_what_its_host_is_granted() {
+        use ui::Widget;
+        use ui::permissions::{Actor, PermissionContext, Role};
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true;
+        app.perms = crate::permissions::ChatPermissions::unknown();
+        app.permissions_changed(&PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Commenter), "u_reporter"),
+            vec![],
+        ));
+        assert!(app.can_comment() && !app.can_participate());
+        app.permissions_changed(&PermissionContext::none());
+        assert!(!app.can_comment(), "a revocation takes it away again");
+    }
+
+    #[test]
     fn live_sync_seeds_empty_starter_never_the_demo() {
         use ui::Widget;
         // Drive the real production `sync` for a live instance that has no

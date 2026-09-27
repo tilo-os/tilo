@@ -86,12 +86,8 @@ impl Person {
     }
 
     /// A live Chat for this person, on its own connection and record store.
-    fn chat(
-        &self,
-        socket: &Path,
-        state: &Path,
-        permissions: ui::permissions::PermissionContext,
-    ) -> ui::App {
+    /// What it may do is the broker's to say.
+    fn chat(&self, socket: &Path, state: &Path) -> ui::App {
         let stream = UnixStream::connect(socket).expect("connect to the broker");
         let manager = ui::collaboration::CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
@@ -105,8 +101,7 @@ impl Person {
         let comments = ui::record::RecordOwners::new(state.to_path_buf())
             .open(APP, &ROOM.to_string())
             .expect("a record store in the room");
-        let chat =
-            chat::ChatApp::for_participant(&self.principal(), self.label, comments, permissions);
+        let chat = chat::ChatApp::for_participant(&self.principal(), self.label, comments);
         let mut app =
             ui::App::with_collaboration_manager(ui::State::new(), Box::new(chat), manager);
         chat::actions::register(app.action_registry_mut());
@@ -259,6 +254,12 @@ fn chat_provider(
     provider.expect("found")
 }
 
+/// Whether `app` may do `verb` in its room, as its broker last said.
+fn may(app: &ui::App, verb: ui::permissions::Verb) -> bool {
+    app.permission_ctx()
+        .check(&ui::permissions::PermissionScope::workspace(verb))
+}
+
 fn conversation_has(app: &mut ui::App, test: impl Fn(&automerge::AutoCommit) -> bool) -> bool {
     test(&app.state_mut_for_test().doc)
 }
@@ -286,9 +287,10 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
     let mut tree = WorkspaceTree::default();
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
+    let tree = tree.shared();
     let handle = shell::shell::collab_broker::spawn_native_harness(
         socket.clone(),
-        tree.shared(),
+        tree.clone(),
         vec![
             team.device.verifying_key().to_bytes(),
             reporter.device.verifying_key().to_bytes(),
@@ -297,12 +299,12 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
     .expect("bind the broker");
     let host = BrokerActionHost::new(handle.app_action_broker().expect("typed broker"));
 
-    // The team's Chat seeds the room's conversation.
-    let mut editor = team.chat(
-        &socket,
-        &dir.path().join("team"),
-        ui::permissions::PermissionContext::permissive(),
-    );
+    // The team's Chat is told by the broker that it owns the room, and
+    // seeds the room's conversation.
+    let mut editor = team.chat(&socket, &dir.path().join("team"));
+    until(&mut [&mut editor], "the owner's grant", |apps| {
+        may(apps[0], ui::permissions::Verb::Write)
+    });
     until(&mut [&mut editor], "the conversation to exist", |apps| {
         conversation_has(apps[0], chat::doc::ChatDoc::is_seeded)
     });
@@ -338,18 +340,17 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
         "marking #feedback",
     );
 
-    // The reporter joins, a Commenter: its Chat reads the team's
-    // conversation and writes nothing into it.
-    let mut author = reporter.chat(
-        &socket,
-        &dir.path().join("reporter"),
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(
-                Some(ui::permissions::Role::Commenter),
-                reporter.principal(),
-            ),
-            vec![],
-        ),
+    // The reporter joins, a Commenter by the broker's word: its Chat reads
+    // the team's conversation and writes nothing into it.
+    let mut author = reporter.chat(&socket, &dir.path().join("reporter"));
+    until(
+        &mut [&mut editor, &mut author],
+        "the reporter's grant",
+        |apps| may(apps[1], ui::permissions::Verb::Comment),
+    );
+    assert!(
+        !may(&author, ui::permissions::Verb::Write),
+        "a Commenter is not told it may write"
     );
     until(
         &mut [&mut editor, &mut author],
@@ -538,6 +539,30 @@ fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
                 })
             })
         },
+    );
+
+    // The team takes the reporter's membership away; the reporter's Chat
+    // hears it from the broker while it runs, and may no longer comment.
+    let reporter_principal = reporter.principal();
+    let revoked = tree
+        .write()
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room.to_string() == ROOM.to_string())
+        .expect("the room")
+        .revoke_matching(|capability| {
+            capability.subject == collab_types::Subject::person(reporter_principal.clone())
+        });
+    assert!(!revoked.is_empty(), "the reporter's membership was revoked");
+    until(
+        &mut [&mut editor, &mut author],
+        "the reporter to hear of the revocation",
+        |apps| !may(apps[1], ui::permissions::Verb::Comment),
+    );
+    assert!(
+        may(&editor, ui::permissions::Verb::Write),
+        "the team keeps what it holds"
     );
     drop(handle);
 }

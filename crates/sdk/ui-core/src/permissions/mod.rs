@@ -168,6 +168,24 @@ impl PermissionContext {
         )
     }
 
+    /// Nothing at all: the context of an app whose broker has not yet said
+    /// what it may do, and of a connection the room no longer admits.
+    pub fn none() -> Self {
+        Self::from_capabilities(
+            Actor {
+                role: None,
+                key: None,
+                principals: Vec::new(),
+            },
+            Vec::new(),
+        )
+    }
+
+    /// The context a broker's grant describes.
+    pub fn from_grant(grant: &collab_types::ConnectionGrant) -> Self {
+        Self::from_capabilities(grant.actor(), grant.capabilities.clone())
+    }
+
     /// Build a context from a real actor and the capabilities it holds.
     /// Expiry is evaluated against the wall clock at construction time;
     /// use [`PermissionContext::at_unix_time`] to pin it.

@@ -614,6 +614,10 @@ pub trait Decorator {
         self.inner_mut().room_index_changed(index);
     }
 
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        self.inner_mut().permissions_changed(permissions);
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         self.inner().control_action_bindings()
     }
@@ -1411,6 +1415,10 @@ impl<T: Decorator> Widget for T {
 
     fn room_index_changed(&mut self, index: &AutoCommit) {
         Decorator::room_index_changed(self, index);
+    }
+
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        Decorator::permissions_changed(self, permissions);
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {

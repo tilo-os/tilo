@@ -317,12 +317,7 @@ fn a_remark_about_a_field_with_a_redacted_recording_reaches_the_team_privately()
     let comments = ui::record::RecordOwners::new(home.state().join("chat"))
         .open(CHAT, &direct_room)
         .expect("a record store in the direct room");
-    let conversation = chat::ChatApp::for_participant(
-        &me.principal(),
-        "me",
-        comments,
-        ui::permissions::PermissionContext::permissive(),
-    );
+    let conversation = chat::ChatApp::for_participant(&me.principal(), "me", comments);
     let mut chat = ui::App::with_collaboration_manager(
         ui::State::new(),
         Box::new(conversation),

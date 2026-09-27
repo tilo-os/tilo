@@ -867,8 +867,9 @@ struct PresenceEnvelope {
 enum ContextEnvelope {
     Snapshot {
         collaborators: Vec<ui::collaboration::Collaborator>,
-        permissions: Vec<String>,
     },
+    /// What the receiving connection may do now; sent to it alone.
+    Grant(collab_types::ConnectionGrant),
     FollowChanged {
         peer_id: Option<String>,
         mode: ui::view::FollowMode,
@@ -1457,6 +1458,17 @@ struct ContextSub {
     /// The delegated agent principal this connection was admitted as.
     agent: Option<String>,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
+    /// Whose authority this subscriber is kept told of, and what it was
+    /// last told.
+    grant: Option<GrantWatch>,
+}
+
+/// A context subscriber's admitted identity on its route, and the grant it
+/// last received — so a grant or revocation reaches it once, as it lands.
+struct GrantWatch {
+    route: CrdtRoute,
+    admitted: AdmittedJoinIdentity,
+    sent: collab_types::ConnectionGrant,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -4670,10 +4682,9 @@ impl CapnpBrokerState {
                 key,
                 payload,
             } => Self::fanout_presence_update(channels, except, user_id, key, payload),
-            CollabEvent::Context {
-                collaborators,
-                permissions,
-            } => Self::fanout_context(channels, except, collaborators, permissions),
+            CollabEvent::Context { collaborators } => {
+                Self::fanout_context(channels, except, collaborators);
+            }
             CollabEvent::FollowChanged { peer_id, mode } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref(), *mode);
             }
@@ -4685,6 +4696,8 @@ impl CapnpBrokerState {
                 );
             }
             CollabEvent::ScrollbackBatch { .. }
+            // A grant is one connection's own, never a room's to share.
+            | CollabEvent::Grant { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
@@ -4794,11 +4807,9 @@ impl CapnpBrokerState {
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
         collaborators: &[ui::collaboration::Collaborator],
-        permissions: &[String],
     ) {
         let env = ContextEnvelope::Snapshot {
             collaborators: collaborators.to_vec(),
-            permissions: permissions.to_vec(),
         };
         for subs in channels {
             subs.context.retain(|s| {
@@ -4866,6 +4877,7 @@ impl CapnpBrokerState {
         rx
     }
 
+    #[cfg(test)]
     fn subscribe_context(
         &self,
         channel_id: &str,
@@ -4877,9 +4889,140 @@ impl CapnpBrokerState {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
                 .context
-                .push(ContextSub { peer_id, agent, tx });
+                .push(ContextSub {
+                    peer_id,
+                    agent,
+                    tx,
+                    grant: None,
+                });
         }
         rx
+    }
+
+    /// [`Self::subscribe_context`] for an admitted connection, which is told
+    /// what it may do at once and again whenever that changes (see
+    /// [`Self::refresh_connection_grants`]).
+    fn subscribe_context_with_grant(
+        &self,
+        channel_id: &str,
+        peer_id: u64,
+        route: CrdtRoute,
+        admitted: AdmittedJoinIdentity,
+    ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let grant = self.connection_grant(&route, &admitted);
+        let _ = tx.send(ContextEnvelope::Grant(grant.clone()));
+        if let Ok(mut m) = self.channels.lock() {
+            m.entry(channel_id.to_owned())
+                .or_insert_with(ChannelSubscribers::default)
+                .context
+                .push(ContextSub {
+                    peer_id,
+                    agent: admitted.agent_id.clone(),
+                    tx,
+                    grant: Some(GrantWatch {
+                        route,
+                        admitted,
+                        sent: grant,
+                    }),
+                });
+        }
+        rx
+    }
+
+    /// What `admitted` may do on `route` now: the role it holds and the
+    /// capabilities whose subject covers it, or nothing once the room no
+    /// longer admits it. The same decision document admission makes.
+    fn connection_grant(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> collab_types::ConnectionGrant {
+        let actor = admitted.policy_actor(&route.cluster_id);
+        let principal = actor
+            .principals
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Principal::Person(admitted.principal_id.clone()));
+        let Ok(current) = self.revalidate_admission(route, admitted) else {
+            return collab_types::ConnectionGrant::none(principal, route.cluster_id.clone());
+        };
+        let actor = current.policy_actor(&route.cluster_id);
+        let capabilities = self
+            .membership
+            .as_ref()
+            .and_then(|membership| {
+                let tree = membership.read();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room.to_string() == route.cluster_id)
+                    .map(|workspace| {
+                        workspace
+                            .capabilities
+                            .iter()
+                            .filter(|capability| capability.subject.matches_actor(&actor))
+                            .cloned()
+                            .collect()
+                    })
+            })
+            .unwrap_or_default();
+        collab_types::ConnectionGrant {
+            role: actor.role,
+            principal,
+            room: route.cluster_id.clone(),
+            capabilities,
+        }
+    }
+
+    /// Tell every admitted context subscriber whose authority changed —
+    /// a grant, a role change, a revocation — what it may do now.
+    fn refresh_connection_grants(&self) {
+        let watched: Vec<(String, u64, CrdtRoute, AdmittedJoinIdentity)> =
+            match self.channels.lock() {
+                Ok(channels) => channels
+                    .iter()
+                    .flat_map(|(channel, subscribers)| {
+                        subscribers.context.iter().filter_map(move |sub| {
+                            sub.grant.as_ref().map(|watch| {
+                                (
+                                    channel.clone(),
+                                    sub.peer_id,
+                                    watch.route.clone(),
+                                    watch.admitted.clone(),
+                                )
+                            })
+                        })
+                    })
+                    .collect(),
+                Err(_) => return,
+            };
+        let current: Vec<(String, u64, collab_types::ConnectionGrant)> = watched
+            .into_iter()
+            .map(|(channel, peer, route, admitted)| {
+                (channel, peer, self.connection_grant(&route, &admitted))
+            })
+            .collect();
+        let Ok(mut channels) = self.channels.lock() else {
+            return;
+        };
+        for (channel, peer, grant) in current {
+            let Some(subscribers) = channels.get_mut(&channel) else {
+                continue;
+            };
+            for sub in subscribers
+                .context
+                .iter_mut()
+                .filter(|sub| sub.peer_id == peer)
+            {
+                if let Some(watch) = sub.grant.as_mut()
+                    && watch.sent != grant
+                {
+                    watch.sent = grant.clone();
+                    let _ = sub.tx.send(ContextEnvelope::Grant(grant.clone()));
+                }
+            }
+        }
     }
 }
 
@@ -6324,10 +6467,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let rx = self.state.subscribe_context(
+        let rx = self.state.subscribe_context_with_grant(
             &self.channel_id,
             self.peer_id,
-            self.verified_identity.agent_id.clone(),
+            self.route(),
+            self.verified_identity.clone(),
         );
         let server = ContextStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
@@ -8734,11 +8878,16 @@ impl context_stream::Server for ContextStreamServer {
             };
             drop(guard);
             let mut ctx = results.get().init_ctx();
-            let (collaborators, permissions) = match env {
-                ContextEnvelope::Snapshot {
-                    collaborators,
-                    permissions,
-                } => (collaborators, permissions),
+            let collaborators = match env {
+                ContextEnvelope::Snapshot { collaborators } => collaborators,
+                ContextEnvelope::Grant(grant) => {
+                    let grant = serde_json::to_string(&grant).map_err(|error| {
+                        capnp::Error::failed(format!("context: grant not encodable: {error}"))
+                    })?;
+                    ctx.set_grant(&grant);
+                    ctx.set_grant_changed(true);
+                    return Ok(());
+                }
                 ContextEnvelope::FollowChanged { peer_id, mode } => {
                     ctx.set_follow_changed(true);
                     ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
@@ -8765,16 +8914,6 @@ impl context_stream::Server for ContextStreamServer {
                     slot.set_color(pack_color(c.color));
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
-                }
-            }
-            let perm_count = u32::try_from(permissions.len()).map_err(|_| {
-                capnp::Error::failed("context: too many permissions to encode".into())
-            })?;
-            {
-                let mut perms = ctx.init_permissions(perm_count);
-                for (i, p) in permissions.iter().enumerate() {
-                    let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                    perms.set(idx, p.as_str());
                 }
             }
             Ok(())
@@ -8905,6 +9044,7 @@ pub fn spawn(
                             // polling status: completion waiters deserve a
                             // terminal answer even after an app goes silent.
                             state.expire_stale_invocations();
+                            state.refresh_connection_grants();
                             continue;
                         },
                         conn = listener.accept() => conn,

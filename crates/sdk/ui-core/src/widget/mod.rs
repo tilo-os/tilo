@@ -827,6 +827,15 @@ pub trait Widget {
         }
     }
 
+    /// What the app may do changed: the broker granted or revoked
+    /// something. A widget that decides what to write or offer on its own
+    /// (before or between draws) adopts `permissions` here.
+    fn permissions_changed(&mut self, permissions: &crate::permissions::PermissionContext) {
+        for child in self.children_mut() {
+            child.permissions_changed(permissions);
+        }
+    }
+
     /// Opaque actual custody for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         self.callback_binding()

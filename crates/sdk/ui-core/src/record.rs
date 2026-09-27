@@ -1317,6 +1317,10 @@ pub struct RecordSet {
     /// local replicas or subscribe the app to unrelated documents.
     known: BTreeMap<RecordId, RecordKind>,
     active: Option<RecordId>,
+    /// The live record was checked out read-only (see
+    /// [`RecordCheckout::read_only`]); declaring it again as a writer brings
+    /// it into the room then.
+    active_read_only: bool,
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
@@ -1369,6 +1373,7 @@ impl RecordSet {
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: true,
             documents: Some(store),
             backend: None,
@@ -1392,6 +1397,7 @@ impl RecordSet {
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: false,
             documents: None,
             backend: None,
@@ -1489,6 +1495,17 @@ impl RecordSet {
             return false;
         }
         if self.active.as_ref() == Some(&want.id) {
+            // Declared a writer of the record it only read: someone was
+            // granted more. Bringing it into the room is theirs to do now.
+            if self.active_read_only && !want.read_only {
+                self.active_read_only = false;
+                if let Some(room) = room {
+                    room::reference(room, &want.id, &want.kind);
+                    for (target, _) in &want.references {
+                        room::reference(room, &target.id, &target.kind);
+                    }
+                }
+            }
             return false;
         }
 
@@ -1584,6 +1601,7 @@ impl RecordSet {
             }
         }
         self.active = Some(want.id.clone());
+        self.active_read_only = want.read_only;
         self.remember(want);
         true
     }
@@ -2114,6 +2132,7 @@ impl RecordOwners {
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
+            active_read_only: false,
             persistent: true,
             documents: None,
             backend: Some(Rc::clone(&self.store)),
@@ -3702,6 +3721,24 @@ mod tests {
 
         set.checkout(&mut state, Some(&mut room_doc), &a);
         assert_eq!(text(&state.doc, "note").as_deref(), Some("a's note"));
+    }
+
+    #[test]
+    fn a_reader_granted_more_brings_the_record_into_the_room() {
+        let mut room_doc = AutoCommit::new();
+        let mut set = RecordSet::in_memory();
+        let mut state = State::new();
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.conversation"));
+        assert!(set.checkout(&mut state, Some(&mut room_doc), &want.clone().read_only()));
+        assert!(
+            !room::holds(&room_doc, &want.id),
+            "a reader brings nothing in"
+        );
+        assert!(
+            !set.checkout(&mut state, Some(&mut room_doc), &want),
+            "still the live record"
+        );
+        assert!(room::holds(&room_doc, &want.id), "a writer does");
     }
 
     #[test]

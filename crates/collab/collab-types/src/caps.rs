@@ -248,6 +248,47 @@ impl Actor {
     }
 }
 
+/// What one admitted connection may do in its room, as the broker holds it
+/// now: the role it acts with and the capabilities that name it. The broker
+/// hands every connection its own grant, and a fresh one whenever a grant or
+/// revocation changes it, so an app decides what to offer on the authority
+/// the broker enforces rather than on a guess of its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionGrant {
+    /// The role the connection acts with; `None` for an app, an agent, or a
+    /// connection the room no longer admits.
+    pub role: Option<Role>,
+    /// Who the connection acts as.
+    pub principal: Principal,
+    /// The room it acts in.
+    pub room: String,
+    /// The capabilities whose subject covers this connection.
+    pub capabilities: Vec<CapOverride>,
+}
+
+impl ConnectionGrant {
+    /// A connection the room does not admit: no role and nothing granted.
+    pub fn none(principal: Principal, room: impl Into<String>) -> Self {
+        Self {
+            role: None,
+            principal,
+            room: room.into(),
+            capabilities: Vec::new(),
+        }
+    }
+
+    /// The actor these grants are decided for.
+    pub fn actor(&self) -> Actor {
+        Actor {
+            role: self.role,
+            key: None,
+            principals: vec![self.principal.clone()],
+        }
+        .in_room(self.room.clone())
+    }
+}
+
 /// What a permission ranges over.
 ///
 /// Ordered coarsest (`Workspace`) to finest (`ResourceInstance`/`FsPath`).

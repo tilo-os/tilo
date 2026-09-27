@@ -400,7 +400,7 @@ impl stream::Server for FakeOpStream {
 #[derive(Clone)]
 struct SeedContext {
     collaborators: Vec<(String, String, u32)>,
-    permissions: Vec<String>,
+    grant: Option<String>,
 }
 
 struct FakeContextStream {
@@ -430,11 +430,9 @@ impl context_stream::Server for FakeContextStream {
                 c.set_color(*color);
             }
         }
-        {
-            let mut perms = ctx.init_permissions(u32::try_from(seed.permissions.len()).unwrap());
-            for (i, p) in seed.permissions.iter().enumerate() {
-                perms.set(u32::try_from(i).unwrap(), p.as_str());
-            }
+        if let Some(grant) = &seed.grant {
+            ctx.set_grant(grant);
+            ctx.set_grant_changed(true);
         }
         Promise::ok(())
     }
@@ -753,11 +751,11 @@ async fn subscribe_context_delivers_typed_snapshot() {
                         ("alice".into(), "Alice".into(), 0x00ff_0000),
                         ("bob".into(), "Bob".into(), 0x00_00ff00),
                     ],
-                    permissions: vec!["write".into(), "share".into()],
+                    grant: None,
                 },
                 SeedContext {
-                    collaborators: vec![("alice".into(), "Alice".into(), 0x00ff_0000)],
-                    permissions: vec!["write".into()],
+                    collaborators: Vec::new(),
+                    grant: Some(r#"{"role":"Editor"}"#.into()),
                 },
             ];
             let broker = FakeBroker {
@@ -777,11 +775,10 @@ async fn subscribe_context_delivers_typed_snapshot() {
             assert_eq!(s1.collaborators[0].display_name, "Alice");
             assert_eq!(s1.collaborators[0].color, 0x00ff_0000);
             assert_eq!(s1.collaborators[1].user_id, "bob");
-            assert_eq!(s1.permissions, vec!["write", "share"]);
+            assert!(s1.grant.is_none(), "a roster frame carries no grant");
 
             let s2 = stream.read().await.unwrap();
-            assert_eq!(s2.collaborators.len(), 1);
-            assert_eq!(s2.permissions, vec!["write"]);
+            assert_eq!(s2.grant.as_deref(), Some(r#"{"role":"Editor"}"#));
         })
         .await;
 }

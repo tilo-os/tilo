@@ -95,6 +95,14 @@ impl App {
     pub fn permission_ctx(&self) -> &PermissionContext {
         &self.permission_ctx
     }
+
+    /// Take the broker's word for what this app may do now.
+    fn adopt_grant(&mut self, grant: &collab_types::ConnectionGrant) {
+        let next = PermissionContext::from_grant(grant);
+        if next != self.permission_ctx {
+            self.set_permission_ctx(next);
+        }
+    }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         let _entry = self.enter_wake_scope();
         self.permission_ctx = ctx;
@@ -111,6 +119,8 @@ impl App {
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
         self.refresh_control_action_availability();
+        self.root_widget.permissions_changed(&self.permission_ctx);
+        self.needs_sync = true;
         self.layout.layout_dirty = true;
     }
 
@@ -725,8 +735,11 @@ impl App {
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
         match event {
-            CollabEvent::Context { collaborators, .. } => {
+            CollabEvent::Context { collaborators } => {
                 self.apply_collab_context(collaborators);
+            }
+            CollabEvent::Grant { grant } => {
+                self.adopt_grant(&grant);
             }
             CollabEvent::FollowChanged { peer_id, mode } => match peer_id {
                 Some(peer_id) => self.follow_with(peer_id, mode),
@@ -1160,8 +1173,11 @@ impl App {
                     self.respond_primary_document_snapshot();
                 }
             }
-            CollabEvent::Context { collaborators, .. } => {
+            CollabEvent::Context { collaborators } => {
                 self.apply_collab_context(collaborators);
+            }
+            CollabEvent::Grant { grant } => {
+                self.adopt_grant(&grant);
             }
             CollabEvent::Invocation {
                 id,

@@ -979,15 +979,11 @@ impl ChatApp {
     }
 
     /// A live Chat for the participant `id`, keeping this peer's comment
-    /// records in `comments` and authorised by `permissions` — what a host
-    /// with its own identity and record store (a test over a real broker)
-    /// launches instead of [`Self::new`].
-    pub fn for_participant(
-        id: &str,
-        name: &str,
-        comments: ui::record::RecordStore,
-        permissions: ui::permissions::PermissionContext,
-    ) -> Self {
+    /// records in `comments` — what a host with its own identity and record
+    /// store (a test over a real broker) launches instead of [`Self::new`].
+    /// Like every live Chat it may do nothing until its host hands it what
+    /// the broker grants.
+    pub fn for_participant(id: &str, name: &str, comments: ui::record::RecordStore) -> Self {
         let mut app = Self::bare(ContentStore::memory());
         app.is_live = true;
         app.comments = crate::comments::Comments::new(comments);
@@ -997,7 +993,7 @@ impl ChatApp {
             initials: crate::identity::initials_for(name),
             color_idx: crate::identity::color_index_for(id.as_bytes()),
         };
-        app.perms = ChatPermissions::from_context(permissions);
+        app.perms = ChatPermissions::unknown();
         app.new_live_view()
     }
 
@@ -4732,6 +4728,11 @@ impl Widget for ChatApp {
 
     fn joined_records(&self) -> Option<&ui::record::JoinedRecords> {
         Some(self.comments.joined())
+    }
+
+    fn permissions_changed(&mut self, permissions: &PermissionContext) {
+        self.perms = ChatPermissions::from_context(permissions.clone());
+        self.relayout = true;
     }
 
     fn room_index_changed(&mut self, index: &AutoCommit) {
