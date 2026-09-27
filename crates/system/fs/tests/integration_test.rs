@@ -22,7 +22,6 @@ use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, Workspa
 use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
-use tokio::time::timeout;
 
 // These integration tests mount a real FUSE filesystem, which needs
 // `/dev/fuse` (+ fusermount3). Minimal CI containers don't have it, so
@@ -374,7 +373,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
     // doesn't. Requires /dev/fuse.
     async fn fuse_mount_enforces_identity_acl_end_to_end() {
         require_fuse!();
-        let _ = timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the identity-ACL FUSE mounts", async {
             let endpoint = Endpoint::bind(presets::Minimal)
                 .await
                 .expect("bind endpoint");
@@ -635,9 +634,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // which panics on a current-thread runtime.
     {
         require_fuse!();
-        let test_timeout = Duration::from_secs(20);
-
-        let _ = timeout(test_timeout, async {
+        tilo_test_env::within("the projected FUSE tree reads", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let mount_path = mount_dir.path().to_path_buf();
 
@@ -707,55 +704,59 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // overwrite, mkdir, rename, unlink.
     {
         require_fuse!();
-        let _ = timeout(Duration::from_secs(20), async {
-            let mount_dir = tempdir().expect("mount temp dir");
-            let path = mount_dir.path().to_path_buf();
+        tilo_test_env::within(
+            "the FUSE write, create, rename and unlink round trip",
+            async {
+                let mount_dir = tempdir().expect("mount temp dir");
+                let path = mount_dir.path().to_path_buf();
 
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
-            let store = Arc::new(ContentStore::memory());
-            let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
-            let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+                let endpoint = Endpoint::bind(presets::Minimal)
+                    .await
+                    .expect("bind endpoint");
+                let store = Arc::new(ContentStore::memory());
+                let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
+                let shutdown_endpoint = endpoint.clone();
+                let shutdown_store = store.clone();
+                let hydrator = Arc::new(Hydrator::new(endpoint, store));
+                let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+                let fs = QuickFS::new(namespace, hydrator, heuristics);
 
-            let mut config = Config::default();
-            config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
-            let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
-            wait_for_mount(&path).await;
+                let mut config = Config::default();
+                config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
+                let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
+                wait_for_mount(&path).await;
 
-            // create + write
-            std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
-            assert_eq!(std::fs::read(path.join("hello.txt")).unwrap(), b"first");
+                // create + write
+                std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
+                assert_eq!(std::fs::read(path.join("hello.txt")).unwrap(), b"first");
 
-            // overwrite (truncate + rewrite) with a longer body
-            std::fs::write(path.join("hello.txt"), b"second longer content").expect("overwrite");
-            assert_eq!(
-                std::fs::read(path.join("hello.txt")).unwrap(),
-                b"second longer content"
-            );
+                // overwrite (truncate + rewrite) with a longer body
+                std::fs::write(path.join("hello.txt"), b"second longer content")
+                    .expect("overwrite");
+                assert_eq!(
+                    std::fs::read(path.join("hello.txt")).unwrap(),
+                    b"second longer content"
+                );
 
-            // mkdir + nested file
-            std::fs::create_dir(path.join("d")).expect("mkdir");
-            std::fs::write(path.join("d/n.txt"), b"nested").expect("write nested");
-            assert_eq!(std::fs::read(path.join("d/n.txt")).unwrap(), b"nested");
+                // mkdir + nested file
+                std::fs::create_dir(path.join("d")).expect("mkdir");
+                std::fs::write(path.join("d/n.txt"), b"nested").expect("write nested");
+                assert_eq!(std::fs::read(path.join("d/n.txt")).unwrap(), b"nested");
 
-            // rename
-            std::fs::rename(path.join("hello.txt"), path.join("renamed.txt")).expect("rename");
-            assert!(!path.join("hello.txt").exists(), "old name gone");
-            assert_eq!(
-                std::fs::read(path.join("renamed.txt")).unwrap(),
-                b"second longer content"
-            );
+                // rename
+                std::fs::rename(path.join("hello.txt"), path.join("renamed.txt")).expect("rename");
+                assert!(!path.join("hello.txt").exists(), "old name gone");
+                assert_eq!(
+                    std::fs::read(path.join("renamed.txt")).unwrap(),
+                    b"second longer content"
+                );
 
-            // unlink
-            std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
-            assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
-        })
+                // unlink
+                std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
+                assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
+                shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            },
+        )
         .await;
     }
     // Phase `fuse_non_utf8_name_survives_rename_and_namespace_restart`.
@@ -816,7 +817,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // unlink must refuse a directory.
     {
         require_fuse!();
-        let _ = timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the FUSE rmdir and unlink checks", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
@@ -869,7 +870,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // through the mount; unknown formats stay opaque bytes.
     {
         require_fuse!();
-        let _ = timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the FUSE document round trip", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
@@ -913,7 +914,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // directories are `local` — the path the file manager reads for sync badges.
     {
         require_fuse!();
-        let _ = timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the FUSE sync-state xattrs", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
