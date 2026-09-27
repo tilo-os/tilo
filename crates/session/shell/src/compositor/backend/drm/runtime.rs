@@ -295,9 +295,9 @@ pub struct DrmDispatchState {
     /// Where local motion may take the pointer while a client locks or
     /// confines it.
     pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
-    /// The output a pen tablet maps onto (Settings' "Pen & tablet"), by
-    /// connector name or display settings key; `None` spans every output.
-    pub pen_output: Option<String>,
+    /// Drawing tablets: their saved settings, the shortcut table their
+    /// buttons press, and their pads.
+    pub tablets: TabletRuntime,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -309,6 +309,111 @@ pub struct DrmDispatchState {
     /// already be inside a page flip when the libseat callback returns; the
     /// callback must not drop DRM master until that presentation has retired.
     pub present_gate: Option<Arc<Mutex<()>>>,
+}
+
+/// What the DRM backend keeps for drawing tablets.
+#[derive(Default)]
+pub struct TabletRuntime {
+    /// Per-tablet settings, keyed by device identity.
+    pub configs: BTreeMap<String, settings_store::hardware::TabletConfig>,
+    /// The shortcut table, so a pen or pad button presses the chord the user
+    /// bound to its shortcut.
+    pub shortcuts: settings_store::hardware::ShortcutConfig,
+    /// Pads opened a second time, for their buttons.
+    pub pads: Option<PadInput>,
+}
+
+impl TabletRuntime {
+    fn load() -> Self {
+        Self {
+            configs: settings_store::hardware::tablets_from_section(&settings_store::load_section(
+                input_config::SECTION,
+            )),
+            shortcuts: settings_store::hardware::ShortcutConfig::load(),
+            pads: None,
+        }
+    }
+
+    /// Re-read the settings, keeping the open pads.
+    fn reload(&mut self) {
+        let pads = self.pads.take();
+        *self = Self {
+            pads,
+            ..Self::load()
+        };
+    }
+
+    fn config_for(
+        &self,
+        device: &smithay::reexports::input::Device,
+    ) -> settings_store::hardware::TabletConfig {
+        self.configs
+            .get(&libinput_device_key(device))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Tablet pads' buttons. Smithay's libinput backend drops pad events, so
+/// each pad is opened again in a path context of its own that is read only
+/// for them.
+pub struct PadInput {
+    context: Libinput,
+    /// Pad handles in `context`, by the udev context's device id.
+    devices: HashMap<String, smithay::reexports::input::Device>,
+}
+
+impl PadInput {
+    fn new(seat: LibSeatSession) -> Self {
+        Self {
+            context: Libinput::new_from_path(LibinputSessionInterface::from(seat)),
+            devices: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, pad: &smithay::reexports::input::Device) {
+        let path = Path::new("/dev/input").join(pad.sysname());
+        let Some(path) = path.to_str() else {
+            return;
+        };
+        let Some(device) = self.context.path_add_device(path) else {
+            tracing::warn!(pad = pad.name(), "DRM input: could not open tablet pad");
+            return;
+        };
+        tracing::info!(
+            pad = pad.name(),
+            "DRM input: listening to tablet pad buttons"
+        );
+        self.devices.insert(pad.id(), device);
+    }
+
+    fn remove(&mut self, pad: &smithay::reexports::input::Device) {
+        if let Some(device) = self.devices.remove(&pad.id()) {
+            self.context.path_remove_device(device);
+        }
+    }
+
+    /// Read pending pad events: `(device identity, button, pressed)`.
+    fn take_buttons(&mut self) -> Vec<(String, u32, bool)> {
+        use smithay::reexports::input::event::tablet_pad::{
+            ButtonState as PadButtonState, TabletPadEvent,
+        };
+        use smithay::reexports::input::event::{Event as LibinputEvent, EventTrait as _};
+        if let Err(error) = self.context.dispatch() {
+            tracing::debug!(%error, "DRM input: tablet pad dispatch failed");
+        }
+        let mut buttons = Vec::new();
+        for event in &mut self.context {
+            if let LibinputEvent::TabletPad(TabletPadEvent::Button(button)) = event {
+                buttons.push((
+                    libinput_device_key(&button.device()),
+                    button.button_number(),
+                    button.button_state() == PadButtonState::Pressed,
+                ));
+            }
+        }
+        buttons
+    }
 }
 
 /// The direct-touch equivalent of the pointer-gesture ownership tracker.
@@ -885,7 +990,7 @@ impl DrmDispatchState {
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
-            pen_output: load_pen_output(),
+            tablets: TabletRuntime::load(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -2214,18 +2319,28 @@ impl DrmDispatchState {
             | InputEvent::TabletToolButton { .. } => {
                 self.handle_libinput_tablet_event(&event);
             }
-            // Switches (lid, tablet mode) and tablet pads are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered.
+            // Switches (lid, tablet mode) are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered. Tablet pads are read from their own context (`PadInput`), since this backend drops their events.
             _ => {}
         }
     }
 
     /// Tablet-tool half of [`Self::handle_libinput_event`]: every axis the
-    /// tool reports, mapped onto the output the pen is tied to.
+    /// tool reports, shaped by that tablet's saved settings — the display it
+    /// maps onto, aspect ratio, orientation, pressure curve — and its barrel
+    /// buttons remapped, or turned into a shortcut.
     fn handle_libinput_tablet_event(&mut self, event: &InputEvent<LibinputInputBackend>) {
         use smithay::backend::input::{
             ProximityState, TabletToolButtonEvent, TabletToolProximityEvent, TabletToolTipEvent,
             TabletToolTipState,
         };
+        let device = match event {
+            InputEvent::TabletToolAxis { event } => event.device(),
+            InputEvent::TabletToolProximity { event } => event.device(),
+            InputEvent::TabletToolTip { event } => event.device(),
+            InputEvent::TabletToolButton { event } => event.device(),
+            _ => return,
+        };
+        let config = self.tablets.config_for(&device);
         let Some(target) = super::tablet::pen_target(
             self.live.iter().map(|output| {
                 (
@@ -2235,13 +2350,13 @@ impl DrmDispatchState {
                     logical_output_size(output.size, output.transform),
                 )
             }),
-            self.pen_output.as_deref(),
+            config.output.as_deref(),
         ) else {
             return;
         };
         let input = match event {
             InputEvent::TabletToolAxis { event } => {
-                super::tablet::tablet_input(event, TabletPhase::Motion, target)
+                super::tablet::tablet_input(event, TabletPhase::Motion, target, &config)
             }
             InputEvent::TabletToolProximity { event } => super::tablet::tablet_input(
                 event,
@@ -2250,6 +2365,7 @@ impl DrmDispatchState {
                     ProximityState::Out => TabletPhase::ProximityOut,
                 },
                 target,
+                &config,
             ),
             InputEvent::TabletToolTip { event } => super::tablet::tablet_input(
                 event,
@@ -2258,21 +2374,83 @@ impl DrmDispatchState {
                     TabletToolTipState::Up => TabletPhase::TipUp,
                 },
                 target,
+                &config,
             ),
-            InputEvent::TabletToolButton { event } => super::tablet::tablet_input(
-                event,
-                TabletPhase::Button {
-                    button: TabletToolButtonEvent::button(event),
-                    pressed: matches!(
-                        TabletToolButtonEvent::button_state(event),
-                        ButtonState::Pressed
-                    ),
-                },
-                target,
-            ),
+            InputEvent::TabletToolButton { event } => {
+                let pressed = matches!(
+                    TabletToolButtonEvent::button_state(event),
+                    ButtonState::Pressed
+                );
+                let button = match super::tablet::stylus_button(
+                    &config,
+                    TabletToolButtonEvent::button(event),
+                ) {
+                    super::tablet::ButtonOutcome::Button(button) => button,
+                    super::tablet::ButtonOutcome::Shortcut(action) => {
+                        if pressed {
+                            self.press_shortcut(action);
+                        }
+                        return;
+                    }
+                    super::tablet::ButtonOutcome::Ignore => return,
+                };
+                super::tablet::tablet_input(
+                    event,
+                    TabletPhase::Button { button, pressed },
+                    target,
+                    &config,
+                )
+            }
             _ => return,
         };
         self.push(BackendEvent::Tablet(input));
+    }
+
+    /// Run the pad-button half of a tablet: a mapped button presses its
+    /// shortcut's chord.
+    fn handle_pad_buttons(&mut self) {
+        let Some(pads) = self.tablets.pads.as_mut() else {
+            return;
+        };
+        for (key, button, pressed) in pads.take_buttons() {
+            if !pressed {
+                continue;
+            }
+            let action = self
+                .tablets
+                .configs
+                .get(&key)
+                .and_then(|config| super::tablet::pad_button(config, button));
+            if let Some(action) = action {
+                self.press_shortcut(action);
+            }
+        }
+    }
+
+    /// Press and release the chord bound to `action`, through the ordinary
+    /// keyboard path, so the one shortcut resolver decides what it does and
+    /// a rebound shortcut moves its pen and pad buttons with it.
+    fn press_shortcut(&mut self, action: settings_store::hardware::ShortcutAction) {
+        let Some(chord) = self.tablets.shortcuts.bindings.get(&action) else {
+            tracing::debug!(?action, "DRM input: pen shortcut has no chord bound");
+            return;
+        };
+        let keyboard = self.keyboard.as_ref();
+        let Some(codes) = super::tablet::chord_keycodes(chord, |ch| {
+            keyboard.and_then(|keyboard| keyboard.keycode_for_char(ch))
+        }) else {
+            tracing::debug!(
+                ?action,
+                "DRM input: pen shortcut chord is not on this layout"
+            );
+            return;
+        };
+        for code in &codes {
+            self.process_keyboard_key(evdev_to_xkb(*code), true);
+        }
+        for code in codes.iter().rev() {
+            self.process_keyboard_key(evdev_to_xkb(*code), false);
+        }
     }
 
     /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
@@ -2285,6 +2463,11 @@ impl DrmDispatchState {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
                 self.remember_touch_output_binding(&device);
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad)
+                    && let Some(pads) = self.tablets.pads.as_mut()
+                {
+                    pads.add(&device);
+                }
                 self.devices.push(device);
                 self.publish_input_snapshot();
             }
@@ -2309,6 +2492,9 @@ impl DrmDispatchState {
                     // touch source retires every current contact rather than
                     // risking a stale device-local slot being reused.
                     self.handle_direct_touch_source_removed();
+                }
+                if let Some(pads) = self.tablets.pads.as_mut() {
+                    pads.remove(&device);
                 }
                 self.touch_output_bindings.remove(&device.id());
                 self.devices.retain(|d| *d != device);
@@ -3008,6 +3194,22 @@ impl DrmRuntime {
             keyboard,
         );
         dispatch.display_set = display_set;
+        // Tablet pads are read from a context of their own; see `PadInput`.
+        let pads = PadInput::new(session.clone());
+        handle
+            .insert_source(
+                smithay::reexports::calloop::generic::Generic::new(
+                    pads.context.clone(),
+                    smithay::reexports::calloop::Interest::READ,
+                    smithay::reexports::calloop::Mode::Level,
+                ),
+                |_, _, state: &mut DrmDispatchState| {
+                    state.handle_pad_buttons();
+                    Ok(smithay::reexports::calloop::PostAction::Continue)
+                },
+            )
+            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+        dispatch.tablets.pads = Some(pads);
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
@@ -3134,7 +3336,7 @@ impl DrmRuntime {
             );
         }
         self.dispatch.accessibility = accessibility;
-        self.dispatch.pen_output = load_pen_output();
+        self.dispatch.tablets.reload();
         if accessibility.effective_cursor_size() != previous_cursor_size {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
@@ -3465,17 +3667,27 @@ impl input_config::ConfigurableDevice for smithay::reexports::input::Device {
     }
 }
 
+/// The identity input settings are keyed by, for a libinput device.
+fn libinput_device_key(device: &smithay::reexports::input::Device) -> String {
+    settings_store::hardware::input_device_key(
+        device.id_vendor(),
+        device.id_product(),
+        device.name(),
+    )
+}
+
+/// libinput reports evdev keycodes; xkb numbers the same keys eight higher.
+fn evdev_to_xkb(code: u32) -> xkb::Keycode {
+    xkb::Keycode::new(code.saturating_add(8))
+}
+
 /// One attached device as Settings sees it.
 fn input_device_snapshot(
     device: &smithay::reexports::input::Device,
 ) -> settings_store::hardware::InputDeviceSnapshot {
     let caps = device_caps(device);
     settings_store::hardware::InputDeviceSnapshot {
-        key: settings_store::hardware::input_device_key(
-            device.id_vendor(),
-            device.id_product(),
-            device.name(),
-        ),
+        key: libinput_device_key(device),
         name: device.name().to_string(),
         kind: caps.kind(),
         pad_buttons: if caps.is_tablet_pad {
@@ -3674,14 +3886,6 @@ where
 }
 
 /// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
-fn load_pen_output() -> Option<String> {
-    settings_store::hardware::RichInputConfig::from_section(&settings_store::load_section(
-        super::input_config::SECTION,
-    ))
-    .pen_output
-    .filter(|name| !name.is_empty())
-}
-
 fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
@@ -3850,6 +4054,20 @@ impl KeyboardXkb {
 
     fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
         self.keymap.key_repeats(keycode)
+    }
+
+    /// The evdev keycode that types `ch` without modifiers on the active
+    /// layout, if any key does.
+    fn keycode_for_char(&self, ch: char) -> Option<u32> {
+        let wanted = xkb::utf32_to_keysym(u32::from(ch.to_ascii_lowercase()));
+        let layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
+        (self.keymap.min_keycode().raw()..=self.keymap.max_keycode().raw())
+            .find(|raw| {
+                self.keymap
+                    .key_get_syms_by_level(xkb::Keycode::new(*raw), layout, 0)
+                    .contains(&wanted)
+            })
+            .map(|raw| raw.saturating_sub(8))
     }
 
     /// Forget keys and modifiers which may have been released while input

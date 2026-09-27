@@ -200,8 +200,9 @@ pub struct InputPrefs {
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
     pub keyboard_layouts: Vec<String>,
-    /// Stable connector name used to map an absolute pen/tablet.
-    pub pen_output: Option<String>,
+    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
+    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
+    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
 impl Default for InputPrefs {
@@ -235,7 +236,7 @@ impl Default for InputPrefs {
             compose_key: None,
             caps_lock: None,
             keyboard_layouts: vec!["us".into()],
-            pen_output: None,
+            tablets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -299,7 +300,7 @@ impl InputPrefs {
             touchpad_click_method: self.touchpad_click_method,
             touchpad_scroll_method: self.touchpad_scroll_method,
             scroll_speed: self.scroll_speed,
-            pen_output: self.pen_output.clone(),
+            tablets: self.tablets.clone(),
         };
         config.normalise_sources();
         self.keyboard_layout = config.keyboard_layout;

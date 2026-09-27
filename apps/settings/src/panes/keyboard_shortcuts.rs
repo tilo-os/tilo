@@ -304,6 +304,15 @@ pub(crate) fn resource_entries() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// Every shortcut the page lists, with its name, in page order — what a pen
+/// or pad button can be set to run.
+pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, &'static str)> {
+    entries()
+        .into_iter()
+        .map(|(action, _, label, _)| (action, label))
+        .collect()
+}
+
 /// Whether `key` names one of this pane's durable shortcut preferences.
 /// Presentation drafts/errors intentionally do not pass this boundary.
 pub(crate) fn is_durable_key(key: &str) -> bool {
