@@ -303,7 +303,35 @@ impl App {
             tracing::debug!(?error, "history input refused");
         }
         self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_changed(revision, open);
+    }
+
+    /// Let History preview a selected version with the app's own root: a
+    /// fresh read-only instance built by `factory`, never the live one.
+    #[must_use]
+    pub fn with_history_preview_root(
+        mut self,
+        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
+    ) -> Self {
+        self.document_history
+            .set_preview_root(std::rc::Rc::new(factory));
+        self
+    }
+
+    /// Build the preview root a selection asked for, inside this app's wake
+    /// scope like its live root, and hand it to the History host.
+    fn fulfil_history_preview(&mut self) {
+        if !self.document_history.has_preview_request() {
+            return;
+        }
+        let root = self.document_history.preview_root().and_then(|factory| {
+            let _scope = self.enter_wake_scope();
+            factory()
+                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
+                .ok()
+        });
+        self.with_history_host(|host, context| host.install_preview(root, context));
     }
 
     /// Write a restore the History pane confirmed into the live document,
@@ -522,7 +550,8 @@ impl App {
             chrome.into_iter().zip(
                 std::iter::once(layout.toolbar)
                     .chain(layout.search)
-                    .chain(layout.pane),
+                    .chain(layout.pane)
+                    .chain(layout.preview),
             ),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_ref()) {
@@ -662,6 +691,23 @@ impl App {
                 &self.layout.taffy,
             );
         }
+        if !*handled
+            && !keyboard
+            && let Some(node) = layout.preview
+            && let Some(preview) = self.document_history.preview_mut()
+        {
+            preview.handle_event(
+                event,
+                scale,
+                &self.input.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                handled,
+                focus,
+                node,
+                &self.layout.taffy,
+            );
+        }
         if !layout.app_visible && !keyboard {
             *handled = true;
         }
@@ -733,6 +779,7 @@ impl App {
         let mut pending = vec![layout.toolbar];
         pending.extend(layout.search);
         pending.extend(layout.pane);
+        pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
             if next == node {
                 return true;
@@ -818,6 +865,7 @@ impl App {
         let open = self.document_history.is_open();
         let result = self.with_history_host(|host, context| host.invoke_local(encoded, context));
         self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_changed(revision, open);
         result.map_err(|error| format!("History is unavailable: {error:?}"))
     }

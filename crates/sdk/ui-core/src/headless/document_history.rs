@@ -116,6 +116,7 @@ impl FrameHarness {
         };
         let mut pending = vec![layout.toolbar];
         pending.extend(layout.pane);
+        pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
             if next == node {
                 return true;
@@ -308,8 +309,31 @@ impl FrameHarness {
             .map_err(|error| format!("History is unavailable: {error:?}"))
         };
         self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
+    }
+
+    /// Let History preview a selected version with a fresh read-only instance
+    /// of the app's root, as the native App does.
+    pub fn set_history_preview_root(
+        &mut self,
+        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
+    ) {
+        self.document_history
+            .set_preview_root(std::rc::Rc::new(factory));
+    }
+
+    fn fulfil_history_preview(&mut self) {
+        if !self.document_history.has_preview_request() {
+            return;
+        }
+        let root = self
+            .document_history
+            .preview_root()
+            .and_then(|factory| factory().ok());
+        self.with_history(|host, context| host.install_preview(root, context));
+        self.invalidate_layout_tree();
     }
 
     /// The headless counterpart of the App's restore door: the same checked
@@ -377,6 +401,7 @@ impl FrameHarness {
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
         self.apply_confirmed_history_restore();
+        self.fulfil_history_preview();
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
         // boundary records completed actions but does not commit unrelated typing.
         self.idle_control_tick();
@@ -465,9 +490,11 @@ impl FrameHarness {
             self.child_node,
         )];
         roots.extend(
-            chrome
-                .into_iter()
-                .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
+            chrome.into_iter().zip(
+                std::iter::once(layout.toolbar)
+                    .chain(layout.pane)
+                    .chain(layout.preview),
+            ),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.action_palette.as_deref()) {
             roots.push((palette, node));
@@ -647,6 +674,22 @@ impl FrameHarness {
             && let Some(pane) = self.document_history.pane_mut()
         {
             pane.handle_event(
+                event,
+                self.input_scale,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                handled,
+                focus,
+                node,
+                &self.taffy,
+            );
+        }
+        if !*handled
+            && let Some(node) = layout.preview
+            && let Some(preview) = self.document_history.preview_mut()
+        {
+            preview.handle_event(
                 event,
                 self.input_scale,
                 &self.modifiers,

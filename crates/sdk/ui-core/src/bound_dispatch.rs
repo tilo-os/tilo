@@ -2774,6 +2774,13 @@ impl CallbackBinding {
         Ok(true)
     }
 
+    /// Close a step the widget keeps open (a word being typed) through the
+    /// ordinary mutation entry, as an undo, a save or a merge does, so a
+    /// restore reviewed afterwards starts at a finished action boundary.
+    pub(crate) fn close_open_step(&self, outer: &mut AutoCommit) -> Result<(), BoundDispatchError> {
+        self.with_document(outer, |doc, _| self.finish_action_boundary(doc))?
+    }
+
     pub(crate) fn history_request(
         &self,
         outer: &mut AutoCommit,
@@ -2866,11 +2873,27 @@ impl CallbackBinding {
     }
     /// Restore only through the already owned record frame. Unlike ordinary
     /// mutation entry this never activates or flushes an unfinished action.
+    #[cfg(test)]
     pub(crate) fn restore_prepared(
         &self,
         outer: &mut AutoCommit,
         admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
         prepared: &crate::history_mode::restore::PreparedContentRestore,
+    ) -> Result<
+        crate::state::owned_restore::OwnedActionReceipt,
+        crate::state::owned_restore::OwnedRestoreError,
+    > {
+        self.restore_write(
+            outer,
+            admitted,
+            crate::state::owned_restore::RestoreWrite::Content(prepared),
+        )
+    }
+    pub(crate) fn restore_write(
+        &self,
+        outer: &mut AutoCommit,
+        admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
+        write: crate::state::owned_restore::RestoreWrite<'_>,
     ) -> Result<
         crate::state::owned_restore::OwnedActionReceipt,
         crate::state::owned_restore::OwnedRestoreError,
@@ -2906,11 +2929,11 @@ impl CallbackBinding {
             let receipt = OwnedContentAction::begin_clean(
                 doc,
                 &mut frame.history,
-                prepared.current_heads(),
+                write.current_heads(),
                 admitted,
                 Some(self.instance_id),
             )?
-            .apply_restore(prepared)?;
+            .apply(write)?;
             if receipt.changed {
                 frame.state.generation = Some(next_generation);
                 frame.reset_operation_baseline(self, receipt.after.clone());
@@ -3044,7 +3067,7 @@ pub(crate) fn restore_legacy_history(
     store: &RecordStore,
     checkout: &RecordCheckout,
     admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
-    prepared: &crate::history_mode::restore::PreparedContentRestore,
+    write: crate::state::owned_restore::RestoreWrite<'_>,
 ) -> Result<
     crate::state::owned_restore::OwnedActionReceipt,
     crate::state::owned_restore::OwnedRestoreError,
@@ -3069,11 +3092,11 @@ pub(crate) fn restore_legacy_history(
             let receipt = OwnedContentAction::begin_clean(
                 doc,
                 history,
-                prepared.current_heads(),
+                write.current_heads(),
                 admitted,
                 None,
             )?
-            .apply_restore(prepared)?;
+            .apply(write)?;
             if receipt.changed {
                 state.generation = Some(next);
                 state.pending = None;
