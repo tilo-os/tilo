@@ -5,10 +5,9 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# The app uses the protocol types through ui's canonical re-export. The
-# renamed self dev-dependency only turns on `test-support` for tests.
+# The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["tilo-actions", "containers-test-support"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "containers"
@@ -20,7 +19,6 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-test-support = ["ui/test-support"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -38,10 +36,6 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Tests see this package's `test-support` API. The key must not be the package
-# name: a dependency named `containers` claims `--features containers/thin` in
-# the collection build, and the app then links the whole runtime statically.
-containers-test-support = { package = "containers", path = ".", default-features = false, features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
