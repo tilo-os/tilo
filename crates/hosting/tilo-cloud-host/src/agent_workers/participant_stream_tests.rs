@@ -180,7 +180,7 @@ async fn agent_chat_post_is_authored_by_the_invoking_agent() {
     const CHAT: &str = "so.tilo.chat";
     let (directory, owner) = super::tests::selected();
     let (mut workers, mut documents, mut network) = started(directory.path(), owner).await;
-    let grants = workers.publications().unwrap().grants;
+    let grants = offered_grants(&mut workers, &mut documents, &mut network).await;
     let task = enrolled_task(&mut workers, &mut documents, &mut network, true).await;
     let task_id = task.acceptance.task_id.clone();
     let active = [ActiveAgentTask {
