@@ -287,7 +287,7 @@ async fn submit_without_owner_pump(
         arguments: serde_json::Map::new(),
         confirmation
     }));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         for event in f.caller.poll() {
             if let CollabEvent::PublishedInvocationResult { request_id, result } = event
@@ -297,7 +297,7 @@ async fn submit_without_owner_pump(
             }
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "genuine signed RPC admission timed out"
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -320,7 +320,7 @@ fn assert_queued(f: &ScopedAppFixture, p: &Probe, id: u64) {
     );
 }
 async fn owner_mutates_once(f: &mut ScopedAppFixture, p: &Probe, id: u64) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Err(error) = f.pump().await {
             assert_eq!(
@@ -330,7 +330,7 @@ async fn owner_mutates_once(f: &mut ScopedAppFixture, p: &Probe, id: u64) {
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "did not reach actual closed native publication fence"
         );
     }
@@ -466,7 +466,7 @@ async fn refused_after_admission(reason: Refusal) {
         Refusal::Retired => f.retire_policy_origin(),
         Refusal::Expired => f.expire_original_caller(),
     }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let result = f.pump().await;
         if matches!(reason, Refusal::Unavailable | Refusal::Retired) {
@@ -495,7 +495,7 @@ async fn refused_after_admission(reason: Refusal) {
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "expired signed invocation did not fail"
         );
     }

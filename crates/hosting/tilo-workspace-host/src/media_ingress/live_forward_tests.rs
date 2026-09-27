@@ -372,7 +372,7 @@ async fn subscribe_ops(
 ) {
     use super::live_tests::{grant, live_connect, request};
     use tilo_delivery_protocol::delivery_v3::live_wire::room_digest;
-    use tokio::time::{Duration, Instant, timeout};
+    use tokio::time::{Duration, Instant};
     let wanted = request(h, participation, true);
     let (status, token) = grant(h, &wanted).await;
     assert_eq!(status, StatusCode::OK);
@@ -382,9 +382,8 @@ async fn subscribe_ops(
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(Duration::from_secs(5), client.member(&path))
+    let own = tilo_test_env::within("the own namespace to be relayed", client.member(&path))
         .await
-        .unwrap()
         .expect("own namespace relayed");
     let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     let mut ops = own
