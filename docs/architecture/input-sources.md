@@ -40,11 +40,18 @@ session. If compilation fails (for example, an XKB data package was removed),
 hot reload keeps the previous working keymap; failure never leaves a running
 session without keyboard input.
 
-Alt+Shift uses the standard `grp:alt_shift_toggle` option when more than one
-source is configured. Super+Space is deliberately not claimed because it is the
-Tilo global-search shortcut. Compose-key selections map to standard XKB options.
-The saved active source is the session-start preference; shortcut cycling is
-temporary and does not rewrite settings on every chord.
+Switching sources is the compositor's rebindable **Next keyboard layout**
+shortcut, Super+Alt+Space by default (Super+Space is global search). It writes
+the new active source to the settings document, switches the Wayland seat and
+the DRM keyboard at once — keeping held modifiers — and shows the layout's XKB
+name in the on-screen readout. A settings reload that changes only the active
+source switches groups rather than recompiling the keymap. No XKB group toggle
+option is compiled in: `grp:alt_shift_toggle` switched silently, was forgotten
+on reload and collided with Alt+Shift+Tab.
+
+Compose-key selections and the Caps Lock remaps (Control `ctrl:nocaps`, Escape
+`caps:escape`, Backspace `caps:backspace`) map to standard XKB options; Compose
+on Caps Lock wins over a Caps Lock remap.
 
 ## Input methods (Chinese, Japanese, Korean)
 
@@ -89,6 +96,17 @@ Apps receive composed text through `zwp_text_input_v3` (GTK, Qt, Chromium and
 Tilo apps through winit's IME). Candidate windows are `zwp_input_popup_surface_v2`
 surfaces placed directly below the field's caret rectangle, flipped above it
 at the bottom of an output, and kept on that output.
+
+X11 apps compose through XIM on their workspace's own X display. X11 host
+launches get `XMODIFIERS=@im=fcitx`. Once a workspace's X server has run for
+a real client for a second, the compositor asks the running Fcitx5 over the
+session bus (`org.fcitx.Fcitx.Controller1.OpenX11Connection`) to serve that
+display. First it refreshes the composer's `XAUTHORITY` file with every
+workspace display's cookie. Each server and composer pair is asked once. The
+composer's connection never keeps a server alive: the 60-second idle stop
+counts clients by their peer socket inode (`sock_diag`) and excludes inodes
+held by the composer's process group. When the server stops, the connection
+dies with it.
 
 Hosted development mode receives already-translated physical key events from
 the host compositor, so Tilo cannot override that host keyboard. Its embedded

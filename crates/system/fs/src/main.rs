@@ -466,6 +466,32 @@ enum Command {
         #[arg(long)]
         fs_binary: Option<PathBuf>,
     },
+    /// Run the per-user cloud account service: one mount per enabled
+    /// cloud storage account under `--mounts-root` (`~/Remote`).
+    #[cfg(target_os = "linux")]
+    CloudService {
+        /// Where account folders appear.
+        #[arg(long)]
+        mounts_root: PathBuf,
+        /// Private per-account metadata, queues and content caches.
+        #[arg(long)]
+        state_root: PathBuf,
+        /// Settings' config root; defaults to `$XDG_CONFIG_HOME/tilo`.
+        #[arg(long)]
+        config_root: Option<PathBuf>,
+        /// Filesystem executable used for supervised `mount-cloud` children.
+        #[arg(long)]
+        fs_binary: Option<PathBuf>,
+    },
+    /// Serve one cloud account at `--mount-point`. The mount specification
+    /// and credential arrive on stdin from `cloud-service`, never in argv.
+    #[cfg(target_os = "linux")]
+    MountCloud {
+        #[arg(long)]
+        mount_point: PathBuf,
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
     /// Keep a complete, authenticated workspace replica without mounting FUSE.
     Replica {
         /// A home-peer bundle exported by an existing workspace member.
@@ -530,6 +556,10 @@ fn main() -> Result<()> {
     tilo_rt::daemon("tilo-fs").run(run_command())?
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch over every subcommand the daemon offers"
+)]
 async fn run_command() -> Result<()> {
     let cli = Cli::parse();
     if let Some(path) = &cli.test_clock_file {
@@ -597,6 +627,51 @@ async fn run_command() -> Result<()> {
             cache_root,
             fs_binary,
         } => recipient_service(socket, mounts_root, cache_root, fs_binary).await,
+        #[cfg(target_os = "linux")]
+        Command::CloudService {
+            mounts_root,
+            state_root,
+            config_root,
+            fs_binary,
+        } => {
+            let executable = match fs_binary {
+                Some(path) => path,
+                None => std::env::current_exe()?,
+            };
+            tokio::task::spawn_blocking(move || {
+                fs::cloud::CloudService::new(
+                    fs::cloud::ServiceConfig {
+                        // Settings' credential helper, the only process that
+                        // opens the account vault, publishes fresh handoff
+                        // credentials.
+                        refresher: std::sync::Arc::new(accounts::CommandRefresher::new(
+                            config_root.clone(),
+                        )),
+                        config_root,
+                        mounts_root,
+                        state_root,
+                    },
+                    Box::new(fs::cloud::ProcessLauncher {
+                        executable,
+                        ready_timeout: std::time::Duration::from_secs(30),
+                    }),
+                )
+                .run()
+            })
+            .await??;
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Command::MountCloud {
+            mount_point,
+            state_dir,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                fs::cloud::service::run_mount(&mount_point, &state_dir)
+            })
+            .await??;
+            Ok(())
+        }
         Command::Replica { config } => replica(config).await,
         Command::ExportHomePeer {
             cache_dir,

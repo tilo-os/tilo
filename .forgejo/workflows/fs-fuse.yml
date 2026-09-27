@@ -62,6 +62,20 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/system/fs/**"
+      - "crates/system/cloud-source/**"
+      - "crates/system/cloud-source-dav/**"
+      - "crates/system/cloud-source-dropbox/**"
+      - "crates/system/cloud-source-gdrive/**"
+      - "crates/system/cloud-source-icloud/**"
+      - "crates/system/cloud-source-onedrive/**"
+      - "crates/system/tilo-dav/**"
+      - "crates/dev/test-http/**"
+      - "crates/system/accounts/**"
+      - "crates/system/fs-native/**"
+      - "crates/system/secret-vault/**"
+      - "crates/system/tilo-clock/**"
+      - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-net/**"
       - "crates/doc/qdoc/**"
       - "crates/doc/qdoc-codecs/**"
       - "crates/system/content/**"
@@ -99,6 +113,7 @@ on:
       - "crates/dev/test-env/**"
       - "crates/system/fs-native/**"
       - "crates/system/fs-content/**"
+      - "crates/system/tilo-seal/**"
       - "crates/system/tilo-clock/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
@@ -144,6 +159,15 @@ env:
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
   TILO_FS_FUSE_REQUIRED: "1"
   TILO_REQUIRE_FUSE: "1"
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
   applicability:
@@ -248,6 +272,11 @@ jobs:
           bash scripts/ci-run.sh "real FUSE integration" --
           cargo test --locked -p fs --test integration_test -- --nocapture --test-threads=1
 
+      - name: Mount a cloud account through the kernel and write back
+        run: >-
+          bash scripts/ci-run.sh "cloud account mount" --
+          cargo test --locked -p fs --test cloud_mount -- --nocapture --test-threads=1
+
       - name: Run the separate-process exact-share and injected-clock lifecycle
         run: >-
           bash scripts/ci-run.sh "real FUSE exact-share lifecycle" --
@@ -304,6 +333,106 @@ jobs:
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # The cloud-source conformance suite against real, self-hosted servers:
+  # Apache mod_dav and the official Nextcloud image, as job services. The
+  # same suite runs against in-process fakes in every affected-package test
+  # shard, and against live accounts in `cloud-live`.
+  cloud-servers:
+    needs: [applicability, builder]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        needs.builder.result == 'success'
+      }}
+    runs-on: runner
+    timeout-minutes: 30
+    env:
+      TILO_FS_FUSE_REQUIRED: "0"
+      TILO_REQUIRE_FUSE: "0"
+      TILO_REQUIRE_CLOUD_SERVERS: "1"
+      TILO_TEST_WEBDAV_URL: http://webdav/
+      TILO_TEST_WEBDAV_USER: ada
+      TILO_TEST_WEBDAV_PASSWORD: conformance-password
+      TILO_TEST_NEXTCLOUD_URL: http://nextcloud/
+      TILO_TEST_NEXTCLOUD_USER: ada
+      TILO_TEST_NEXTCLOUD_PASSWORD: conformance-password
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    services:
+      webdav:
+        image: docker.io/bytemark/webdav:latest
+        env:
+          AUTH_TYPE: Basic
+          USERNAME: ada
+          PASSWORD: conformance-password
+      nextcloud:
+        image: docker.io/library/nextcloud:31-apache
+        env:
+          SQLITE_DATABASE: nextcloud
+          NEXTCLOUD_ADMIN_USER: ada
+          NEXTCLOUD_ADMIN_PASSWORD: conformance-password
+          NEXTCLOUD_TRUSTED_DOMAINS: nextcloud
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
+
+      # Nextcloud installs itself before it listens; curl's retry bounds it.
+      - name: Wait for the servers to serve
+        run: |
+          curl -sS -o /dev/null --retry 60 --retry-connrefused --retry-delay 1 http://webdav/
+          curl -fsS -o /dev/null --retry 300 --retry-all-errors --retry-delay 1 http://nextcloud/status.php
+
+      - name: Run the conformance suite against real servers
+        run: >-
+          bash scripts/ci-run.sh "cloud-source conformance (servers)" --
+          cargo test --locked -p cloud-source-dav --test conformance container_ -- --nocapture
+
+  # The same suite against live provider accounts, on a schedule. Each run
+  # works in its own folder and deletes it; without the secrets every test
+  # is skipped.
+  cloud-live:
+    needs: builder
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.builder.result == 'success' }}
+    runs-on: runner
+    timeout-minutes: 30
+    env:
+      TILO_FS_FUSE_REQUIRED: "0"
+      TILO_REQUIRE_FUSE: "0"
+      TILO_LIVE_WEBDAV_URL: ${{ secrets.TILO_LIVE_WEBDAV_URL }}
+      TILO_LIVE_WEBDAV_USER: ${{ secrets.TILO_LIVE_WEBDAV_USER }}
+      TILO_LIVE_WEBDAV_PASSWORD: ${{ secrets.TILO_LIVE_WEBDAV_PASSWORD }}
+      TILO_LIVE_NEXTCLOUD_URL: ${{ secrets.TILO_LIVE_NEXTCLOUD_URL }}
+      TILO_LIVE_NEXTCLOUD_USER: ${{ secrets.TILO_LIVE_NEXTCLOUD_USER }}
+      TILO_LIVE_NEXTCLOUD_PASSWORD: ${{ secrets.TILO_LIVE_NEXTCLOUD_PASSWORD }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
+
+      - name: Run the conformance suite against live accounts
+        run: >-
+          bash scripts/ci-run.sh "cloud-source conformance (live)" --
+          cargo test --locked -p cloud-source-dav --test conformance live_ -- --nocapture --test-threads=1
 
   # The native data plane's acceptance suites (`fs --test native_tier1`,
   # `fs-native --test it`): two daemons on two loop-mounted Btrfs stores,

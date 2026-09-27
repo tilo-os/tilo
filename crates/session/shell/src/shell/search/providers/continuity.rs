@@ -54,6 +54,20 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
+/// The semantic id of "keep playing this local media session here and send
+/// its sound to speaker group `group`". Like [`media_handoff_action_id`], it
+/// names the destination without disclosing the session or group identity.
+pub(crate) fn speaker_group_media_action_id(
+    session_id: &str,
+    group: crate::shell::speaker_group::SpeakerGroupId,
+) -> String {
+    format!(
+        "speakers.media.{}.{}",
+        opaque("so.tilo.continuity.media-session.v1", session_id.as_bytes()),
+        opaque("so.tilo.continuity.speaker-group.v1", &group.0)
+    )
+}
+
 /// The semantic id of "play this local media session on `target`". Other
 /// chrome names a handoff destination by this id, never by the device or
 /// session identity behind it.
@@ -445,14 +459,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
         for media in &view.local_media {
             actions.push(DeviceAction {
-                id: format!(
-                    "speakers.media.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.media-session.v1",
-                        media.session_id.as_bytes()
-                    ),
-                    speaker_id(group.id)
-                ),
+                id: speaker_group_media_action_id(&media.session_id, group.id),
                 title: format!("Play {} on {}", media.title, group.name),
                 subtitle: "Keep playing here and send the sound to this speaker group".into(),
                 action: DeviceFabricUiAction::PlayMediaOnSpeakerGroup {

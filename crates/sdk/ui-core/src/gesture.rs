@@ -136,7 +136,8 @@ pub struct TouchGestureArena {
 }
 
 impl TouchGestureArena {
-    const TAP_SLOP: f64 = 14.0;
+    /// Travel a finger may make and still be a tap.
+    pub const TAP_SLOP: f64 = 14.0;
     const SWIPE_DISTANCE: f64 = 56.0;
     const AXIS_DOMINANCE: f64 = 1.4;
     const PINCH_SLOP: f64 = 0.04;

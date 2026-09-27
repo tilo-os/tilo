@@ -130,8 +130,8 @@ struct SnapAnim {
 const GROUP_DRAG_THRESHOLD: f64 = 6.0;
 
 /// In-flight whole-group reorder drag, set on a tab-bar-background press
-/// (see [`WindowGroup::bar_grab_hit`]) and cleared on release. `moved`
-/// latches once the pointer passes [`GROUP_DRAG_THRESHOLD`].
+/// or touch (see [`WindowGroup::bar_grab_hit`]) and cleared on release.
+/// `moved` latches once the pointer passes [`GROUP_DRAG_THRESHOLD`].
 #[derive(Clone, Copy, Debug)]
 struct GroupDrag {
     src_idx: usize,
@@ -139,6 +139,8 @@ struct GroupDrag {
     start: Point,
     lifted_at: Instant,
     moved: bool,
+    /// The finger carrying the drag; `None` for the pointer.
+    touch: Option<u64>,
 }
 
 /// The one spatial answer to a tab drag within a strip — the desktop
@@ -242,6 +244,9 @@ pub struct GroupRow {
     /// Insertion gap index targeted by an in-progress reorder drag;
     /// `draw` paints the indicator here. Cleared on release.
     group_reorder_target: Option<usize>,
+    /// Lane the targeted gap is in, on a partitioned strip: a group dragged
+    /// onto another display lands in that display's lane.
+    group_reorder_lane: Option<usize>,
     /// One-shot `(group_id, new_index)` on reorder commit; drained via
     /// [`Self::take_pending_group_reorder`] into the persisted `WorkspaceTree`.
     pending_group_reorder: Option<(u64, usize)>,
@@ -292,9 +297,11 @@ pub struct OutputSpan {
 pub struct StripLane {
     /// The display this lane belongs to (the compositor's output id).
     pub output: u32,
-    /// Where the lane's windows may sit, in the row's coordinate space: the
-    /// display's rectangle less any chrome drawn along its top edge. The
-    /// lane's viewport is this intersected with the row's own band.
+    /// Where the lane's windows sit, in the row's coordinate space: this
+    /// strip's band of the display. Every display stacks all of a
+    /// workspace's strips in its own height, so the band lies on the
+    /// display whatever part of the desktop the row itself is laid out
+    /// over.
     pub area: Rect,
     /// Width window groups in this lane resolve their fractions against.
     pub usable: f64,
@@ -688,14 +695,10 @@ struct Lane {
 }
 
 impl Lane {
-    /// The lane's viewport inside a row laid out at `row`: its area, cut
-    /// to the row's vertical band. Degenerate when the display is outside
-    /// the band altogether.
-    fn viewport_in(&self, row: Rect) -> Rect {
+    /// The lane's viewport: its area, never inverted.
+    fn viewport(&self) -> Rect {
         let area = self.spec.area;
-        let y0 = area.y0.max(row.y0);
-        let y1 = area.y1.min(row.y1).max(y0);
-        Rect::new(area.x0, y0, area.x1, y1)
+        Rect::new(area.x0, area.y0, area.x1.max(area.x0), area.y1.max(area.y0))
     }
 }
 
@@ -777,6 +780,7 @@ impl GroupRow {
             hidden: false,
             group_drag: None,
             group_reorder_target: None,
+            group_reorder_lane: None,
             pending_group_reorder: None,
             pending_topology_change: false,
             output_spans: Vec::new(),
@@ -945,6 +949,16 @@ impl GroupRow {
         !self.lanes.is_empty()
     }
 
+    /// Whether logical point `p` is over this strip: inside one of its
+    /// lanes when it is partitioned, else within its row's band.
+    pub fn covers(&self, p: Point) -> bool {
+        if self.lanes.is_empty() {
+            p.y >= self.rect.y0 && p.y <= self.rect.y1
+        } else {
+            self.lanes.iter().any(|lane| lane.viewport().contains(p))
+        }
+    }
+
     /// Lane of the group at vector index `idx`: its assigned lane, else the
     /// lane of the nearest assigned group before it, else the first lane.
     fn lane_index_of(&self, idx: usize) -> usize {
@@ -1008,10 +1022,9 @@ impl GroupRow {
         if self.lanes.is_empty() {
             return None;
         }
-        let row = self.rect;
         self.lanes
             .iter()
-            .position(|lane| lane.viewport_in(row).contains(p))
+            .position(|lane| lane.viewport().contains(p))
             .or_else(|| {
                 self.lanes
                     .iter()
@@ -1903,7 +1916,7 @@ impl GroupRow {
             .groups
             .iter()
             .any(super::window_group::WindowGroup::drag_in_flight);
-        self.tab_drop_target = if any_drag && self.rect.contains(self.last_cursor) {
+        self.tab_drop_target = if any_drag && self.covers(self.last_cursor) {
             self.tab_drop_target_with_hysteresis(self.last_cursor)
         } else {
             None
@@ -1928,34 +1941,49 @@ impl GroupRow {
 
     /// Slot before the first group whose centre sits right of the
     /// cursor. Centre-based so nudging past a neighbour's midpoint
-    /// commits the swap, matching tab-reorder feel.
-    fn group_insertion_index_for(&self, p: Point) -> usize {
-        // A partitioned strip reorders within the dragged group's display.
-        let run = match self.group_drag {
-            Some(drag) if !self.lanes.is_empty() => {
-                self.lane_range(self.lane_index_of(drag.src_idx))
-            }
-            _ => 0..self.groups.len(),
+    /// commits the swap, matching tab-reorder feel. On a partitioned strip
+    /// the slot is among the groups of the display under the cursor, with
+    /// that display's lane: dragging a group onto another display moves it
+    /// there.
+    fn group_insertion_for(&self, p: Point) -> (usize, Option<usize>) {
+        let lane = match self.group_drag {
+            Some(drag) if !self.lanes.is_empty() => Some(
+                self.lane_at(p)
+                    .unwrap_or_else(|| self.lane_index_of(drag.src_idx)),
+            ),
+            _ => None,
         };
+        let run = lane.map_or(0..self.groups.len(), |lane| self.lane_range(lane));
         for i in run.clone() {
             if self
                 .groups
                 .get(i)
                 .is_some_and(|g| p.x < g.get_rect().center().x)
             {
-                return i;
+                return (i, lane);
             }
         }
-        run.end
+        (run.end, lane)
     }
 
     /// `insert_at` is a pre-removal gap index; converted here to the
     /// post-removal landing slot so `WorkspaceTree::reorder_group_within_strip`
-    /// reproduces the same order.
-    fn commit_group_reorder(&mut self, src: usize, group_id: u64, insert_at: usize) {
+    /// reproduces the same order. On a partitioned strip `lane` is the
+    /// lane the gap is in; a group landing in another lane moves to it even
+    /// when its index stays the same (the last group of one display dropped
+    /// at the start of the next).
+    fn commit_group_reorder(
+        &mut self,
+        src: usize,
+        group_id: u64,
+        insert_at: usize,
+        lane: Option<usize>,
+    ) {
         if src >= self.groups.len() {
             return;
         }
+        let changes_lane =
+            lane.is_some_and(|lane| !self.lanes.is_empty() && self.lane_index_of(src) != lane);
         // Removing `src` shifts every later slot left by one.
         let final_idx = if insert_at > src {
             insert_at.saturating_sub(1)
@@ -1963,13 +1991,95 @@ impl GroupRow {
             insert_at
         };
         let dest = final_idx.min(self.groups.len().saturating_sub(1));
-        if dest == src {
+        if dest == src && !changes_lane {
             return;
         }
         let g = self.groups.remove(src);
         self.groups.insert(dest, g);
+        if let Some(lane) = lane.filter(|_| changes_lane) {
+            self.group_lanes.insert(group_id, lane);
+        }
         self.structure_dirty = true;
         self.pending_group_reorder = Some((group_id, dest));
+    }
+
+    /// A press or touch at the cursor on a group's bar lifts that group as
+    /// a drag candidate, unless another drag is already in flight.
+    fn begin_group_drag(&mut self, touch: Option<u64>) {
+        // Don't start a group drag while a tab-detach or resize drag is
+        // already in flight, or one is already tracked.
+        if self.group_drag.is_some()
+            || self
+                .groups
+                .iter()
+                .any(|g| g.resize_grab_hit(self.last_cursor))
+            || self
+                .groups
+                .iter()
+                .any(super::window_group::WindowGroup::drag_in_flight)
+            || self
+                .handles
+                .iter()
+                .any(super::resize_handle::ResizeHandle::is_dragging)
+        {
+            return;
+        }
+        if let Some(idx) = self
+            .groups
+            .iter()
+            .position(|g| g.bar_grab_hit(self.last_cursor))
+            && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
+        {
+            self.group_drag = Some(GroupDrag {
+                src_idx: idx,
+                group_id,
+                start: self.last_cursor,
+                lifted_at: crate::time::now(),
+                moved: false,
+                touch,
+            });
+        }
+    }
+
+    /// The drag followed the cursor; whether it is past the threshold and
+    /// so claims the motion.
+    fn move_group_drag(&mut self) -> bool {
+        let Some(mut drag) = self.group_drag else {
+            return false;
+        };
+        if !drag.moved {
+            let dx = self.last_cursor.x - drag.start.x;
+            let dy = self.last_cursor.y - drag.start.y;
+            if (dx * dx + dy * dy).sqrt() > GROUP_DRAG_THRESHOLD {
+                drag.moved = true;
+            }
+        }
+        self.group_drag = Some(drag);
+        if drag.moved {
+            let (target, lane) = self.group_insertion_for(self.last_cursor);
+            self.group_reorder_target = Some(target);
+            self.group_reorder_lane = lane;
+            return true;
+        }
+        false
+    }
+
+    /// The drag was let go (`commit`) or cancelled; whether it had moved
+    /// and so claims the release.
+    fn end_group_drag(&mut self, commit: bool) -> bool {
+        let Some(drag) = self.group_drag.take() else {
+            return false;
+        };
+        let claimed = drag.moved;
+        let lane = self.group_reorder_lane.take();
+        if commit
+            && drag.moved
+            && let Some(insert_at) = self.group_reorder_target.take()
+        {
+            self.commit_group_reorder(drag.src_idx, drag.group_id, insert_at, lane);
+        }
+        self.group_reorder_target = None;
+        claimed
     }
 
     /// Returns `true` when the event is claimed by an in-flight group
@@ -1977,83 +2087,51 @@ impl GroupRow {
     /// press records a *candidate* drag but does not claim it, so a
     /// plain click still falls through to the child for focus — only
     /// once past [`GROUP_DRAG_THRESHOLD`] does the row claim motion.
-    fn update_group_drag(&mut self, event: &WindowEvent) -> bool {
+    fn update_group_drag(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        let pointer_drag = self.group_drag.is_none_or(|drag| drag.touch.is_none());
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                // Don't start a group drag while a tab-detach or resize
-                // drag is already in flight, or one is already tracked.
-                if self.group_drag.is_some()
-                    || self
-                        .groups
-                        .iter()
-                        .any(|g| g.resize_grab_hit(self.last_cursor))
-                    || self
-                        .groups
-                        .iter()
-                        .any(super::window_group::WindowGroup::drag_in_flight)
-                    || self
-                        .handles
-                        .iter()
-                        .any(super::resize_handle::ResizeHandle::is_dragging)
-                {
-                    return false;
-                }
-                if let Some(idx) = self
-                    .groups
-                    .iter()
-                    .position(|g| g.bar_grab_hit(self.last_cursor))
-                    && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
-                {
-                    self.group_drag = Some(GroupDrag {
-                        src_idx: idx,
-                        group_id,
-                        start: self.last_cursor,
-                        lifted_at: crate::time::now(),
-                        moved: false,
-                    });
-                }
+                self.begin_group_drag(None);
                 // Never claim the press — let it set focus on the group.
                 false
             }
-            WindowEvent::CursorMoved { .. } => {
-                let Some(mut drag) = self.group_drag else {
-                    return false;
-                };
-                if !drag.moved {
-                    let dx = self.last_cursor.x - drag.start.x;
-                    let dy = self.last_cursor.y - drag.start.y;
-                    if (dx * dx + dy * dy).sqrt() > GROUP_DRAG_THRESHOLD {
-                        drag.moved = true;
-                    }
-                }
-                self.group_drag = Some(drag);
-                if drag.moved {
-                    self.group_reorder_target =
-                        Some(self.group_insertion_index_for(self.last_cursor));
-                    return true;
-                }
-                false
-            }
+            WindowEvent::CursorMoved { .. } if pointer_drag => self.move_group_drag(),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let Some(drag) = self.group_drag.take() else {
-                    return false;
-                };
-                let claimed = drag.moved;
-                if drag.moved
-                    && let Some(insert_at) = self.group_reorder_target.take()
-                {
-                    self.commit_group_reorder(drag.src_idx, drag.group_id, insert_at);
+            } if pointer_drag => self.end_group_drag(true),
+            // A finger on a group's bar drags it exactly as the pointer
+            // does; the first finger down carries the drag.
+            WindowEvent::Touch(touch) => {
+                let carries = self
+                    .group_drag
+                    .is_some_and(|drag| drag.touch == Some(touch.id));
+                let at = Point::new(
+                    touch.location.x / scale_factor,
+                    touch.location.y / scale_factor,
+                );
+                match touch.phase {
+                    winit::event::TouchPhase::Started => {
+                        self.last_cursor = at;
+                        self.begin_group_drag(Some(touch.id));
+                        false
+                    }
+                    winit::event::TouchPhase::Moved if carries => {
+                        self.last_cursor = at;
+                        self.move_group_drag()
+                    }
+                    winit::event::TouchPhase::Ended if carries => {
+                        self.last_cursor = at;
+                        self.end_group_drag(true)
+                    }
+                    winit::event::TouchPhase::Cancelled if carries => self.end_group_drag(false),
+                    _ => false,
                 }
-                self.group_reorder_target = None;
-                claimed
             }
             _ => false,
         }
@@ -2388,11 +2466,7 @@ impl Widget for GroupRow {
             }
             let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
             for (lane, run) in self.lanes.iter_mut().zip(lane_children) {
-                let viewport = if row.height() > 0.0 {
-                    lane.viewport_in(row)
-                } else {
-                    lane.spec.area
-                };
+                let viewport = lane.viewport();
                 lane.built_viewport = viewport;
                 let style = Style {
                     position: Position::Absolute,
@@ -2446,11 +2520,10 @@ impl Widget for GroupRow {
             self.pan.viewport = self.rect;
             self.pan.inset = self.leading_inset;
         }
-        let row = self.rect;
         for lane in &mut self.lanes {
-            let viewport = lane.viewport_in(row);
-            // Built against a row that has since moved: lay out again so
-            // every lane's height matches its display.
+            let viewport = lane.viewport();
+            // Built against another area: lay out again so every lane's
+            // height matches its band.
             if (viewport.y0 - lane.built_viewport.y0).abs() > 0.5
                 || (viewport.height() - lane.built_viewport.height()).abs() > 0.5
                 || (viewport.x0 - lane.built_viewport.x0).abs() > 0.5
@@ -2674,7 +2747,7 @@ impl Widget for GroupRow {
         // threshold, it claims the motion/release they'd otherwise
         // contend for. A press records a candidate without claiming, so
         // a plain click still reaches the child for focus.
-        if self.update_group_drag(event) {
+        if self.update_group_drag(event, scale_factor) {
             *handled = true;
             return;
         }
@@ -3435,7 +3508,7 @@ impl GroupRow {
 
         let mut diverted: Option<usize> = None;
         for (idx, &(src_idx, tab_id, release_point)) in detaches.iter().enumerate() {
-            let out_of_band = release_point.y < self.rect.y0 || release_point.y > self.rect.y1;
+            let out_of_band = !self.covers(release_point);
             if !out_of_band {
                 continue;
             }

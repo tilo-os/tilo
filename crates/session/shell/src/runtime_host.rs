@@ -43,6 +43,15 @@ impl Session {
     /// # Errors
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start(root: &Path) -> io::Result<Self> {
+        Self::start_reporting(root, &mut |_| {})
+    }
+
+    /// [`Session::start`], naming each step to `stage` before taking it, so
+    /// whoever waits for the session can tell a slow start from a stuck one.
+    /// # Errors
+    /// Rejects a locked profile, invalid persisted state, or failed provisioning.
+    pub fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        stage("locking the profile");
         unix::private_directory(root)?;
         let lock_path = root.join("runtime.lock");
         let lock = advisory_lock::FileLock::try_exclusive(unix::private_file(&lock_path)?)
@@ -59,11 +68,13 @@ impl Session {
                 advisory_lock::TryLockError::Error(error) => error,
             })?;
         lock.record_owner()?;
+        stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
         crate::firstboot::ensure_collaboration_identity(
             &identity_dir,
             &crate::firstboot::collaboration_identity_paths(),
         )?;
+        stage("loading the workspace");
         let path = root.join("workspace.json");
         let mut tree = match persist::load_tree_from(&path) {
             Ok(tree) => tree,
@@ -88,15 +99,19 @@ impl Session {
         if workspace.owner.is_none() {
             workspace.set_owner(actor.clone());
         }
+        stage("saving the workspace");
         persist::save_tree_to(&tree, &path)?;
         let tree = tree.shared();
         let identity_socket = root.join("identity.sock");
         let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        stage("starting the identity service");
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
+        stage("starting the collaboration broker");
         let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
         channel_keys.set(broker.channel_encryption());
         let blob_socket = root.join("blobs.sock");
+        stage("opening the content store");
         let media = MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,

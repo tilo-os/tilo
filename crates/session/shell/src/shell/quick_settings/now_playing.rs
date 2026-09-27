@@ -688,6 +688,7 @@ impl NowPlayingCard {
                         node = node.with_description(tr(match output.kind {
                             OutputKind::Local => "now-playing-output-local",
                             OutputKind::Device => "now-playing-output-device",
+                            OutputKind::SpeakerGroup => "now-playing-output-speaker-group",
                         }));
                         node.state.selected = output.current;
                     }
@@ -927,11 +928,13 @@ impl NowPlayingCard {
                         tr(match output.kind {
                             OutputKind::Local => "now-playing-output-local",
                             OutputKind::Device => "now-playing-output-device",
+                            OutputKind::SpeakerGroup => "now-playing-output-speaker-group",
                         }),
                         output.current,
                         match output.kind {
                             OutputKind::Local => ui::icons::Icon::Volume2,
                             OutputKind::Device => ui::icons::Icon::Monitor,
+                            OutputKind::SpeakerGroup => ui::icons::Icon::Layers,
                         },
                     )
                 })

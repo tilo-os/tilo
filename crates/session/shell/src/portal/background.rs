@@ -220,10 +220,10 @@ impl BackgroundService for ShellBackgroundService {
         let review = ReviewRequest {
             handle: format!("{}:background", request.handle),
             app_id: request.app_id,
-            title: "Allow background activity?".into(),
+            title: crate::shell::i18n::t("portal-background-title"),
             reason: request.name,
-            resource: "The app may keep working after its window is closed.".into(),
-            confirm_label: "Allow in background".into(),
+            resource: crate::shell::i18n::t("portal-background-resource"),
+            confirm_label: crate::shell::i18n::t("portal-background-confirm"),
         };
         let receiver = match self.dialogs.enqueue_review(review) {
             Ok(receiver) => receiver,

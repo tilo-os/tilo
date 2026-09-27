@@ -189,26 +189,26 @@ impl DynamicLauncherBackend {
             review: ReviewRequest {
                 handle: path.clone(),
                 app_id: auth.caller.app_id.clone(),
-                title: if kind == 2 {
-                    "Install this web app?".into()
+                title: crate::shell::i18n::t(if kind == 2 {
+                    "portal-launcher-web-app-title"
                 } else {
-                    "Add this launcher?".into()
-                },
-                reason: "Review the launcher before it is added to your application library. The supplied image is checked but never opened from an app path or file descriptor.".into(),
+                    "portal-launcher-title"
+                }),
+                reason: crate::shell::i18n::t("portal-launcher-reason"),
                 resource,
-                confirm_label: "Add launcher".into(),
+                confirm_label: crate::shell::i18n::t("portal-launcher-confirm"),
             },
             name: name.clone(),
             editable_name,
             editable_icon,
             icon_choices: if editable_icon {
                 vec![
-                    "Supplied image (validated)".into(),
-                    "Tilo monogram".into(),
-                    "Tilo web compass".into(),
+                    crate::shell::i18n::t("portal-launcher-icon-supplied"),
+                    crate::shell::i18n::t("portal-launcher-icon-monogram"),
+                    crate::shell::i18n::t("portal-launcher-icon-compass"),
                 ]
             } else {
-                vec!["Supplied image (validated)".into()]
+                vec![crate::shell::i18n::t("portal-launcher-icon-supplied")]
             },
         }) else {
             self.lifecycle

@@ -25,6 +25,7 @@ use ui::widget::Widget;
 use ui::widget::toast::{ToastCard, ToastKind};
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 
 /// Severity tier for a notification, controlling the leading-dot colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -231,7 +232,13 @@ impl Notification {
         }
         let projection = remote.projection;
         let body_redacted = projection.body_redacted;
-        let source_caption = format!("{} · From {}", projection.app_name, remote.source_label);
+        let source_caption = t_args(
+            "notification-source-caption",
+            &[
+                ("app", projection.app_name.as_str().into()),
+                ("device", remote.source_label.as_str().into()),
+            ],
+        );
         Some(Self {
             id: next_id(),
             title: projection.title,
@@ -404,8 +411,7 @@ pub const MAX_HISTORY: usize = 50;
 pub fn lock_suppressed_label(count: usize) -> String {
     match count {
         0 => String::new(),
-        1 => "1 notification".to_string(),
-        n => format!("{n} notifications"),
+        n => t_args("notification-lock-count", &[("count", n.into())]),
     }
 }
 
@@ -589,7 +595,10 @@ impl NotificationStack {
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
         let label = if history_count > 0 {
-            format!("{status} · {history_count} held")
+            t_args(
+                "notification-dnd-held",
+                &[("status", status.into()), ("count", history_count.into())],
+            )
         } else {
             status.to_string()
         };
@@ -929,7 +938,7 @@ impl Widget for NotificationStack {
             }
             return Some(
                 AccessNode::new(Role::Group)
-                    .with_name("Notifications")
+                    .with_name(t("notification-stack-a11y"))
                     .with_live(Politeness::Polite)
                     .with_value(lock_suppressed_label(n)),
             );
@@ -942,7 +951,7 @@ impl Widget for NotificationStack {
             }
         });
         let mut node = AccessNode::new(Role::Group)
-            .with_name("Notifications")
+            .with_name(t("notification-stack-a11y"))
             .with_live(Politeness::Assertive);
         if let Some(v) = latest {
             node = node.with_value(v);

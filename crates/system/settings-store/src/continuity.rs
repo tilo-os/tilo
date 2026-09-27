@@ -109,6 +109,7 @@ policies! {
         "tilo.input.key_repeat_rate_hz",
         "tilo.input.keyboard_layout",
         "tilo.input.tap_drag",
+        "tilo.input.tap_drag_lock",
         "tilo.input.disable_while_typing",
         "tilo.input.middle_emulation",
         "tilo.input.left_handed",
@@ -118,6 +119,7 @@ policies! {
         "tilo.input.touchpad_scroll_method",
         "tilo.input.scroll_speed",
         "tilo.input.compose_key",
+        "tilo.input.caps_lock",
         "tilo.input.keyboard_layouts",
         "tilo.audio.system_sounds",
         "tilo.audio.balance",
@@ -138,7 +140,11 @@ policies! {
         "tilo.display.auto_brightness",
         "tilo.display.scale",
         "tilo.input.pen_output",
+        "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Like whether the touchpad is on, whether a mouse switches it off
+        // says nothing about another device's touchpad.
+        "tilo.input.touchpad_disabled_on_external_mouse",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
         "tilo.power.saver_suspend_minutes",
@@ -402,6 +408,7 @@ mod tests {
                     "message": null
                 },
                 "shortcuts": {"bindings": {}},
+                "input": {"touchpad_enabled": false},
                 "desktop_controls": {"vim_mode": false},
                 "quick_settings": {"controls": ["wifi"]},
                 "text_assistance": {"check_spelling": true, "auto_correct": true},
