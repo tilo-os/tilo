@@ -1942,7 +1942,7 @@ async fn guest_authenticated_action_rejects_forced_owner_operation() {
         sign_join_proof,
     };
 
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+    tilo_test_env::within("the guest's join and forced owner invite", async {
         let dir = tempfile::tempdir().unwrap();
         let now = tilo_delivery_protocol::clock::now_ns();
         let owner_root = SigningKey::from_bytes(&[31; 32]);
@@ -2035,8 +2035,7 @@ async fn guest_authenticated_action_rejects_forced_owner_operation() {
                 .any(|key| key.ends_with(":forced-owner-invite"))
         );
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 /// An idle owner and guest re-running the membership challenge must

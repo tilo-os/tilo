@@ -10,6 +10,11 @@ use tilo_relay::client::CertifiedAction;
 use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// A request deadline no loaded runner reaches before the test finishes.
+fn far_deadline() -> Instant {
+    Instant::from_std(tilo_test_env::hang_deadline())
+}
+
 // Actual Store authorization and signed HTTP admission, not a manufactured
 // CertifiedAction or a positive installation/memory qualification witness.
 pub(crate) fn certified(store: &Store, message: ActionMessage) -> CertifiedAction {
@@ -160,7 +165,7 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
     let service = runtime.certified_commands();
     let before = std::fs::read(dir.path().join("state.json")).unwrap();
     let binding = service
-        .binding(catalogue, Instant::now() + Duration::from_secs(5), None)
+        .binding(catalogue, far_deadline(), None)
         .await
         .unwrap();
     let (binding, _) = binding.into_parts();
@@ -174,7 +179,7 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
                     cursor: None,
                 },
             ),
-            Instant::now() + Duration::from_secs(5),
+            far_deadline(),
             None,
         )
         .await
@@ -202,7 +207,7 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
                     cursor: None,
                 },
             ),
-            Instant::now() + Duration::from_secs(5),
+            far_deadline(),
             None,
         )
         .await
@@ -238,11 +243,7 @@ async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
     let permits = runtime.commands.try_reserve_many(32).unwrap();
     assert_eq!(
         service
-            .binding(
-                catalogue.clone(),
-                Instant::now() + Duration::from_secs(5),
-                None
-            )
+            .binding(catalogue.clone(), far_deadline(), None)
             .await
             .unwrap_err(),
         AgentReadError::Capacity
@@ -250,18 +251,14 @@ async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
     drop(permits);
     assert!(
         service
-            .binding(
-                catalogue.clone(),
-                Instant::now() + Duration::from_secs(5),
-                None
-            )
+            .binding(catalogue.clone(), far_deadline(), None)
             .await
             .is_ok()
     );
     runtime.close().await.unwrap();
     assert_eq!(
         service
-            .binding(catalogue, Instant::now() + Duration::from_secs(5), None)
+            .binding(catalogue, far_deadline(), None)
             .await
             .unwrap_err(),
         AgentReadError::Unavailable
@@ -279,7 +276,7 @@ async fn agent_read_attachment_result_retains_original_queue_custody() {
         .unwrap();
     let service = runtime.certified_commands();
     let (queue, mut requests) = PeerActionQueue::channel();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = far_deadline();
     let pending = queue.submit_certified(evidence.clone(), deadline).unwrap();
     let request = requests.recv().await.unwrap();
     let custody = AgentReadCustody::from_request(&request);
@@ -322,7 +319,7 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
     let store_lock = Store::open(dir.path(), "agent-admission").unwrap();
     let before = std::fs::read(dir.path().join("state.json")).unwrap();
     let (queue, mut requests) = PeerActionQueue::channel();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = far_deadline();
     let pending = queue.submit_certified(evidence.clone(), deadline).unwrap();
     let request = requests.recv().await.unwrap();
     let custody = AgentReadCustody::from_request(&request);
@@ -355,7 +352,7 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
             OwnerControls::default(),
         ));
     });
-    begin.recv_timeout(Duration::from_secs(1)).unwrap();
+    tilo_test_env::recv("the dispatch thread's runtime to start", &begin);
     // Real dispatch is synchronous through Store::open's OS lock. Keep its
     // receiver live while the worker enters that read, then dispose the waiter.
     tokio::time::sleep(Duration::from_millis(40)).await;
@@ -396,7 +393,7 @@ async fn agent_read_attachment_broker_callback_uses_actual_owner_and_exact_scope
         &service,
         host,
         evidence.clone(),
-        Instant::now() + Duration::from_secs(5),
+        far_deadline(),
         None,
     )
     .await
@@ -413,7 +410,7 @@ async fn agent_read_attachment_broker_callback_uses_actual_owner_and_exact_scope
             &service,
             Uuid::new_v4(),
             evidence,
-            Instant::now() + Duration::from_secs(5),
+            far_deadline(),
             None
         )
         .await
@@ -445,7 +442,7 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
     let before = std::fs::read(dir.path().join("state.json")).unwrap();
     for evidence in [status, cancel] {
         let response = commands
-            .handle_certified(evidence, Instant::now() + Duration::from_secs(5))
+            .handle_certified(evidence, far_deadline())
             .await
             .unwrap();
         assert!(
@@ -454,7 +451,7 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
     }
     assert!(
         commands
-            .handle_certified(ordinary, Instant::now() + Duration::from_secs(5))
+            .handle_certified(ordinary, far_deadline())
             .await
             .unwrap()
             .is_none()
@@ -468,7 +465,7 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
     drop(foreign);
     assert_eq!(
         commands
-            .binding(wrong, Instant::now() + Duration::from_secs(5), None)
+            .binding(wrong, far_deadline(), None)
             .await
             .unwrap_err(),
         AgentReadError::Denied
@@ -502,7 +499,7 @@ async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
             policy_time: owner.policy_time().unwrap(),
             evidence,
             kind: CommandKind::Binding,
-            deadline: Instant::now() + Duration::from_secs(5),
+            deadline: far_deadline(),
             custody: None,
             reply: dropped_reply,
         },
@@ -529,7 +526,7 @@ async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
         }
         done.send(()).unwrap();
     });
-    let finished = completed.recv_timeout(Duration::from_secs(1));
+    let finished = completed.recv_timeout(tilo_test_env::hang_bound());
     drop(lock);
     tokio::task::spawn_blocking(move || thread.join().unwrap())
         .await
@@ -575,23 +572,19 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
     // FIFO completion of a second actual owner command proves the first result
     // was sent and ready. This does not infer readiness from a sleep or clock.
     service
-        .binding(
-            evidence.clone(),
-            Instant::now() + Duration::from_secs(5),
-            None,
-        )
+        .binding(evidence.clone(), far_deadline(), None)
         .await
         .unwrap();
     let mut held = Vec::new();
     for _ in 0..31 {
         held.push(
             queue
-                .submit_certified(evidence.clone(), Instant::now() + Duration::from_secs(5))
+                .submit_certified(evidence.clone(), far_deadline())
                 .unwrap(),
         );
     }
     assert!(matches!(
-        queue.submit_certified(evidence.clone(), Instant::now() + Duration::from_secs(5)),
+        queue.submit_certified(evidence.clone(), far_deadline()),
         Err(CarrierError::Capacity)
     ));
     tokio::time::sleep_until(deadline + Duration::from_millis(1)).await;
@@ -600,9 +593,7 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
     let late_is_deadline = matches!(late, Err(AgentReadError::Deadline));
     drop(late);
     assert!(
-        queue
-            .submit_certified(evidence, Instant::now() + Duration::from_secs(5))
-            .is_ok(),
+        queue.submit_certified(evidence, far_deadline()).is_ok(),
         "late result must release original custody after its value is dropped"
     );
     runtime.close().await.unwrap();
@@ -627,7 +618,7 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
         .bind_source(original.clone())
         .unwrap();
     let (queue, mut requests) = PeerActionQueue::channel();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = far_deadline();
     let pending = queue
         .submit_certified_with_policy_time(evidence.clone(), deadline, original.clone())
         .unwrap();
@@ -769,7 +760,7 @@ async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
             (result, cache)
         }
     });
-    let finished = answered.recv_timeout(Duration::from_secs(2));
+    let finished = answered.recv_timeout(tilo_test_env::hang_bound());
     drop(lock);
     let (second, mut cache) = tokio::task::spawn_blocking(move || reader.join().unwrap())
         .await
@@ -867,7 +858,7 @@ async fn agent_read_burst_basis_is_never_an_authorization() {
         policy_time: time.clone(),
         evidence: status,
         kind: CommandKind::Action,
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: far_deadline(),
         custody: None,
         reply,
     };

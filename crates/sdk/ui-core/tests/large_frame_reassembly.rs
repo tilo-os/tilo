@@ -12,9 +12,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::thread;
-use std::time::Duration;
-
 use crate::support::typed_collab::TypedBroker;
 use tilo_ui::collaboration::CollabRequest;
 
@@ -23,7 +20,6 @@ fn large_frame_survives_split_reads() {
     let broker = TypedBroker::new();
     let mut a = broker.manager("alice");
     let mut b = broker.manager("bob");
-    thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
 

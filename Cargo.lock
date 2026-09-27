@@ -905,6 +905,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "windows-sys 0.61.2",
 ]
 
@@ -13091,6 +13092,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-clock",
  "tilo-content",
+ "tilo-copy-lint",
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
@@ -14752,6 +14754,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-seal",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -14790,6 +14793,13 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "xdg-paths",
+]
+
+[[package]]
+name = "tilo-copy-lint"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14855,6 +14865,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "uuid",
@@ -14877,6 +14888,7 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-resource",
  "tilo-ui",
@@ -14948,6 +14960,7 @@ dependencies = [
  "tilo-moq",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-workspace-host",
@@ -15060,6 +15073,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tokio",
  "url",
  "web-transport-quinn",
@@ -15147,6 +15161,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
