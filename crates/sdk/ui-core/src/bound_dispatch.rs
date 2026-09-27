@@ -2650,6 +2650,15 @@ impl CallbackBinding {
         }
         self.records.route(&self.checkout).ok()
     }
+    /// [`Self::broker_route`], or a live New reservation's route before its
+    /// factory writes the record. Only native component admission uses it.
+    pub(crate) fn admission_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        let (_, app, _) = self.records.canonical_namespace()?;
+        if app != self.app_id {
+            return None;
+        }
+        self.records.admission_route(&self.checkout).ok()
+    }
     pub(crate) fn matches_broker_route(
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
