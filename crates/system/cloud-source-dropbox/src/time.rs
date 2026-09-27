@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::DateTime;
 
 /// Parse a Dropbox timestamp, an RFC 3339 UTC time. `None` for anything else.
 pub fn parse(text: &str) -> Option<SystemTime> {
@@ -14,7 +14,7 @@ pub fn parse(text: &str) -> Option<SystemTime> {
 /// Format as `YYYY-MM-DDTHH:MM:SSZ`.
 #[cfg(any(test, feature = "fake-server"))]
 pub fn format(time: SystemTime) -> String {
-    DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Secs, true)
+    DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[cfg(test)]

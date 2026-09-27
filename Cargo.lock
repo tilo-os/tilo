@@ -3927,6 +3927,7 @@ dependencies = [
  "chrono",
  "feed-rs",
  "hex",
+ "quick-xml 0.41.0",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -5785,6 +5786,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hot-reload-demo"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7293,16 +7303,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b68395633c21277ff4030327ec49f4e528660cd747dd4146229b72012312ce85"
@@ -8365,7 +8365,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.0",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand 0.10.1",
@@ -13046,6 +13046,7 @@ dependencies = [
  "qcms",
  "qdoc",
  "qdoc-codecs",
+ "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13090,6 +13091,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-identity-host",
  "tilo-lockdown-policy",
  "tilo-moq",
  "tilo-native-media-control",
@@ -14812,6 +14814,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "reqwest",
  "roxmltree 0.20.0",
  "test-http",
@@ -15008,6 +15011,35 @@ dependencies = [
  "winit",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-identity-host"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tracing",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15663,6 +15695,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17822,7 +17855,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
@@ -18429,6 +18462,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest",
  "serde",
