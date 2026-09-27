@@ -346,6 +346,7 @@ pub(crate) fn mouse_nav_direction(
 
 /// Android's Back key as the Escape the toolkit dismisses with; what Escape
 /// leaves unconsumed falls through to back navigation, then to closing.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn back_key_as_escape(
     event: &winit::event::WindowEvent,
 ) -> Option<winit::event::WindowEvent> {
