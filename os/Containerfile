@@ -840,18 +840,29 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
 # the browser the same app-store and sandbox route as every other app. The
 # special runtime is needed only when the main app collection was prebuilt;
 # source builds already make the browser thin in the unified runtime graph.
-RUN : > /out/browser-runtime-publisher.hex \
+ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
+RUN --mount=type=secret,id=browser_runtime_identity \
+    : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          test "${RUNTIME_VERSION}" = 2026.07 \
          && test -x /out/optional/browser \
-         && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+         && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+              test -s /run/secrets/browser_runtime_identity \
+              && actual="$(/out/tilo-runtime-bundle key pubkey \
+                   --identity /run/secrets/browser_runtime_identity)" \
+              && test "$actual" = "$TILO_BROWSER_RUNTIME_PUBLISHER" \
+              && identity=/run/secrets/browser_runtime_identity; \
+            else \
+              /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+              && identity=/out/browser-runtime-identity.json; \
+            fi \
          && /out/tilo-runtime-bundle build \
               --version 2026.7.0-browser --arch "$(uname -m)" --from / \
               --include /out/optional/browser \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               --out /usr/lib/tilo-runtime/2026.7.0-browser \
          && /out/tilo-runtime-bundle key pubkey \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               > /out/browser-runtime-publisher.hex \
          && /out/tilo-runtime-bundle verify \
               /usr/lib/tilo-runtime/2026.7.0-browser \
@@ -878,7 +889,9 @@ RUN : > /out/browser-runtime-publisher.hex \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN BIN_DIR=/out/thin-apps \
+RUN --mount=type=secret,id=browser_app_identity \
+    export TILO_IMAGE_BUILD=1 \
+    && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
@@ -895,9 +908,19 @@ RUN BIN_DIR=/out/thin-apps \
                  > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
             && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
                  /tmp/browser-package-repo/apps/browser/tilo-app.toml \
+            && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+                 test -s /run/secrets/browser_app_identity \
+                 && browser_app_identity=/run/secrets/browser_app_identity \
+                 && browser_app_publisher="$TILO_APP_COLLECTION_PUBLISHER"; \
+               else \
+                 browser_app_identity= \
+                 browser_app_publisher=; \
+               fi \
             && REPO=/tmp/browser-package-repo \
             BIN_DIR=/out/browser-app \
             TAPP_DIR= \
+            IDENTITY_JSON="$browser_app_identity" \
+            EXPECTED_PUBKEY="$browser_app_publisher" \
             PKG_BIN=/out/tilo-app-package \
             INSTALL_BIN=/out/tilo-install \
             BUNDLE_BIN=/out/tilo-runtime-bundle \
