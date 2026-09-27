@@ -201,10 +201,26 @@ fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
     );
     assert!(message.contains("startup step last changed"), "{message}");
     assert!(message.contains("wrote nothing"), "{message}");
-    // What the stalled process was blocked on.
-    assert!(message.contains("threads: sleep S"), "{message}");
-    // The stalled child was killed and reaped.
-    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    #[cfg(target_os = "linux")]
+    {
+        // What the stalled process was blocked on.
+        assert!(message.contains("threads: sleep S"), "{message}");
+        // The stalled child was killed and reaped.
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+    // Only Linux exposes a process tree's CPU time and thread states; elsewhere
+    // the step names alone are the progress signal.
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert!(message.contains("CPU time unreadable"), "{message}");
+        // The stalled child was killed and reaped.
+        // SAFETY: signal 0 only checks whether the exact child still exists.
+        assert_eq!(
+            unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
+            -1,
+            "{message}"
+        );
+    }
 }
 
 #[test]

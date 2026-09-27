@@ -892,7 +892,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             crate::compositor::tab_binding::Placement::NewGroup,
         );
         let notice = chrome.borrow_mut().push_notification_full(
-            crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
+            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
                 .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         crate::shell::catalogue::note_pending_notice(package_id, notice);
@@ -1801,7 +1801,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))
@@ -1881,7 +1881,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
-            st.push_notification_full(crate::shell::notification::Notification::new(
+            st.push_notification_full(tilo_desktop::notifications::Notification::new(
                 "Opening Ledger",
                 "Loading…",
             ))

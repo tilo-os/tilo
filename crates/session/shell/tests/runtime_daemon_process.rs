@@ -14,7 +14,7 @@ use std::{
 /// The runtime host every test launches.
 const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_tilo-runtime-mcp");
 /// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
-/// `runtime_host::daemon`). A launcher that fails sooner exits with the reason.
+/// `tilo_runtime::daemon`). A launcher that fails sooner exits with the reason.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {

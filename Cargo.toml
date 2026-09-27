@@ -206,6 +206,7 @@ members = [
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
     "crates/runtime/runtime-portal-xdg",
+    "crates/runtime/tilo-runtime",
     "crates/runtime/ush",
 
     # Session

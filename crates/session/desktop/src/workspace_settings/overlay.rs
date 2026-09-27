@@ -1,12 +1,12 @@
-//! Shell-owned presentation state for the workspace-settings lens.
+//! Presentation state for the workspace-settings lens.
 //!
-//! Policy mutations deliberately remain in the overlay host: this component
+//! Policy mutations deliberately remain with the host: this component
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
-use crate::shell::i18n::{t, t_args};
-use crate::shell::state::WorkspaceAuthority as _;
-use std::time::{Duration, Instant};
+use crate::authority::WorkspaceAuthority as _;
+use crate::i18n::{t, t_args};
+use ui::clock::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -16,14 +16,14 @@ use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use crate::shell::chrome_state::{Chrome, WsTab};
-use crate::shell::overlay_host::modal_transition_curve;
-use crate::shell::state::{CapRole, UserId, WorkspaceTree};
-use crate::shell::workspace_settings::{
-    DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
-    draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
-    permissions_pane_layout,
+use collab_types::role::Role as CapRole;
+use tilo_desktop_model::{DesktopTree, UserId};
+
+use super::{
+    AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
+    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
+    draw_permissions_pane, members_pane_rows, ownership_action_rect, ownership_transfer_resource,
+    permission_profiles_rect, permissions_pane_layout,
 };
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
@@ -40,6 +40,26 @@ fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color)
             ui::chrome::shell::HAIRLINE_ALPHA,
         ),
     )
+}
+
+/// What the lens paints, read from the host once per frame. Everything is
+/// borrowed, so building it costs no copy of the desktop.
+pub struct WorkspaceSettingsModel<'a> {
+    pub desktop: &'a DesktopTree,
+    pub tab: WsTab,
+    pub grant_draft: GrantDraft,
+    /// This device's person principal.
+    pub local_user: &'a UserId,
+    /// The person principal acting in the active workspace.
+    pub acting_user: &'a UserId,
+    /// The in-progress name, while the person is renaming the workspace.
+    pub editing_name: Option<&'a str>,
+    pub name_selection: ui::text_selection::Selection,
+    /// Whether this device governs the active workspace's room.
+    pub governs_active_room: bool,
+    /// Whether policy controls are live rather than painted disabled.
+    pub owner_controls: bool,
+    pub apps: &'a dyn AppDirectory,
 }
 
 /// The Permissions tab's grant-composer controls, as painted.
@@ -179,7 +199,7 @@ impl WorkspaceSettingsOverlay {
         // conventional 20 px breathing edge on every output while retaining
         // the responsive width calculation below.
         let margin = 20.0;
-        let top = viewport.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
+        let top = viewport.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
         let bottom = (viewport.y1 - margin).max(top + 320.0);
         if viewport.width() < 820.0 {
             return Rect::new(viewport.x0 + margin, top, viewport.x1 - margin, bottom);
@@ -567,12 +587,12 @@ impl WorkspaceSettingsOverlay {
         }
         // The one Panel entrance (HIG §9.7): opacity, a short rise and a
         // scale-up about the sheet's centre, shared with the other modal
-        // surfaces through `modal_transition_curve` — not a bespoke 48 px
+        // surfaces through `ui::Transition::modal_curve` — not a bespoke 48 px
         // slide in from the right. Reduced motion keeps the end state.
         let (_, dy, scale) = if theme.reduce_motion {
             (alpha, 0.0, 1.0)
         } else {
-            modal_transition_curve(&self.transition, now, 0.95)
+            self.transition.modal_curve(now, 0.95)
         };
         let centre = rect.center();
         let panel_transform = transform
@@ -712,18 +732,13 @@ impl WorkspaceSettingsOverlay {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "tree/state feed the per-tab pane bodies and the General tab's tail; \
-                  cloning Workspace to narrow the guard further isn't worth the paint-path allocation"
-    )]
     pub fn draw_contents(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        chrome: &Chrome,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -732,28 +747,12 @@ impl WorkspaceSettingsOverlay {
         // centered-modal geometry; hit-tests reach for the same helper
         // so a width bump can't desync the card vs. the clickable bounds.
         let rect = self.rect();
-        // Borrowed only once the header's geometry (which needs no chrome
-        // state at all) is already painted, and read again below for the
-        // per-tab pane bodies and — on the General tab — the invite URL
-        // and collaborator tile near the end of the function; those need
-        // a live `&Workspace`, so cloning it to shrink the guard further
-        // would add an allocation to a hot paint path for no real gain.
-        let state = chrome.borrow();
-        let tree = state.tree();
 
-        let active_name = self.draw_ws_settings_header_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &state,
-            &tree,
-        );
+        let active_name =
+            self.draw_ws_settings_header_text(scene, transform, text_renderer, theme, rect, model);
 
-        // Reads the typed `ws_settings_tab` field on chrome state, kept
-        // orthogonal to the name-edit buffer.
-        let active_tab = state.ws_settings_tab;
+        // The selected tab is kept orthogonal to the name-edit buffer.
+        let active_tab = model.tab;
         self.draw_ws_settings_tab_strip(scene, transform, text_renderer, theme, rect, active_tab);
 
         // Members, Permissions and Apps each own their whole body and
@@ -766,12 +765,11 @@ impl WorkspaceSettingsOverlay {
             theme,
             rect,
             active_tab,
-            &state,
-            &tree,
+            model,
         );
 
         if fully_painted {
-            self.draw_member_sheet(scene, transform, text_renderer, theme, rect, &tree);
+            self.draw_member_sheet(scene, transform, text_renderer, theme, rect, model);
             return;
         }
 
@@ -805,12 +803,12 @@ impl WorkspaceSettingsOverlay {
             text_renderer,
             theme,
             content_rect,
-            &state,
+            model,
             active_name.as_str(),
             body_y,
         );
-        let can_invite = tree.desktop.active_workspace().is_some_and(|workspace| {
-            tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
+        let can_invite = model.desktop.active_workspace().is_some_and(|workspace| {
+            model.governs_active_room && workspace.may_administer(model.local_user)
         });
         let invite_y = self.draw_ws_settings_invite_link(
             scene,
@@ -828,7 +826,7 @@ impl WorkspaceSettingsOverlay {
             text_renderer,
             theme,
             content_rect,
-            &tree,
+            model,
             collab_y,
         );
 
@@ -849,7 +847,7 @@ impl WorkspaceSettingsOverlay {
             transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
             None,
         );
-        self.draw_member_sheet(scene, transform, text_renderer, theme, rect, &tree);
+        self.draw_member_sheet(scene, transform, text_renderer, theme, rect, model);
     }
 
     /// Paint the focused decision surface over the settings lens. The outer
@@ -866,7 +864,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         settings_rect: Rect,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         let Some(sheet) = self.member_sheet.clone() else {
             self.member_sheet_option_rects.clear();
@@ -919,7 +917,7 @@ impl WorkspaceSettingsOverlay {
 
         let (title, description, subject): (String, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
-                let current = tree
+                let current = model
                     .desktop
                     .active_workspace()
                     .and_then(|workspace| workspace.role_of(user))
@@ -929,14 +927,8 @@ impl WorkspaceSettingsOverlay {
                     t_args(
                         "workspace-settings-role-sheet-description",
                         &[
-                            (
-                                "person",
-                                crate::shell::workspace_settings::short_id(user).into(),
-                            ),
-                            (
-                                "role",
-                                crate::shell::workspace_settings::role_label(current).into(),
-                            ),
+                            ("person", super::short_id(user).into()),
+                            ("role", super::role_label(current).into()),
                         ],
                     ),
                     None,
@@ -945,12 +937,12 @@ impl WorkspaceSettingsOverlay {
             MemberSheet::Remove(user) => (
                 t("workspace-settings-remove-sheet-title"),
                 t("workspace-settings-remove-sheet-description"),
-                Some(crate::shell::workspace_settings::short_id(user)),
+                Some(super::short_id(user)),
             ),
             MemberSheet::Revoke(cap_id) => (
                 t("workspace-settings-revoke-sheet-title"),
                 t("workspace-settings-revoke-sheet-description"),
-                Some(crate::shell::workspace_settings::short_id(cap_id)),
+                Some(super::short_id(cap_id)),
             ),
         };
         text_renderer.draw_text(
@@ -997,15 +989,10 @@ impl WorkspaceSettingsOverlay {
             MemberSheet::Role(_) => {
                 let roles = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
                 (
+                    roles.iter().map(|role| super::role_label(*role)).collect(),
                     roles
                         .iter()
-                        .map(|role| crate::shell::workspace_settings::role_label(*role))
-                        .collect(),
-                    roles
-                        .iter()
-                        .map(|role| {
-                            crate::shell::workspace_settings::role_capability_preview(*role)
-                        })
+                        .map(|role| super::role_capability_preview(*role))
                         .collect(),
                 )
             }
@@ -1113,26 +1100,22 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) -> String {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let (identity, close) =
             self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
         if theme.text_scale > 1.0 {
-            let name = tree.desktop.active_workspace().map_or_else(
+            let name = model.desktop.active_workspace().map_or_else(
                 || t("workspace-settings-workspace-fallback"),
                 |workspace| workspace.name.clone(),
             );
-            let role = tree
+            let role = model
                 .desktop
                 .active_workspace()
-                .and_then(|workspace| workspace.role_of(&state.local_user_id))
-                .map_or_else(
-                    || t("workspace-settings-role-guest"),
-                    crate::shell::workspace_settings::role_label,
-                );
+                .and_then(|workspace| workspace.role_of(model.local_user))
+                .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
             let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
             let caption = text_renderer.elide_to_width(
                 &t_args(
@@ -1159,7 +1142,7 @@ impl WorkspaceSettingsOverlay {
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 38.0).into()),
                 None,
             );
-            return tree.desktop.active_workspace().map_or_else(
+            return model.desktop.active_workspace().map_or_else(
                 || t("workspace-settings-workspace-fallback"),
                 |workspace| workspace.name.clone(),
             );
@@ -1172,7 +1155,7 @@ impl WorkspaceSettingsOverlay {
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
-        let active_name = tree.desktop.active_workspace().map_or_else(
+        let active_name = model.desktop.active_workspace().map_or_else(
             || t("workspace-settings-workspace-fallback"),
             |w| w.name.clone(),
         );
@@ -1190,14 +1173,11 @@ impl WorkspaceSettingsOverlay {
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
             None,
         );
-        let active_role = tree
+        let active_role = model
             .desktop
             .active_workspace()
-            .and_then(|workspace| workspace.role_of(&state.local_user_id))
-            .map_or_else(
-                || t("workspace-settings-role-guest"),
-                crate::shell::workspace_settings::role_label,
-            );
+            .and_then(|workspace| workspace.role_of(model.local_user))
+            .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
         let label = text_renderer.elide_to_width(
             &t_args(
                 "workspace-settings-role-policy-line",
@@ -1465,8 +1445,7 @@ impl WorkspaceSettingsOverlay {
         theme: &Theme,
         rect: Rect,
         active_tab: WsTab,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) -> bool {
         match active_tab {
             WsTab::Members => {
@@ -1476,8 +1455,7 @@ impl WorkspaceSettingsOverlay {
                     text_renderer,
                     theme,
                     rect,
-                    state,
-                    tree,
+                    model,
                 );
                 true
             }
@@ -1488,8 +1466,7 @@ impl WorkspaceSettingsOverlay {
                     text_renderer,
                     theme,
                     rect,
-                    state,
-                    tree,
+                    model,
                 );
                 true
             }
@@ -1500,21 +1477,12 @@ impl WorkspaceSettingsOverlay {
                     text_renderer,
                     theme,
                     rect,
-                    state,
-                    tree,
+                    model,
                 );
                 true
             }
             WsTab::Apps => {
-                self.draw_ws_settings_apps_tab(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    rect,
-                    state,
-                    tree,
-                );
+                self.draw_ws_settings_apps_tab(scene, transform, text_renderer, theme, rect, model);
                 true
             }
             WsTab::General => {
@@ -1544,8 +1512,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
@@ -1555,10 +1522,10 @@ impl WorkspaceSettingsOverlay {
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
-        let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.desktop.active_workspace() {
-            let actor = state.active_local_user();
-            if !ownership_transfer_resource(ws, &actor).actions.is_empty() {
+        let is_owner = model.owner_controls;
+        if let Some(ws) = model.desktop.active_workspace() {
+            let actor = model.acting_user;
+            if !ownership_transfer_resource(ws, actor).actions.is_empty() {
                 self.ownership_action_rect = ownership_action_rect(body_rect);
             }
             for row in members_pane_rows(ws, body_rect) {
@@ -1570,7 +1537,7 @@ impl WorkspaceSettingsOverlay {
                 transform,
                 body_rect,
                 ws,
-                &state.local_user_id,
+                model.local_user,
                 is_owner,
                 text_renderer,
                 theme,
@@ -1592,8 +1559,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
@@ -1603,8 +1569,8 @@ impl WorkspaceSettingsOverlay {
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
         self.agent_add_rect = agents_add_rect(body_rect);
-        let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.desktop.active_workspace() {
+        let is_owner = model.owner_controls;
+        if let Some(ws) = model.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
@@ -1639,23 +1605,22 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         let body_rect = Self::body_rect(rect);
-        let is_owner = is_active_workspace_owner(state);
-        let draft = state.ws_grant_draft;
+        let is_owner = model.owner_controls;
+        let draft = model.grant_draft;
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
-        if let Some(ws) = tree.desktop.active_workspace() {
+        if let Some(ws) = model.desktop.active_workspace() {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
-            let layout = permissions_pane_layout(ws, body_rect);
+            let layout = permissions_pane_layout(ws, body_rect, model.apps);
             for row in &layout.rows {
                 self.revoke_rects
                     .push((row.cap_id.clone(), row.revoke_rect));
@@ -1670,7 +1635,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 transform,
                 body_rect,
-                ws,
+                (ws, model.apps),
                 &draft,
                 is_owner,
                 text_renderer,
@@ -1693,8 +1658,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
     ) {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
@@ -1703,8 +1667,8 @@ impl WorkspaceSettingsOverlay {
         self.agent_add_rect = Rect::ZERO;
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
-        let candidates = crate::shell::launcher::default_app_candidates();
-        if let Some(ws) = tree.desktop.active_workspace() {
+        let candidates = model.apps.default_app_candidates();
+        if let Some(ws) = model.desktop.active_workspace() {
             self.default_app_rects.extend(
                 default_app_rows(body_rect, &candidates)
                     .into_iter()
@@ -1716,7 +1680,7 @@ impl WorkspaceSettingsOverlay {
                 body_rect,
                 &DefaultAppsCtx {
                     ws,
-                    local_user: &state.local_user_id,
+                    local_user: model.local_user,
                     candidates: &candidates,
                 },
                 text_renderer,
@@ -1779,7 +1743,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
+        model: &WorkspaceSettingsModel<'_>,
         active_name: &str,
         _body_y: f64,
     ) -> bool {
@@ -1835,8 +1799,8 @@ impl WorkspaceSettingsOverlay {
         let input_rect = self.name_rect();
         let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
-        let can_rename = is_active_workspace_owner(state);
-        let editing = can_rename && state.editing_workspace_name.is_some();
+        let can_rename = model.owner_controls;
+        let editing = can_rename && model.editing_name.is_some();
         let border_color = if editing {
             colors.accent[5]
         } else {
@@ -1850,10 +1814,7 @@ impl WorkspaceSettingsOverlay {
             &input,
         );
         let shown = if editing {
-            state
-                .editing_workspace_name
-                .as_deref()
-                .unwrap_or(active_name)
+            model.editing_name.unwrap_or(active_name)
         } else {
             active_name
         };
@@ -1863,7 +1824,7 @@ impl WorkspaceSettingsOverlay {
             shown,
             input_size,
             input_rect,
-            state.editing_workspace_name_selection,
+            model.name_selection,
         );
         if editing && selected.width() > 0.0 {
             scene.fill(
@@ -2085,7 +2046,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        tree: &WorkspaceTree,
+        model: &WorkspaceSettingsModel<'_>,
         _collab_y: f64,
     ) {
         let tokens = &theme.tokens;
@@ -2114,14 +2075,13 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let (members, grants, app_rules) =
-            tree.desktop.active_workspace().map_or((0, 0, 0), |ws| {
+            model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
                 let members = ws.roster().len();
                 let grants = ws
                     .capabilities
                     .iter()
                     .filter(|cap| {
-                        cap.effect == crate::shell::state::Effect::Grant
-                            && !cap.is_room_membership()
+                        cap.effect == collab_types::caps::Effect::Grant && !cap.is_room_membership()
                     })
                     .count();
                 (members, grants, ws.default_apps.policy.len())
@@ -2295,13 +2255,6 @@ fn usize_to_f64_lossy(value: usize) -> f64 {
 )]
 fn f64_to_f32_lossy(value: f64) -> f32 {
     value as f32
-}
-
-fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
-    if let Some(forced) = state.test_only_owner_override {
-        return forced;
-    }
-    state.can_rename_active_workspace()
 }
 
 #[cfg(test)]
@@ -2740,9 +2693,3 @@ mod general_scroll_tests {
         assert_eq!(overlay.name_rect(), name);
     }
 }
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;

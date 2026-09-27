@@ -10,7 +10,6 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::shell::i18n::t;
-use crate::shell::overlay_host::modal_transition_curve;
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
 /// default token: `open`/`close` have no theme in hand, and the menu is
@@ -275,7 +274,7 @@ impl PowerMenu {
     /// the untransformed rectangles made a visibly correct click activate an
     /// adjacent action (most dangerously Lock instead of Log out).
     fn untransform_pointer(&self, viewport: Rect, point: Point, now: Instant) -> Point {
-        let (_, dy, scale) = modal_transition_curve(&self.transition, now, 0.94);
+        let (_, dy, scale) = self.transition.modal_curve(now, 0.94);
         if !scale.is_finite() || scale <= f64::EPSILON {
             return point;
         }
@@ -362,7 +361,7 @@ impl PowerMenu {
         if !self.transition.is_visible(now) {
             return;
         }
-        let (alpha, dy, scale) = modal_transition_curve(&self.transition, now, 0.94);
+        let (alpha, dy, scale) = self.transition.modal_curve(now, 0.94);
         let panel = self.panel_rect(viewport);
         scene.push_layer(
             Fill::NonZero,
@@ -838,7 +837,7 @@ mod tests {
             let now = Instant::now();
             let panel = panel_rect(VIEWPORT);
             let stable = action_rect(VIEWPORT, 1).center();
-            let (_, dy, scale) = modal_transition_curve(&menu.transition, now, 0.94);
+            let (_, dy, scale) = menu.transition.modal_curve(now, 0.94);
             let centre = panel.center();
             let painted = Point::new(
                 centre.x + (stable.x - centre.x) * scale,

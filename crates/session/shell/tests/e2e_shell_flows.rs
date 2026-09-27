@@ -450,19 +450,19 @@ fn e2e_launch_failure_notifications_visual_review() {
         {
             let mut chrome = h.chrome.borrow_mut();
             chrome.push_notification_full(
-                shell::shell::notification::Notification::new(
+                tilo_desktop::notifications::Notification::new(
                     "Couldn't open LibreOffice Calc — profile initialization failed after a very long diagnostic suffix",
                     "The app stopped before opening. Open Applications and try again.",
                 )
-                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                 .with_app_name("Applications"),
             );
             chrome.push_notification_full(
-                shell::shell::notification::Notification::new(
+                tilo_desktop::notifications::Notification::new(
                     "Couldn't open Notes",
                     "The app launcher is unavailable. Open Applications and try again.",
                 )
-                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                 .with_app_name("Applications"),
             );
         }

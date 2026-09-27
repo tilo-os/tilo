@@ -1,10 +1,11 @@
 //! Collaborator roster popover.
 //!
 //! This component owns the popover's layout, painting and hit targets. The
-//! shell host supplies a policy-filtered model and applies the semantic action
+//! host supplies a policy-filtered model and applies the semantic action
 //! returned by [`CollaboratorsOverlay::hit_test`].
 
-use crate::shell::state::WorkspaceAuthority as _;
+use std::collections::HashMap;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -14,7 +15,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::shell::state::WorkspaceTree;
+use tilo_desktop_model::{Collaborator, DesktopTree};
 
 const FOOTER_H: f64 = 40.0;
 const WARNING_H: f64 = 24.0;
@@ -284,7 +285,7 @@ impl CollaboratorsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            &crate::shell::i18n::t("a11y-shell-people"),
+            &crate::i18n::t("a11y-shell-people"),
             tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
@@ -296,8 +297,7 @@ impl CollaboratorsOverlay {
             .filter(|row| !row.invited)
             .collect::<Vec<_>>();
         let here_count = live_rows.len().saturating_add(1);
-        let here =
-            crate::shell::i18n::t_args("people-panel-here-now", &[("count", here_count.into())]);
+        let here = crate::i18n::t_args("people-panel-here-now", &[("count", here_count.into())]);
         let (here_width, _) = text_renderer.measure(&here, tokens.typography.scale.xs, None);
         let here_x = rect.x1 - 14.0 - f64::from(here_width);
         text_renderer.draw_text(
@@ -335,7 +335,7 @@ impl CollaboratorsOverlay {
             );
             text_renderer.draw_text(
                 scene,
-                &crate::shell::i18n::t("people-panel-screen-visible"),
+                &crate::i18n::t("people-panel-screen-visible"),
                 tokens.typography.scale.xs,
                 colors.accent[5],
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
@@ -373,7 +373,7 @@ impl CollaboratorsOverlay {
         if model.rows.is_empty() && model.unavailable.is_none() {
             text_renderer.draw_text(
                 scene,
-                &crate::shell::i18n::t("people-panel-only-you"),
+                &crate::i18n::t("people-panel-only-you"),
                 tokens.typography.scale.sm,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
@@ -450,7 +450,6 @@ impl CollaboratorsOverlay {
         *self = Self::default();
     }
 
-    #[cfg(test)]
     pub fn panel_rect(&self) -> Rect {
         self.panel
     }
@@ -622,7 +621,7 @@ impl CollaboratorsOverlay {
         reason = "a declarative accessibility tree for every panel control"
     )]
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
-        use crate::shell::i18n::{t, t_args};
+        use crate::i18n::{t, t_args};
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let people = self
@@ -1052,12 +1051,12 @@ impl CollaboratorsOverlay {
                 .own_status
                 .filter(|status| !status.is_empty())
                 .map_or_else(
-                    || crate::shell::i18n::t("people-panel-status-typing"),
+                    || crate::i18n::t("people-panel-status-typing"),
                     str::to_string,
                 )
         } else {
             model.own_status.map_or_else(
-                || crate::shell::i18n::t("people-panel-status-empty"),
+                || crate::i18n::t("people-panel-status-empty"),
                 str::to_string,
             )
         };
@@ -1105,8 +1104,7 @@ impl CollaboratorsOverlay {
                 &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
             );
         }
-        let label =
-            crate::shell::i18n::t_args("people-panel-own-status", &[("status", label.into())]);
+        let label = crate::i18n::t_args("people-panel-own-status", &[("status", label.into())]);
         let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
         #[expect(
             clippy::cast_possible_truncation,
@@ -1178,7 +1176,7 @@ impl CollaboratorsOverlay {
                 None,
                 &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
             );
-            let text = crate::shell::i18n::t(match mode {
+            let text = crate::i18n::t(match mode {
                 ui::StatusSharing::Automatic => "people-panel-sharing-auto",
                 ui::StatusSharing::ManualOnly => "people-panel-sharing-manual",
                 ui::StatusSharing::Off => "people-panel-sharing-hidden",
@@ -1424,7 +1422,7 @@ impl CollaboratorsOverlay {
             transform.pre_translate((text_x, label_y).into()),
             None,
         );
-        let agent_tag = crate::shell::i18n::t("people-panel-agent-tag");
+        let agent_tag = crate::i18n::t("people-panel-agent-tag");
         if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
             text_renderer.draw_text(
                 scene,
@@ -1436,12 +1434,12 @@ impl CollaboratorsOverlay {
             );
         }
         let subtitle = if row.invited {
-            Some(crate::shell::i18n::t("people-panel-invited-tag"))
+            Some(crate::i18n::t("people-panel-invited-tag"))
         } else if followed {
             row.activity.as_ref().map_or_else(
-                || Some(crate::shell::i18n::t("people-panel-following")),
+                || Some(crate::i18n::t("people-panel-following")),
                 |activity| {
-                    Some(crate::shell::i18n::t_args(
+                    Some(crate::i18n::t_args(
                         "people-panel-following-activity",
                         &[("activity", activity.as_str().into())],
                     ))
@@ -1509,7 +1507,7 @@ impl CollaboratorsOverlay {
             // `radii.sm` is for details drawn inside a control.
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
-            let label = crate::shell::i18n::t(if followed {
+            let label = crate::i18n::t(if followed {
                 "people-panel-stop-following"
             } else {
                 "people-panel-follow"
@@ -1538,8 +1536,8 @@ impl CollaboratorsOverlay {
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // each face is handed the theme-scaled label size explicitly.
             let label_size = tokens.typography.scale.base;
-            let invite_label = crate::shell::i18n::t("people-panel-invite");
-            let join_label = crate::shell::i18n::t("people-panel-join");
+            let invite_label = crate::i18n::t("people-panel-invite");
+            let join_label = crate::i18n::t("people-panel-join");
             Button::paint(
                 scene,
                 transform,
@@ -1587,7 +1585,7 @@ impl CollaboratorsOverlay {
             colors.lift(0.35),
         );
         let size = tokens.typography.scale.sm;
-        let title = crate::shell::i18n::t("a11y-shell-workspace-activity");
+        let title = crate::i18n::t("a11y-shell-workspace-activity");
         let (_, height) = text_renderer.measure(&title, size, None);
         text_renderer.draw_text(
             scene,
@@ -1621,36 +1619,28 @@ impl CollaboratorsOverlay {
     }
 }
 
-/// Rows the dropdown and compositor presence publisher agree are in the room.
-pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
-    collaborator_roster_rows_with_local_user(tree, &crate::shell::state::local_user_id())
-}
-
-/// Builds the same presence rows using an explicitly supplied local principal.
-pub(crate) fn collaborator_roster_rows_with_local_user(
-    tree: &WorkspaceTree,
-    local_user: &str,
-) -> Vec<RosterRow> {
+/// Rows the dropdown and the presence publisher agree are in the room, with
+/// `local_user` the principal this device speaks as.
+pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
     // Presence publication updates the active workspace and the legacy
     // tree-wide mirror together, but readers can observe one side of that
     // handoff before the other (and old control clients still update only
     // the mirror). Merge by stable participant id, preferring the room row's
     // richer activity fields, so nobody temporarily disappears from People.
-    let mut roster = tree
-        .desktop
+    let mut roster = desktop
         .active_workspace()
         .map(|workspace| workspace.collaborators.clone())
         .unwrap_or_default();
-    for participant in &tree.desktop.collaborators {
+    for participant in &desktop.collaborators {
         if !roster.iter().any(|row| row.id == participant.id) {
             roster.push(participant.clone());
         }
     }
-    let colors = crate::shell::state::roster_colors_with_local_user(&roster, local_user);
-    let agent_members = tree
-        .desktop
-        .active_workspace()
-        .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
+    let colors = roster_colors_with_local_user(&roster, local_user);
+    let agent_members = desktop.active_workspace().map_or_else(
+        Vec::new,
+        crate::authority::WorkspaceAuthority::agent_members,
+    );
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
@@ -1674,17 +1664,14 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 role: agent_role
-                    .map(crate::shell::workspace_settings::role_label)
+                    .map(crate::workspace_settings::role_label)
                     .or_else(|| participant.role_id.as_deref().map(display_role_id)),
                 invited: participant.invited,
                 activity: participant
                     .active_tab
-                    .and_then(|tab| active_tab_title(tree, tab))
+                    .and_then(|tab| active_tab_title(desktop, tab))
                     .map(|title| {
-                        crate::shell::i18n::t_args(
-                            "people-panel-viewing",
-                            &[("title", title.into())],
-                        )
+                        crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),
                 status: None,
                 // A headless agent has no pointer/viewport to follow merely
@@ -1706,10 +1693,44 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
 /// A recorded role id as people read it; an id this model does not define
 /// shows as recorded.
 fn display_role_id(id: &str) -> String {
-    crate::shell::state::role_from_id(id).map_or_else(
-        || id.to_string(),
-        crate::shell::workspace_settings::role_label,
-    )
+    tilo_desktop_model::role_from_id(id)
+        .map_or_else(|| id.to_string(), crate::workspace_settings::role_label)
+}
+
+/// What colour each person on `roster` is drawn in, with `local` the
+/// principal this device speaks as. One function so cursor and avatar cannot
+/// disagree and read as two participants: both go through
+/// [`ui::presence::assign_peer_colors`], which settles the whole room at
+/// once. An explicit [`Collaborator::cursor_color`] outranks anything
+/// computed and is held back from the assignment; the local user is
+/// included in the settled set (never the avatar stack) so every host
+/// computes the same one.
+pub fn roster_colors_with_local_user(
+    roster: &[Collaborator],
+    local: &str,
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for c in roster {
+        if let Some(rgb) = c
+            .cursor_color
+            .as_deref()
+            .and_then(ui::presence::parse_hex_color)
+        {
+            explicit.insert(c.id.clone(), rgb);
+        }
+    }
+    let mut ids: Vec<&str> = roster
+        .iter()
+        .filter(|c| !explicit.contains_key(&c.id))
+        .map(|c| c.id.as_str())
+        .collect();
+    if !explicit.contains_key(local) {
+        ids.push(local);
+    }
+    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
+    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
+    assigned.extend(explicit);
+    assigned
 }
 
 fn roster_initial(name: &str) -> char {
@@ -1718,8 +1739,8 @@ fn roster_initial(name: &str) -> char {
         .map_or('\u{2022}', |character| character.to_ascii_uppercase())
 }
 
-fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
-    tree.desktop
+fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
+    desktop
         .active_workspace()?
         .strips
         .iter()
@@ -1734,7 +1755,7 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::FreshId as _;
+    use crate::authority::WorkspaceAuthority as _;
 
     #[test]
     #[allow(
@@ -1873,9 +1894,10 @@ mod tests {
     )]
     fn collaborators_accessibility_and_roster_separate_identity_action_and_intent() {
         fn agent_classification_uses_stable_identity_not_display_label() {
-            use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+            use collab_types::caps::{CapOverride, Subject, Verb};
+            use tilo_desktop_model::{Workspace, WorkspaceId};
 
-            let mut workspace = Workspace::new(WorkspaceId::new(), "Shared");
+            let mut workspace = Workspace::new(WorkspaceId(71), "Shared");
             workspace.owner = Some("owner".into());
             workspace
                 .grant_as(
@@ -1889,15 +1911,14 @@ mod tests {
                 .expect("owner admits agent");
             workspace
                 .collaborators
-                .push(crate::shell::state::Collaborator::new(
-                    "scribe",
-                    "Release Notes Agent",
-                ));
-            let mut tree = WorkspaceTree::default();
-            tree.desktop.active = workspace.id;
-            tree.desktop.workspaces.push(workspace);
+                .push(Collaborator::new("scribe", "Release Notes Agent"));
+            let desktop = DesktopTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            };
 
-            let rows = collaborator_roster_rows(&tree);
+            let rows = collaborator_roster_rows(&desktop, "local");
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].label, "Release Notes Agent");
             assert!(

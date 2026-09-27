@@ -1,5 +1,5 @@
 //! Persistent native runtime and stdio MCP entry point.
-use shell::runtime_host::{daemon, mcp_process};
+use shell::runtime_host::{Session, daemon, mcp_process};
 use std::{ffi::OsString, io, path::Path};
 
 #[allow(
@@ -27,7 +27,7 @@ fn run() -> io::Result<()> {
         let _ = tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .try_init();
-        return mcp_process::run(&args.profile, &args.apps);
+        return mcp_process::run::<Session>(&args.profile, &args.apps);
     }
     let args = daemon::parse_args(arguments)?;
     if args.mode == daemon::Mode::Daemon {
@@ -38,7 +38,7 @@ fn run() -> io::Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     match args.mode {
-        daemon::Mode::Daemon => daemon::serve(&args.profile),
+        daemon::Mode::Daemon => daemon::serve::<Session>(&args.profile),
         daemon::Mode::Connect => daemon::connect(&args.profile),
         daemon::Mode::RunApp {
             app_id,

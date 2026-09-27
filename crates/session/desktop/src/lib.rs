@@ -17,16 +17,23 @@
 
 mod navigation;
 
+pub mod authority;
 pub mod backdrop;
 pub mod chrome;
+pub mod collaborators;
 pub mod composition;
+pub mod drill_in;
 pub mod i18n;
 pub mod intents;
+pub mod launchpad;
+pub mod notifications;
+pub mod peer_join_toast;
 pub mod records;
 pub mod resolver;
 pub mod search;
 pub mod session_commands;
 pub mod topbar;
+pub mod workspace_settings;
 
 extern crate self as tilo_desktop;
 pub mod activity;
