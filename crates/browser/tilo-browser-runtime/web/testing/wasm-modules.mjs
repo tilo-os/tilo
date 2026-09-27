@@ -49,18 +49,19 @@ export const CORE_DATA_VALUE = 42;
 /**
  * Exports: memory, __indirect_function_table (growable), __stack_pointer,
  * core_data (the address of a word holding 42), tilo_dl_alloc (a bump
- * allocator), core_add(a, b), call_slot(index) (calls table[index]() -> i32).
+ * allocator), core_add(a, b), call_slot(index) (calls table[index]() -> i32),
+ * and the __wbindgen_start the glue calls.
  * `omit` leaves exports out, as a core linked without `dylink` would; an
  * `abi` of null leaves out the runtime ABI section.
  */
 export function coreModule({abi = 'test-abi', omit = []} = {}) {
   const exports = [
     ['memory', 2, 0], ['__indirect_function_table', 1, 0], ['__stack_pointer', 3, 0], ['core_data', 3, 2],
-    ['tilo_dl_alloc', 0, 0], ['core_add', 0, 1], ['call_slot', 0, 2],
+    ['tilo_dl_alloc', 0, 0], ['core_add', 0, 1], ['call_slot', 0, 2], ['__wbindgen_start', 0, 3],
   ].filter(([title]) => !omit.includes(title));
   return module([
-    section(1, vec([func([I32, I32], [I32]), func([I32], [I32]), func([], [I32])])),
-    section(3, vec([[0], [0], [1]])),
+    section(1, vec([func([I32, I32], [I32]), func([I32], [I32]), func([], [I32]), func([], [])])),
+    section(3, vec([[0], [0], [1], [3]])),
     section(4, vec([[FUNCREF, 0x00, ...uleb(1)]])),
     section(5, vec([[0x00, ...uleb(1)]])),
     section(6, vec([
@@ -75,6 +76,7 @@ export function coreModule({abi = 'test-abi', omit = []} = {}) {
         ...op.tee(2), ...op.local(0), ...op.add, ...op.setGlobal(1), ...op.local(2)], [[1, I32]]),
       body([...op.local(0), ...op.local(1), ...op.add]),
       body([...op.local(0), ...op.callIndirect(2)]),
+      body([]),
     ])),
     section(11, vec([[0, ...op.i32(CORE_DATA_ADDRESS), 0x0b, ...vec([CORE_DATA_VALUE, 0, 0, 0].map(b => [b]))]])),
     ...(abi === null ? [] : [custom('tilo.runtime_abi', [...text.encode(abi)])]),

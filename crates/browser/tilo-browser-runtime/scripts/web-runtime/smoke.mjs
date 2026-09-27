@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // smoke.mjs OUTPUT: wasm-level check of a build-web-dev.sh output in Node.
-// Instantiates the core through its wasm-bindgen glue, links every app in
+// Instantiates the core through its generated glue as host.mjs does
+// (core-loader.mjs), links every app in
 // apps/index.json with the page's loader, and checks that each registered
 // into the core's catalogue, and that a module stamped with another ABI id is
 // refused. No GPU or DOM is involved.
@@ -10,12 +11,12 @@ import {pathToFileURL} from 'node:url';
 import assert from 'node:assert/strict';
 
 const out = process.argv[2];
-const {SideModuleLinker, runtimeAbi, RuntimeAbiMismatch} = await import(pathToFileURL(join(out, 'dylink.mjs')).href);
+const {SideModuleLinker, RuntimeAbiMismatch} = await import(pathToFileURL(join(out, 'dylink.mjs')).href);
+const {loadCore} = await import(pathToFileURL(join(out, 'core-loader.mjs')).href);
 const {addSection} = await import(new URL('./wasm-tools.mjs', import.meta.url).href);
+// The page's own path: the generated, self-contained glue and loadCore.
 const glue = await import(pathToFileURL(join(out, 'pkg/tilo_browser_runtime.js')).href);
-const coreModule = new WebAssembly.Module(readFileSync(join(out, 'pkg/tilo_browser_runtime_bg.wasm')));
-const core = glue.initSync({module: coreModule});
-const abi = runtimeAbi(coreModule);
+const {exports: core, abi} = await loadCore({glue, module: readFileSync(join(out, 'pkg/tilo_browser_runtime_bg.wasm'))});
 assert.equal(abi, JSON.parse(readFileSync(join(out, 'runtime.json'), 'utf8')).abi);
 const linker = new SideModuleLinker(core, abi);
 const before = JSON.parse(glue.applications()).map(app => app.id);
