@@ -387,7 +387,13 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 let request = InvokeRequest {
                     invocation,
                     target,
-                    argument: InvokeArgument::Json(a.arguments),
+                    // An empty object is the nullary call: some actions
+                    // (opening an app) read any argument as their input.
+                    argument: if a.arguments.is_empty() {
+                        InvokeArgument::None
+                    } else {
+                        InvokeArgument::Json(a.arguments)
+                    },
                     context: self.context(),
                     confirmation,
                     revision: Some(a.revision),

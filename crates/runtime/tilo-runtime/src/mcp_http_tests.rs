@@ -409,4 +409,9 @@ fn the_workspace_itself_is_addressable_for_installed_apps() {
     let invoked = invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0].target.provider, "workspace:room");
+    assert_eq!(
+        invoked[0].argument,
+        tilo_actions::remote::InvokeArgument::None,
+        "an empty argument object is the nullary call"
+    );
 }
