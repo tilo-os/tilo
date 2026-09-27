@@ -25,6 +25,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 mod json;
 mod pack;
 pub mod portability;
+mod resource_kinds;
 pub mod size;
 pub mod standalone;
 
@@ -4656,13 +4657,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     }
 
     let staged_package = staging.path().join("package.tapp");
-    let identity = if let Some(path) = &request.identity {
-        pack::load_identity(&absolute_from(&spec.app_dir, path))?
-    } else {
-        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
-        tilo_app_package::SigningIdentity::generate()
-    };
-    let packed = pack::pack_payload(&spec.manifest_path, &payload, &staged_package, &identity)?;
+    let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
+    let packed = pack::pack_payload(
+        &spec.manifest_path,
+        resource_kinds::declared_in(&spec.app_dir)?,
+        &payload,
+        &staged_package,
+        &identity,
+    )?;
     let entrypoints: Vec<PathBuf> = spec
         .entrypoints
         .iter()
@@ -4722,6 +4724,19 @@ fn within_budget(
         );
     }
     Ok(size)
+}
+
+/// The publisher identity at `path`, relative to the app, or an ephemeral
+/// one when none is given.
+fn signing_identity(
+    app_dir: &Path,
+    path: Option<&Path>,
+) -> Result<tilo_app_package::SigningIdentity> {
+    let Some(path) = path else {
+        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        return Ok(tilo_app_package::SigningIdentity::generate());
+    };
+    pack::load_identity(&absolute_from(app_dir, path))
 }
 
 fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
