@@ -73,7 +73,7 @@ async fn canonical_root_rejects_symlink_escape_and_directory_listing() {
 }
 
 async fn resolve_encoded(root: &AssetRoot, path: &str) -> Asset {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let asset = root.resolve(path, false, asset_test_lease()).await.unwrap();
         if asset.encoded.is_some() || std::time::Instant::now() > deadline {
