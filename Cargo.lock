@@ -11449,6 +11449,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "registry-web"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
+name = "registry-web-bindgen"
+version = "0.1.0"
+dependencies = [
+ "registry-web",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "reis"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
