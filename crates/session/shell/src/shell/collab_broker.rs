@@ -1128,6 +1128,26 @@ pub fn spawn_native_harness(
     )
 }
 
+/// [`spawn_native_harness`] on a device's peer network, so several devices
+/// in one test process each publish and receive through their own network,
+/// as [`spawn_native`] does, without one process-wide identity registry.
+#[cfg(test)]
+pub(crate) fn spawn_networked_harness(
+    capnp_socket_path: PathBuf,
+    peer_sync: &Arc<ShellNetwork>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::from_network(Some(Arc::clone(peer_sync)));
+    spawn_inner(
+        capnp_socket_path,
+        Some(peer_sync),
+        &publisher,
+        Some(membership),
+        Some(Arc::new(trusted_devices)),
+    )
+}
+
 /// Inbound queues + shared fanout state the drain thread polls each
 /// cycle. Grouped into one struct so the thread closure in
 /// [`spawn_inner`] doesn't have to carry the whole per-iteration match

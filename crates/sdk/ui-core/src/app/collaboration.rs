@@ -778,6 +778,35 @@ impl App {
         {
             self.collaboration.snapshot_on_ready = false;
         }
+        self.publish_checked_out_record();
+    }
+
+    /// A writer that checked a record out leaves the record's whole state
+    /// in the room once the record's route can carry it. The checkout took
+    /// the document as its baseline, so nothing it held before — content an
+    /// app wrote before the checkout, or kept from an earlier session — would
+    /// otherwise ever reach that route: a member on another device, or one
+    /// who arrives while this writer is away, learns the record only from
+    /// what the room's host retains.
+    fn publish_checked_out_record(&mut self) {
+        if !self.collaboration.publish_on_ready || !self.collaboration.manager.is_connected() {
+            return;
+        }
+        match self.primary_document_snapshot() {
+            Ok(data) => {
+                let result = self
+                    .collaboration
+                    .manager
+                    .try_send(CollabRequest::document_snapshot(data));
+                if self.note_document_send(&result) {
+                    self.collaboration.publish_on_ready = false;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: checked-out record not published");
+                self.collaboration.publish_on_ready = false;
+            }
+        }
     }
 
     /// Applies every queued collaboration event. Returns whether any event

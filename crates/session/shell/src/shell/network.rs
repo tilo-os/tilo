@@ -12485,11 +12485,13 @@ mod tests {
     }
 
     /// A public room the team owns, hosted on a `tilo-relay` with the team's
-    /// delegation and a standing Commenter invitation, the team having
-    /// connected once and gone offline.
+    /// delegation and a standing Commenter invitation. The team connected
+    /// once; `team` is its shell when it stayed online.
     struct HostedCommunity {
         room: RoomId,
         team_root: ed25519_dalek::SigningKey,
+        team_device: ed25519_dalek::SigningKey,
+        team: Option<Arc<ShellNetwork>>,
         token: String,
         _relay: tilo_relay::Relay,
         _state: tempfile::TempDir,
@@ -12499,7 +12501,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one host, one owner and one standing invitation, set up in order"
     )]
-    async fn hosted_community() -> HostedCommunity {
+    async fn hosted_community(team_stays_online: bool) -> HostedCommunity {
         use tilo_user_identity::DeviceCapabilities;
 
         let operator = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
@@ -12618,8 +12620,9 @@ mod tests {
         .expect("relay restart");
 
         // The team connects once, which leaves its governance and its
-        // certificate retained at the host, then goes away.
-        {
+        // certificate retained at the host, then goes away unless asked
+        // to stay.
+        let team_net = {
             let team_net = Box::pin(networked_shell(team_tree, &team)).await;
             assert!(team_net.join_default_workspace());
             assert!(team_net.connect_host(relay.node_addr()));
@@ -12634,11 +12637,14 @@ mod tests {
                 "the owner's governance and identity are retained at the host"
             );
             let _ = team_device;
-        }
+            team_stays_online.then(|| Arc::new(team_net))
+        };
 
         HostedCommunity {
             room,
             team_root,
+            team_device: team.key.clone(),
+            team: team_net,
             token,
             _relay: relay,
             _state: state,
@@ -12682,7 +12688,7 @@ mod tests {
         use tilo_user_identity::DeviceCapabilities;
 
         let _env = tilo_test_env::lock();
-        let community = Box::pin(hosted_community()).await;
+        let community = Box::pin(hosted_community(false)).await;
         let (room, team_root, token) = (
             community.room,
             community.team_root.clone(),
@@ -12839,6 +12845,402 @@ mod tests {
             .expect("session record");
     }
 
+    /// A public room's owner writes into the room's documents while its
+    /// members listen through the host alone: a change the owner's device
+    /// signs reaches a member who joined by the standing invitation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_public_rooms_owner_reaches_its_members_documents_through_the_host() {
+        let _env = tilo_test_env::lock();
+        let community = Box::pin(hosted_community(true)).await;
+        let room = community.room;
+        let team = community.team.as_ref().expect("the team stays online");
+        let (ada, ada_root, _) = Box::pin(join_community(&community, "Ada", 0xE5)).await;
+        let ada_person = person_of(&ada_root);
+        assert!(
+            tick_until(&ada, 60, |net| workspace_state(net, room).is_some_and(
+                |(_, _, roster)| roster.iter().any(|(who, _)| who == &ada_person)
+            ))
+            .await,
+            "Ada is admitted: {:?}",
+            workspace_state(&ada, room)
+        );
+
+        let (app, cluster, record) = ("so.tilo.chat", room.to_string(), "uuid:chat-conversation");
+        team.register_local_record(app, &cluster, record);
+        ada.register_local_record(app, &cluster, record);
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(vec![9; 16])
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(app, &cluster, record),
+            collab_types::Ed25519PublicKey::from_bytes(
+                community.team_device.verifying_key().to_bytes(),
+            ),
+            collab_types::document_attestation_id(app, &cluster, record),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &community.team_device).expect("the team signs");
+        team.publish_document(app.into(), cluster.clone(), record, envelope);
+
+        let delivered = tick_until(&ada, 30, |net| {
+            team.tick();
+            net.inbound_documents_handle()
+                .lock()
+                .is_ok_and(|documents| documents.iter().any(|document| document.app_id == app))
+        })
+        .await;
+        assert!(
+            delivered,
+            "the owner's document change reaches Ada through the host"
+        );
+    }
+
+    /// One person's Chat on their own device, joined to `room` through that
+    /// device's broker with a root-certified device identity.
+    struct ChatSeat {
+        root: ed25519_dalek::SigningKey,
+        device: ed25519_dalek::SigningKey,
+        label: &'static str,
+    }
+
+    impl ChatSeat {
+        fn identity(&self, room: RoomId) -> ui::collaboration::CertifiedEndpointIdentity {
+            use ed25519_dalek::Signer as _;
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: self.root.verifying_key().to_bytes(),
+                device_public_key: self.device.verifying_key().to_bytes(),
+                device_label: self.label.to_owned(),
+                capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &self.root)
+                .expect("root signs the device");
+            let presentation = runtime_collab::CertifiedJoinIdentity {
+                workspace_id: room.to_string(),
+                device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
+                proof: self
+                    .device
+                    .sign(&runtime_identity::collaboration_join_signing_bytes(
+                        &room.to_string(),
+                    ))
+                    .to_bytes()
+                    .to_vec(),
+            }
+            .encode()
+            .expect("certified join encodes");
+            ui::collaboration::CertifiedEndpointIdentity::new(presentation, self.device.clone())
+        }
+
+        fn chat(&self, socket: &std::path::Path, state: &std::path::Path, room: RoomId) -> ui::App {
+            use std::os::fd::IntoRawFd as _;
+            let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+            let manager = ui::collaboration::CollaborationManager::for_route_fd_with_identity(
+                stream.into_raw_fd(),
+                "so.tilo.chat",
+                room.as_uuid(),
+                None,
+                Some(self.label.to_owned()),
+                self.identity(room),
+            )
+            .expect("start the collaboration client");
+            let comments = ui::record::RecordOwners::new(state.to_path_buf())
+                .open("so.tilo.chat", &room.to_string())
+                .expect("a record store in the room");
+            let chat = chat::ChatApp::for_participant(&person_of(&self.root), self.label, comments);
+            let mut app =
+                ui::App::with_collaboration_manager(ui::State::new(), Box::new(chat), manager);
+            chat::actions::register(app.action_registry_mut());
+            app.with_records(
+                ui::RecordSet::in_memory().with_home(room.to_string()),
+                automerge::AutoCommit::new(),
+            )
+        }
+    }
+
+    /// Step every app and tick every network once.
+    async fn step_all(apps: &mut [&mut ui::App], nets: &[&ShellNetwork]) {
+        for net in nets {
+            net.tick();
+        }
+        for app in apps.iter_mut() {
+            app.step_headless();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    /// Run Chat's `action` on `resource` as `seat`, through its device's
+    /// broker, the way the palette or an agent does, until it finishes.
+    async fn chat_invoke(
+        host: &crate::shell::remote_actions::BrokerActionHost,
+        seat: &ChatSeat,
+        room: RoomId,
+        (resource, action): (&str, &str),
+        apps: &mut [&mut ui::App],
+        nets: &[&ShellNetwork],
+    ) {
+        use tilo_actions::remote::{
+            ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, PendingPoll,
+            RemoteActionTarget,
+        };
+        let caller = Caller::authenticated(
+            seat.root.verifying_key().to_bytes(),
+            seat.device.verifying_key().to_bytes(),
+        )
+        .in_room(room.to_string());
+        let started = std::time::Instant::now();
+        let (provider, revision) = loop {
+            let mut page = host.query(
+                &caller,
+                CatalogueQuery {
+                    needle: resource.into(),
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            );
+            if let PendingPoll::Ready(Ok(page)) = page.poll_ready()
+                && let Some(row) = page.rows.iter().find(|row| {
+                    row.action.as_ref().is_some_and(|descriptor| {
+                        descriptor.address.resource == resource
+                            && descriptor.address.action == action
+                    })
+                })
+            {
+                break (row.provider.clone(), page.revision.clone());
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "Chat never offered {resource}/{action}"
+            );
+            step_all(apps, nets).await;
+        };
+        let invocation = tilo_actions::InvocationId::new();
+        let mut pending = host.invoke(
+            &caller,
+            InvokeRequest {
+                invocation,
+                target: RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new(resource, action),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: Some(revision),
+            },
+        );
+        loop {
+            match pending.poll_ready() {
+                PendingPoll::Ready(result) => {
+                    result.unwrap_or_else(|error| panic!("{resource}/{action}: {error}"));
+                    break;
+                }
+                PendingPoll::Abandoned => panic!("{resource}/{action} was abandoned"),
+                PendingPoll::Waiting => {}
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "{resource}/{action} unanswered"
+            );
+            step_all(apps, nets).await;
+        }
+        loop {
+            if let Some(state) = host.observe(&caller, &invocation)
+                && state.is_terminal()
+            {
+                assert!(
+                    matches!(
+                        state.update,
+                        tilo_actions::InvocationUpdate::Succeeded { .. }
+                    ),
+                    "{resource}/{action}: {:?}",
+                    state.update
+                );
+                return;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "{resource}/{action} never finished"
+            );
+            step_all(apps, nets).await;
+        }
+    }
+
+    /// The community room across two devices, each with its own shell
+    /// network and broker, meeting only at the room's host: the team's Chat
+    /// seeds the room's conversation as its owner, and a member who joined
+    /// by the standing invitation reads it in her own Chat on her own device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario across three devices and a host: a live member, then a late one"
+    )]
+    async fn a_public_rooms_chat_reaches_a_member_on_another_device_through_its_host() {
+        let _env = tilo_test_env::lock();
+        let community = Box::pin(hosted_community(true)).await;
+        let room = community.room;
+        let team = Arc::clone(community.team.as_ref().expect("the team stays online"));
+        let (ada, ada_root, ada_device) = Box::pin(join_community(&community, "Ada", 0xE7)).await;
+        let ada = Arc::new(ada);
+        let ada_person = person_of(&ada_root);
+        assert!(
+            tick_until(&ada, 60, |net| {
+                team.tick();
+                workspace_state(net, room)
+                    .is_some_and(|(_, _, roster)| roster.iter().any(|(who, _)| who == &ada_person))
+            })
+            .await,
+            "Ada is admitted: {:?}",
+            workspace_state(&ada, room)
+        );
+
+        let dir = tempfile::tempdir().expect("scratch");
+        let broker = |name: &str, net: &Arc<ShellNetwork>, device: &ed25519_dalek::SigningKey| {
+            let socket = dir.path().join(format!("{name}.sock"));
+            let handle = crate::shell::collab_broker::spawn_networked_harness(
+                socket.clone(),
+                net,
+                net.tree_handle().expect("tree"),
+                vec![device.verifying_key().to_bytes()],
+            )
+            .expect("broker");
+            (handle, socket)
+        };
+        let (team_broker, team_socket) = broker("team", &team, &community.team_device);
+        let (ada_broker, ada_socket) = broker("ada", &ada, &ada_device.key);
+        let team_seat = ChatSeat {
+            root: community.team_root.clone(),
+            device: community.team_device.clone(),
+            label: "Team",
+        };
+        let ada_seat = ChatSeat {
+            root: ada_root.clone(),
+            device: ada_device.key.clone(),
+            label: "Ada",
+        };
+        // Ada's Chat is open in the room before the team writes anything.
+        let mut author = ada_seat.chat(&ada_socket, &dir.path().join("ada"), room);
+        let started = std::time::Instant::now();
+        while !author
+            .permission_ctx()
+            .check(&ui::permissions::PermissionScope::workspace(
+                ui::permissions::Verb::Comment,
+            ))
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "Ada's Chat is admitted as a Commenter"
+            );
+            ada.tick();
+            author.step_headless();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut editor = team_seat.chat(&team_socket, &dir.path().join("team"), room);
+
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::is_seeded(&author.state_mut_for_test().doc) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Ada's Chat never received the conversation the team's Chat seeded \
+                 (the team's is seeded: {}, team may write: {}, Ada may comment: {})",
+                chat::doc::ChatDoc::is_seeded(&editor.state_mut_for_test().doc),
+                editor
+                    .permission_ctx()
+                    .check(&ui::permissions::PermissionScope::workspace(
+                        ui::permissions::Verb::Write
+                    )),
+                author
+                    .permission_ctx()
+                    .check(&ui::permissions::PermissionScope::workspace(
+                        ui::permissions::Verb::Comment
+                    )),
+            );
+            team.tick();
+            ada.tick();
+            editor.step_headless();
+            author.step_headless();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // The team adds and marks #feedback as the room's feedback channel;
+        // Ada, listening on her own device, sees a feedback channel appear.
+        let team_host = crate::shell::remote_actions::BrokerActionHost::new(
+            team_broker.app_action_broker().expect("typed broker"),
+        );
+        let workspace = chat::doc::ChatDoc::list_workspaces(&editor.state_mut_for_test().doc)
+            .first()
+            .expect("a starter workspace")
+            .id
+            .clone();
+        let feedback = tilo_reference::FEEDBACK_CHANNEL;
+        for (resource, action) in [
+            (
+                format!("chat.workspace:{workspace}"),
+                "add-feedback-channel",
+            ),
+            (format!("chat.channel:{feedback}"), "mark-feedback"),
+        ] {
+            chat_invoke(
+                &team_host,
+                &team_seat,
+                room,
+                (&resource, action),
+                &mut [&mut editor, &mut author],
+                &[&team, &ada],
+            )
+            .await;
+        }
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::is_feedback_channel(&author.state_mut_for_test().doc, feedback) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Ada's Chat never saw the team mark #feedback"
+            );
+            step_all(&mut [&mut editor, &mut author], &[&team, &ada]).await;
+        }
+
+        // Bea opens Chat only after the team has written: she learns the
+        // conversation from what the room's host retained.
+        let (bea, bea_root, bea_device) = Box::pin(join_community(&community, "Bea", 0xE8)).await;
+        let bea = Arc::new(bea);
+        let bea_person = person_of(&bea_root);
+        assert!(
+            tick_until(&bea, 60, |net| {
+                team.tick();
+                workspace_state(net, room)
+                    .is_some_and(|(_, _, roster)| roster.iter().any(|(who, _)| who == &bea_person))
+            })
+            .await,
+            "Bea is admitted: {:?}",
+            workspace_state(&bea, room)
+        );
+        let (bea_broker, bea_socket) = broker("bea", &bea, &bea_device.key);
+        let bea_seat = ChatSeat {
+            root: bea_root.clone(),
+            device: bea_device.key.clone(),
+            label: "Bea",
+        };
+        let mut late = bea_seat.chat(&bea_socket, &dir.path().join("bea"), room);
+        let started = std::time::Instant::now();
+        while !chat::doc::ChatDoc::is_feedback_channel(&late.state_mut_for_test().doc, feedback) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "Bea's Chat, opened after the team wrote, never received the conversation \
+                 with its feedback channel (seeded: {})",
+                chat::doc::ChatDoc::is_seeded(&late.state_mut_for_test().doc)
+            );
+            team.tick();
+            bea.tick();
+            editor.step_headless();
+            late.step_headless();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        drop((team_broker, ada_broker, bea_broker));
+    }
+
     /// The rooms.md rule, across two devices: a member of a room reaches the
     /// records that room references. Ada's reviewed recording, referenced
     /// by the public room she reports into, is served by her device on the
@@ -12854,7 +13256,7 @@ mod tests {
         use crate::shell::record_custody::{DeviceSigner, RecordCustody};
 
         let _env = tilo_test_env::lock();
-        let community = Box::pin(hosted_community()).await;
+        let community = Box::pin(hosted_community(false)).await;
         let room = community.room;
         let (ada, ada_root, ada_device) = Box::pin(join_community(&community, "Ada", 0xE1)).await;
         let (bea, bea_root, _) = Box::pin(join_community(&community, "Bea", 0xE2)).await;
