@@ -46,6 +46,18 @@ impl ActionCx {
         }
     }
 
+    /// A context whose ids come from `seed` alone: for a write that already
+    /// knows what makes it unique (the object it fills), and must not read
+    /// the heads, which would close the change it is part of.
+    #[must_use]
+    pub fn from_seed(seed: [u8; 32], now_ms: i64) -> Self {
+        Self {
+            seed,
+            minted: 0,
+            now_ms,
+        }
+    }
+
     /// A fresh id, unique to this action and stable under replay.
     pub fn id(&mut self) -> Id {
         let mut hasher = blake3::Hasher::new();

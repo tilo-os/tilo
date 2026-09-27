@@ -27,6 +27,11 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tilo-content = { path = "../../crates/system/content" }
+# Text boxes are qdoc rich text, edited and drawn by the SDK editor.
+qdoc = { path = "../../crates/doc/qdoc" }
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+tracing.workspace = true
 # The XML entity helpers shared with the office document codecs.
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.

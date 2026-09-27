@@ -13343,7 +13343,9 @@ dependencies = [
  "automerge",
  "bounded-zip",
  "image",
+ "qdoc",
  "qdoc-codecs",
+ "qdoc-rich-text",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
@@ -13353,7 +13355,9 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-rich-text",
  "tilo-test-env",
+ "tracing",
  "uuid",
  "vello",
  "vello_encoding",
@@ -15510,6 +15514,7 @@ dependencies = [
 name = "tilo-rich-text"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "qdoc",
  "qdoc-rich-text",
  "serde",

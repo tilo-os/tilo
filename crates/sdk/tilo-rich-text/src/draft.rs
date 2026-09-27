@@ -209,6 +209,35 @@ mod tests {
     }
 
     #[test]
+    fn each_arrow_press_moves_a_caret_placed_at_the_end() {
+        let mut field = Field::new(SubmitKey::ModEnter);
+        let surface = field.host.widget_mut();
+        surface
+            .source_mut()
+            .reset(&[ui::widget::BlockContent::paragraph("", "Hi")]);
+        surface.present_now();
+        surface
+            .editor_mut()
+            .focus_block(0, ui::widget::CursorPlacement::End);
+        let mut text = ui::TextRenderer::new();
+        field.host.layout(
+            Rect::new(0.0, 0.0, 400.0, 40.0),
+            &ui::Theme::dark(),
+            &mut text,
+        );
+        let mut carets = Vec::new();
+        for _ in 0..2 {
+            field.key(
+                &press(Key::Named(NamedKey::ArrowLeft), None),
+                ModifiersState::SHIFT,
+            );
+            let line = &field.host.widget().editor().blocks()[0].line;
+            carets.push((line.cursor_pos(), line.selection_range()));
+        }
+        assert_eq!(carets, [(1, Some((1, 2))), (0, Some((0, 2)))]);
+    }
+
+    #[test]
     fn an_embedded_field_sends_with_its_key_and_cancels_with_escape() {
         let mut field = Field::new(SubmitKey::ModEnter);
         field.type_text("hi");

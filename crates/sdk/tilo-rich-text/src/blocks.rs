@@ -86,15 +86,17 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
     }
     let containers = qdoc::model::open(doc, root)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
-    // Ids unique to this field and this content at this version of the
-    // document: the same on a replica replaying the write, and clear of every
-    // id elsewhere in the document.
-    let mut seed = root.to_string().into_bytes();
+    // Ids unique to this field and this content: the field's object id is
+    // unique in the document and the same on a replica replaying the write.
+    // Not the heads: reading them would close the change this write is part of.
+    let mut seed = blake3::Hasher::new();
+    seed.update(b"tilo-rich-text/fill/v1");
+    seed.update(root.to_string().as_bytes());
     for block in blocks {
-        seed.extend_from_slice(block.text.as_bytes());
-        seed.push(0);
+        seed.update(block.text.as_bytes());
+        seed.update(&[0]);
     }
-    let cx = ui::tilo_resource::ActionCx::for_apply(doc, &seed, 0);
+    let cx = ui::tilo_resource::ActionCx::from_seed(*seed.finalize().as_bytes(), 0);
     let mut ids = qdoc::model::IdGen::for_action(cx);
     let mut dm = qdoc::model::DocMut {
         doc,
