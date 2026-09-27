@@ -74,9 +74,11 @@ grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow"
   && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
   && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
     | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
-  && grep -Fq "second_manifest='\${{ steps.reproduction.outputs.manifest }}'" "$workflow" \
+  && grep -A2 -F -- '- name: Compare with the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && grep -Fq 'REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}' "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 4 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
