@@ -79,6 +79,34 @@ unfixed="$(rpm --dbpath "$work/unfixed/rpmdb" -q \
 test "$unfixed" != "$epoch $epoch"
 test "$(sha256sum "$work/unfixed/rpmdb/rpmdb.sqlite" | cut -d' ' -f1)" != "$first"
 
+# An operator can run the same probe against the exact Fedora 44/RPM 6 base
+# already cached locally, without building or downloading a full OS image:
+# TILO_RPM6_IMAGE=<local-image-id> bash os/tests/dnf_layer_repro.sh
+if [ -n "${TILO_RPM6_IMAGE:-}" ]; then
+  for run in 1 2; do
+    podman run --rm --pull=never --network=none \
+      -v "$work:/probe:Z" \
+      -e SOURCE_DATE_EPOCH="$epoch" -e LD_PRELOAD=/probe/build-clock.so \
+      --entrypoint /bin/bash "$TILO_RPM6_IMAGE" -euc '
+        run="$1"
+        rpm --dbpath "/probe/rpm6db$run" --initdb
+        rpm --dbpath "/probe/rpm6db$run" --prefix /probe/files --nodeps \
+          -i /probe/rpmbuild/RPMS/noarch/tilo-clock-probe-1-1.noarch.rpm
+        test "$(rpm --dbpath "/probe/rpm6db$run" -q \
+          --qf "%{INSTALLTIME} %{INSTALLTID}" tilo-clock-probe)" = \
+          "$SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH"
+        rpm --dbpath "/probe/rpm6db$run" --verifydb
+        rm -rf /probe/files
+      ' bash "$run"
+  done
+  first6="$(sha256sum "$work/rpm6db1/rpmdb.sqlite" | cut -d' ' -f1)"
+  second6="$(sha256sum "$work/rpm6db2/rpmdb.sqlite" | cut -d' ' -f1)"
+  test "$first6" = "$second6" || {
+    echo "RPM 6 database differs with fixed build clock: $first6 != $second6" >&2
+    exit 1
+  }
+fi
+
 # The final image stage must use the wrapper before the first DNF command and
 # invoke finalization after its last DNF command; each intermediate layer is
 # otherwise already contaminated before final cleanup can run.
