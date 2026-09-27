@@ -7,6 +7,7 @@ license.workspace = true
 description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies and a blocking client on Tilo's TLS defaults."
 
 [dependencies]
+quick-xml.workspace = true
 roxmltree.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }

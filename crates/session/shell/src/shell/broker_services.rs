@@ -772,39 +772,14 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if cert.user_public_key != profile.user_public_key
-            || fleet.is_revoked(&cert.device_public_key)
-        {
-            return Err("device revoked or identity mismatched".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize(&room.to_string(), cert)
     }
     fn authorize_join(
         &self,
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, cert)?;
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-            .and_then(|store| store.load(&profile.id))
-            .map_err(|e| e.to_string())?;
-        if !fleet
-            .certificates
-            .iter()
-            .any(|known| known.device_public_key == cert.device_public_key)
-        {
-            return Err("certified collaboration device is not enrolled".into());
-        }
-        Ok(())
+        tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
 pub fn native_services(

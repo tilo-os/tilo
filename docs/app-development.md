@@ -41,6 +41,20 @@ or test harness:
 tilo-app test -- --nocapture
 ```
 
+For scripts and agents, every command accepts `--json`. Stdout then carries
+exactly one JSON document: `{"ok": true, "command": …, "result": …}`, or
+`{"ok": false, "command": …, "error": …, "causes": […], "result": …}`. A
+command that ran but failed its verdict, such as `doctor`, `check` or
+`scenario run`, still reports what it found in `result`. Progress text and the
+output of Cargo, the app and other tools move to stderr, and nothing prompts:
+`new --json` needs a name and `add --json` needs an artifact subcommand. Usage
+errors are JSON too, with exit status 2.
+
+```bash
+tilo-app new reading-list --dry-run --json | jq -r '.result.files[]'
+tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
+```
+
 ## The Tilo-native contract
 
 Generated applications depend on `tilo-app` (normally under the concise Rust
