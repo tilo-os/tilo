@@ -2591,6 +2591,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
       | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
     find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
       | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
+    # ldconfig -r in dracut requires absolute include patterns. Fedora's
+    # default relative pattern resolves to the same directory without -r.
+    sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
         --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
