@@ -79,6 +79,12 @@ FROM ${RPMS_REF} AS rpms
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
 FROM ${BASE_REF} AS public-trust-tools
 
+# Restore the runtime resolver only after transient-state cleanup. A RUN with
+# /etc/resolv.conf pointing into /run/NetworkManager makes BuildKit mount its
+# build-time DNS file there, so /run cannot be emptied by bootc's lint gate.
+FROM ${BASE_REF} AS runtime-resolver-link
+RUN mkdir -p /out && ln -s ../run/NetworkManager/resolv.conf /out/resolv.conf
+
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
 # os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
@@ -2749,7 +2755,10 @@ RUN case "${TILO_GENERATION}" in \
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
 # warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
 # recreated on first boot rather than baked into the image.
-RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+# Replace the runtime symlink with a build-only regular file in a separate
+# layer. Its current RUN may still mount DNS under /run; the next one will not.
+RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2778,8 +2787,12 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
-    && python3 /run/tilo-clean-bootc-transient-state.py \
+    && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
+
+# COPY is a separate build operation, with no DNS mount in /run. Restore the
+# NetworkManager resolver before split/ukify seal the final rootfs digest.
+COPY --from=runtime-resolver-link /out/resolv.conf /etc/resolv.conf
 
 # ---------------------------------------------------------------------------
 # The sealed layout: split the kernel out, build the UKI over what remains
@@ -2800,7 +2813,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
 # os/dev/build-image.sh instead of being copied into the image.
 
 FROM rootfs AS split
-RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
+    && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 # A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
 # out of the same digest-pinned base and the same frozen RPM snapshot as

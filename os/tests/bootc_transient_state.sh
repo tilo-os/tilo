@@ -30,7 +30,7 @@ else
 fi
 
 if grep -Fq 'clean-bootc-transient-state.py' "$containerfile" \
-   && grep -Fq 'python3 /run/tilo-clean-bootc-transient-state.py' "$containerfile" \
+   && grep -Fq 'python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py' "$containerfile" \
    && awk '
         /tilo-clean-bootc-transient-state[.]py/ { seen_clean = 1 }
         seen_clean && /bootc container lint/ { found = 1 }
@@ -39,6 +39,19 @@ if grep -Fq 'clean-bootc-transient-state.py' "$containerfile" \
   ok 'rootfs Containerfile clears transient state immediately before bootc lint'
 else
   bad 'rootfs Containerfile does not run transient-state cleanup before bootc lint'
+fi
+
+if grep -Fq "target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro" "$containerfile" \
+   && awk '
+      /^RUN rm -f \/etc\/resolv.conf && printf / { placeholder = NR }
+      /python3 \/usr\/local\/libexec\/tilo-clean-bootc-transient-state[.]py/ { clean = NR }
+      /^COPY --from=runtime-resolver-link \/out\/resolv.conf \/etc\/resolv.conf$/ { restored = NR }
+      /^FROM rootfs AS split$/ { split_line = NR }
+      END { exit (placeholder && clean && restored && split_line && placeholder < clean && clean < restored && restored < split_line) ? 0 : 1 }
+   ' "$containerfile"; then
+  ok 'build DNS mount is outside /run during cleanup; runtime resolver is restored before sealing'
+else
+  bad 'rootfs resolver ordering may pin /run during cleanup or alter the sealed image'
 fi
 
 work="$(mktemp -d)"
