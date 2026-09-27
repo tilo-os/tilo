@@ -1639,10 +1639,10 @@ mod tests {
 
     #[test]
     fn the_dialog_announces_the_highlight() {
-        // A language without its own emoji names falls back to English.
+        // German names and searches in German.
         let mut picker = EmojiPicker::new();
         picker.open(VIEWPORT, "de-DE");
-        typed(&mut picker, "thumbs");
+        typed(&mut picker, "daumen");
         assert_eq!(picker.selected(), Some("👍"));
         let node = picker.accessibility().expect("open");
         assert_eq!(node.role, Role::Dialog);
