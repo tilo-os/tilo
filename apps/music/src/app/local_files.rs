@@ -1010,7 +1010,9 @@ mod tests {
             .capture()
             .expect("tests capture decoded audio")
             .clone();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // A hang bound: decoding a short tone takes milliseconds, but a loaded
+        // test machine can stall the pipeline's threads for seconds.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
         // A playing source must also be rendering before the caller acts on
         // it. Unlike a sound server's sink, the capture sink can stall when it
         // is paused while still completing its switch to PLAYING.
