@@ -94,7 +94,7 @@ impl NativeConstruction {
             };
         };
         let requested = binding
-            .broker_route()
+            .admission_route()
             .ok_or("component record route is not valid")?;
         if requested.app_id != current.route.app_id
             || requested.cluster_id != current.route.cluster_id
@@ -120,7 +120,10 @@ impl NativeConstruction {
             }
         }
         manager.switch_native_record(&binding.checkout.id)?;
-        if !binding.matches_broker_route(manager.primary_route()) {
+        if manager
+            .primary_route()
+            .is_none_or(|witness| binding.admission_route().as_ref() != Some(&witness.route))
+        {
             return Err("component route changed during native admission".into());
         }
         Ok(())
