@@ -34,6 +34,7 @@
 //! the product's display name:
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
+//! - [`DEVCERT_V2_PREIMAGE_TAG`] — `tilo-devcert-v2\0` (foreign devices)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
@@ -93,7 +94,7 @@ pub use approval::{
 };
 pub use canonical::CanonicalError;
 pub use cert::{
-    DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
+    DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
     device_cert_signing_digest, sign_device_cert, verify_device_cert, verify_device_cert_at,
 };
 pub use directory::{
@@ -252,6 +253,7 @@ mod tests {
         {
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
             assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
+            assert_eq!(cert::DEVCERT_V2_PREIMAGE_TAG, b"tilo-devcert-v2\0");
 
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);

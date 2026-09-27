@@ -38,6 +38,7 @@ mod owner_commit_tests {
             let admitted = admit_verified_join(&membership.read(), &route, VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: device.verifying_key().to_bytes(),
+                foreign: false,
             }).unwrap();
             let fanout = Arc::new(FanoutState::new());
             let sink = Arc::new(RecordingSink::default());
@@ -120,6 +121,7 @@ mod owner_commit_tests {
                         VerifiedJoinIdentity {
                             user_public_key: root.verifying_key().to_bytes(),
                             device_public_key: device.verifying_key().to_bytes(),
+                            foreign: false,
                         },
                     )
                     .unwrap();
@@ -464,6 +466,7 @@ mod owner_commit_tests {
             VerifiedJoinIdentity {
                 user_public_key: owner.peer().authority().user_public_key,
                 device_public_key: owner.peer().authority().device_public_key,
+                foreign: false,
             },
         )
         .unwrap();

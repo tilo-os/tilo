@@ -68,6 +68,7 @@ pub mod event;
 pub mod file_invite;
 pub mod files;
 pub mod first_party_app_ids;
+pub mod foreign_device;
 pub mod history;
 pub mod identity;
 pub mod invite;
