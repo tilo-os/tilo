@@ -2379,6 +2379,7 @@ shortcut-step-no = Nein
 shortcut-trigger-failed = Der Kurzbefehl wurde nicht ausgeführt
 osd-keys-captured = Die App empfängt alle Tasten · { $chord } stellt die Tastenkürzel wieder her
 osd-keys-released = Tastenkürzel wiederhergestellt
+osd-pad-mode = Tablett-Modus { $mode } von { $modes }
 workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
