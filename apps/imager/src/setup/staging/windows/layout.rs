@@ -69,14 +69,7 @@ fn nonneg_at(buf: &[u8], at: usize) -> ParseResult<u64> {
 /// Format a little-endian (in-memory `GUID` / on-disk GPT) GUID as the
 /// lowercase hyphenated form the staging contract uses.
 pub fn guid_from_le(raw: [u8; 16]) -> String {
-    let [a0, a1, a2, a3, b0, b1, c0, c1, d @ ..] = raw;
-    let [d0, d1, d2, d3, d4, d5, d6, d7] = d;
-    format!(
-        "{:08x}-{:04x}-{:04x}-{d0:02x}{d1:02x}-{d2:02x}{d3:02x}{d4:02x}{d5:02x}{d6:02x}{d7:02x}",
-        u32::from_le_bytes([a0, a1, a2, a3]),
-        u16::from_le_bytes([b0, b1]),
-        u16::from_le_bytes([c0, c1]),
-    )
+    uuid::Uuid::from_bytes_le(raw).to_string()
 }
 
 fn guid_at(buf: &[u8], at: usize) -> ParseResult<String> {
