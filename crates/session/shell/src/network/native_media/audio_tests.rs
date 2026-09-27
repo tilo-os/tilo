@@ -168,23 +168,21 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         });
     }
     for side in &sides {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tilo_test_env::within("native client connected", async {
             while side.client.status() == Status::Connecting {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await
-        .expect("native client connected");
+        .await;
         assert_eq!(side.client.status(), Status::Live);
     }
     // The relay counts a session once its SETUP completed after admission.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("both native clients admitted", async {
         while relay.counters().accepted < 2 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
-    .await
-    .expect("both native clients admitted");
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     for side in &sides {
         side.client.enable_publication().unwrap();

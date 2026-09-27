@@ -400,7 +400,7 @@ mod tests {
         )
         .expect("the quick action starts");
         let job = receipt.broker_invocation_id.expect("a broker job");
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let output = loop {
             match broker.status(job) {
                 Some(InvocationUpdate::Succeeded { output, .. }) => break output,
