@@ -26,7 +26,6 @@ mod unix_tests {
     const UMASK_PATH: &str = "TILO_ATOMIC_FILE_UMASK_PATH";
     const FIFO_CHILD: &str = "TILO_ATOMIC_FILE_FIFO_CHILD";
     const FIFO_ROOT: &str = "TILO_ATOMIC_FILE_FIFO_ROOT";
-    const CHILD_DEADLINE: Duration = Duration::from_secs(3);
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -201,10 +200,13 @@ mod unix_tests {
             .spawn()
             .unwrap();
 
-        let status = wait_for_child(&mut child, CHILD_DEADLINE).unwrap_or_else(|| {
+        let status = wait_for_child(&mut child).unwrap_or_else(|| {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("FIFO validation blocked past {CHILD_DEADLINE:?}");
+            panic!(
+                "FIFO validation blocked past the {:?} hang bound",
+                tilo_test_env::hang_bound()
+            );
         });
         assert!(status.success(), "FIFO validation child failed: {status}");
     }
@@ -414,8 +416,8 @@ mod unix_tests {
         assert_eq!(stages, 0, "publication left a staging file behind");
     }
 
-    fn wait_for_child(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
-        let deadline = Instant::now().checked_add(timeout).unwrap();
+    fn wait_for_child(child: &mut Child) -> Option<std::process::ExitStatus> {
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 return Some(status);

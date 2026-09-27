@@ -28,8 +28,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DEADLINE: Duration = Duration::from_secs(10);
-
 // This test authority consumes exactly one claim and validates the immutable
 // binding. The process proof still comes only from actual launcher/kernel
 // admission; no persisted labels are converted into live witnesses.
@@ -265,7 +263,7 @@ fn fixture_runtime(root: &Path) -> ManagedRuntime {
 }
 
 fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let events = launcher.drain_events().unwrap();
         if !events.is_empty() {
@@ -388,7 +386,9 @@ fn qualify_tree(owned_stop: bool) {
     let (pending, collab_child) = PendingManagedConnection::pair(&mut permit).unwrap();
     let (identity_child, _identity_peer) = UnixStream::pair().unwrap();
     let (model_child, mut model_peer) = UnixStream::pair().unwrap();
-    model_peer.set_read_timeout(Some(DEADLINE)).unwrap();
+    model_peer
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     let services = EnrolledServiceContext::new(
         binding.clone(),
         root.path().to_path_buf(),
@@ -421,8 +421,12 @@ fn qualify_tree(owned_stop: bool) {
         .unwrap();
     let (agent, collab) = admitted.into_parts();
     let agent_pidfd = PinnedProcess::capture(agent.process().pid);
-    collab.set_read_timeout(Some(DEADLINE)).unwrap();
-    collab.set_write_timeout(Some(DEADLINE)).unwrap();
+    collab
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    collab
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     let mut orphan = None;
     let mut parent_reaped = false;
     for _ in 0..2 {
@@ -509,7 +513,7 @@ fn qualify_tree(owned_stop: bool) {
     } else {
         model_peer.write_all(b"E").unwrap();
     }
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = tilo_test_env::hang_deadline();
     let mut finished = 0;
     while finished == 0 {
         for event in launcher.drain_events().unwrap() {

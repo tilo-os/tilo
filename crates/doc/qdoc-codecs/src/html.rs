@@ -561,6 +561,29 @@ struct ImportState {
     pre_depth: usize,
 }
 
+/// Import `html` as the rich text under `root`, a rich-text field of another document (a
+/// message body): its containers are started when missing and the imported paragraphs appended.
+/// An import holding no paragraph leaves one empty paragraph to type in. Images arrive in
+/// `inputs`.
+pub fn import_html_under(
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    html: &str,
+    inputs: &mut ContentInputs,
+) {
+    let c = qdoc::model::init(doc, root);
+    let mut ids = qdoc::model::IdGen::new(doc.get_actor().to_hex_string());
+    let mut dm = DocMut {
+        doc,
+        c: &c,
+        ids: &mut ids,
+    };
+    dm.bulk(|dm| import_html(html, dm, inputs));
+    if qdoc::model::blocks_in_order(dm.doc, &c).is_empty() {
+        dm.insert_block(None, "paragraph");
+    }
+}
+
 fn import_html(src: &str, doc: &mut DocMut, inputs: &mut ContentInputs) {
     let tokens = tokenize(src);
     let mut st = ImportState::default();
@@ -1058,6 +1081,47 @@ mod tests {
             .import(src.as_bytes(), &mut d.as_mut(), &mut inputs)
             .unwrap();
         (d.materialize(), inputs)
+    }
+
+    #[test]
+    fn html_round_trips_through_a_field_of_another_document() {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        let message = doc
+            .put_object(automerge::ROOT, "message", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&message, "subject", "untouched").unwrap();
+        let body = doc
+            .put_object(&message, "body", automerge::ObjType::Map)
+            .unwrap();
+        import_html_under(
+            &mut doc,
+            &body,
+            "<h2>Plan</h2><p><b>ship</b> it</p>",
+            &mut ContentInputs::new(),
+        );
+        let html =
+            crate::export_html::render_html_fragment_under(&doc, &body, &tilo_content::NoContent)
+                .unwrap();
+        assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
+        assert!(html.contains("<strong>ship</strong> it"), "got: {html}");
+        assert!(
+            crate::export_html::render_html_fragment_under(
+                &doc,
+                &message,
+                &tilo_content::NoContent
+            )
+            .is_none(),
+            "the message itself holds no rich text"
+        );
+
+        // Nothing to import still leaves a paragraph to type in.
+        let empty = doc
+            .put_object(&message, "empty", automerge::ObjType::Map)
+            .unwrap();
+        import_html_under(&mut doc, &empty, "", &mut ContentInputs::new());
+        let c = qdoc::model::open(&doc, &empty).unwrap();
+        assert_eq!(qdoc::model::blocks_in_order(&doc, &c).len(), 1);
     }
 
     #[test]

@@ -4016,9 +4016,7 @@ mod resolved_invocation_tests {
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
                 };
-                tokio::time::timeout(std::time::Duration::from_secs(5), action(channel))
-                    .await
-                    .expect("bounded RPC test");
+                tilo_test_env::within("the RPC under test", action(channel)).await;
                 task.abort();
                 let _ = task.await;
             })
@@ -4775,9 +4773,7 @@ mod reliable_invocation_tests {
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
                 };
-                tokio::time::timeout(std::time::Duration::from_secs(5), action(channel))
-                    .await
-                    .expect("bounded RPC");
+                tilo_test_env::within("the RPC under test", action(channel)).await;
                 task.abort();
                 let _ = task.await;
             })

@@ -3188,7 +3188,6 @@ impl RecordStore {
 
     /// Merge broker-admitted bytes atomically into the canonical owner. Validate
     /// on a private copy before ending local typing or changing the undo baseline.
-    #[allow(dead_code, reason = "used by feature-gated collaboration paths")]
     pub(crate) fn merge_remote_document(
         &self,
         checkout: &RecordCheckout,
@@ -3248,6 +3247,22 @@ impl RecordStore {
             Ok((changed, observed))
         })
         .map_err(|error| error.to_string())?
+    }
+
+    /// Merge a peer's full document into an open record, exactly as a
+    /// collaborator's state arriving over sync is merged: validated first,
+    /// and without moving the local author's undo history onto the peer's
+    /// edits. Returns whether anything changed.
+    ///
+    /// # Errors
+    /// Returns why the peer's document was refused; the record is unchanged.
+    pub fn merge_peer_document(
+        &self,
+        checkout: &RecordCheckout,
+        document: Vec<u8>,
+    ) -> Result<bool, String> {
+        self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
+            .map(|(changed, _)| changed)
     }
 
     /// Do something with a record's document. `None` if the record is not open here.

@@ -229,7 +229,7 @@ fn scenario_outcome(
             s.run_until(Instant::now() + Duration::from_secs(3))
                 .unwrap()
         });
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         if owner_released {
             send(
                 &mut owner,

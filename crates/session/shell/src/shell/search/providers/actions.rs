@@ -219,59 +219,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     contract
 }
 
-/// Viewer-local workspace view rows (switch workspace, open the activity
-/// sheet in a given view). Mirrors
-/// `tilo_desktop::activity::view_actions::workspace_view_descriptors`, read
-/// from the shell's own desktop model; the request names workspaces by raw id
-/// and `ChromeState::request_workspace_view` resolves it back.
-fn workspace_view_descriptors(
-    tree: &crate::shell::state::DesktopTree,
-    activity_available: bool,
-) -> Vec<tilo_desktop::activity::view_actions::WorkspaceViewDescriptor> {
-    use tilo_desktop::activity::ActivityView;
-    use tilo_desktop::activity::view_actions::{WorkspaceViewDescriptor, WorkspaceViewRequest};
-    let mut result = tree
-        .workspaces
-        .iter()
-        .map(|workspace| WorkspaceViewDescriptor {
-            id: format!("workspace.select.{}", workspace.id.0),
-            label: format!("Switch to {}", workspace.name),
-            request: WorkspaceViewRequest::Select {
-                workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-            },
-        })
-        .collect::<Vec<_>>();
-    if activity_available && let Some(workspace) = tree.active_workspace() {
-        for (id, label, view) in [
-            (
-                "room.activity.open",
-                "Review workspace activity",
-                ActivityView::CatchUp,
-            ),
-            (
-                "room.activity.explore",
-                "Explore workspace activity",
-                ActivityView::Explore,
-            ),
-            (
-                "room.activity.replay",
-                "Replay workspace activity",
-                ActivityView::Replay,
-            ),
-        ] {
-            result.push(WorkspaceViewDescriptor {
-                id: id.into(),
-                label: label.into(),
-                request: WorkspaceViewRequest::OpenActivity {
-                    workspace: tilo_desktop_model::WorkspaceId(workspace.id.0),
-                    view,
-                },
-            });
-        }
-    }
-    result
-}
-
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
         "shortcut-help.toggle"
@@ -1995,7 +1942,7 @@ fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract 
     if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
-            reason: "Quick Settings service is unavailable".into(),
+            reason: t("search-action-quick-settings-unavailable"),
         };
     }
     contract
@@ -2310,12 +2257,16 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        let descriptors = workspace_view_descriptors(&ctx.chrome.tree().desktop, true);
+        let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree().desktop,
+            true,
+        );
+        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
             let Some(score) = match_score(
                 &needle_lower,
                 &descriptor.label.to_lowercase(),
-                "workspace activity history",
+                &view_keywords,
                 &descriptor.id,
             ) else {
                 continue;

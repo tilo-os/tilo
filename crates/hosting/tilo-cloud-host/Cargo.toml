@@ -64,6 +64,7 @@ tilo-automerge.workspace = true
 tilo-action-broker = {path="../../collab/tilo-action-broker", features=["test-support"]}
 atomic-file = {path="../../system/atomic-file", features=["test-support"]}
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 moq-net.workspace = true
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rustls.workspace = true

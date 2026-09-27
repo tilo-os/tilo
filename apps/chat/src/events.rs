@@ -595,7 +595,7 @@ impl ChatApp {
 
     /// Enter in the picker's search field picks the best match.
     fn pick_first_emoji_result(&mut self, doc: &mut AutoCommit) {
-        let first = emoji::Catalogue::english()
+        let first = crate::i18n::emoji_catalogue()
             .search(self.emoji_search.value(), 1)
             .first()
             .map(|e| e.text());
@@ -2966,25 +2966,17 @@ mod tests {
         channel: &str,
         expected_count: usize,
     ) {
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the attachment worker", || {
             app.settle_attachment_import(doc);
-            if ChatDoc::list_messages(doc, channel).len() == expected_count {
-                return;
-            }
-            std::thread::sleep(ui::clock::Duration::from_millis(5));
-        }
-        panic!("attachment worker did not settle within 500ms");
+            ChatDoc::list_messages(doc, channel).len() == expected_count
+        });
     }
 
     fn settle_picker_until(app: &mut ChatApp) {
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the attachment picker worker", || {
             app.settle_attachment_picker();
-            if app.attachment_picker_pending.is_none() {
-                return;
-            }
-            std::thread::sleep(ui::clock::Duration::from_millis(5));
-        }
-        panic!("attachment picker worker did not settle within 500ms");
+            app.attachment_picker_pending.is_none()
+        });
     }
 
     #[test]

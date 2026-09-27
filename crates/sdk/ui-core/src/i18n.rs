@@ -1165,6 +1165,8 @@ mod tests {
 
     #[test]
     fn relative_times_follow_the_host_locale_and_its_plural_rules() {
+        use crate::format::relative;
+        use crate::history_source::participant_display_label;
         use crate::time::{Duration, SystemTime};
         use crate::widget::format_relative_time;
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -1187,6 +1189,19 @@ mod tests {
             assert_eq!(ago(2 * 3600 + 5), "vor 2 Std.");
             assert_eq!(ago(86_400), "vor 1 Tag");
             assert_eq!(ago(259_200), "vor 3 Tagen");
+
+            assert_eq!(relative(0), "gerade eben");
+            assert_eq!(relative(90_000), "gestern");
+            assert_eq!(relative(3 * 86_400), "vor 3 Tagen");
+            assert_eq!(relative(8 * 86_400), "vor 1 Woche");
+            assert_eq!(relative(90 * 86_400), "vor 3 Monaten");
+            assert_eq!(relative(400 * 86_400), "vor 1 Jahr");
+
+            assert_eq!(
+                participant_display_label("agent:"),
+                "Unbekannter Agent · Agent"
+            );
+            assert_eq!(participant_display_label("ada"), "ada");
         }
     }
 
@@ -1204,9 +1219,20 @@ mod tests {
             "relative-time-minutes",
             "relative-time-hours",
             "relative-time-days",
+            "relative-ago-just-now",
+            "relative-ago-minutes",
+            "relative-ago-hours",
+            "relative-ago-yesterday",
+            "relative-ago-days",
+            "relative-ago-weeks",
+            "relative-ago-months",
+            "relative-ago-years",
+            "participant-agent",
+            "participant-unknown-agent",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));
+            args.set("name", FluentValue::from("scribe"));
             for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
                 let (value, clean) = format_from_bundle(bundle, key, Some(&args))
                     .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));
