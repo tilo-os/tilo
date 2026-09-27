@@ -166,7 +166,7 @@ pub enum SideEffect {
     SignIn {
         profile: String,
     },
-    /// Forget the account's sealed tokens.
+    /// Remove the custody account the provider signed in with.
     SignOut {
         account_id: String,
     },
@@ -561,62 +561,72 @@ pub fn perform(operation: AiOperation) -> Result<(), String> {
         }
         SideEffect::RemoveKey { profile } => tilo_model_gateway::remove_api_key(profile)
             .map_err(|error| format!("the key was not removed: {error}")),
-        SideEffect::SignOut { account_id } => {
-            forget_account(account_id);
-            Ok(())
-        }
+        SideEffect::SignOut { account_id } => forget_account(account_id)
+            .map_err(|error| format!("the account was not removed: {error}")),
         SideEffect::SignIn { profile } => start_sign_in(profile.clone()),
     }
 }
 
-fn forget_account(account_id: &str) {
-    let id = accounts::AccountId::new(account_id);
-    let mut vault = accounts::SecretVault::open();
-    vault.remove(&id);
-    vault.save();
-    let mut store = accounts::AccountStore::load();
-    if store.remove(&id) {
-        let _ = store.save();
-    }
+/// The use of Tilo's Microsoft client a hosted model provider signs in for.
+const AZURE_OPENAI: account_custody::OAuthUse =
+    account_custody::OAuthUse::ai(account_custody::OAuthIssuer::Microsoft);
+
+/// Whether this build can sign in to Azure `OpenAI`: Tilo's Microsoft client
+/// registration gives the `ai` use its scopes.
+#[must_use]
+pub fn account_sign_in_configured() -> bool {
+    account_custody::ClientTable::defaults().is_configured(AZURE_OPENAI)
 }
 
-/// Open the Microsoft sign-in in the browser and, once it completes, record
-/// the account, seal its tokens and point the provider at it.
+/// Remove the provider's account through the shared account removal, which
+/// also withdraws its grant from custody.
+fn forget_account(account_id: &str) -> Result<(), String> {
+    let root = crate::accounts::AccountRoot::live();
+    let id = accounts::AccountId::new(account_id);
+    let Some(account) = root.store().get(&id).cloned() else {
+        return Ok(());
+    };
+    crate::panes::accounts::AccountsPane::remove_account(
+        &root,
+        &root.custodian(),
+        account.type_id.as_str(),
+        account_id,
+    )
+}
+
+/// Open the Microsoft sign-in in the browser and, once it completes, save the
+/// account and its sealed grant through the shared account save and point
+/// the provider at it. Custody runs the flow with Tilo's one Microsoft client
+/// registration and the `ai` scopes.
 fn start_sign_in(profile: String) -> Result<(), String> {
-    let client = accounts::oauth::ClientSlot::Entra
-        .registration()
-        .ok_or("Microsoft sign-in is not configured in this installation")?
-        .client(agent_provider_config::AZURE_OPENAI_SCOPE);
+    let root = crate::accounts::AccountRoot::live();
+    let custodian = root.custodian();
+    let authorization = custodian
+        .begin_sign_in_for(AZURE_OPENAI, None)
+        .map_err(|error| error.to_string())?;
+    ui::widget::try_open_external_url(authorization.url()).map_err(|error| error.to_string())?;
     crate::panes::ai::set_signing_in(Some(profile.clone()));
     std::thread::spawn(move || {
-        let result = accounts::oauth::run_loopback_authorization(
-            &client,
-            "",
-            |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
-            std::time::Duration::from_secs(300),
-        )
-        .and_then(|tokens| {
-            let account_id = format!("entra-{}", uuid::Uuid::new_v4());
-            let id = accounts::AccountId::new(account_id.clone());
-            let mut vault = accounts::SecretVault::open();
-            vault.put(&id, &accounts::oauth::tokens_to_secret(&tokens));
-            vault
-                .try_save()
-                .map_err(|error| format!("could not save the sign-in: {error}"))?;
-            let mut account = accounts::Account::new(id, agent_provider_config::ENTRA_ACCOUNT_TYPE);
-            account.display_name = "Microsoft Entra ID".into();
-            let mut store = accounts::AccountStore::load();
-            store.upsert(account);
-            store
-                .save()
-                .map_err(|error| format!("could not save the account: {error}"))?;
-            let mut config = ProviderConfig::load();
-            let entry = profile_mut(&mut config, &profile)?;
-            entry.credential = Some(Credential::Account { account_id });
-            config
-                .save()
-                .map_err(|error| format!("provider settings were not saved: {error}"))
-        });
+        let result = account_custody::Custodian::finish_sign_in(authorization)
+            .map_err(|error| error.to_string())
+            .and_then(|tokens| {
+                let id = accounts::AccountId::new(format!(
+                    "{}-{}",
+                    account_custody::providers::AZURE_OPENAI_TYPE,
+                    uuid::Uuid::new_v4()
+                ));
+                let mut account = accounts::Account::new(
+                    id.clone(),
+                    account_custody::providers::AZURE_OPENAI_TYPE,
+                );
+                account.display_name = AZURE_OPENAI.label().into();
+                crate::panes::accounts::AccountsPane::commit_account(
+                    &root,
+                    account,
+                    Some(&account_custody::oauth_secret(&tokens)),
+                )?;
+                point_at_account(&profile, id.as_str())
+            });
         crate::panes::ai::set_signing_in(None);
         crate::panes::ai::notify(match result {
             Ok(()) => crate::i18n::t("ai-notice-signed-in"),
@@ -625,6 +635,25 @@ fn start_sign_in(profile: String) -> Result<(), String> {
             }
         });
     });
+    Ok(())
+}
+
+/// Make `profile` authenticate as the custody account `account_id`,
+/// replacing (and removing) any account it signed in with before.
+fn point_at_account(profile: &str, account_id: &str) -> Result<(), String> {
+    let mut config = ProviderConfig::load();
+    let entry = profile_mut(&mut config, profile)?;
+    let previous = entry.credential.replace(Credential::Account {
+        account_id: account_id.to_string(),
+    });
+    config
+        .save()
+        .map_err(|error| format!("provider settings were not saved: {error}"))?;
+    if let Some(Credential::Account { account_id: old }) = previous
+        && old != account_id
+    {
+        forget_account(&old)?;
+    }
     Ok(())
 }
 

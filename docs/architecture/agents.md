@@ -124,8 +124,17 @@ so it resolves on whichever device runs it.
 Settings' AI pane is the one hub for all of this, and every control in it is
 an action of its resource tree, so agents and `tilo-control` configure it the
 same way; keys, removals and downloads need confirmation. Azure OpenAI signs
-in with Microsoft Entra ID through `accounts::oauth`, the one OAuth
-implementation Mail also uses.
+in with a Microsoft work or school account through account custody
+(`crates/system/account-custody`), the one OAuth implementation in Tilo: the
+`ai` use of Tilo's shared Microsoft client in `oauth-clients.toml` (scopes
+`offline_access` and `https://cognitiveservices.azure.com/user_impersonation`),
+the same registration Mail and cloud storage sign in through. The sign-in
+creates an ordinary custody account (type `azure-openai`), saved and removed
+through Settings' shared account save and removal, and the provider profile
+names it (`Credential::Account`). The gateway asks
+`Custodian::account_access_token` for a current access token before each
+call; custody refreshes and reseals the grant, and the refresh token never
+leaves it.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned

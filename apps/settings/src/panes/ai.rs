@@ -1353,7 +1353,7 @@ impl AiPane {
                     &t("ai-action-remove-key"),
                 )));
             if profile.protocol.supports_account_sign_in() {
-                let registered = accounts::oauth::ClientSlot::Entra.registration().is_some();
+                let registered = crate::ai_settings::account_sign_in_configured();
                 credential_row = credential_row.push(hgap(8.0)).push(Box::new(
                     bound_button(
                         tree,

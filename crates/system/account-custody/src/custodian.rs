@@ -1,6 +1,7 @@
 //! The custodian: the one place that turns a sealed long-lived grant into a
 //! short-lived credential, for the storage daemon (through the handoff
-//! store) and for Mail (an access token for `XOAUTH2`).
+//! store), for Mail (an access token for `XOAUTH2`) and for the model gateway
+//! (an access token for Azure `OpenAI`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -131,8 +132,8 @@ pub fn icloud_apple_id(secret: &Secret) -> Option<String> {
 
 /// Whether an account type's credential is held by this custodian (rather
 /// than being a password another app uses directly).
-pub fn is_cloud_type(type_id: &str) -> bool {
-    OAuthCloud::from_type_id(type_id).is_some()
+pub fn is_custody_type(type_id: &str) -> bool {
+    OAuthUse::of_account_type(type_id).is_some()
         || matches!(type_id, ICLOUD_DRIVE_TYPE | NEXTCLOUD_TYPE | WEBDAV_TYPE)
 }
 
@@ -395,6 +396,29 @@ impl Custodian {
         Ok(Zeroizing::new(tokens.access_token))
     }
 
+    /// A current access token for account `id`, through the use its account
+    /// type names ([`OAuthUse::of_account_type`]): the model gateway's path
+    /// to an Azure `OpenAI` token. See [`Self::oauth_access_token`].
+    ///
+    /// # Errors
+    /// [`CustodyError::Account`] when the account is missing or its type
+    /// holds no `OAuth` grant, else as [`Self::oauth_access_token`].
+    pub fn account_access_token(
+        &self,
+        id: &AccountId,
+        force: bool,
+    ) -> Result<Zeroizing<String>, CustodyError> {
+        let account = self
+            .store()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CustodyError::Account("account no longer exists".into()))?;
+        let oauth_use = OAuthUse::of_account_type(account.type_id.as_str()).ok_or_else(|| {
+            CustodyError::Account("this account type does not sign in with OAuth".into())
+        })?;
+        self.oauth_access_token(id, oauth_use, force)
+    }
+
     /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with
     /// any change sealed back into `vault`.
     fn fresh_oauth_tokens(
@@ -575,9 +599,9 @@ impl Custodian {
             let _ = handoff.withdraw(&account.id);
         }
         let type_id = account.type_id.as_str();
-        if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
+        if let Some(oauth_use) = OAuthUse::of_account_type(type_id) {
             let (Some(Grant::Oauth2 { tokens }), Ok((provider, registration))) =
-                (grant_of(secret), self.oauth_config(cloud))
+                (grant_of(secret), self.use_config(oauth_use))
             else {
                 return;
             };
@@ -587,7 +611,7 @@ impl Custodian {
             let result = OAuthClient::new()
                 .and_then(|client| client.revoke(&provider, &registration, &tokens));
             if let Err(error) = result {
-                tracing::warn!(provider = cloud.label(), %error, "could not revoke a removed account's grant");
+                tracing::warn!(provider = oauth_use.label(), %error, "could not revoke a removed account's grant");
             }
         } else if type_id == ICLOUD_DRIVE_TYPE {
             if let Some(Grant::Icloud { session, .. }) = grant_of(secret) {

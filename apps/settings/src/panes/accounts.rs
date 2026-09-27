@@ -1384,7 +1384,7 @@ impl AccountsPane {
     /// Journal and persist `stored` with its credential (when given): the
     /// vault first, so a metadata failure never leaves an account whose
     /// credential is missing.
-    fn commit_account(
+    pub(crate) fn commit_account(
         account_root: &AccountRoot,
         stored: accounts::Account,
         secret: Option<&accounts::Secret>,
@@ -1458,14 +1458,16 @@ impl AccountsPane {
         )
     }
 
-    /// Remove an account of `kind` by id from its owning store, persisting.
+    /// Remove an account of type `expected_type` by id from its owning
+    /// store, persisting, and give its grant back through custody. Every
+    /// surface that removes an account (this pane, its resource actions, the
+    /// AI hub's sign-out) goes through here.
     pub(crate) fn remove_account(
         account_root: &AccountRoot,
         custodian: &account_custody::Custodian,
-        kind: AccountKind,
+        expected_type: &str,
         id: &str,
     ) -> Result<(), String> {
-        let expected_type = kind.type_id();
         let account_id = accounts::AccountId::from(id.to_string());
         let original_store = account_root.store();
         if let Some(account) = original_store.get(&account_id)
@@ -1535,7 +1537,7 @@ impl AccountsPane {
         // handoff credential. Best effort, off the UI thread: the account is
         // already gone locally.
         if let (Some(account), Some(secret)) = (original_store.get(&account_id), original_secret)
-            && account_custody::is_cloud_type(account.type_id.as_str())
+            && account_custody::is_custody_type(account.type_id.as_str())
         {
             let account = account.clone();
             let custodian = custodian.clone();
@@ -1858,7 +1860,8 @@ impl AccountsPane {
                 automerge::ScalarValue::Boolean(false),
             );
             if let Some((kind, id)) = self.pending_remove.take() {
-                match Self::remove_account(&self.account_root, &self.custodian, kind, &id) {
+                match Self::remove_account(&self.account_root, &self.custodian, kind.type_id(), &id)
+                {
                     Ok(()) => {
                         self.removed.push(id);
                         self.reload();

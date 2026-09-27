@@ -4,9 +4,10 @@
 //! and signs the person in (Google, Microsoft, Dropbox): its endpoints, and
 //! one client registration in `oauth-clients.toml`. An [`OAuthUse`] is one
 //! thing a grant from that issuer is for ([`Capability::Files`] for cloud
-//! storage, [`Capability::Mail`] for IMAP and SMTP). Scopes belong to the
-//! use, so Google Drive and Gmail share Google's client with different
-//! scopes.
+//! storage, [`Capability::Mail`] for IMAP and SMTP, [`Capability::Ai`] for a
+//! hosted model provider). Scopes belong to the use, so Google Drive and
+//! Gmail share Google's client with different scopes, and so do `OneDrive`,
+//! Outlook and Azure `OpenAI`.
 
 use serde::Deserialize;
 use tilo_oauth::{ClientId, Provider, Revocation};
@@ -23,6 +24,9 @@ pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
 pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
 /// Account type id of a plain `WebDAV` account.
 pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
+/// Account type id of a Microsoft work or school account the AI hub signed
+/// in to Azure `OpenAI` with.
+pub const AZURE_OPENAI_TYPE: &str = "azure-openai";
 
 /// A provider that registered Tilo as an installed `OAuth` client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,6 +149,9 @@ pub enum Capability {
     Files,
     /// Mail over IMAP and SMTP (`XOAUTH2`).
     Mail,
+    /// A hosted model provider the model gateway calls with the access
+    /// token (Azure `OpenAI`).
+    Ai,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -164,6 +171,21 @@ impl OAuthUse {
         Self::new(issuer, Capability::Mail)
     }
 
+    /// A hosted model provider signed in through `issuer` (Azure `OpenAI`).
+    pub const fn ai(issuer: OAuthIssuer) -> Self {
+        Self::new(issuer, Capability::Ai)
+    }
+
+    /// The use an account of `type_id` holds a grant for: a storage
+    /// provider's, or Azure `OpenAI`'s. Mail accounts carry their issuer in
+    /// their own configuration, so they are not named by type.
+    pub fn of_account_type(type_id: &str) -> Option<Self> {
+        match type_id {
+            AZURE_OPENAI_TYPE => Some(Self::ai(OAuthIssuer::Microsoft)),
+            other => OAuthCloud::from_type_id(other).map(OAuthCloud::oauth_use),
+        }
+    }
+
     /// The product name shown to the person.
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
@@ -173,6 +195,9 @@ impl OAuthUse {
             (OAuthIssuer::Microsoft, Capability::Mail) => "Outlook",
             (OAuthIssuer::Dropbox, Capability::Files) => "Dropbox",
             (OAuthIssuer::Dropbox, Capability::Mail) => "Dropbox mail",
+            (OAuthIssuer::Google, Capability::Ai) => "Google AI",
+            (OAuthIssuer::Microsoft, Capability::Ai) => "Azure OpenAI",
+            (OAuthIssuer::Dropbox, Capability::Ai) => "Dropbox AI",
         }
     }
 }

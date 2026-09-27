@@ -2214,13 +2214,10 @@ impl Widget for SettingsApp {
                     .get(&accounts::AccountId::from(id.clone()))
                     .cloned()
                     .ok_or_else(|| "account no longer exists".to_string())?;
-                let account_kind =
-                    crate::accounts::AccountKind::from_type_id(stored.type_id.as_str())
-                        .ok_or_else(|| "unsupported account type".to_string())?;
                 crate::panes::accounts::AccountsPane::remove_account(
                     &self.account_root,
                     &self.account_root.custodian(),
-                    account_kind,
+                    stored.type_id.as_str(),
                     &id,
                 )?;
                 self.refresh_account_resources();

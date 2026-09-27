@@ -3,8 +3,8 @@
 //! The committed table `oauth-clients.toml` holds what each issuer's
 //! developer console issued: the client id, Google's installed-app client
 //! secret, the loopback ports an issuer that matches redirect URIs exactly
-//! has registered, and the scopes of each use (cloud storage, mail) of that
-//! one client. An environment variable overrides the id (and Google's
+//! has registered, and the scopes of each use (cloud storage, mail, a hosted
+//! model provider) of that one client. An environment variable overrides the id (and Google's
 //! secret) at runtime, then at build time.
 
 use std::sync::OnceLock;
@@ -24,6 +24,7 @@ const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
+    pub ai: Vec<String>,
 }
 
 impl Scopes {
@@ -31,6 +32,7 @@ impl Scopes {
         match capability {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
+            Capability::Ai => &self.ai,
         }
     }
 }
@@ -210,6 +212,22 @@ mod tests {
             table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
             ["https://www.googleapis.com/auth/drive"]
         );
+        assert_eq!(
+            table.scopes(OAuthUse::ai(OAuthIssuer::Microsoft)),
+            [
+                "offline_access",
+                "https://cognitiveservices.azure.com/user_impersonation",
+            ]
+        );
+        // Azure OpenAI signs in through the one Microsoft client.
+        assert_eq!(
+            table
+                .config(OAuthUse::ai(OAuthIssuer::Microsoft))
+                .unwrap()
+                .1,
+            table.config(OUTLOOK).unwrap().1
+        );
+        assert!(!table.is_configured(OAuthUse::ai(OAuthIssuer::Google)));
         // Dropbox is storage only.
         assert!(
             table
