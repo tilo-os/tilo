@@ -330,10 +330,19 @@ impl ChatDoc {
     }
 
     /// First-run scaffolding for a **real** install: just the local person and
-    /// an empty workspace they own — a `#general` text channel and a `General`
-    /// voice channel to start in. No fabricated people or conversation; the
-    /// user creates channels, invites peers, and types. Idempotent via the
+    /// an empty workspace — a `#general` text channel and a `Lounge` voice
+    /// channel to start in. No fabricated people or conversation; the user
+    /// creates channels, invites peers, and types. Idempotent via the
     /// `seeded` guard so adopting a peer's shared document never re-seeds.
+    ///
+    /// Every writer of a room's conversation may scaffold it before any other
+    /// writer's copy arrives, so the scaffold is one change every member
+    /// writes identically ([`Self::starter_scaffold`]): two members' copies are
+    /// the same change and merge as one. Scaffolded separately, each member's
+    /// workspace and channel maps would be concurrent objects at the same
+    /// keys, and the edits one member later made under its own objects would
+    /// vanish wherever the other's won. Only the person entry is this
+    /// member's own.
     ///
     /// The rich demo workspace ([`Self::seed_if_empty`]) is reserved for the
     /// ephemeral `--shots`/test path — it never lands on a real user's disk.
@@ -341,9 +350,32 @@ impl ChatDoc {
         if Self::is_seeded(doc) {
             return;
         }
-        let _ = doc.put(&ROOT, "seeded", true);
-
+        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+    }
+
+    /// The starter workspace as the one change every member writes: a fixed
+    /// actor, the same operations in the same order, at time zero.
+    fn starter_scaffold() -> Vec<automerge::Change> {
+        let mut scaffold =
+            AutoCommit::new().with_actor(automerge::ActorId::from(b"chat.starter".as_slice()));
+        let doc = &mut scaffold;
+        let _ = doc.put(&ROOT, "seeded", true);
+        // Every top-level container too, so what members add later lands in
+        // the one shared object rather than in maps each created on its own.
+        for key in [
+            "users",
+            "workspaces",
+            "categories",
+            "channels",
+            "messages",
+            "read",
+            "drafts",
+            "reports",
+            "voice",
+        ] {
+            let _ = get_or_map(doc, &ROOT, key);
+        }
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
         Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
         Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
@@ -367,6 +399,8 @@ impl ChatDoc {
             ChannelKind::Voice,
             0,
         );
+        scaffold.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        scaffold.get_changes(&[])
     }
 
     /// Populate the document with a believable demo workspace if it is
@@ -1032,6 +1066,11 @@ impl ChatDoc {
             let voice = get_or_map(doc, &ROOT, "voice");
             let _ = get_or_map(doc, &voice, id);
         }
+        // Its message list likewise: two members posting first into a new
+        // channel before syncing would otherwise each create the list, and
+        // the merge would keep one member's messages.
+        let messages = get_or_map(doc, &ROOT, "messages");
+        let _ = get_or_list(doc, &messages, id);
     }
 
     fn messages_list_mut(doc: &mut AutoCommit, channel: &str) -> ObjId {
@@ -2750,6 +2789,56 @@ mod tests {
     use super::*;
     use crate::model;
     use tilo_automerge::ApplyIncoming;
+
+    /// Two writers each scaffold the room's conversation before the other's
+    /// copy arrives, and one then adds a channel: once their documents meet,
+    /// both hold one workspace and the channel, whoever merged whom.
+    #[test]
+    fn members_scaffolding_the_same_conversation_keep_each_others_channels() {
+        let mut team = AutoCommit::new();
+        let mut mate = AutoCommit::new();
+        ChatDoc::seed_starter(&mut team, "u_team", "Team", "T");
+        ChatDoc::seed_starter(&mut mate, "u_mate", "Mate", "M");
+        ChatDoc::insert_channel(
+            &mut team,
+            "c_feedback",
+            "ws_home",
+            "cat_home_text",
+            "feedback",
+            ChannelKind::Text,
+        );
+        let first = |author: &str, text: &str| NewMessage {
+            author: author.into(),
+            ts: 1,
+            text: text.into(),
+            ..Default::default()
+        };
+        ChatDoc::push_message(&mut team, "c_general", first("u_team", "from the team"));
+        ChatDoc::push_message(&mut mate, "c_general", first("u_mate", "from the mate"));
+        let mut team_view = team.fork();
+        team_view.merge_incoming(&mut mate.fork()).unwrap();
+        let mut mate_view = mate.fork();
+        mate_view.merge_incoming(&mut team.fork()).unwrap();
+        for view in [&team_view, &mate_view] {
+            assert_eq!(ChatDoc::list_workspaces(view).len(), 1, "one workspace");
+            assert!(
+                ChatDoc::list_channels(view)
+                    .iter()
+                    .any(|channel| channel.id == "c_feedback"),
+                "the channel one writer added survives the other's scaffold"
+            );
+            assert_eq!(
+                ChatDoc::list_users(view).len(),
+                2,
+                "each person is their own"
+            );
+            assert_eq!(
+                ChatDoc::list_messages(view, "c_general").len(),
+                2,
+                "both first posts survive"
+            );
+        }
+    }
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
