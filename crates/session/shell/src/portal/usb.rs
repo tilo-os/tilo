@@ -119,11 +119,10 @@ impl UsbBackend {
             review: ReviewRequest {
                 handle: request_path.clone(),
                 app_id,
-                title: "Choose USB devices".into(),
-                reason: "Select devices individually; read-write can modify a device.".into(),
-                resource: "Space or click toggles a row. Access ends on release or disconnect."
-                    .into(),
-                confirm_label: "Allow selected".into(),
+                title: crate::shell::i18n::t("portal-usb-title"),
+                reason: crate::shell::i18n::t("portal-usb-reason"),
+                resource: crate::shell::i18n::t("portal-usb-resource"),
+                confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
             },
             devices: requested
                 .iter()
@@ -132,7 +131,7 @@ impl UsbBackend {
                     label: device
                         .label
                         .clone()
-                        .unwrap_or_else(|| "USB device".to_string()),
+                        .unwrap_or_else(|| crate::shell::i18n::t("portal-usb-unnamed-device")),
                     writable: device.writable,
                 })
                 .collect(),

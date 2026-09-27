@@ -66,28 +66,22 @@ type MergePreflightResult = Arc<
         )>,
     >,
 >;
-enum RemoteDavResult {
-    Browse(Vec<crate::remote_dav::RemoteEntry>),
-    Downloaded(PathBuf),
-    Mutated(String),
-}
-type RemoteBrowseResult =
-    Arc<std::sync::Mutex<Option<(String, Result<RemoteDavResult, crate::remote_dav::DavError>)>>>;
-
-/// The account projection is deliberately conservative only for an account
-/// Settings has explicitly disabled. `Offline` is last-observed reachability,
-/// not a live probe, so blocking a request on it would prevent the request
-/// that discovers a recovered server. Authentication and transport failures
-/// are likewise returned by the narrowly scoped DAV handoff as a useful,
-/// current outcome rather than guessed from stale metadata here.
-fn remote_dav_availability(health: crate::remote_accounts::RemoteAccountHealth) -> Availability {
-    match health {
-        crate::remote_accounts::RemoteAccountHealth::Disabled => Availability::Unavailable {
+/// A remote account's folder opens while the cloud service has it mounted.
+/// A disabled or not-yet-mounted account says why instead.
+fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -> Availability {
+    if account.health == crate::remote_accounts::RemoteAccountHealth::Disabled {
+        return Availability::Unavailable {
             code: "account_disabled".into(),
-            reason: health.unavailable_reason().into(),
-        },
-        _ => Availability::Available,
+            reason: account.health.unavailable_reason().into(),
+        };
     }
+    if !account.mount.as_deref().is_some_and(Path::is_dir) {
+        return Availability::Unavailable {
+            code: "account_not_mounted".into(),
+            reason: "This account's folder is not mounted yet".into(),
+        };
+    }
+    Availability::Available
 }
 
 /// Build the file manager's thumbnail service. The content-addressed cache
@@ -532,11 +526,11 @@ pub struct FileExplorerWidget {
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
-    /// One bounded remote DAV browse at a time. The worker owns the network
-    /// request; the UI thread only adopts the resulting metadata projection.
-    remote_browse_result: RemoteBrowseResult,
-    remote_browse_pending: Option<String>,
-    remote_entries: HashMap<String, Vec<crate::remote_dav::RemoteEntry>>,
+    /// Settings' config root remote accounts are read from; `None` reads
+    /// none (embedded and test views), so no ambient store is touched.
+    accounts_root: Option<PathBuf>,
+    /// The accounts as last read from `accounts_root`.
+    accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
@@ -588,7 +582,10 @@ impl FileExplorerWidget {
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
         // renders as an absolute trail from the filesystem root.
-        Self::with_persistence(config::config_dir(), crate::model::user_home())
+        let mut widget = Self::with_persistence(config::config_dir(), crate::model::user_home());
+        widget.accounts_root = accounts::config_root();
+        widget.refresh_external_search_catalogs();
+        widget
     }
 
     /// Surface a bounded result from startup portals such as received-file
@@ -626,6 +623,9 @@ impl FileExplorerWidget {
             format!("Status: {}", account.health.label()),
             account.health.unavailable_reason().to_string(),
         ];
+        if let Some(mount) = &account.mount {
+            lines.push(format!("Folder: {}", mount.display()));
+        }
         if reauthenticate {
             lines.push(
                 "Open Settings → External Accounts and choose Sign in again. Credentials stay in the system vault and are never shown to Files."
@@ -710,7 +710,7 @@ impl FileExplorerWidget {
             initial_dir: initial_path(),
             workspace_roots: crate::model::workspace_roots(),
             record_roots: crate::model::workspace_record_authority_roots(),
-            remote_accounts: crate::remote_accounts::load(),
+            remote_accounts: Vec::new(),
             trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
                 .unwrap_or_default(),
         });
@@ -863,9 +863,8 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             resource_invocation: None,
             resource_result: None,
-            remote_browse_result: Arc::new(std::sync::Mutex::new(None)),
-            remote_browse_pending: None,
-            remote_entries: HashMap::new(),
+            accounts_root: None,
+            accounts_cache: Vec::new(),
             host_intent: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -933,13 +932,22 @@ impl FileExplorerWidget {
     fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
         self.startup_accounts
             .clone()
-            .unwrap_or_else(crate::remote_accounts::load)
+            .unwrap_or_else(|| self.accounts_cache.clone())
+    }
+
+    fn remote_account(&self, id: &str) -> Option<crate::remote_accounts::RemoteAccount> {
+        self.remote_account_snapshot()
+            .into_iter()
+            .find(|account| account.id.as_str() == id)
     }
 
     fn refresh_external_search_catalogs(&mut self) {
         let page = self.advance_collaborative_search_page();
         if page.truncated {
             self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+        }
+        if let Some(root) = self.accounts_root.as_deref() {
+            self.accounts_cache = crate::remote_accounts::load_in(root, self.home_path.as_deref());
         }
         self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
         let accounts = self.remote_account_snapshot();
@@ -1001,16 +1009,26 @@ impl FileExplorerWidget {
     }
 
     fn visible_open_path(&self, resource_id: &str) -> Option<PathBuf> {
-        self.visible_entry_path(resource_id).or_else(|| {
-            self.favs
-                .borrow()
-                .favorites
-                .iter()
-                .find(|favorite| {
-                    crate::search_provider::place_resource_id(&favorite.path) == resource_id
-                })
-                .map(|favorite| favorite.path.clone())
-        })
+        self.visible_entry_path(resource_id)
+            .or_else(|| {
+                self.favs
+                    .borrow()
+                    .favorites
+                    .iter()
+                    .find(|favorite| {
+                        crate::search_provider::place_resource_id(&favorite.path) == resource_id
+                    })
+                    .map(|favorite| favorite.path.clone())
+            })
+            .or_else(|| {
+                self.remote_account_snapshot()
+                    .into_iter()
+                    .filter(|account| {
+                        matches!(remote_folder_availability(account), Availability::Available)
+                    })
+                    .filter_map(|account| account.mount)
+                    .find(|mount| crate::search_provider::place_resource_id(mount) == resource_id)
+            })
     }
 
     /// Block until every in-flight thumbnail generation has settled (or the
@@ -1054,7 +1072,19 @@ impl FileExplorerWidget {
                 self.cmds.clone(),
             )
             .with_cursor(self.last_cursor)
-            .with_workspaces(self.workspace_roots.clone()),
+            .with_workspaces(self.workspace_roots.clone())
+            .with_remote_accounts(
+                self.remote_account_snapshot()
+                    .into_iter()
+                    .filter(|account| {
+                        matches!(remote_folder_availability(account), Availability::Available)
+                    })
+                    .filter_map(|account| {
+                        let badge = account.health.badge().map(str::to_owned);
+                        account.mount.map(|mount| (account.label, mount, badge))
+                    })
+                    .collect(),
+            ),
         )
     }
 
@@ -5921,80 +5951,6 @@ impl FileExplorerWidget {
         true
     }
 
-    fn poll_remote_browse_result(&mut self) -> bool {
-        let result = self
-            .remote_browse_result
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
-        let Some((account_id, result)) = result else {
-            return false;
-        };
-        self.remote_browse_pending = None;
-        let lifecycle = self
-            .resource_invocation
-            .take()
-            .map(|invocation| match &result {
-                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "files.remote_dav_failed".into(),
-                        message: error.message().into(),
-                        details: None,
-                        retryable: matches!(error, crate::remote_dav::DavError::Offline),
-                    },
-                },
-            });
-        match result {
-            Ok(RemoteDavResult::Browse(entries)) => {
-                self.remote_entries
-                    .insert(account_id.clone(), entries.clone());
-                let account = crate::remote_accounts::find(&account_id);
-                let label = account
-                    .as_ref()
-                    .map_or("Remote files", |account| account.label.as_str());
-                let lines = if entries.is_empty() {
-                    vec!["This remote folder is empty.".into()]
-                } else {
-                    entries
-                        .iter()
-                        .take(crate::remote_dav::MAX_REMOTE_ENTRIES)
-                        .map(|entry| {
-                            let kind = if entry.is_dir { "Folder" } else { "File" };
-                            format!("{kind} · {}", entry.name)
-                        })
-                        .collect()
-                };
-                self.status = Some(format!("Loaded {} remote item(s)", entries.len()));
-                self.show_collab_panel(CollabPanel {
-                    history: None,
-                    title: format!("{label} files"),
-                    summary: "Remote folder".into(),
-                    lines,
-                    action: None,
-                });
-            }
-            Ok(RemoteDavResult::Downloaded(path)) => {
-                self.status = Some(format!("Downloaded to {}", path.display()));
-                self.refresh_metadata_preserving_view();
-            }
-            Ok(RemoteDavResult::Mutated(message)) => {
-                self.status = Some(message);
-                self.remote_entries.remove(&account_id);
-            }
-            Err(error) => self.status = Some(error.message().into()),
-        }
-        self.structure_dirty = true;
-        if lifecycle.is_some() {
-            self.resource_result = lifecycle;
-        }
-        true
-    }
-
     fn request_merge_preflight(
         &mut self,
         path: PathBuf,
@@ -7487,7 +7443,6 @@ impl Widget for FileExplorerWidget {
             "files.rename",
             "files.share-link",
             "files.remote-account",
-            "files.remote-dav",
             // The hand-positioned recovery Button still publishes through the
             // normal action door; this handler delegates its stable control
             // resource back to the retained widget.
@@ -7572,71 +7527,46 @@ impl Widget for FileExplorerWidget {
                     );
             folder.children.push(resource);
         }
-        // External file accounts are a read-only projection of Settings'
-        // canonical account store. Files intentionally has no network
-        // permission and never opens the credential vault; opening one shows
-        // its truthful lifecycle/mount state rather than fabricating a remote
-        // directory that this sandbox cannot actually access.
+        // External file accounts are the folders the storage daemon's cloud
+        // service mounts under `~/Remote`. Files never talks to the server or
+        // opens the vault: it opens the folder like any other place and shows
+        // the account's reported health as a badge.
         for account in self.remote_account_snapshot() {
             let resource_id = crate::remote_accounts::resource_id(&account.id);
-            let payload = vec!["details".to_string(), account.id.to_string()];
+            let availability = remote_folder_availability(&account);
             let mut resource =
                 Resource::new(resource_id, "files.remote-account", account.label.clone());
+            resource.presentation = Some(tilo_actions::ResourcePresentation {
+                detail: Some(format!("{} · {}", account.kind.label(), account.host)),
+                badge: account.health.badge().map(str::to_owned),
+                preview: None,
+            });
+            let open_payload = vec!["open".to_string(), account.id.to_string()];
             resource.actions.push(
                 ActionSpec::operation(
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Show connection details",
+                    "Open",
                     OperationKind::View,
                     "files.remote-account",
-                    &payload,
+                    &open_payload,
+                )
+                .expect("remote account open payload is serializable")
+                .with_contract(ActionContract {
+                    availability,
+                    ..ActionContract::view()
+                }),
+            );
+            let details_payload = vec!["details".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "details",
+                    "Show account status",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &details_payload,
                 )
                 .expect("remote account detail payload is serializable")
                 .with_contract(ActionContract::view()),
-            );
-            let create_account_id = account.id.to_string();
-            resource.actions.push(
-                ActionSpec::prompted_operation(
-                    "create-folder",
-                    "Create remote folder",
-                    "Folder name",
-                    "New Folder",
-                    OperationKind::Effect,
-                    "files.remote-dav",
-                    move |name| {
-                        EncodedAction::encode_operation(
-                            "files.remote-dav",
-                            &vec!["create-folder", create_account_id.as_str(), name],
-                        )
-                        .expect("remote create-folder payload is serializable")
-                    },
-                )
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job)
-                .with_contract(ActionContract {
-                    availability: remote_dav_availability(account.health),
-                    permission: PermissionRequirement::Write,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-            let browse_payload = vec!["browse".to_string(), account.id.to_string()];
-            resource.actions.push(
-                ActionSpec::operation(
-                    "browse",
-                    "Browse remote files",
-                    OperationKind::Effect,
-                    "files.remote-dav",
-                    &browse_payload,
-                )
-                .expect("remote browse payload is serializable")
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job)
-                .with_contract(ActionContract {
-                    availability: remote_dav_availability(account.health),
-                    permission: PermissionRequirement::Read,
-                    retry: RetryPolicy::Idempotent,
-                    ..ActionContract::default()
-                }),
             );
             let reauth_payload = vec!["reauthenticate".to_string(), account.id.to_string()];
             resource.actions.push(
@@ -7650,96 +7580,6 @@ impl Widget for FileExplorerWidget {
                 .expect("remote account reauthentication payload is serializable")
                 .with_contract(ActionContract::view()),
             );
-            if let Some(entries) = self.remote_entries.get(account.id.as_str()) {
-                for entry in entries {
-                    let entry_id = format!(
-                        "{}:{}",
-                        crate::remote_accounts::resource_id(&account.id),
-                        hex_prefix(entry.href.as_bytes(), entry.href.len())
-                    );
-                    let download_payload =
-                        vec!["download", account.id.as_str(), entry.href.as_str()];
-                    let delete_payload = vec!["delete", account.id.as_str(), entry.href.as_str()];
-                    let rename_account_id = account.id.to_string();
-                    let rename_href = entry.href.clone();
-                    let mut remote_entry =
-                        Resource::new(entry_id, "files.remote-entry", entry.name.clone());
-                    remote_entry.actions.push(
-                        ActionSpec::operation(
-                            "download",
-                            "Download to this folder",
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            &download_payload,
-                        )
-                        .expect("remote download payload")
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Read,
-                            // A prior attempt may already have written the
-                            // local destination before its result was lost.
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    remote_entry.actions.push(
-                        ActionSpec::prompted_operation(
-                            "rename",
-                            "Rename",
-                            "New name",
-                            &entry.name,
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            move |name| {
-                                EncodedAction::encode_operation(
-                                    "files.remote-dav",
-                                    &vec![
-                                        "rename",
-                                        rename_account_id.as_str(),
-                                        rename_href.as_str(),
-                                        name,
-                                    ],
-                                )
-                                .expect("remote rename payload")
-                            },
-                        )
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Write,
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    remote_entry.actions.push(
-                        ActionSpec::operation(
-                            "delete",
-                            "Delete remote file",
-                            OperationKind::Effect,
-                            "files.remote-dav",
-                            &delete_payload,
-                        )
-                        .expect("remote delete payload")
-                        .destructive()
-                        .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job)
-                        .with_contract(ActionContract {
-                            availability: remote_dav_availability(account.health),
-                            permission: PermissionRequirement::Write,
-                            risk: RiskLevel::Destructive,
-                            confirmation: ConfirmationPolicy::Confirm,
-                            retry: RetryPolicy::AtMostOnce,
-                            execution: ExecutionMode::Background { cancellable: false },
-                            result: ResultSpec::Job,
-                            ..ActionContract::default()
-                        }),
-                    );
-                    resource.children.push(remote_entry);
-                }
-            }
             folder.children.push(resource);
         }
         // Keep the context catalogue bounded. The visible directory can still
@@ -8406,9 +8246,14 @@ impl Widget for FileExplorerWidget {
                 let id = args
                     .get(1)
                     .ok_or_else(|| "missing remote account id".to_string())?;
-                let account = crate::remote_accounts::find(id)
+                let account = self
+                    .remote_account(id)
                     .ok_or_else(|| "remote account is no longer available".to_string())?;
                 match operation.as_str() {
+                    "open" => match (&account.mount, remote_folder_availability(&account)) {
+                        (Some(mount), Availability::Available) => self.open_path(mount.clone()),
+                        _ => self.show_remote_account_panel(&account, false),
+                    },
                     "details" => self.show_remote_account_panel(&account, false),
                     "reauthenticate" => self.show_remote_account_panel(&account, true),
                     _ => return Ok(false),
@@ -8436,107 +8281,6 @@ impl Widget for FileExplorerWidget {
         if self.resource_invocation.is_some() {
             return Err("another file operation is still running".into());
         }
-        if type_id == "files.remote-dav" {
-            if kind != OperationKind::Effect {
-                return Err("remote file operations must be effect actions".into());
-            }
-            let args: Vec<String> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let operation = args
-                .first()
-                .ok_or_else(|| "missing remote DAV operation".to_string())?;
-            let account_id = args
-                .get(1)
-                .ok_or_else(|| "missing remote account id".to_string())?
-                .clone();
-            let account = crate::remote_accounts::find(&account_id)
-                .ok_or_else(|| "remote account is no longer available".to_string())?;
-            if matches!(
-                account.health,
-                crate::remote_accounts::RemoteAccountHealth::Disabled
-            ) {
-                return Err("remote account is disabled".into());
-            }
-            if self.remote_browse_pending.is_some() {
-                return Err("a remote operation is already running".into());
-            }
-            let args = args.clone();
-            let current_path = self.current_path.clone();
-            let known_entry = args.get(2).is_some_and(|href| {
-                self.remote_entries
-                    .get(&account_id)
-                    .is_some_and(|entries| entries.iter().any(|entry| &entry.href == href))
-            });
-            if matches!(operation.as_str(), "download" | "delete" | "rename") && !known_entry {
-                return Err("remote file is no longer available".into());
-            }
-            let valid_shape = match operation.as_str() {
-                "browse" => args.len() == 2,
-                "create-folder" | "download" | "delete" => args.len() == 3,
-                "rename" => args.len() == 4,
-                _ => false,
-            };
-            if !valid_shape {
-                return Err("invalid remote file operation".into());
-            }
-            self.resource_invocation = Some(invocation);
-            self.remote_browse_pending = Some(account_id.clone());
-            self.status = Some("Running remote file operation…".into());
-            let result = Arc::clone(&self.remote_browse_result);
-            std::thread::spawn(move || {
-                let id = accounts::AccountId::from(account_id.clone());
-                let outcome = crate::remote_dav::DavConnection::open(&id).and_then(|connection| {
-                    match args.first().map(String::as_str) {
-                        Some("browse") => connection.list("").map(RemoteDavResult::Browse),
-                        Some("create-folder") => connection
-                            .create_folder(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Created remote folder".into())),
-                        Some("download") => {
-                            let href = args
-                                .get(2)
-                                .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?;
-                            let bytes = connection.download_url(href)?;
-                            let name = href
-                                .rsplit('/')
-                                .next()
-                                .filter(|name| !name.is_empty())
-                                .ok_or(crate::remote_dav::DavError::InvalidRemoteResponse)?;
-                            let destination = current_path.join(name);
-                            if destination.exists() {
-                                return Err(crate::remote_dav::DavError::Conflict);
-                            }
-                            std::fs::write(&destination, bytes)
-                                .map_err(|_| crate::remote_dav::DavError::RemoteFailure)?;
-                            Ok(RemoteDavResult::Downloaded(destination))
-                        }
-                        Some("rename") => connection
-                            .rename_url(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                args.get(3)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                None,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Renamed remote file".into())),
-                        Some("delete") => connection
-                            .delete_url(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                                None,
-                            )
-                            .map(|()| RemoteDavResult::Mutated("Deleted remote file".into())),
-                        _ => Err(crate::remote_dav::DavError::InvalidConfiguration),
-                    }
-                });
-                if let Ok(mut slot) = result.lock() {
-                    *slot = Some((account_id, outcome));
-                }
-            });
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
@@ -8559,7 +8303,6 @@ impl Widget for FileExplorerWidget {
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
-        self.poll_remote_browse_result();
         if self
             .resource_result
             .as_ref()
@@ -8770,7 +8513,6 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.poll_remote_browse_result();
         self.paint_background(scene, transform, theme);
         // Recurse with `draw_with_presence` (not the plain `draw`) so the
         // inner `Scrollable` pushes its viewport rect and the file list culls

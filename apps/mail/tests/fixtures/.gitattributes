@@ -1,0 +1,2 @@
+# Sealed vault fixtures are bytes, never text.
+vault.* binary

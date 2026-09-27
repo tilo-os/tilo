@@ -22,6 +22,7 @@ pub mod scale;
 pub mod scanout;
 pub mod seat_diag;
 pub mod session;
+mod tablet;
 mod xrgb_history;
 
 use std::sync::mpsc::Receiver;
@@ -1665,6 +1666,10 @@ impl Backend for DrmBackend {
 
     fn reset_display(&mut self) {
         self.inner.resume_from_sleep();
+    }
+
+    fn set_keyboard_source(&mut self, index: usize) {
+        self.inner.set_keyboard_source(index);
     }
 
     fn reload_input_settings(&mut self) {

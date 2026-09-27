@@ -27,6 +27,7 @@ use ui::accesskit::{
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
 use crate::shell::quick_settings::now_playing::{
     Transport, paint_artwork, paint_transport, transport_rects,
@@ -376,6 +377,19 @@ fn primary_output(outputs: &[LockOutput]) -> Option<LockOutput> {
     outputs.first().copied()
 }
 
+/// What the lock screen's clock reads as: the lock state, then the time and
+/// date when they are known.
+fn locked_clock_label(view: &LockView<'_>) -> String {
+    match (view.clock.is_empty(), view.date.is_empty()) {
+        (true, _) => t("lock-screen-locked"),
+        (false, true) => t_args("lock-screen-locked-at", &[("clock", view.clock.into())]),
+        (false, false) => t_args(
+            "lock-screen-locked-at-date",
+            &[("clock", view.clock.into()), ("date", view.date.into())],
+        ),
+    }
+}
+
 /// The locked semantic tree has one password target, matching the primary
 /// output. It never publishes a password or masked value to assistive tech.
 pub fn build_accessibility_tree(
@@ -392,21 +406,17 @@ pub fn build_accessibility_tree(
     let layout = LockLayout::for_output(output, theme);
 
     let mut root = AccessNode::new(AccessRole::Window);
-    root.set_label("Tilo lock screen");
+    root.set_label(t("lock-screen-a11y-name"));
     root.set_bounds(AccessRect::new(0.0, 0.0, width.max(1.0), height.max(1.0)));
 
     let mut clock = AccessNode::new(AccessRole::Label);
-    clock.set_label(match (view.clock.is_empty(), view.date.is_empty()) {
-        (true, _) => "Session locked".to_string(),
-        (false, true) => format!("Session locked, {}", view.clock),
-        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
-    });
+    clock.set_label(locked_clock_label(view));
     clock.set_bounds(access_rect(layout.clock));
 
     // `PasswordInput` maps to AT-SPI's PasswordText role. That lets Orca and
     // braille clients suppress credential echo while retaining editable text.
     let mut password = AccessNode::new(AccessRole::PasswordInput);
-    password.set_label("Password");
+    password.set_label(t("lock-screen-password"));
     password.set_bounds(access_rect(layout.password));
     password.add_action(AccessAction::Focus);
     if view.verifying {
@@ -421,7 +431,7 @@ pub fn build_accessibility_tree(
     }
 
     let mut help = AccessNode::new(AccessRole::Label);
-    help.set_label("Type your password and press Enter");
+    help.set_label(t("lock-screen-help"));
     help.set_bounds(access_rect(layout.status));
 
     let mut children = vec![LOCK_CLOCK_ID, LOCK_PASSWORD_ID, LOCK_HELP_ID];
@@ -465,9 +475,9 @@ pub fn build_accessibility_tree(
         nodes.push((LOCK_MEDIA_ID, group));
     }
     let status = if view.verifying {
-        Some("Verifying password".to_string())
+        Some(t("lock-screen-verifying-password"))
     } else if let Some(error) = view.error {
-        Some(lock_error_status(error).to_string())
+        Some(lock_error_status(error))
     } else if view.notification_count > 0 {
         Some(count_label(view.notification_count))
     } else {
@@ -920,7 +930,7 @@ fn draw_secondary_lock_widget(
     draw_centered_text(
         scene,
         text,
-        "Session locked",
+        &t("lock-screen-locked"),
         scaled_text_size(type_scale.lg, layout.scale, theme),
         theme.text_primary,
         Rect::new(
@@ -933,7 +943,7 @@ fn draw_secondary_lock_widget(
     draw_centered_text(
         scene,
         text,
-        "Password prompt is on the primary display",
+        &t("lock-screen-prompt-elsewhere"),
         scaled_text_size(type_scale.sm, layout.scale, theme),
         theme.text_primary,
         Rect::new(
@@ -1120,7 +1130,7 @@ fn draw_password_field(
         draw_centered_text(
             scene,
             text,
-            "Enter password",
+            &t("lock-screen-enter-password"),
             scaled_text_size(ui::tokens::TypeScale::default().base, layout.scale, theme),
             theme.text_dim,
             layout.password,
@@ -1165,7 +1175,7 @@ fn draw_status(
     // the scale and made the row jump as the state changed.
     let type_scale = ui::tokens::TypeScale::default();
     let (value, color) = if view.verifying {
-        ("Verifying…", theme.text_dim)
+        (t("lock-screen-verifying"), theme.text_dim)
     } else if let Some(err) = view.error {
         // Keep the recovery action visible after a failed attempt. This must
         // stay a single line at 1280x800: wrapping a red status below the
@@ -1174,19 +1184,19 @@ fn draw_status(
         draw_centered_text(
             scene,
             text,
-            retry,
+            &retry,
             scaled_text_size(type_scale.sm, layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
         );
         return;
     } else {
-        ("Press Enter to unlock", theme.text_dim)
+        (t("lock-screen-press-enter"), theme.text_dim)
     };
     draw_centered_text(
         scene,
         text,
-        value,
+        &value,
         scaled_text_size(type_scale.sm, layout.scale, theme),
         color,
         layout.status,
@@ -1199,11 +1209,11 @@ fn draw_status(
 /// diagnostic plus a recovery instruction exceeded the fixed status row at
 /// common 1280x800 layouts. Keep the action in the line while preserving the
 /// distinction between a rejected credential and an unavailable verifier.
-fn lock_error_status(error: &str) -> &'static str {
+fn lock_error_status(error: &str) -> String {
     if error == UNAVAILABLE_MSG {
-        "Can't verify · Enter your password to try again"
+        t("lock-screen-cannot-verify")
     } else {
-        "Sign-in failed · Enter your password to try again"
+        t("lock-screen-sign-in-failed")
     }
 }
 
@@ -1417,7 +1427,7 @@ mod tests {
                 lock_error_status(UNAVAILABLE_MSG),
             ] {
                 let (width, height) =
-                    text.measure(message, scaled_text_size(12.0, layout.scale, &theme), None);
+                    text.measure(&message, scaled_text_size(12.0, layout.scale, &theme), None);
                 assert!(
                     f64::from(width) <= layout.status.width(),
                     "{message:?} must not wrap in the lock status row"
@@ -1700,13 +1710,15 @@ mod tests {
                         &theme,
                     );
                     let mut text = TextRenderer::new();
+                    let failed = lock_error_status("wrong password");
+                    let unavailable = lock_error_status(UNAVAILABLE_MSG);
                     for (value, base_size, row) in [
                         (title.as_str(), 22.0, layout.title),
                         ("Enter password", 15.0, layout.password),
                         ("Press Enter to unlock", 13.0, layout.status),
                         ("Verifying…", 14.0, layout.status),
-                        (lock_error_status("wrong password"), 12.0, layout.status),
-                        (lock_error_status(UNAVAILABLE_MSG), 12.0, layout.status),
+                        (failed.as_str(), 12.0, layout.status),
+                        (unavailable.as_str(), 12.0, layout.status),
                         (notifications.as_str(), 13.0, layout.notifications),
                     ] {
                         let font_size = scaled_text_size(base_size, layout.scale, &theme);

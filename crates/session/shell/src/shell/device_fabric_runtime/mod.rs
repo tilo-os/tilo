@@ -8975,7 +8975,10 @@ mod tests {
                     "studio": {"id": "aurora"},
                     "wallpaper_path": "/home/person/private.png"
                 },
-                "input": {"keyboard_layouts": ["us", "de"], "pen_output": "DP-2"},
+                "input": {
+                    "keyboard_layouts": ["us", "de"],
+                    "tablets": {"056a:0374:Wacom Intuos S Pen": {"output": "DP-2"}}
+                },
                 "audio": {"mono_output": true, "output_device": "USB DAC"},
                 "display": {
                     "night_light_temperature": 3700,
@@ -9006,7 +9009,7 @@ mod tests {
             }
             for key in [
                 "tilo.appearance.wallpaper_path",
-                "tilo.input.pen_output",
+                "tilo.input.tablets",
                 "tilo.audio.output_device",
                 "tilo.display.scale",
                 "tilo.display.auto_brightness",

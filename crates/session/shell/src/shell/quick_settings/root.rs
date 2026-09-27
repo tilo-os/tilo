@@ -5,6 +5,7 @@
 //! only when the panel is rendered.
 
 use crate::shell::chrome_state::QuickSettingsState;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::quick_settings::drill_in::{
     CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
     SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
@@ -73,13 +74,13 @@ impl RootTile {
     /// Paint order, left to right.
     const ALL: [Self; 4] = [Self::Settings, Self::Privacy, Self::History, Self::Power];
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Settings => "Settings",
-            Self::Privacy => "Privacy",
-            Self::History => "History",
-            Self::Power => "Power",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::Settings => "qs-tile-settings",
+            Self::Privacy => "qs-tile-privacy",
+            Self::History => "qs-tile-history",
+            Self::Power => "qs-tile-power",
+        })
     }
     const fn semantic_name(self) -> &'static str {
         match self {
@@ -89,13 +90,13 @@ impl RootTile {
             Self::Power => "power",
         }
     }
-    const fn description(self) -> &'static str {
-        match self {
-            Self::Settings => "Open device settings",
-            Self::Privacy => "App grants and enforced access for this workspace",
-            Self::History => "Notification history",
-            Self::Power => "Lock, log out, restart or shut down",
-        }
+    fn description(self) -> String {
+        t(match self {
+            Self::Settings => "qs-tile-settings-description",
+            Self::Privacy => "qs-tile-privacy-description",
+            Self::History => "qs-tile-history-description",
+            Self::Power => "qs-tile-power-description",
+        })
     }
     const fn icon(self) -> ui::icons::Icon {
         match self {
@@ -196,7 +197,9 @@ impl QuickSettingsRoot {
     const PAD: f64 = 16.0;
     const ACTION_COUNT: usize = 4;
     const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
-    const EDIT_HELP_COPY: &'static str = "Drag to reorder · Ctrl + Up/Down";
+    fn edit_help_copy() -> String {
+        t("qs-edit-help")
+    }
 
     /// Single-line height of a chrome type role at the user's text scale.
     ///
@@ -466,11 +469,13 @@ impl QuickSettingsRoot {
     }
     fn slider_name(&self, i: usize) -> String {
         if i == self.volume_slider() {
-            "Volume".into()
+            t("qs-volume")
         } else {
             match self.display_names.get(i) {
-                Some(name) if self.display_names.len() > 1 => format!("Brightness, {name}"),
-                _ => "Brightness".into(),
+                Some(name) if self.display_names.len() > 1 => {
+                    t_args("qs-brightness-display", &[("display", name.into())])
+                }
+                _ => t("qs-brightness"),
             }
         }
     }
@@ -1041,16 +1046,14 @@ impl QuickSettingsRoot {
     }
     fn devices_subline(state: &QuickSettingsState) -> String {
         match state.personal_devices {
-            None => "Audio and media".into(),
-            Some(1) => "1 device".into(),
-            Some(count) => format!("{count} devices"),
+            None => t("qs-devices-audio-and-media"),
+            Some(count) => t_args("qs-devices-count", &[("count", count.into())]),
         }
     }
     fn clipboard_subline(state: &QuickSettingsState) -> String {
         match state.clipboard_items {
-            0 => "Empty".into(),
-            1 => "1 item".into(),
-            count => format!("{count} items"),
+            0 => t("qs-clipboard-empty"),
+            count => t_args("qs-clipboard-count", &[("count", count.into())]),
         }
     }
     fn edit_rect(&self) -> Rect {
@@ -1064,22 +1067,22 @@ impl QuickSettingsRoot {
             y + target,
         )
     }
-    fn label(c: QuickSettingsControl) -> &'static str {
-        match c {
-            QuickSettingsControl::Wifi => "Network",
-            QuickSettingsControl::Bluetooth => "Bluetooth",
-            QuickSettingsControl::Vpn => "VPN",
-            QuickSettingsControl::NightLight => "Night Light",
-            QuickSettingsControl::AirplaneMode => "Airplane mode",
-            QuickSettingsControl::MobileData => "Mobile data",
-            QuickSettingsControl::DoNotDisturb => "Do Not Disturb",
-            QuickSettingsControl::RotationLock => "Rotation lock",
-        }
+    fn label(c: QuickSettingsControl) -> String {
+        t(match c {
+            QuickSettingsControl::Wifi => "qs-network",
+            QuickSettingsControl::Bluetooth => "qs-bluetooth",
+            QuickSettingsControl::Vpn => "qs-vpn",
+            QuickSettingsControl::NightLight => "qs-night-light",
+            QuickSettingsControl::AirplaneMode => "qs-airplane-mode",
+            QuickSettingsControl::MobileData => "qs-mobile-data",
+            QuickSettingsControl::DoNotDisturb => "qs-do-not-disturb",
+            QuickSettingsControl::RotationLock => "qs-rotation-lock",
+        })
     }
-    fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> &'static str {
+    fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         match c {
-            QuickSettingsControl::Wifi if !s.radios.wifi_available => "Wired network",
-            QuickSettingsControl::Wifi => "Wi-Fi",
+            QuickSettingsControl::Wifi if !s.radios.wifi_available => t("qs-wired-network"),
+            QuickSettingsControl::Wifi => t("qs-wifi"),
             _ => Self::label(c),
         }
     }
@@ -1111,71 +1114,53 @@ impl QuickSettingsRoot {
             QuickSettingsControl::RotationLock => s.rotation_lock,
         }
     }
-    fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> &str {
+    fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+        let on_off = |on: bool| t(if on { "qs-on" } else { "qs-off" });
         match c {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => s
                 .wired
                 .as_ref()
                 .and_then(|wired| wired.device.as_deref())
-                .map_or("Not connected", |device| {
-                    if s.wired.as_ref().is_some_and(|wired| wired.connected) {
-                        device
-                    } else {
-                        "Cable unplugged"
-                    }
-                }),
+                .map_or_else(
+                    || t("qs-not-connected"),
+                    |device| {
+                        if s.wired.as_ref().is_some_and(|wired| wired.connected) {
+                            device.to_owned()
+                        } else {
+                            t("qs-cable-unplugged")
+                        }
+                    },
+                ),
             QuickSettingsControl::Wifi if s.wifi => s
                 .wifi_networks
                 .iter()
                 .find(|v| v.connected)
-                .map_or("Not connected", |v| v.ssid.as_str()),
+                .map_or_else(|| t("qs-not-connected"), |v| v.ssid.clone()),
             QuickSettingsControl::Bluetooth if s.bluetooth => s
                 .bt_devices
                 .iter()
                 .find(|v| v.connected)
-                .map_or("Not connected", |v| v.name.as_str()),
-            QuickSettingsControl::Wifi | QuickSettingsControl::Bluetooth => "Off",
+                .map_or_else(|| t("qs-not-connected"), |v| v.name.clone()),
+            QuickSettingsControl::Wifi | QuickSettingsControl::Bluetooth => t("qs-off"),
             QuickSettingsControl::Vpn => s
                 .vpns
                 .iter()
                 .find(|v| v.active)
                 .or_else(|| s.vpns.first())
-                .map_or("No profiles", |v| v.name.as_str()),
-            QuickSettingsControl::NightLight => {
-                if s.night_light {
-                    "On"
-                } else {
-                    "Off"
-                }
-            }
-            QuickSettingsControl::AirplaneMode => {
-                if s.radios.airplane_mode {
-                    "On"
-                } else {
-                    "Off"
-                }
-            }
-            QuickSettingsControl::MobileData => {
-                if s.radios.wwan_enabled {
-                    "On"
-                } else {
-                    "Off"
-                }
-            }
-            QuickSettingsControl::DoNotDisturb => {
-                if s.do_not_disturb {
-                    "Notifications held"
-                } else {
-                    "Off"
-                }
-            }
-            QuickSettingsControl::RotationLock => {
-                if s.rotation_lock {
-                    "Locked"
-                } else {
-                    "Rotates with device"
-                }
-            }
+                .map_or_else(|| t("qs-vpn-no-profiles"), |v| v.name.clone()),
+            QuickSettingsControl::NightLight => on_off(s.night_light),
+            QuickSettingsControl::AirplaneMode => on_off(s.radios.airplane_mode),
+            QuickSettingsControl::MobileData => on_off(s.radios.wwan_enabled),
+            QuickSettingsControl::DoNotDisturb => t(if s.do_not_disturb {
+                "qs-do-not-disturb-on"
+            } else {
+                "qs-off"
+            }),
+            QuickSettingsControl::RotationLock => t(if s.rotation_lock {
+                "qs-rotation-locked"
+            } else {
+                "qs-rotation-unlocked"
+            }),
         }
     }
     fn toggle(
@@ -1572,11 +1557,12 @@ impl QuickSettingsRoot {
         // header band by its measured height so it shares a centre line
         // with the Edit button instead of sitting on an authored baseline
         // that large text pushed into the action tiles.
-        let title = if self.edit_mode {
-            "Edit controls"
+        let title = t(if self.edit_mode {
+            "qs-edit-controls"
         } else {
-            "Quick Settings"
-        };
+            "qs-title"
+        });
+        let title = title.as_str();
         let title_size = type_size(text, theme.tokens.typography.scale.base);
         let header = self.header_rect();
         let (_, title_h) = text.measure_weighted(title, title_size, None, TextWeight::Semibold);
@@ -1593,7 +1579,8 @@ impl QuickSettingsRoot {
         if !self.edit_mode {
             let r = self.edit_rect();
             let icon = ui::icons::Icon::Pencil;
-            let name = "Edit controls";
+            let name = t("qs-edit-controls");
+            let name = name.as_str();
             Button::paint(
                 scene,
                 transform,
@@ -1639,6 +1626,7 @@ impl QuickSettingsRoot {
         // tooltip or accessibility tree is not sufficient discoverability.
         for tile in RootTile::ALL {
             let (icon, label) = (tile.icon(), tile.label());
+            let label = label.as_str();
             let r = self.stop_rect(RootStop::Tile(tile), state);
             let power = tile == RootTile::Power;
             paint_control(
@@ -1766,18 +1754,18 @@ impl QuickSettingsRoot {
             (
                 RootStop::Devices,
                 ui::icons::Icon::Monitor,
-                "Devices",
+                t("qs-devices"),
                 Self::devices_subline(state),
             ),
             (
                 RootStop::Clipboard,
                 ui::icons::Icon::ClipboardPaste,
-                "Clipboard",
+                t("qs-clipboard"),
                 Self::clipboard_subline(state),
             ),
         ] {
             self.draw_link_row(
-                scene, transform, text, theme, cursor, state, stop, icon, label, &detail,
+                scene, transform, text, theme, cursor, state, stop, icon, &label, &detail,
             );
         }
         // The power row: battery glyph, profile and detail, chevron — all
@@ -1818,7 +1806,7 @@ impl QuickSettingsRoot {
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
         let power_label = text.elide_to_width(
-            state.power_profile.label(),
+            &state.power_profile.label(),
             power_label_size,
             text_width as f32,
         );
@@ -1973,12 +1961,12 @@ impl QuickSettingsRoot {
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let label = text.elide_to_width(Self::rendered_label(c, s), label_size, text_width as f32);
+        let label = text.elide_to_width(&Self::rendered_label(c, s), label_size, text_width as f32);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let sub = text.elide_to_width(Self::subline(c, s), sub_size, text_width as f32);
+        let sub = text.elide_to_width(&Self::subline(c, s), sub_size, text_width as f32);
         let label_y = icon_row.y1 + self.scaled(RELATED_GAP);
         let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
         text.draw_text_weighted(
@@ -2050,7 +2038,7 @@ impl QuickSettingsRoot {
         // Section caption on the control padding under the title band.
         text.draw_text(
             scene,
-            Self::EDIT_HELP_COPY,
+            &Self::edit_help_copy(),
             caption_size,
             colors.text_dim,
             transform.pre_translate(
@@ -2064,7 +2052,7 @@ impl QuickSettingsRoot {
         );
         text.draw_text(
             scene,
-            "ACTIVE CONTROLS",
+            &t("qs-edit-active-heading"),
             caption_size,
             colors.text_dim,
             transform.pre_translate((self.panel.x0 + pad, self.edit_section_baseline()).into()),
@@ -2194,7 +2182,7 @@ impl QuickSettingsRoot {
             let top = self.available_edit_top(state);
             text.draw_text(
                 scene,
-                "AVAILABLE",
+                &t("qs-edit-available-heading"),
                 caption_size,
                 colors.text_dim,
                 transform
@@ -2202,17 +2190,18 @@ impl QuickSettingsRoot {
                 None,
             );
             for (i, (control, chip)) in chips.into_iter().enumerate() {
+                let label = Self::label(control);
                 Button::paint(
                     scene,
                     transform,
                     text,
                     theme,
-                    &ButtonFace::new(chip, Self::label(control))
+                    &ButtonFace::new(chip, &label)
                         .icon(ui::icons::Icon::Plus)
                         .text_size(caption_size)
                         .hovered(cursor.is_some_and(|point| chip.contains(point)))
                         .focused(self.keyboard_focus == Some(active.len().saturating_add(i)))
-                        .accessible_name(Self::label(control)),
+                        .accessible_name(&label),
                 );
             }
         }
@@ -2226,21 +2215,21 @@ impl QuickSettingsRoot {
             transform,
             text,
             theme,
-            &ButtonFace::new(reset, "Reset defaults")
+            &ButtonFace::new(reset, &t("qs-edit-reset"))
                 .hovered(cursor.is_some_and(|p| reset.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count))
-                .accessible_name("Reset Quick Settings defaults"),
+                .accessible_name(&t("qs-edit-reset-a11y")),
         );
         Button::paint(
             scene,
             transform,
             text,
             theme,
-            &ButtonFace::new(done, "Done")
+            &ButtonFace::new(done, &t("qs-edit-done"))
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
-                .accessible_name("Finish editing Quick Settings"),
+                .accessible_name(&t("qs-edit-done-a11y")),
         );
     }
     /// The grip, label and add/remove button of an edit row, shared by the
@@ -2295,7 +2284,7 @@ impl QuickSettingsRoot {
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
         let label = text.elide_to_width(
-            Self::label(c),
+            &Self::label(c),
             label_size,
             (action.x0 - self.scaled(RELATED_GAP) - label_x).max(1.0) as f32,
         );
@@ -2309,15 +2298,16 @@ impl QuickSettingsRoot {
             None,
             TextWeight::Medium,
         );
+        let action_name = t(if c.required() {
+            "qs-edit-required-a11y"
+        } else if present {
+            "qs-edit-remove-a11y"
+        } else {
+            "qs-edit-add-a11y"
+        });
         let action_face = ButtonFace::new(action, "")
             .hovered(cursor.is_some_and(|point| action.contains(point)))
-            .accessible_name(if c.required() {
-                "Required Quick Settings control"
-            } else if present {
-                "Remove Quick Settings control"
-            } else {
-                "Add Quick Settings control"
-            })
+            .accessible_name(&action_name)
             .text_size(type_size(text, theme.tokens.typography.scale.xs));
         let action_face = if c.required() {
             action_face.ghost()
@@ -2343,12 +2333,12 @@ impl QuickSettingsRoot {
         };
         let mut root = bounded(
             AccessNode::new(Role::Dialog)
-                .with_name("Quick Settings")
-                .with_description(if self.edit_mode {
-                    "Edit controls; drag or use Control plus Arrow keys to reorder"
+                .with_name(t("qs-title"))
+                .with_description(t(if self.edit_mode {
+                    "qs-edit-a11y-description"
                 } else {
-                    "Frequently used system controls"
-                })
+                    "qs-a11y-description"
+                }))
                 .with_state(AccessState::new().modal(true)),
             self.panel,
         );
@@ -2383,11 +2373,11 @@ impl QuickSettingsRoot {
         for (index, c) in controls.into_iter().enumerate() {
             let node = AccessNode::new(Role::Button)
                 .with_name(Self::rendered_label(c, state))
-                .with_description(if c.required() {
-                    "Required; use Control plus Arrow keys to reorder"
+                .with_description(t(if c.required() {
+                    "qs-edit-required-control-a11y"
                 } else {
-                    "Select to add or remove; use Control plus Arrow keys to reorder"
-                })
+                    "qs-edit-optional-control-a11y"
+                }))
                 .with_state(AccessState::new().focusable(true));
             let rect = if index < active_count {
                 self.card(self.panel, index, true)
@@ -2400,13 +2390,13 @@ impl QuickSettingsRoot {
         {
             root.children.push(bounded(
                 AccessNode::new(Role::Button)
-                    .with_name("Reset defaults")
+                    .with_name(t("qs-edit-reset"))
                     .with_state(AccessState::new().focusable(true)),
                 self.edit_reset(state),
             ));
             root.children.push(bounded(
                 AccessNode::new(Role::Button)
-                    .with_name("Done")
+                    .with_name(t("qs-edit-done"))
                     .with_state(AccessState::new().focusable(true)),
                 self.edit_done(state),
             ));
@@ -2424,7 +2414,7 @@ impl QuickSettingsRoot {
                 AccessNode::new(Role::Slider)
                     .with_name(self.slider_name(index))
                     .with_value(format!("{:.0}%", value * 100.0))
-                    .with_description("Use Left and Right Arrow to adjust")
+                    .with_description(t("qs-slider-a11y-description"))
             }
             RootStop::Control(_, control) => AccessNode::new(if Self::is_switch(control) {
                 Role::Switch
@@ -2434,21 +2424,21 @@ impl QuickSettingsRoot {
             .with_name(Self::rendered_label(control, state))
             .with_description(Self::subline(control, state)),
             RootStop::Devices => AccessNode::new(Role::Button)
-                .with_name("Devices")
+                .with_name(t("qs-devices"))
                 .with_value(Self::devices_subline(state))
-                .with_description("Personal devices, audio outputs and media routes"),
+                .with_description(t("qs-devices-a11y-description")),
             RootStop::Clipboard => AccessNode::new(Role::Button)
-                .with_name("Clipboard")
+                .with_name(t("qs-clipboard"))
                 .with_value(Self::clipboard_subline(state))
-                .with_description("Private clipboard history"),
+                .with_description(t("qs-clipboard-a11y-description")),
             RootStop::PowerProfile => AccessNode::new(Role::Button)
-                .with_name("Change power profile")
+                .with_name(t("qs-power-profile-a11y"))
                 .with_value(format!(
                     "{}, {}",
                     state.power_profile.label(),
                     power_detail(state)
                 )),
-            RootStop::Edit => AccessNode::new(Role::Button).with_name("Edit controls"),
+            RootStop::Edit => AccessNode::new(Role::Button).with_name(t("qs-edit-controls")),
             RootStop::Tile(tile) => AccessNode::new(Role::Button)
                 .with_name(tile.label())
                 .with_description(tile.description()),
@@ -2476,16 +2466,23 @@ impl QuickSettingsRoot {
 /// the screen from sleeping.
 fn power_detail(state: &QuickSettingsState) -> String {
     let power = if state.battery.present {
-        format!("{}% battery", state.battery.capacity)
+        t_args(
+            "qs-power-battery",
+            &[("percent", state.battery.capacity.into())],
+        )
     } else {
-        "AC power".to_string()
+        t("qs-power-ac")
     };
     match state.awake_holders.as_slice() {
         [] => power,
-        [app, rest @ ..] if rest.iter().all(|other| other == app) => {
-            format!("{power} · {app} is preventing sleep")
-        }
-        many => format!("{power} · {} apps are preventing sleep", many.len()),
+        [app, rest @ ..] if rest.iter().all(|other| other == app) => t_args(
+            "qs-power-kept-awake-by-app",
+            &[("power", power.into()), ("app", app.into())],
+        ),
+        many => t_args(
+            "qs-power-kept-awake-by-apps",
+            &[("power", power.into()), ("count", many.len().into())],
+        ),
     }
 }
 
@@ -3023,12 +3020,10 @@ mod tests {
         }
 
         fn edit_help_copy_uses_font_safe_keyboard_names() {
-            assert_eq!(
-                QuickSettingsRoot::EDIT_HELP_COPY,
-                "Drag to reorder · Ctrl + Up/Down"
-            );
-            assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↑'));
-            assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↓'));
+            let copy = QuickSettingsRoot::edit_help_copy();
+            assert_eq!(copy, "Drag to reorder · Ctrl + Up/Down");
+            assert!(!copy.contains('↑'));
+            assert!(!copy.contains('↓'));
         }
 
         edit_add_remove_and_keyboard_reorder_change_model();

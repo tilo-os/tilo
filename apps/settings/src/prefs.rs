@@ -172,12 +172,20 @@ pub struct InputPrefs {
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
     pub tap_drag: bool,
+    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
     /// `adaptive` or `flat`; capability-gated by libinput.
     pub accel_profile: String,
     pub touchpad_gestures: bool,
+    /// Whether touchpads send events at all. The touchpad-toggle key writes
+    /// the same key, so both stay in agreement.
+    pub touchpad_enabled: bool,
+    /// Switch touchpads off while an external mouse is connected;
+    /// capability-gated by libinput.
+    pub touchpad_disabled_on_external_mouse: bool,
     /// Which button a clickpad press means; capability-gated by libinput.
     pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
     /// Two-finger or edge scrolling; capability-gated by libinput.
@@ -186,11 +194,15 @@ pub struct InputPrefs {
     pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
     pub compose_key: Option<String>,
+    /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
+    /// Caps Lock itself.
+    pub caps_lock: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
     pub keyboard_layouts: Vec<String>,
-    /// Stable connector name used to map an absolute pen/tablet.
-    pub pen_output: Option<String>,
+    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
+    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
+    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
 impl Default for InputPrefs {
@@ -210,17 +222,21 @@ impl Default for InputPrefs {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".to_string(),
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
             accel_profile: "adaptive".into(),
             touchpad_gestures: true,
+            touchpad_enabled: true,
+            touchpad_disabled_on_external_mouse: false,
             touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
             touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
             compose_key: None,
+            caps_lock: None,
             keyboard_layouts: vec!["us".into()],
-            pen_output: None,
+            tablets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -264,6 +280,7 @@ impl InputPrefs {
             mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
             tap_drag: self.tap_drag,
+            tap_drag_lock: self.tap_drag_lock,
             disable_while_typing: self.disable_while_typing,
             middle_emulation: self.middle_emulation,
             left_handed: self.left_handed,
@@ -278,11 +295,12 @@ impl InputPrefs {
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
+            caps_lock: self.caps_lock.clone(),
             touchpad_gestures: self.touchpad_gestures,
             touchpad_click_method: self.touchpad_click_method,
             touchpad_scroll_method: self.touchpad_scroll_method,
             scroll_speed: self.scroll_speed,
-            pen_output: self.pen_output.clone(),
+            tablets: self.tablets.clone(),
         };
         config.normalise_sources();
         self.keyboard_layout = config.keyboard_layout;
@@ -1289,6 +1307,36 @@ mod tests {
         assert_eq!(rich.scroll_speed, 2.0);
         assert_eq!(root["accessibility"]["bounce_keys_delay_ms"], 500);
         assert_eq!(root["accessibility"]["mouse_keys"], true);
+    }
+
+    #[test]
+    fn touchpad_power_choices_round_trip_and_share_the_toggle_keys_spelling() {
+        use settings_store::hardware::{
+            TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY, TOUCHPAD_ENABLED_KEY,
+        };
+        let defaults = SystemPrefs::default();
+        assert!(defaults.input.touchpad_enabled);
+        assert!(!defaults.input.touchpad_disabled_on_external_mouse);
+
+        let mut p = SystemPrefs::default();
+        p.input.touchpad_enabled = false;
+        p.input.touchpad_disabled_on_external_mouse = true;
+        let json = p.to_json_merged("");
+        let back = SystemPrefs::from_json(&json);
+        assert!(!back.input.touchpad_enabled);
+        assert!(back.input.touchpad_disabled_on_external_mouse);
+
+        // The touchpad key and the compositor read these exact keys.
+        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(root["input"][TOUCHPAD_ENABLED_KEY], false);
+        assert_eq!(root["input"][TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY], true);
+
+        // A key press that switched the touchpad off survives an unrelated
+        // Settings save instead of being overwritten with the default.
+        let pressed = SystemPrefs::from_json(r#"{"input":{"touchpad_enabled":false}}"#);
+        assert!(!pressed.input.touchpad_enabled);
+        let saved: serde_json::Value = serde_json::from_str(&pressed.to_json_merged("")).unwrap();
+        assert_eq!(saved["input"][TOUCHPAD_ENABLED_KEY], false);
     }
 
     #[test]

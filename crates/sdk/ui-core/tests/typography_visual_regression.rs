@@ -39,7 +39,7 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
-#[path = "../examples/common/gallery_scene.rs"]
+#[path = "../../../dev/ui-examples/examples/common/gallery_scene.rs"]
 mod gallery_scene;
 
 const LOGICAL_WIDTH: u32 = 1160;

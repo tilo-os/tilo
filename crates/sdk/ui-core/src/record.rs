@@ -1906,6 +1906,58 @@ fn validate_identity(
     Ok(())
 }
 
+/// Make `doc` the record `checkout` of `workspace` as it is created: its
+/// identity and the app's `initialize`d content, in one change that is byte
+/// for byte the same on every peer that creates it. The change is made by an
+/// actor derived from the record's identity, at time zero, so it hashes the
+/// same everywhere: two members of a room that each create a record another
+/// member is creating too (a derived default, the same file) make the same
+/// change and converge on one record rather than two competing roots.
+/// `doc` is a fresh document of this device; what it holds so far (the
+/// store's schema stamp) is made part of the genesis, and its own actor
+/// writes everything after it.
+fn genesis(
+    doc: &mut AutoCommit,
+    checkout: &RecordCheckout,
+    workspace: &str,
+    initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+) -> Result<(), RecordOpenError> {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"tilo.record.genesis\0")
+        .chain_update(checkout.id.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(checkout.kind.as_str().as_bytes())
+        .chain_update(b"\0")
+        .chain_update(workspace.as_bytes())
+        .finalize();
+    let actor = automerge::ActorId::from(digest.get(..16).unwrap_or_default());
+    let mut made = AutoCommit::new().with_actor(actor);
+    for key in doc.keys(&ROOT).collect::<Vec<_>>() {
+        if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, key.as_str()) {
+            made.put(&ROOT, key.as_str(), value.into_owned())
+                .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+        }
+    }
+    if !init_scoped(
+        &mut made,
+        &checkout.id,
+        &checkout.kind,
+        workspace,
+        Some(workspace),
+    ) {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    let changes = made.get_changes(&[]);
+    let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
+    ApplyIncoming::apply_incoming(&mut created, changes)
+        .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+    *doc = created;
+    Ok(())
+}
+
 /// The unique construction owner of a not-yet-live record. Drop cancels only this generation.
 pub struct RecordReservation {
     store: RecordStore,
@@ -1947,16 +1999,7 @@ impl RecordReservation {
             (Rc::clone(&pending.store), set.home.clone())
         };
         let mut doc = owner.new_document()?;
-        if !init_scoped(
-            &mut doc,
-            &self.checkout.id,
-            &self.checkout.kind,
-            &workspace,
-            Some(&workspace),
-        ) {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        initialize(&mut doc).map_err(RecordOpenError::Initialization)?;
+        genesis(&mut doc, &self.checkout, &workspace, initialize)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit();
@@ -2719,6 +2762,62 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two members of a room each create the record the room derives for
+    /// them, before either has heard of the other's: the same record, from
+    /// the same initial content. Their documents merge into one record whose
+    /// content has one value at every key, not two competing roots.
+    #[test]
+    fn members_creating_the_same_record_converge_on_one() {
+        let initialize = |doc: &mut AutoCommit| {
+            for key in ["pages", "tags"] {
+                doc.put_object(ROOT, key, ObjType::Map)
+                    .map_err(|e| e.to_string())?;
+            }
+            doc.put(ROOT, "schema_version", 1_u64)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        };
+        let checkout = RecordCheckout::new(
+            RecordId::derived("default-notebook", &RecordId::for_tab(7)),
+            RecordKind::new("notebook"),
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let created: Vec<Vec<u8>> = ["ada", "bea"]
+            .into_iter()
+            .map(|member| {
+                let mut owners = RecordOwners::new(temp.path().join(member));
+                let store = owners.open("so.tilo.test", "room-a").unwrap();
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(initialize)
+                    .unwrap();
+                store.read(&checkout.id, |doc| doc.clone().save()).unwrap()
+            })
+            .collect();
+        let mut merged = AutoCommit::load(&created[0]).unwrap();
+        let mut other = AutoCommit::load(&created[1]).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut other).unwrap();
+        for key in ["pages", "tags", "schema_version"] {
+            assert_eq!(
+                merged.get_all(ROOT, key).unwrap().len(),
+                1,
+                "{key} has one value once both members' records meet"
+            );
+        }
+        assert_eq!(
+            identity(&merged).map(|found| found.id),
+            Some(checkout.id.clone()),
+            "the record keeps its one identity"
+        );
+        // Each member still writes as itself after the shared creation.
+        let actors: std::collections::BTreeSet<_> = [&created[0], &created[1]]
+            .iter()
+            .map(|bytes| AutoCommit::load(bytes).unwrap().get_actor().clone())
+            .collect();
+        assert_eq!(actors.len(), 2, "the members keep their own actors");
+    }
 
     #[test]
     fn record_identities_keys_and_homes_are_stable_and_distinct() {

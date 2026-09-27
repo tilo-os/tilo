@@ -45,6 +45,8 @@ strip changes context; switching a window or tab changes focus within it.
 | Power menu | Ctrl+Alt+Delete | Quick Settings power button |
 | Magnifier on/off | Super+Alt+8 | Settings → Accessibility |
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
+| Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
+| Insert an emoji into the focused text field | Super+. | — |
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same
@@ -104,6 +106,7 @@ granted to an app through the GlobalShortcuts portal.
 | Screenshot | Print Screen |
 | Switch windows | Alt+Tab |
 | Switch windows backwards | Alt+Shift+Tab |
+| Switch windows of the app | Alt+` |
 | Close tab | Alt+F4  /  Super+W |
 | Change workspace | Super+Page Up / Down |
 | New window | Super+N |
@@ -128,6 +131,12 @@ granted to an app through the GlobalShortcuts portal.
 
 - Quick Settings root: Tab/Shift+Tab moves through every enabled control,
   Enter/Space activates it, and Left/Right adjusts a focused slider.
+- Window switcher (Alt+Tab): windows of the current workspace, most recently
+  used first. Hold Alt and press Tab (Shift+Tab, the arrows) to move; release
+  Alt to switch, Escape to stay. A quick Alt+Tab goes straight back to the
+  previous window without showing anything; the switcher appears once Alt has
+  been held for 120 ms. Hovering a window selects it, clicking or tapping one
+  switches to it. Alt+` does the same across the focused app's windows only.
 - Overview: Up/Down changes only the preview; Enter commits and closes.
 - Display layout (Super+P): Super+P again moves the highlight to the next
   layout the attached displays allow; Up/Down walk the layouts, Keep/Revert

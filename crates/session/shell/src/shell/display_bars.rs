@@ -244,7 +244,7 @@ impl Widget for DisplayBars {
             .collect();
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Other displays")
+                .with_name(crate::shell::i18n::t("status-other-displays-a11y"))
                 .with_children(children),
         )
     }

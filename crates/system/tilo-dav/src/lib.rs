@@ -13,7 +13,7 @@ pub mod multistatus;
 pub use body::{PropName, props};
 #[cfg(feature = "client")]
 pub use client::{
-    Credentials, DavClient, DavResponse, Depth, Error, Options, Precondition, Redirects,
+    Body, Credentials, DavClient, DavResponse, Depth, Error, Options, Precondition, Redirects,
     StatusCode, Url,
 };
 pub use multistatus::{Limits, Multistatus, Property, Propstat, Response, XmlError};

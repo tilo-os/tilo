@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 
 use crate::shell::fixed_chords::FixedChordAction;
+use crate::shell::i18n::{t, t_args};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, NamedKey};
 
@@ -151,83 +152,90 @@ pub(super) fn shortcut_chord_from_event(
     })
 }
 
-pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
-    match action {
-        ShortcutAction::Search => "open search",
-        ShortcutAction::WorkspaceOverview => "open the workspace overview",
-        ShortcutAction::Lock => "lock the screen",
-        ShortcutAction::QuickSettings => "open Quick Settings",
-        ShortcutAction::ShortcutHelp => "open this guide",
-        ShortcutAction::FocusPreviousWindow => "focus the previous window",
-        ShortcutAction::FocusNextWindow => "focus the next window",
-        ShortcutAction::PreviousTab => "select the previous tab",
-        ShortcutAction::NextTab => "select the next tab",
-        ShortcutAction::PreviousStrip => "select the previous strip",
-        ShortcutAction::NextStrip => "select the next strip",
-        ShortcutAction::PreviousWorkspace => "select the previous workspace",
-        ShortcutAction::NextWorkspace => "select the next workspace",
-        ShortcutAction::ToggleMaximize => "maximize or restore the window",
-        ShortcutAction::DetachTab => "move the tab into a new group",
-        ShortcutAction::AttachTabLeft => "move the tab into the group on the left",
-        ShortcutAction::AttachTabRight => "move the tab into the group on the right",
-        ShortcutAction::MoveGroupLeft => "move the group left",
-        ShortcutAction::MoveGroupRight => "move the group right",
-        ShortcutAction::MoveGroupToPreviousDisplay => "move the group to the display on the left",
-        ShortcutAction::MoveGroupToNextDisplay => "move the group to the display on the right",
-        ShortcutAction::ResizeNarrower => "make the window narrower",
-        ShortcutAction::ResizeWider => "make the window wider",
-        ShortcutAction::ReopenClosedTab => "reopen the tab you closed last",
-        ShortcutAction::FocusGroup1 => "focus the first window in the strip",
-        ShortcutAction::FocusGroup2 => "focus the second window in the strip",
-        ShortcutAction::FocusGroup3 => "focus the third window in the strip",
-        ShortcutAction::FocusGroup4 => "focus the fourth window in the strip",
-        ShortcutAction::FocusGroup5 => "focus the fifth window in the strip",
-        ShortcutAction::FocusGroup6 => "focus the sixth window in the strip",
-        ShortcutAction::FocusGroup7 => "focus the seventh window in the strip",
-        ShortcutAction::FocusGroup8 => "focus the eighth window in the strip",
-        ShortcutAction::FocusGroup9 => "focus the ninth window in the strip",
-        ShortcutAction::OpenFiles => "open Files",
-        ShortcutAction::OpenTerminal => "open a terminal",
-        ShortcutAction::ClipboardHistory => "open clipboard history",
-        ShortcutAction::Notifications => "open notifications",
-        ShortcutAction::ToggleFullscreen => "make the window full screen or restore it",
-        ShortcutAction::ToggleMagnifier => "turn the magnifier on or off",
-        ShortcutAction::MagnifierZoomIn => "magnify more",
-        ShortcutAction::MagnifierZoomOut => "magnify less",
-        ShortcutAction::PowerMenu => "open the power menu",
-    }
+pub(super) fn shortcut_action_label(action: ShortcutAction) -> String {
+    let key = match action {
+        ShortcutAction::Search => "shortcut-action-search",
+        ShortcutAction::WorkspaceOverview => "shortcut-action-workspace-overview",
+        ShortcutAction::Lock => "shortcut-action-lock",
+        ShortcutAction::QuickSettings => "shortcut-action-quick-settings",
+        ShortcutAction::ShortcutHelp => "shortcut-action-shortcut-help",
+        ShortcutAction::FocusPreviousWindow => "shortcut-action-focus-previous-window",
+        ShortcutAction::FocusNextWindow => "shortcut-action-focus-next-window",
+        ShortcutAction::PreviousTab => "shortcut-action-previous-tab",
+        ShortcutAction::NextTab => "shortcut-action-next-tab",
+        ShortcutAction::PreviousStrip => "shortcut-action-previous-strip",
+        ShortcutAction::NextStrip => "shortcut-action-next-strip",
+        ShortcutAction::PreviousWorkspace => "shortcut-action-previous-workspace",
+        ShortcutAction::NextWorkspace => "shortcut-action-next-workspace",
+        ShortcutAction::ToggleMaximize => "shortcut-action-toggle-maximize",
+        ShortcutAction::DetachTab => "shortcut-action-detach-tab",
+        ShortcutAction::AttachTabLeft => "shortcut-action-attach-tab-left",
+        ShortcutAction::AttachTabRight => "shortcut-action-attach-tab-right",
+        ShortcutAction::MoveGroupLeft => "shortcut-action-move-group-left",
+        ShortcutAction::MoveGroupRight => "shortcut-action-move-group-right",
+        ShortcutAction::MoveGroupToPreviousDisplay => {
+            "shortcut-action-move-group-to-previous-display"
+        }
+        ShortcutAction::MoveGroupToNextDisplay => "shortcut-action-move-group-to-next-display",
+        ShortcutAction::ResizeNarrower => "shortcut-action-resize-narrower",
+        ShortcutAction::ResizeWider => "shortcut-action-resize-wider",
+        ShortcutAction::ReopenClosedTab => "shortcut-action-reopen-closed-tab",
+        ShortcutAction::FocusGroup1 => "shortcut-action-focus-group-1",
+        ShortcutAction::FocusGroup2 => "shortcut-action-focus-group-2",
+        ShortcutAction::FocusGroup3 => "shortcut-action-focus-group-3",
+        ShortcutAction::FocusGroup4 => "shortcut-action-focus-group-4",
+        ShortcutAction::FocusGroup5 => "shortcut-action-focus-group-5",
+        ShortcutAction::FocusGroup6 => "shortcut-action-focus-group-6",
+        ShortcutAction::FocusGroup7 => "shortcut-action-focus-group-7",
+        ShortcutAction::FocusGroup8 => "shortcut-action-focus-group-8",
+        ShortcutAction::FocusGroup9 => "shortcut-action-focus-group-9",
+        ShortcutAction::OpenFiles => "shortcut-action-open-files",
+        ShortcutAction::OpenTerminal => "shortcut-action-open-terminal",
+        ShortcutAction::ClipboardHistory => "shortcut-action-clipboard-history",
+        ShortcutAction::Notifications => "shortcut-action-notifications",
+        ShortcutAction::ToggleFullscreen => "shortcut-action-toggle-fullscreen",
+        ShortcutAction::ToggleMagnifier => "shortcut-action-toggle-magnifier",
+        ShortcutAction::MagnifierZoomIn => "shortcut-action-magnifier-zoom-in",
+        ShortcutAction::MagnifierZoomOut => "shortcut-action-magnifier-zoom-out",
+        ShortcutAction::PowerMenu => "shortcut-action-power-menu",
+        ShortcutAction::NextInputSource => "shortcut-action-next-input-source",
+        ShortcutAction::EmojiPicker => "shortcut-action-emoji-picker",
+    };
+    t(key)
 }
 
 /// Compact, non-editable reference shown below the configurable navigation
 /// pairs. Configurable actions use their live chord so the guide never
 /// promises a default the user has rebound; fixed chords come from the
 /// shell's one fixed-chord table.
-pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'static str, String)> {
+pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
     let chord = |action| {
         shortcuts
             .bindings
             .get(&action)
-            .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
+            .map_or_else(|| t("guide-unassigned"), shortcut_guide_chord)
     };
     let fixed = |action| {
-        crate::shell::fixed_chords::entry_for(action).map(|entry| (entry.label, entry.display()))
+        crate::shell::fixed_chords::entry_for(action).map(|entry| (entry.label(), entry.display()))
     };
-    let editable = |label: &'static str, action| Some((label, chord(action)));
+    let editable = |key: &str, action| Some((t(key), chord(action)));
     [
         fixed(FixedChordAction::SwitchWindows),
         fixed(FixedChordAction::CloseTab),
         // Changing workspace is already an editable navigation pair above;
         // its essentials slot names how to undo a close instead.
-        editable("Reopen closed tab", ShortcutAction::ReopenClosedTab),
+        editable("guide-reopen-closed-tab", ShortcutAction::ReopenClosedTab),
         fixed(FixedChordAction::NewWindow),
         fixed(FixedChordAction::AddTab),
         fixed(FixedChordAction::DuplicateTab),
-        editable("Global search", ShortcutAction::Search),
-        fixed(FixedChordAction::GlobalSearch),
-        editable("Overview", ShortcutAction::WorkspaceOverview),
-        editable("Quick Settings", ShortcutAction::QuickSettings),
+        editable("shortcut-global-search", ShortcutAction::Search),
+        // Super+Space and a lone Super tap search too; the keyboard map
+        // lists every alias, the guide keeps one row per action.
+        editable("guide-emoji", ShortcutAction::EmojiPicker),
+        editable("guide-overview", ShortcutAction::WorkspaceOverview),
+        editable("guide-quick-settings", ShortcutAction::QuickSettings),
         fixed(FixedChordAction::WorkspaceWheel),
-        editable("Lock", ShortcutAction::Lock),
+        editable("shortcut-lock", ShortcutAction::Lock),
         fixed(FixedChordAction::Screenshot),
         fixed(FixedChordAction::DisplayLayout),
         fixed(FixedChordAction::CaptureScreenshot),
@@ -255,13 +263,12 @@ pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, S
 pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<String> {
     let rows = shortcut_action_rows(shortcuts);
     (!rows.is_empty()).then(|| {
-        format!(
-            "Your shortcuts: {}",
-            rows.into_iter()
-                .map(|(label, chord)| format!("{label} · {chord}"))
-                .collect::<Vec<_>>()
-                .join("   ")
-        )
+        let list = rows
+            .into_iter()
+            .map(|(label, chord)| format!("{label} · {chord}"))
+            .collect::<Vec<_>>()
+            .join("   ");
+        t_args("guide-your-shortcuts", &[("shortcuts", list.into())])
     })
 }
 

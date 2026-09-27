@@ -1,0 +1,33 @@
+[package]
+name = "cloud-source-dav"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "WebDAV and Nextcloud accounts as a cloud-source provider: PROPFIND listings, sync-collection, ranged reads, conditional and chunked uploads, versions."
+
+[dependencies]
+cloud-source = { path = "../cloud-source" }
+tilo-dav = { path = "../tilo-dav" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+url = { workspace = true, features = ["serde"] }
+# The in-memory WebDAV/Nextcloud server behind `fake-server`.
+test-http = { path = "../../dev/test-http", optional = true }
+
+[features]
+# `cloud_source_dav::fake::FakeDav`, an in-memory WebDAV/Nextcloud server on
+# the shared test responder, for this crate's conformance run and the
+# storage daemon's end-to-end tests. Test support only.
+fake-server = ["dep:test-http"]
+
+[dev-dependencies]
+cloud-source = { path = "../cloud-source", features = ["conformance"] }
+# The conformance run needs the fake server of this very crate.
+cloud-source-dav = { path = ".", features = ["fake-server"] }
+test-http = { path = "../../dev/test-http" }
+zeroize.workspace = true
+
+[lints]
+workspace = true

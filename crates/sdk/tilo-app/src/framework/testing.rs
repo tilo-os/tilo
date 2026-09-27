@@ -317,6 +317,33 @@ impl<A: ResourceApp> HeadlessApp<A> {
         super::preview::render_past::<A>(past, A::SHOT_VIEWPORT)
     }
 
+    /// A collaborator's edit arriving: `edit` writes on their own replica of
+    /// the record as it stands now, under their own actor, and the change is
+    /// merged in as sync merges a peer's. It is not the local participant's
+    /// action, so it never lands on their undo stack.
+    ///
+    /// # Panics
+    /// Panics when the record is not open or the change does not merge,
+    /// which a test should surface.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test harness surfaces a failed merge loudly"
+    )]
+    pub fn merge_peer_edit(&mut self, edit: impl FnOnce(&mut tilo_resource::Doc)) {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut peer = self
+            .records
+            .with(&self.checkout.id, tilo_resource::Doc::fork)
+            .expect("record is open");
+        edit(&mut peer);
+        peer.commit();
+        self.records
+            .with(&self.checkout.id, |doc| doc.merge_incoming(&mut peer))
+            .expect("record is open")
+            .expect("a peer's change merges");
+        self.harness().relayout();
+    }
+
     /// Undo the local participant's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
         let harness = self.harness();
