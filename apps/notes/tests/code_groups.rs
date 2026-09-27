@@ -1,18 +1,16 @@
 use crate::component_support::*;
 use notes::{doc::NotesDoc, markdown};
-use ui::widget::BlockEditOp;
+
+/// A panel showing `page` of `doc`, as a person opening it sees it.
+fn panel(doc: &automerge::AutoCommit, page: notes::PageId, title: &str) -> notes::MainPanel {
+    let mut panel = notes::MainPanel::new();
+    panel.bind_canonical_page(doc, page, title).unwrap();
+    panel
+}
 
 fn exported(doc: &automerge::AutoCommit, page: notes::PageId) -> String {
     notes::notebook::validate(doc).unwrap();
-    let mut panel = notes::MainPanel::new();
-    panel
-        .bind_canonical_page(
-            doc,
-            page,
-            "Code",
-            &NotesDoc::page_blocks_list(doc, page).unwrap(),
-        )
-        .unwrap();
+    let panel = panel(doc, page, "Code");
     markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()))
 }
 
@@ -31,15 +29,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
-            let mut panel = notes::MainPanel::new();
-            panel
-                .bind_canonical_page(
-                    doc,
-                    f.child,
-                    "Mixed content",
-                    &NotesDoc::page_blocks_list(doc, f.child).unwrap(),
-                )
-                .unwrap();
+            let panel = panel(doc, f.child, "Mixed content");
             let blocks = panel.editor().blocks();
             assert_eq!(
                 blocks
@@ -176,13 +166,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let outside = f
             .records
             .read(&checkout.id, |doc| {
-                use automerge::ReadDoc;
-                let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                let empty = &NotesDoc::ordered_block_objects(doc, &list)[4];
-                doc.get(empty, "nesting")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_u64())
-                    .unwrap_or(0)
+                NotesDoc::page_blocks(doc, f.child)[4].nesting
             })
             .unwrap();
         assert_eq!(outside, 0);
@@ -218,11 +202,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
             notes::notebook::validate(doc).unwrap();
-            let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-            let mut panel = notes::MainPanel::new();
-            panel
-                .bind_canonical_page(doc, f.child, "Separate fences", &list)
-                .unwrap();
+            let panel = panel(doc, f.child, "Separate fences");
             let actual = markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()));
             assert_eq!(
                 actual, expected,
@@ -241,19 +221,13 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
 fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
     eprintln!("phase deleting_first_fence_row_and_duplicating_keep_boundaries_and_new_group_ids");
     {
-        use automerge::ReadDoc;
         let source = "```python\nfirst()\nkept()\n```\n\n```python\nsecond()\n```\n";
         let f = LegacyFixture::rich();
         f.write_page(f.child, source.as_bytes());
         let checkout = imported(&f);
         let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let first = NotesDoc::page_block_snapshots(&doc, f.child)[0].0.clone();
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            f.child,
-            &[BlockEditOp::Delete { block_id: first }],
-        )
-        .unwrap();
+        remove_block(&mut doc, f.child, &first);
         let expected = "```python\nkept()\n```\n\n```python\nsecond()\n```\n";
         let expected = markdown::serialize(&markdown::parse(expected));
         assert_eq!(exported(&doc, f.child), expected);
@@ -267,18 +241,9 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         let mut doc = automerge::AutoCommit::load(&doc.save()).unwrap();
         assert_eq!(exported(&doc, destination), expected);
         let groups = |page| {
-            let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-            NotesDoc::ordered_block_objects(&doc, &list)
-                .iter()
-                .map(|map| {
-                    doc.get(map, "code_group")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                })
+            NotesDoc::page_blocks(&doc, page)
+                .into_iter()
+                .map(|block| block.code_group.unwrap())
                 .collect::<Vec<_>>()
         };
         let source_groups = groups(f.child);
