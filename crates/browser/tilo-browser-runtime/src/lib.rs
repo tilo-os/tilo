@@ -90,6 +90,10 @@ mod catalog;
 mod desktop;
 #[cfg(all(target_arch = "wasm32", feature = "dylink"))]
 mod side_module;
+// Side modules link against the SDK facade and its resource layer, which the
+// core itself never names; rustc links only crates that are referenced.
+#[cfg(all(target_arch = "wasm32", feature = "dylink"))]
+extern crate tilo_app as _;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_activity;
