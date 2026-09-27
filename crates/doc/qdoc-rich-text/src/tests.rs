@@ -242,6 +242,66 @@ fn the_outline_follows_headings() {
     assert_eq!(outline, replica.state().unwrap().headings());
 }
 
+/// Rich text stored as a field of another document: edited, read and
+/// refreshed under its own map, never touching the document's root or a
+/// sibling field.
+#[test]
+fn rich_text_under_a_field_is_edited_and_refreshed_in_place() {
+    use automerge::transaction::Transactable;
+    let mut doc = automerge::AutoCommit::new();
+    let messages = doc
+        .put_object(automerge::ROOT, "messages", automerge::ObjType::Map)
+        .unwrap();
+    let first = doc
+        .put_object(&messages, "m1", automerge::ObjType::Map)
+        .unwrap();
+    let second = doc
+        .put_object(&messages, "m2", automerge::ObjType::Map)
+        .unwrap();
+    RichText::initialize_under(&mut doc, &first).unwrap();
+    RichText::initialize_under(&mut doc, &second).unwrap();
+    doc.commit();
+    assert!(
+        RichText::read(&doc).is_err(),
+        "the root holds no rich text of its own"
+    );
+
+    let mut state = RichText::read_under(&doc, &first).unwrap();
+    let everything = tilo_resource::Demand::range(0..usize::MAX);
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    let block = state.body().id_at(0).unwrap().to_owned();
+
+    let mut tracker = tilo_resource::Tracker::new();
+    tracker.start(&mut doc);
+    RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: block.clone(),
+        at: 0,
+        del: 0,
+        ins: "hello".into(),
+    }
+    .apply_under(&mut doc, &first)
+    .unwrap();
+    doc.commit();
+    let delta = tracker.delta_located(&mut doc, &|obj| RichText::locate(&state, obj));
+    RichText::refresh_under(&mut state, &doc, &delta).unwrap();
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    assert_eq!(state.block(&block).unwrap().text, "hello");
+
+    let mut fresh = RichText::read_under(&doc, &first).unwrap();
+    RichText::load(&mut fresh, &doc, &everything).unwrap();
+    assert_eq!(state, fresh, "the refreshed field equals a fresh read");
+
+    let mut other = RichText::read_under(&doc, &second).unwrap();
+    RichText::load(&mut other, &doc, &everything).unwrap();
+    let other_block = other.body().id_at(0).unwrap().to_owned();
+    assert_eq!(
+        other.block(&other_block).unwrap().text,
+        "",
+        "the sibling is untouched"
+    );
+}
+
 /// The cells of every table in the body, in order: `(table, row, col, id, text)`.
 fn table_cells(replica: &Replica<RichText>) -> Vec<(String, i64, i64, String, String)> {
     let c = replica.state().unwrap().containers().clone();

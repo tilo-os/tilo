@@ -203,6 +203,16 @@ pub enum RichTextAction {
         key: String,
         value: AttrVal,
     },
+    /// Remove one block attribute from each of `blocks`, restoring its
+    /// default: a list item that stops being a task (`checked`), a code line
+    /// that becomes prose (`code`, `lang`, `code_group`), a block back at the
+    /// outline's top (`nesting`).
+    ClearBlockAttr {
+        #[serde(default)]
+        region: RegionKind,
+        blocks: Vec<String>,
+        key: String,
+    },
     /// Replace all four page margins as one absolute page-setup operation.
     /// Keeping the rectangle atomic avoids transient invalid page geometry while
     /// still giving history and collaborators a single authored mutation.
@@ -412,6 +422,7 @@ impl RichTextAction {
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
             | Self::SetBlockAttr { .. }
+            | Self::ClearBlockAttr { .. }
             | Self::SetPageMargins { .. }
             | Self::SetStyleProperty { .. }
             | Self::DeleteStyle { .. } => ActionDomain::Formatting,
@@ -586,7 +597,9 @@ impl<'a> ActionValidator<'a> {
             "align" => {
                 matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
             }
-            "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
+            "page_break_before" | "flip_h" | "flip_v" | "checked" | "code" => {
+                matches!(value, AttrVal::Bool(_))
+            }
             "indent" | "line_spacing" => {
                 matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
             }
@@ -595,8 +608,18 @@ impl<'a> ActionValidator<'a> {
             }
             "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
             "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+            "lang" => {
+                matches!(value, AttrVal::Str(v) if v.len() <= 64 && !v.chars().any(char::is_control))
+            }
+            "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
+            "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
             _ => false,
         }
+    }
+
+    /// Attributes whose absence is their default, so an edit may remove them.
+    fn clearable_attr(key: &str) -> bool {
+        matches!(key, "checked" | "code" | "lang" | "code_group" | "nesting")
     }
 
     fn valid_style_property(key: &str, value: &AttrVal) -> bool {
@@ -768,6 +791,11 @@ impl<'a> ActionValidator<'a> {
             key,
             value,
         } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
+        RichTextAction::ClearBlockAttr {
+            region,
+            blocks,
+            key,
+        } => self.unique_existing(*region, blocks) && Self::clearable_attr(key),
         RichTextAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
             .into_iter()
             .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
@@ -1906,6 +1934,17 @@ fn apply_formatting_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             key,
             value,
         } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        RichTextAction::ClearBlockAttr {
+            region,
+            blocks,
+            key,
+        } => {
+            let mut sorted = blocks.clone();
+            sorted.sort();
+            for block in &sorted {
+                dm.remove_attr_in(region.to_region(), block, key);
+            }
+        }
         RichTextAction::SetPageMargins {
             top,
             right,
@@ -2078,18 +2117,22 @@ fn apply_review_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
     }
 }
 
-impl Action for RichTextAction {
-    /// Apply this action's mutation to `doc`.
+impl RichTextAction {
+    /// Apply this action to the rich text stored under `root`: the whole
+    /// document when `root` is the document's root, or one rich-text field
+    /// of another resource (a message body, a note's page) when it is that
+    /// field's map. The owning resource's own action carries this one and
+    /// names the field, so the edit replays exactly as it was made.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Refused`] for an unavailable Writer document or
-    /// stale/hostile decoded arguments before opening a mutable view.
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // Bind to the canonical schema under ROOT. Refuse an unbound document
-        // explicitly so callers never mistake an unavailable target for a
-        // successful edit.
-        let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    /// Returns [`ActionError::Refused`] for rich text that is missing under
+    /// `root` or stale/hostile decoded arguments, before anything is written.
+    pub fn apply_under(&self, doc: &mut Doc, root: &ObjId) -> Result<(), ActionError> {
+        // Bind to the canonical schema under `root`. Refuse an unbound
+        // document explicitly so callers never mistake an unavailable target
+        // for a successful edit.
+        let Ok(c) = qdoc::model::open(doc, root) else {
             return Err(ActionError::Refused(
                 "Writer document is unavailable or has not been initialized".into(),
             ));
@@ -2124,6 +2167,18 @@ impl Action for RichTextAction {
             ActionDomain::Review => apply_review_action(&mut dm, self),
         }
         Ok(())
+    }
+}
+
+impl Action for RichTextAction {
+    /// Apply this action's mutation to the document's rich text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Refused`] for an unavailable Writer document or
+    /// stale/hostile decoded arguments before opening a mutable view.
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        self.apply_under(doc, &automerge::ROOT)
     }
 
     fn locus(&self) -> ExecutionLocus {
