@@ -160,7 +160,7 @@ pub(super) async fn restart_after_offline_snapshot(
     // request independently. Keep those exact inputs bounded and alive; no fake
     // expired checkpoint or clock override is introduced into the product.
     let mut prior_replay = Vec::new();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("the actor to report HostReady", async {
         loop {
             match received.recv().await.expect("current actor") {
                 crate::network::actor::NetEvent::HostReady { .. } => break,
@@ -172,12 +172,13 @@ pub(super) async fn restart_after_offline_snapshot(
             }
         }
     })
+    .await;
+    let request = tilo_test_env::within(
+        "Ready to request the original governor refresh",
+        requests.recv(),
+    )
     .await
     .unwrap();
-    let request = tokio::time::timeout(std::time::Duration::from_secs(10), requests.recv())
-        .await
-        .expect("Ready must automatically request the original governor refresh")
-        .unwrap();
     dispatcher.execute(&mut governor, request).await.unwrap();
     let fresh = publish_committed(&governor, publisher);
     admit_exact(&mut received, &commands, identity, &fresh).await;
@@ -193,32 +194,35 @@ pub(super) async fn restart_after_offline_snapshot(
     // proof; admission of fresh messages alone enabled the genuine projection.
     drop(prior_replay);
 
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if let Some(tilo_relay::Inbound::Delta { author, data }) = publisher.recv().await {
-                if author != identity.device_cert.device_public_key {
-                    continue;
-                }
-                let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                governor
-                    .receive(
-                        tilo_peer_state::TransportOrigin::RelayDelta(author),
-                        message,
-                    )
-                    .unwrap();
-                let doc = AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
-                    .unwrap();
-                if doc.get(ROOT, "real-clock-offline-edit").unwrap().is_some() {
-                    for head in &expected_heads {
-                        assert!(doc.get_change_by_hash(head).is_some());
+    tilo_test_env::within(
+        "the live member session to resend its retained projection",
+        async {
+            loop {
+                if let Some(tilo_relay::Inbound::Delta { author, data }) = publisher.recv().await {
+                    if author != identity.device_cert.device_public_key {
+                        continue;
                     }
-                    break;
+                    let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
+                    governor
+                        .receive(
+                            tilo_peer_state::TransportOrigin::RelayDelta(author),
+                            message,
+                        )
+                        .unwrap();
+                    let doc =
+                        AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
+                            .unwrap();
+                    if doc.get(ROOT, "real-clock-offline-edit").unwrap().is_some() {
+                        for head in &expected_heads {
+                            assert!(doc.get_change_by_hash(head).is_some());
+                        }
+                        break;
+                    }
                 }
             }
-        }
-    })
-    .await
-    .expect("same live member session must automatically resend its retained projection");
+        },
+    )
+    .await;
     assert!(
         owner
             .outgoing_status(room, SystemTime::now())
@@ -274,7 +278,7 @@ async fn admit_exact(
     messages: &[Vec<u8>],
 ) {
     let mut seen = std::collections::BTreeSet::new();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tilo_test_env::within("every expected governor input", async {
         while seen.len() < messages.len() {
             if let Some(crate::network::actor::NetEvent::NativeInput(input)) = received.recv().await
             {
@@ -294,6 +298,5 @@ async fn admit_exact(
             }
         }
     })
-    .await
-    .unwrap();
+    .await;
 }
