@@ -129,7 +129,7 @@ async fn prime_then_close_relay2(
     r2_first.add_peer_relay_at(relay1_addr, "r1".into(), 0);
     // Wait for the actual subscription rather than guessing how long the
     // handshake takes on the runner.
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("relay2 subscribed to relay1", async {
         loop {
             if relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
                 break;
@@ -137,13 +137,12 @@ async fn prime_then_close_relay2(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("relay2 subscribed to relay1");
+    .await;
     r2_first.shutdown().await;
     // Wait until relay1 has removed the closed subscription before publishing
     // the outage deltas. Otherwise a loaded runner can accidentally classify
     // the dead QUIC stream as live and lose store-and-forward coverage.
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tilo_test_env::within("relay1 observed relay2 shutdown", async {
         loop {
             if !relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
                 break;
@@ -151,8 +150,7 @@ async fn prime_then_close_relay2(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("relay1 observed relay2 shutdown");
+    .await;
 }
 
 /// p1 publishes three tagged deltas via relay1 while relay2 is down, and
@@ -175,9 +173,7 @@ async fn publish_three_while_peer_is_down(
     .await
     .unwrap();
     c1.send(Envelope::Subscribe { workspace_id: 11 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), c1.recv())
-        .await
-        .expect("p1 Ready");
+    let _ = tilo_test_env::within("p1 Ready", c1.recv()).await;
 
     for (i, tag) in ["one", "two", "three"].iter().enumerate() {
         c1.send(Envelope::Delta {
@@ -231,7 +227,7 @@ async fn drain_three_deltas(
 
     let mut got: Vec<Vec<u8>> = Vec::new();
     for _ in 0..15 {
-        let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
+        let env = tokio::time::timeout(tilo_test_env::hang_bound(), c2.recv()).await;
         match env {
             Ok(Some(Envelope::Delta {
                 delta,

@@ -6471,7 +6471,7 @@ mod tests {
             let store = canonical_image_store(&app.canonical_assets, Some(workspace.path()));
             assert!(store.get(&embedded).is_none());
             assert!(store.get(&legacy_reference).is_none());
-            store.block_until_idle(Duration::from_secs(2));
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(store.get(&embedded).is_some());
             assert!(store.get(&legacy_reference).is_some());
             assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_bytes);
@@ -6933,7 +6933,7 @@ mod tests {
                 command.creation_flags(0x0800_0000);
             }
             let mut child = command.spawn().unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             let status = loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;

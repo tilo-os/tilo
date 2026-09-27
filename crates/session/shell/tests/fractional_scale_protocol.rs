@@ -167,9 +167,7 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);

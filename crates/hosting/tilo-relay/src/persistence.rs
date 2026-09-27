@@ -1176,9 +1176,11 @@ mod tests {
         started.notified().await;
         drop(receipt);
         release_tx.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), completed.notified())
-            .await
-            .expect("cancelled receiver stopped admitted sequence work");
+        tilo_test_env::within(
+            "cancelled receiver stopped admitted sequence work",
+            completed.notified(),
+        )
+        .await;
         tokio::task::yield_now().await;
         assert_eq!(inspect.normal_messages.available_permits(), NORMAL_MESSAGES);
         assert_eq!(inspect.normal_bytes.available_permits(), NORMAL_BYTES);
@@ -1209,8 +1211,8 @@ mod tests {
             .await
             .unwrap();
         started.notified().await;
-        let replay = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
+        let replay = tilo_test_env::within(
+            "saturated normal sequence blocked reserved replay admission",
             owner.submit_replay_resumable_wait(
                 false,
                 1,
@@ -1220,7 +1222,6 @@ mod tests {
             ),
         )
         .await
-        .expect("saturated normal sequence blocked reserved replay admission")
         .unwrap();
 
         release_tx.send(()).unwrap();
@@ -1394,9 +1395,8 @@ mod tests {
         drop(normal_tx);
         drop(replay_tx);
         release_tx.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), running)
+        tilo_test_env::within("closed queues were not drained", running)
             .await
-            .expect("closed queues were not drained")
             .unwrap();
         assert_eq!(
             *order

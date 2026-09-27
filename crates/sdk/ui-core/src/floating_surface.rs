@@ -1749,7 +1749,7 @@ mod tests {
 
             let (app_side, mut shell_side) = UnixStream::pair().unwrap();
             shell_side
-                .set_read_timeout(Some(crate::time::Duration::from_secs(1)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
             let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };

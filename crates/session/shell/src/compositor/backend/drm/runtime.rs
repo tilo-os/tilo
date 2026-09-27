@@ -299,7 +299,7 @@ pub struct DrmDispatchState {
     /// confines it.
     pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
     /// Drawing tablets: their saved settings, the shortcut table their
-    /// buttons press, and their pads.
+    /// buttons press, their pads and where each pad's rings and strips are.
     pub tablets: TabletRuntime,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
@@ -322,8 +322,10 @@ pub struct TabletRuntime {
     /// The shortcut table, so a pen or pad button presses the chord the user
     /// bound to its shortcut.
     pub shortcuts: settings_store::hardware::ShortcutConfig,
-    /// Pads opened a second time, for their buttons.
+    /// Pads opened a second time, for their buttons, rings and strips.
     pub pads: Option<PadInput>,
+    /// Ring and strip travel not yet turned into a whole step.
+    pub dials: crate::compositor::tablet_pad::DialSteps,
 }
 
 impl TabletRuntime {
@@ -334,14 +336,17 @@ impl TabletRuntime {
             )),
             shortcuts: settings_store::hardware::ShortcutConfig::load(),
             pads: None,
+            dials: crate::compositor::tablet_pad::DialSteps::default(),
         }
     }
 
-    /// Re-read the settings, keeping the open pads.
+    /// Re-read the settings, keeping the open pads and touches in progress.
     fn reload(&mut self) {
         let pads = self.pads.take();
+        let dials = std::mem::take(&mut self.dials);
         *self = Self {
             pads,
+            dials,
             ..Self::load()
         };
     }
@@ -357,9 +362,9 @@ impl TabletRuntime {
     }
 }
 
-/// Tablet pads' buttons. Smithay's libinput backend drops pad events, so
-/// each pad is opened again in a path context of its own that is read only
-/// for them.
+/// Tablet pads' buttons, rings and strips. Smithay's libinput backend drops
+/// pad events, so each pad is opened again in a path context of its own
+/// that is read only for them.
 pub struct PadInput {
     context: Libinput,
     /// Pad handles in `context`, by the udev context's device id.
@@ -383,10 +388,7 @@ impl PadInput {
             tracing::warn!(pad = pad.name(), "DRM input: could not open tablet pad");
             return;
         };
-        tracing::info!(
-            pad = pad.name(),
-            "DRM input: listening to tablet pad buttons"
-        );
+        tracing::info!(pad = pad.name(), "DRM input: listening to tablet pad");
         self.devices.insert(pad.id(), device);
     }
 
@@ -396,27 +398,83 @@ impl PadInput {
         }
     }
 
-    /// Read pending pad events: `(device identity, button, pressed)`.
-    fn take_buttons(&mut self) -> Vec<(String, u32, bool)> {
+    /// Read pending pad events.
+    fn take_events(&mut self) -> Vec<RawPadEvent> {
+        use settings_store::hardware::PadDial;
         use smithay::reexports::input::event::tablet_pad::{
-            ButtonState as PadButtonState, TabletPadEvent,
+            ButtonState as PadButtonState, RingAxisSource, StripAxisSource, TabletPadEvent,
+            TabletPadEventTrait as _,
         };
         use smithay::reexports::input::event::{Event as LibinputEvent, EventTrait as _};
         if let Err(error) = self.context.dispatch() {
             tracing::debug!(%error, "DRM input: tablet pad dispatch failed");
         }
-        let mut buttons = Vec::new();
+        // libinput reports a lifted finger as a negative position.
+        let touching = |position: f64| (position >= 0.0).then_some(position);
+        let mut events = Vec::new();
         for event in &mut self.context {
-            if let LibinputEvent::TabletPad(TabletPadEvent::Button(button)) = event {
-                buttons.push((
-                    libinput_device_key(&button.device()),
-                    button.button_number(),
-                    button.button_state() == PadButtonState::Pressed,
-                ));
+            let LibinputEvent::TabletPad(event) = event else {
+                continue;
+            };
+            match event {
+                TabletPadEvent::Button(button) => {
+                    let number = button.button_number();
+                    let pressed = button.button_state() == PadButtonState::Pressed;
+                    let group = button.mode_group();
+                    events.push(RawPadEvent::Button {
+                        pad: libinput_device_key(&button.device()),
+                        button: number,
+                        pressed,
+                        time: button.time(),
+                        mode_switch: (pressed && group.button_is_toggle(number))
+                            .then(|| (group.index(), button.mode(), group.number_of_modes())),
+                    });
+                }
+                TabletPadEvent::Ring(ring) => events.push(RawPadEvent::Dial {
+                    pad: libinput_device_key(&ring.device()),
+                    dial: PadDial::Ring(ring.number()),
+                    position: touching(ring.position()),
+                    finger: ring.source() == RingAxisSource::Finger,
+                    mode: ring.mode(),
+                    time: ring.time(),
+                }),
+                TabletPadEvent::Strip(strip) => events.push(RawPadEvent::Dial {
+                    pad: libinput_device_key(&strip.device()),
+                    dial: PadDial::Strip(strip.number()),
+                    position: touching(strip.position()),
+                    finger: strip.source() == StripAxisSource::Finger,
+                    mode: strip.mode(),
+                    time: strip.time(),
+                }),
+                _ => {}
             }
         }
-        buttons
+        events
     }
+}
+
+/// One pad event as libinput reported it.
+enum RawPadEvent {
+    Button {
+        pad: String,
+        button: u32,
+        pressed: bool,
+        time: u32,
+        /// `(group, new mode, modes)` when the button is its group's mode
+        /// switch.
+        mode_switch: Option<(u32, u32, u32)>,
+    },
+    /// A ring (degrees) or strip (`0.0..=1.0`) moved, or `None`: the finger
+    /// lifted.
+    Dial {
+        pad: String,
+        dial: settings_store::hardware::PadDial,
+        position: Option<f64>,
+        finger: bool,
+        /// The mode of the control's group.
+        mode: u32,
+        time: u32,
+    },
 }
 
 /// The direct-touch equivalent of the pointer-gesture ownership tracker.
@@ -2442,28 +2500,145 @@ impl DrmDispatchState {
             }
             _ => return,
         };
+        if input.tool.kind == crate::compositor::backend::TabletToolKind::Eraser {
+            let tip = match super::tablet::eraser_route(&config) {
+                super::tablet::EraserRoute::Native => {
+                    self.push(BackendEvent::Tablet(input));
+                    return;
+                }
+                super::tablet::EraserRoute::Pointer(button) => Some(button),
+                super::tablet::EraserRoute::Shortcut(action) => {
+                    if input.phase == TabletPhase::TipDown {
+                        self.press_shortcut(action);
+                    }
+                    None
+                }
+            };
+            // A remapped eraser is a pointer in every app, never an eraser.
+            for event in crate::compositor::tablet::tool_pointer_events(&input, tip) {
+                self.push(BackendEvent::Input(event));
+            }
+            return;
+        }
         self.push(BackendEvent::Tablet(input));
     }
 
-    /// Run the pad-button half of a tablet: a mapped button presses its
-    /// shortcut's chord.
-    fn handle_pad_buttons(&mut self) {
+    /// The pad half of a tablet. A mapped button presses its shortcut's
+    /// chord; everything else goes to the compositor, which hands it to a
+    /// focused tablet-aware app or applies the fallback built here from the
+    /// pad's settings: a ring or strip scrolling, zooming, resizing the
+    /// brush, or stepping the volume or brightness.
+    fn handle_pad_events(&mut self) {
+        use crate::compositor::backend::{PadAction, PadEvent};
+        use settings_store::hardware::PadDial;
         let Some(pads) = self.tablets.pads.as_mut() else {
             return;
         };
-        for (key, button, pressed) in pads.take_buttons() {
-            if !pressed {
-                continue;
-            }
-            let action = self
-                .tablets
-                .configs
-                .get(&key)
-                .and_then(|config| super::tablet::pad_button(config, button));
-            if let Some(action) = action {
-                self.press_shortcut(action);
+        for event in pads.take_events() {
+            match event {
+                RawPadEvent::Button {
+                    pad,
+                    button,
+                    pressed,
+                    time,
+                    mode_switch,
+                } => {
+                    if let Some((group, mode, modes)) = mode_switch {
+                        self.push(BackendEvent::TabletPad(PadEvent {
+                            pad: pad.clone(),
+                            action: PadAction::ModeSwitch { group, mode, modes },
+                            time_msec: time,
+                            fallback: Vec::new(),
+                        }));
+                    }
+                    let shortcut = self
+                        .tablets
+                        .configs
+                        .get(&pad)
+                        .and_then(|config| super::tablet::pad_button(config, button));
+                    if let Some(action) = shortcut {
+                        if pressed {
+                            self.press_shortcut(action);
+                        }
+                        continue;
+                    }
+                    self.push(BackendEvent::TabletPad(PadEvent {
+                        pad,
+                        action: PadAction::Button { button, pressed },
+                        time_msec: time,
+                        fallback: Vec::new(),
+                    }));
+                }
+                RawPadEvent::Dial {
+                    pad,
+                    dial,
+                    position,
+                    finger,
+                    mode,
+                    time,
+                } => {
+                    let steps = self.tablets.dials.advance(&pad, dial, position);
+                    let mapped = self
+                        .tablets
+                        .configs
+                        .get(&pad)
+                        .map(|config| config.dial_action(dial, mode))
+                        .unwrap_or_default();
+                    let fallback =
+                        crate::compositor::tablet_pad::dial_events(mapped, steps, |step| {
+                            self.dial_key_events(step)
+                        });
+                    let action = match dial {
+                        PadDial::Ring(ring) => PadAction::Ring {
+                            ring,
+                            angle: position,
+                            finger,
+                        },
+                        PadDial::Strip(strip) => PadAction::Strip {
+                            strip,
+                            position,
+                            finger,
+                        },
+                    };
+                    self.push(BackendEvent::TabletPad(PadEvent {
+                        pad,
+                        action,
+                        time_msec: time,
+                        fallback,
+                    }));
+                }
             }
         }
+    }
+
+    /// The keyboard events one ring or strip step presses and releases,
+    /// kept aside rather than queued: they apply only if no tablet-aware app
+    /// takes the step itself.
+    fn dial_key_events(
+        &mut self,
+        step: &crate::compositor::tablet_pad::DialStep,
+    ) -> Vec<BackendEvent> {
+        let codes = match step {
+            crate::compositor::tablet_pad::DialStep::Key(code) => vec![*code],
+            crate::compositor::tablet_pad::DialStep::Chord(chord) => {
+                let keyboard = self.keyboard.as_ref();
+                let Some(codes) = super::tablet::chord_keycodes(chord, |ch| {
+                    keyboard.and_then(|keyboard| keyboard.keycode_for_char(ch))
+                }) else {
+                    tracing::debug!(?chord, "DRM input: pad key is not on this layout");
+                    return Vec::new();
+                };
+                codes
+            }
+        };
+        let start = self.events.len();
+        for code in &codes {
+            self.process_keyboard_key(evdev_to_xkb(*code), true);
+        }
+        for code in codes.iter().rev() {
+            self.process_keyboard_key(evdev_to_xkb(*code), false);
+        }
+        self.events.split_off(start)
     }
 
     /// Press and release the chord bound to `action`, through the ordinary
@@ -2506,10 +2681,11 @@ impl DrmDispatchState {
                     id: device.id(),
                     capabilities: device_input_capabilities(&device),
                 });
-                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad)
-                    && let Some(pads) = self.tablets.pads.as_mut()
-                {
-                    pads.add(&device);
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad) {
+                    if let Some(pads) = self.tablets.pads.as_mut() {
+                        pads.add(&device);
+                    }
+                    self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
                 }
                 self.devices.push(device);
                 self.publish_input_snapshot();
@@ -2535,6 +2711,9 @@ impl DrmDispatchState {
                     // touch source retires every current contact rather than
                     // risking a stale device-local slot being reused.
                     self.handle_direct_touch_source_removed();
+                }
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletPad) {
+                    self.push(BackendEvent::TabletPadRemoved(libinput_device_key(&device)));
                 }
                 if let Some(pads) = self.tablets.pads.as_mut() {
                     pads.remove(&device);
@@ -3248,7 +3427,7 @@ impl DrmRuntime {
                     smithay::reexports::calloop::Mode::Level,
                 ),
                 |_, _, state: &mut DrmDispatchState| {
-                    state.handle_pad_buttons();
+                    state.handle_pad_events();
                     Ok(smithay::reexports::calloop::PostAction::Continue)
                 },
             )
@@ -3730,16 +3909,75 @@ fn input_device_snapshot(
     device: &smithay::reexports::input::Device,
 ) -> settings_store::hardware::InputDeviceSnapshot {
     let caps = device_caps(device);
-    settings_store::hardware::InputDeviceSnapshot {
+    let mut snapshot = settings_store::hardware::InputDeviceSnapshot {
         key: libinput_device_key(device),
         name: device.name().to_string(),
         kind: caps.kind(),
-        pad_buttons: if caps.is_tablet_pad {
-            u32::try_from(device.tablet_pad_number_of_buttons()).unwrap_or(0)
-        } else {
-            0
-        },
+        ..Default::default()
+    };
+    if caps.is_tablet_pad {
+        let pad = pad_description(device);
+        snapshot.pad_buttons = pad.buttons;
+        let modes_of = |control: &dyn Fn(&crate::compositor::backend::PadGroup) -> bool| {
+            pad.groups
+                .iter()
+                .find(|group| control(group))
+                .map_or(1, |group| group.modes.max(1))
+        };
+        snapshot.pad_rings = (0..pad_count(device.tablet_pad_number_of_rings()))
+            .map(|ring| modes_of(&|group| group.rings.contains(&ring)))
+            .collect();
+        snapshot.pad_strips = (0..pad_count(device.tablet_pad_number_of_strips()))
+            .map(|strip| modes_of(&|group| group.strips.contains(&strip)))
+            .collect();
+        snapshot.pad_mode_buttons = pad_mode_buttons(device);
     }
+    snapshot
+}
+
+/// A libinput count, which is negative for a device that is not a pad.
+fn pad_count(count: i32) -> u32 {
+    u32::try_from(count).unwrap_or(0)
+}
+
+/// A pad's buttons, rings and strips, grouped by the mode groups libinput
+/// reports for it.
+fn pad_description(
+    device: &smithay::reexports::input::Device,
+) -> crate::compositor::backend::PadDescription {
+    let buttons = pad_count(device.tablet_pad_number_of_buttons());
+    let rings = pad_count(device.tablet_pad_number_of_rings());
+    let strips = pad_count(device.tablet_pad_number_of_strips());
+    let groups = (0..pad_count(device.tablet_pad_number_of_mode_groups()))
+        .filter_map(|index| device.tablet_pad_mode_group(index))
+        .map(|group| crate::compositor::backend::PadGroup {
+            buttons: (0..buttons).filter(|b| group.has_button(*b)).collect(),
+            rings: (0..rings).filter(|r| group.has_ring(*r)).collect(),
+            strips: (0..strips).filter(|s| group.has_strip(*s)).collect(),
+            modes: group.number_of_modes(),
+        })
+        .collect();
+    crate::compositor::backend::PadDescription {
+        key: libinput_device_key(device),
+        device: crate::compositor::backend::TabletDevice {
+            name: device.name().to_string(),
+            usb_id: Some((device.id_vendor(), device.id_product())),
+            syspath: InputDevice::syspath(device),
+        },
+        buttons,
+        groups,
+    }
+}
+
+/// The pad buttons that switch their group's mode.
+fn pad_mode_buttons(device: &smithay::reexports::input::Device) -> Vec<u32> {
+    let buttons = pad_count(device.tablet_pad_number_of_buttons());
+    let groups: Vec<_> = (0..pad_count(device.tablet_pad_number_of_mode_groups()))
+        .filter_map(|index| device.tablet_pad_mode_group(index))
+        .collect();
+    (0..buttons)
+        .filter(|button| groups.iter().any(|group| group.button_is_toggle(*button)))
+        .collect()
 }
 
 fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
@@ -5547,9 +5785,10 @@ mod tests {
                 "master release must not run while a present still owns the gate"
             );
             drop(in_flight);
-            released_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .expect("master release proceeds once the present retires");
+            tilo_test_env::recv(
+                "master release proceeds once the present retires",
+                &released_rx,
+            );
             callback.join().expect("callback must finish");
         }
     }

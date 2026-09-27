@@ -59,7 +59,7 @@ impl SystemStatus {
     }
     pub fn summary(&self) -> String {
         if self.summary.is_empty() {
-            "System status".into()
+            crate::i18n::t("desktop-system-status")
         } else {
             self.summary.clone()
         }

@@ -947,7 +947,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn desktop_service_readiness_does_not_wait_for_document_workers() {
         let (_root, _owner, runtime) = runtime();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         let desktop = loop {
             if let Some(surface) = runtime
                 .broker
@@ -957,7 +957,7 @@ mod tests {
             {
                 break surface;
             }
-            assert!(tokio::time::Instant::now() < deadline);
+            assert!(std::time::Instant::now() < deadline);
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         };
         let room = desktop.route.cluster_id.clone();
@@ -1439,7 +1439,7 @@ mod tests {
         let (sender, mut network) = tokio::sync::mpsc::channel(64);
         let mut runtime =
             ActionHost::start(&owner, authority.clone(), signing.clone(), sender).unwrap();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let room = owner.peer().room().to_owned();
         let expected_surface =
             |surface: &tilo_action_broker::collab_broker_capnp::PublishedSurface| {
@@ -1475,7 +1475,7 @@ mod tests {
                 _ = network.recv() => {},
                 _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
             }
-            assert!(tokio::time::Instant::now() < deadline);
+            assert!(std::time::Instant::now() < deadline);
         }
         let before = owner
             .peer()
@@ -1581,7 +1581,7 @@ mod tests {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
             }
             assert!(
-                tokio::time::Instant::now() < deadline,
+                std::time::Instant::now() < deadline,
                 "worker did not retire after lost authority"
             );
         }

@@ -118,7 +118,7 @@ mod tests {
         std::fs::write(dir.path().join("outside.txt"), b"x").expect("a file outside");
         std::fs::write(watched.join("scan.pdf"), b"x").expect("a file inside");
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut seen = Vec::new();
         while !seen.iter().any(|change: &FolderChange| {
             change.file == "scan.pdf" && change.change == FileChange::Created

@@ -62,9 +62,7 @@ async fn author_never_receives_echo_through_federation() {
     .await
     .unwrap();
     c.send(Envelope::Subscribe { workspace_id: 9 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), c.recv())
-        .await
-        .expect("ready timeout");
+    let _ = tilo_test_env::within("ready timeout", c.recv()).await;
 
     // Both directions of the federation are live, so an echo has a path.
     wait_until_subscribed(&relay1.relay, 9, &relay_key_2).await;

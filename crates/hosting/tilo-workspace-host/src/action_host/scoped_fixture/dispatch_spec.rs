@@ -230,7 +230,7 @@ async fn run(changed: bool) {
     }));
     // The broker has its own actual RPC executor. Deliberately do not pump the
     // mounted worker until signed admission has retained the original spec.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let id = loop {
         let mut admitted = None;
         for event in fixture.caller.poll() {
@@ -244,7 +244,7 @@ async fn run(changed: bool) {
             break id;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "actual admission timed out"
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -271,7 +271,7 @@ async fn run(changed: bool) {
             break update;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "actual worker did not complete"
         );
     };
@@ -378,7 +378,7 @@ async fn resolved_run(changed: bool) {
         )
         .await
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let terminal = loop {
         fixture.pump().await.unwrap();
         if let Some(update) = fixture.invocation_status(id)
@@ -391,7 +391,7 @@ async fn resolved_run(changed: bool) {
             break update;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "actual resolved invocation did not finish"
         );
     };

@@ -499,12 +499,11 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
             if name == "tilo_invoke" {
                 args["arguments"] = json!({});
             }
-            let reply = tokio::time::timeout(
-                std::time::Duration::from_millis(20),
+            let reply = tilo_test_env::within(
+                "invalid revision must be rejected without waiting for broker",
                 server.handle(call(name, &args)),
             )
             .await
-            .expect("invalid revision must be rejected without waiting for broker")
             .unwrap();
             assert_eq!(reply["result"]["isError"], true);
         }

@@ -166,7 +166,7 @@ fn run(
         s.run_until(until).expect("agent session")
     });
     ready_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
     typed_peer::publish_actions(
@@ -552,7 +552,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 .expect("agent session")
         });
         agent_ready_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("agent never established its cluster subscription");
         std::thread::sleep(Duration::from_millis(250));
 
@@ -850,7 +850,7 @@ fn drive_word_processor_peer(
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     photo_ready_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the photo peer never published its initial state");
     // `send` queues the photo snapshot asynchronously. Let the broker deliver
     // it before revealing the instruction and its consuming action.

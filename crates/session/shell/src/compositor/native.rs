@@ -6688,10 +6688,17 @@ pub fn run() {
         // A pen goes to a tablet-aware client directly and stands in for the
         // pointer everywhere else, so it expands into ordinary input here,
         // in order, before the batch is dispatched.
-        if pending_events
-            .iter()
-            .any(|event| matches!(event, BackendEvent::Tablet(_)))
-        {
+        // A pad follows keyboard focus the same way, with its settings'
+        // mapping standing in wherever no tablet-aware app is focused.
+        if pending_events.iter().any(|event| {
+            matches!(
+                event,
+                BackendEvent::Tablet(_)
+                    | BackendEvent::TabletPad(_)
+                    | BackendEvent::TabletPadAdded(_)
+                    | BackendEvent::TabletPadRemoved(_)
+            )
+        }) {
             for event in std::mem::take(&mut pending_events) {
                 match event {
                     BackendEvent::Tablet(input) => {
@@ -6702,6 +6709,28 @@ pub fn run() {
                             session.is_locked(),
                         ));
                     }
+                    BackendEvent::TabletPad(pad) => {
+                        if let crate::compositor::backend::PadAction::ModeSwitch {
+                            mode,
+                            modes,
+                            ..
+                        } = pad.action
+                        {
+                            frame_builder.with_chrome(|st| {
+                                st.show_osd(crate::shell::osd::Osd::pad_mode(mode, modes));
+                            });
+                        }
+                        pending_events.extend(client_input::route_pad_event(
+                            &mut state,
+                            &frame_builder,
+                            pad,
+                            session.is_locked(),
+                        ));
+                    }
+                    BackendEvent::TabletPadAdded(description) => {
+                        state.add_tablet_pad(description);
+                    }
+                    BackendEvent::TabletPadRemoved(pad) => state.remove_tablet_pad(&pad),
                     other => pending_events.push_back(other),
                 }
             }
@@ -7277,10 +7306,14 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
+                BackendEvent::Redraw
+                | BackendEvent::Tablet(_)
+                | BackendEvent::TabletPad(_)
+                | BackendEvent::TabletPadAdded(_)
+                | BackendEvent::TabletPadRemoved(_) => {
                     // Redraw is implicit: the native loop paints every tick.
-                    // Pen events were expanded into client or pointer input
-                    // before the batch.
+                    // Pen and pad events were expanded into client or
+                    // ordinary input before the batch.
                 }
             }
         }
@@ -9588,7 +9621,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
         | crate::shell::osd::OsdKind::InputSource(_)
-        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
+        | crate::shell::osd::OsdKind::KeysCaptured { .. }
+        | crate::shell::osd::OsdKind::PadMode { .. } => {}
     }
 }
 

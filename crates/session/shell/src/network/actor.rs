@@ -3702,9 +3702,8 @@ mod tests {
                 .unwrap();
             cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(event, NetEvent::PeerJoined { .. }) {
                     break;
@@ -3722,9 +3721,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -3752,9 +3750,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -3832,20 +3829,22 @@ mod tests {
             cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
 
             for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
-                timeout(Duration::from_secs(4), async {
-                    loop {
-                        if let Some(NetEvent::Msg {
-                            msg: NeighbourMsg::IdentityHello { cert, .. },
-                            ..
-                        }) = rx.recv().await
-                            && cert.device_public_key == expected
-                        {
-                            break;
+                tilo_test_env::within(
+                    "identity announcement should not wait for the heartbeat",
+                    async {
+                        loop {
+                            if let Some(NetEvent::Msg {
+                                msg: NeighbourMsg::IdentityHello { cert, .. },
+                                ..
+                            }) = rx.recv().await
+                                && cert.device_public_key == expected
+                            {
+                                break;
+                            }
                         }
-                    }
-                })
-                .await
-                .expect("identity announcement should not wait for the heartbeat");
+                    },
+                )
+                .await;
             }
         }
     }
@@ -3884,9 +3883,8 @@ mod tests {
             let mut joined = HashSet::new();
             while joined.len() < 2 {
                 if let NetEvent::PeerJoined { peer, .. } =
-                    timeout(Duration::from_secs(10), rx_a.recv())
+                    tilo_test_env::within("a message on rx_a", rx_a.recv())
                         .await
-                        .unwrap()
                         .unwrap()
                 {
                     joined.insert(peer);
@@ -3924,10 +3922,12 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_millis(250), rx_c.recv())
-                    .await
-                    .expect("dead media viewer stalled the collaboration actor")
-                    .unwrap();
+                let event = tilo_test_env::within(
+                    "dead media viewer stalled the collaboration actor",
+                    rx_c.recv(),
+                )
+                .await
+                .unwrap();
                 if matches!(
                     event,
                     NetEvent::Msg {
@@ -3972,9 +3972,8 @@ mod tests {
             let mut a_saw_b = false;
             let mut a_saw_c = false;
             while !(a_saw_b && a_saw_c) {
-                match timeout(Duration::from_secs(10), rx_a.recv())
+                match tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap()
                 {
                     NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
@@ -3984,9 +3983,8 @@ mod tests {
             }
             for receiver in [&mut rx_b, &mut rx_c] {
                 loop {
-                    let event = timeout(Duration::from_secs(10), receiver.recv())
+                    let event = tilo_test_env::within("a message on receiver", receiver.recv())
                         .await
-                        .unwrap()
                         .unwrap();
                     if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
                         break;
@@ -4004,9 +4002,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -4061,9 +4058,8 @@ mod tests {
             let mut a_saw_b = false;
             let mut a_saw_c = false;
             while !(a_saw_b && a_saw_c) {
-                match timeout(Duration::from_secs(10), rx_a.recv())
+                match tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap()
                 {
                     NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
@@ -4073,9 +4069,8 @@ mod tests {
             }
             for receiver in [&mut rx_b, &mut rx_c] {
                 loop {
-                    let event = timeout(Duration::from_secs(10), receiver.recv())
+                    let event = tilo_test_env::within("a message on receiver", receiver.recv())
                         .await
-                        .unwrap()
                         .unwrap();
                     if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
                         break;
@@ -4100,9 +4095,8 @@ mod tests {
 
             let mut delivered = 0;
             while delivered < 2 {
-                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -4160,9 +4154,8 @@ mod tests {
                 .unwrap();
             cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
             while !matches!(
-                timeout(Duration::from_secs(10), rx_a.recv())
+                tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap(),
                 NetEvent::PeerJoined { .. }
             ) {}
@@ -4176,9 +4169,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -4215,16 +4207,12 @@ mod tests {
             }
             cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
             while !matches!(
-                timeout(Duration::from_secs(10), rx_a.recv())
-                    .await
-                    .unwrap()
+                tilo_test_env::within("a message on rx_a", rx_a.recv()).await
                     .unwrap(),
                 NetEvent::PeerJoined { peer, .. } if peer == b_id
             ) {}
             while !matches!(
-                timeout(Duration::from_secs(10), rx_b.recv())
-                    .await
-                    .unwrap()
+                tilo_test_env::within("a message on rx_b", rx_b.recv()).await
                     .unwrap(),
                 NetEvent::PeerJoined { peer, .. } if peer == a_id
             ) {}
@@ -4250,9 +4238,8 @@ mod tests {
 
             let mut received = Vec::new();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 let NetEvent::PersonalFabric {
                     payload: PersonalFabricPayload::MediaTransfer(frame),
@@ -4295,9 +4282,8 @@ mod tests {
 
             let mut statuses = Vec::new();
             loop {
-                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 let NetEvent::PersonalMediaTransfer {
                     target,
@@ -4456,9 +4442,9 @@ mod tests {
                             false,
                         );
                         let rejected = matches!(
-                            timeout(Duration::from_secs(5), rx.recv()).await,
-                            Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
-                        );
+                        tilo_test_env::within("a message on rx", rx.recv()).await,
+                        Some(InternalEvent::HostConnected { result, .. }) if result.is_err()
+                                            );
                         for (_, task) in discoveries {
                             task.abort();
                         }
@@ -4558,9 +4544,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(15), rx_b.recv())
+                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(
                     event,
@@ -4623,7 +4608,7 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                let (peer, received) = timeout(Duration::from_secs(15), async {
+                let (peer, received) = timeout(tilo_test_env::hang_bound(), async {
                     loop {
                         if let Some(NetEvent::Msg {
                             peer,
@@ -4690,9 +4675,8 @@ mod tests {
                 .await
                 .unwrap();
             loop {
-                let event = timeout(Duration::from_secs(15), rx_a.recv())
+                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(event, NetEvent::HostReady { .. }) {
                     break;
@@ -4726,20 +4710,22 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    if noted_content_peer_removals()
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .contains(&relay.node_addr().id)
-                    {
-                        break;
+            tilo_test_env::within(
+                "explicit removal must revoke enrolled Files routes",
+                async {
+                    loop {
+                        if noted_content_peer_removals()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .contains(&relay.node_addr().id)
+                        {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
                     }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("explicit removal must revoke enrolled Files routes");
+                },
+            )
+            .await;
             for _ in 0..100 {
                 if !relay.is_subscribed(42, &a_public).await {
                     break;
@@ -4803,7 +4789,7 @@ mod tests {
                 if let Some(NetEvent::Msg {
                     msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
                     ..
-                }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+                }) = tilo_test_env::within("a message on rx_b", rx_b.recv()).await
                 {
                     assert_eq!(snapshot, vec![1]);
                     break;
@@ -4820,7 +4806,7 @@ mod tests {
                 if let Some(NetEvent::Msg {
                     msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
                     ..
-                }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+                }) = tilo_test_env::within("a message on rx_b", rx_b.recv()).await
                 {
                     assert!(snapshot.is_empty(), "closure replaces live checkpoint");
                     break;
@@ -4856,9 +4842,8 @@ mod tests {
                 if let Some(NetEvent::Msg {
                     msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
                     ..
-                }) = timeout(Duration::from_secs(10), replay_events.recv())
-                    .await
-                    .unwrap()
+                }) =
+                    tilo_test_env::within("a message on replay_events", replay_events.recv()).await
                 {
                     assert!(snapshot.is_empty(), "restarted B receives retained closure");
                     break;
@@ -4935,9 +4920,8 @@ mod tests {
             .unwrap();
         for rx in [&mut rx_a, &mut rx_b] {
             loop {
-                let event = timeout(Duration::from_secs(15), rx.recv())
+                let event = tilo_test_env::within("a message on rx", rx.recv())
                     .await
-                    .unwrap()
                     .unwrap();
                 if matches!(event, NetEvent::HostReady { .. }) {
                     break;
@@ -5144,14 +5128,13 @@ mod tests {
         ));
         member.pump(&first_laptop, Instant::now(), 1_000);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
-        timeout(Duration::from_secs(30), async {
+        tilo_test_env::within("the steward admits the laptop from its request", async {
             while steward.generation() == generation {
                 tick.tick().await;
                 steward.pump(&steward_transport, Instant::now(), 1_000);
             }
         })
-        .await
-        .expect("the steward admits the laptop from its request");
+        .await;
 
         // The laptop's network fails before it processes any answer: its
         // session to the host goes down and the process with everything it
@@ -5192,20 +5175,23 @@ mod tests {
             .unwrap();
         let laptop = ActorChannelTransport::new(cmd_again, events_rx, room);
         let mut member = channel_service(&b_key, b_dir.path(), member_directory());
-        let member_keys = timeout(Duration::from_secs(90), async {
-            loop {
-                tick.tick().await;
-                steward.pump(&steward_transport, Instant::now(), 1_000);
-                member.pump(&laptop, Instant::now(), 1_000);
-                if laptop.host_ready()
-                    && let ChannelAccess::Ready(keys) = member.access(room, channel, Instant::now())
-                {
-                    break keys;
+        let member_keys = tilo_test_env::within(
+            "the restarted laptop joins from retained and redelivered frames",
+            async {
+                loop {
+                    tick.tick().await;
+                    steward.pump(&steward_transport, Instant::now(), 1_000);
+                    member.pump(&laptop, Instant::now(), 1_000);
+                    if laptop.host_ready()
+                        && let ChannelAccess::Ready(keys) =
+                            member.access(room, channel, Instant::now())
+                    {
+                        break keys;
+                    }
                 }
-            }
-        })
-        .await
-        .expect("the restarted laptop joins from retained and redelivered frames");
+            },
+        )
+        .await;
 
         // The steward writes; the laptop reads it through the host.
         let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
@@ -5238,18 +5224,18 @@ mod tests {
             })
             .await
             .unwrap();
-        let received = timeout(Duration::from_secs(30), async {
-            loop {
-                tick.tick().await;
-                member.pump(&laptop, Instant::now(), 1_000);
-                let next = laptop.documents.lock().unwrap().pop();
-                if let Some(op) = next {
-                    break op;
+        let received =
+            tilo_test_env::within("the document reaches the laptop through the host", async {
+                loop {
+                    tick.tick().await;
+                    member.pump(&laptop, Instant::now(), 1_000);
+                    let next = laptop.documents.lock().unwrap().pop();
+                    if let Some(op) = next {
+                        break op;
+                    }
                 }
-            }
-        })
-        .await
-        .expect("the document reaches the laptop through the host");
+            })
+            .await;
         assert_eq!(
             member_keys
                 .open_content(artifact, &received.encryption.unwrap(), &received.payload)
@@ -5272,7 +5258,7 @@ mod tests {
 
         // The laptop loses access: removal rotates the keys.
         policy.allowed.lock().unwrap().clear();
-        timeout(Duration::from_secs(30), async {
+        tilo_test_env::within("the laptop learns of its removal", async {
             loop {
                 tick.tick().await;
                 steward.pump(&steward_transport, Instant::now(), 1_000);
@@ -5285,8 +5271,7 @@ mod tests {
                 }
             }
         })
-        .await
-        .expect("the laptop learns of its removal");
+        .await;
         let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
             panic!("steward keys");
         };
