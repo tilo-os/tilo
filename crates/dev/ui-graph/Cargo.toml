@@ -10,6 +10,7 @@ description = "Pure schema and structural editor for Tilo serialized UI graphs"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

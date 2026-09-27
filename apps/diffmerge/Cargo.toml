@@ -30,6 +30,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 similar = "2.6"
+workspace-hack = { version = "0.1" }
 # Host-native file open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on Tilo the compositor's portal backend renders Tilo's picker. The

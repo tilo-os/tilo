@@ -41,6 +41,7 @@ tilo-ui = { path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

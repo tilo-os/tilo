@@ -1,0 +1,67 @@
+# Settings for `cargo hakari`: https://docs.rs/cargo-hakari/latest/cargo_hakari/config
+#
+# crates/workspace-hack depends on every third-party crate that workspace
+# members build with more than one feature set, with the union of those
+# features, and every managed member depends on it. Any selection of `-p`
+# packages then compiles each shared dependency identically, so CI slots and
+# sccache reuse one build instead of one per package set. After changing a
+# dependency or its features, run `cargo hakari generate` and
+# `cargo hakari manage-deps`; CI / fast quality fails until both are clean.
+
+hakari-package = "workspace-hack"
+dep-format-version = "4"
+resolver = "2"
+
+# Members name `workspace-hack = { version = "0.1" }` and the root manifest's
+# `[patch.crates-io]` points it at crates/workspace-hack. Workspaces outside
+# this one that reach members by path (fuzz/, qdoc-codec-markdown-wasm) have no
+# patch and resolve crates.io's empty workspace-hack 0.1.0 instead, so neither
+# their lockfiles nor a wasm32 build take on the host dependency set.
+workspace-hack-line-style = "version-only"
+
+# CI builds and tests Linux on both architectures. Other hosts (Imager on
+# Windows and macOS) still receive the platform-independent section.
+platforms = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+[traversal-excludes]
+# Media stays optional everywhere: hermetic builds, `--shots` and CI must not
+# need the gstreamer-1.0 development stack. Unifying it would make every
+# member link gstreamer-sys.
+third-party = [
+    { name = "gstreamer" },
+    { name = "gstreamer-app" },
+    { name = "gstreamer-base" },
+    { name = "gstreamer-video" },
+]
+
+[final-excludes]
+# These members keep their own dependency graph. Built with managed members
+# they still receive the unified features; built alone they do not.
+# - tilo-desktop-model must not reach host stacks through any dependency
+#   (tools/policy/check_desktop_model_dependencies.py), so neither it nor any
+#   member it depends on may depend on workspace-hack. When that policy reports
+#   a host stack after desktop-model gains a member dependency, list it here.
+# - tilo-crypto is also built standalone from registry dependencies only
+#   (os/kernel/project-crate.py).
+# - tilo-vm, its protocol and xdg-paths are the tilo-vm Windows CLI's whole
+#   workspace graph; keep that cross build to the crates it uses.
+workspace-members = [
+    # tilo-desktop-model and its member dependencies
+    "collab-types",
+    "desktop-policy",
+    "tilo-actions",
+    "tilo-automation",
+    "tilo-automerge",
+    "tilo-clock",
+    "tilo-desktop-model",
+    "wire-frame",
+    # standalone registry-only build
+    "tilo-crypto",
+    # tilo-vm Windows CLI
+    "tilo-vm",
+    "tilo-vm-protocol",
+    "xdg-paths",
+]

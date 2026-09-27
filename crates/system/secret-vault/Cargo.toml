@@ -20,6 +20,7 @@ tilo-seal = { path = "../tilo-seal" }
 zeroize.workspace = true
 # The Secret Service stores the vault key as lower-case hex.
 hex.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 # Serializes key creation between processes.

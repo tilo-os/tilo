@@ -21,6 +21,7 @@ path = "src/bin/tilo-fs-native/main.rs"
 blake3.workspace = true
 fs-content = { path = "../fs-content" }
 libc.workspace = true
+workspace-hack = { version = "0.1" }
 
 [[test]]
 name = "it"
