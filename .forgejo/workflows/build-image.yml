@@ -268,7 +268,7 @@ jobs:
 
   build-and-push:
     needs: [plan, signing-preflight, ensure-rpms]
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') && needs.ensure-rpms.result == 'success' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') && needs.ensure-rpms.result == 'success' && needs.ensure-rpms.outputs.rpms_ref != '' }}
     strategy:
       # Each native lane validates and caches its own architecture. One lane
       # failing must not cancel the other's hours of build; promotion still
