@@ -1,6 +1,6 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
-use super::{
-    Session,
+use crate::{
+    BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices,
     mcp::McpServer,
     mcp_process::{Frame, read_frame, write_reply},
     unix,
@@ -167,13 +167,13 @@ fn probe(profile: &Path) -> io::Result<Status> {
 /// alive and making progress, and gives up once progress stops for `stall`
 /// or the whole start exceeds `cap`.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct StartupLimits {
-    pub(super) stall: Duration,
-    pub(super) cap: Duration,
-    pub(super) poll: Duration,
+pub(crate) struct StartupLimits {
+    pub(crate) stall: Duration,
+    pub(crate) cap: Duration,
+    pub(crate) poll: Duration,
 }
 
-pub(super) const STARTUP: StartupLimits = StartupLimits {
+pub(crate) const STARTUP: StartupLimits = StartupLimits {
     stall: Duration::from_secs(15),
     cap: Duration::from_secs(120),
     poll: Duration::from_millis(25),
@@ -181,17 +181,17 @@ pub(super) const STARTUP: StartupLimits = StartupLimits {
 
 /// What a starting process looks like from outside at one instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Observation {
+pub(crate) struct Observation {
     /// What the process is doing, for errors: "while <stage>".
-    pub(super) stage: String,
+    pub(crate) stage: String,
     /// Every sign of progress by name, in the same order at each instant:
     /// its current value, or `None` while it cannot be read. Any value that
     /// changes counts as progress.
-    pub(super) signals: Vec<(&'static str, Option<u64>)>,
+    pub(crate) signals: Vec<(&'static str, Option<u64>)>,
 }
 
 /// A spawned process that has not reported ready yet.
-pub(super) trait StartingProcess {
+pub(crate) trait StartingProcess {
     type Ready;
     /// The ready answer, once the process gives one.
     fn ready(&mut self) -> Option<Self::Ready>;
@@ -231,7 +231,7 @@ fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> Stri
 /// # Errors
 /// Names the stage the process reached, when each progress signal last
 /// changed, and the process's diagnostics.
-pub(super) fn wait_until_ready<P: StartingProcess>(
+pub(crate) fn wait_until_ready<P: StartingProcess>(
     process: &mut P,
     limits: StartupLimits,
 ) -> io::Result<P::Ready> {
@@ -298,8 +298,10 @@ const OUTPUT_TAIL: u64 = 4096;
 /// The longest step name a launcher repeats from the stages file.
 const STAGE_LIMIT: usize = 200;
 /// Processes, and threads per process, a launcher inspects in a daemon's tree.
+#[cfg(target_os = "linux")]
 const TREE_LIMIT: usize = 256;
 /// Processes a launcher reads when the kernel lists no children per task.
+#[cfg(target_os = "linux")]
 const PROCESS_SCAN_LIMIT: usize = 8192;
 
 /// The daemon's side of [`STAGES_FILE`].
@@ -621,14 +623,11 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     clippy::significant_drop_tightening,
     reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
 )]
-pub fn serve(profile: &Path) -> io::Result<()> {
+pub fn serve<S: RuntimeServices>(profile: &Path) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
-    let session = Session::start_reporting(profile, &mut |stage| stages.enter(stage))?;
-    let broker = session
-        .broker
-        .app_action_broker()
-        .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
+    let session = S::start_reporting(profile, &mut |stage| stages.enter(stage))?;
+    let host = session.action_host()?;
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
@@ -651,7 +650,7 @@ pub fn serve(profile: &Path) -> io::Result<()> {
     let status = Status {
         version: 1,
         pid: std::process::id(),
-        room: session.room.clone(),
+        room: session.room().to_owned(),
     };
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -660,9 +659,9 @@ pub fn serve(profile: &Path) -> io::Result<()> {
             drop(stream);
             continue;
         }
-        let broker = broker.clone();
-        let room = session.room.clone();
-        let actor = session.actor.clone();
+        let host = host.clone();
+        let room = session.room().to_owned();
+        let actor = session.actor().to_owned();
         let status = status.clone();
         let active = Arc::clone(&active);
         active.fetch_add(1, Ordering::Relaxed);
@@ -672,7 +671,7 @@ pub fn serve(profile: &Path) -> io::Result<()> {
             .spawn(move || {
                 let _slot = slot;
                 if let Err(error) =
-                    serve_connection(stream, McpServer::new(broker, room, actor), &status)
+                    serve_connection(stream, McpServer::new(host, room, actor), &status)
                 {
                     tracing::debug!(%error, "native runtime client disconnected");
                 }
@@ -687,9 +686,9 @@ impl Drop for ConnectionSlot {
     }
 }
 
-fn serve_connection(
+fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     mut stream: UnixStream,
-    mut server: McpServer,
+    mut server: McpServer<H>,
     status: &Status,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
@@ -765,9 +764,9 @@ pub fn run_app(
         app_id,
         &status.room,
         &unix::ServiceSockets {
-            collab: &profile.join("collab.sock"),
-            identity: &profile.join("identity.sock"),
-            blobs: &profile.join("blobs.sock"),
+            collab: &profile.join(COLLAB_SOCKET),
+            identity: &profile.join(IDENTITY_SOCKET),
+            blobs: &profile.join(BLOB_SOCKET),
         },
     )?;
     command
