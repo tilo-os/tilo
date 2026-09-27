@@ -701,6 +701,9 @@ pub struct ChromeState {
     /// here lets the chrome remove its durable tab immediately without owning
     /// Wayland protocol handles.
     close_surface_requests: Vec<u64>,
+    /// Client windows being carried into another workspace, from the sheet
+    /// asking the person through to the old window closing.
+    pub window_transfers: super::window_transfer::WindowTransfers,
     /// The full-screen chord was pressed. The native compositor drains it
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
@@ -840,6 +843,7 @@ impl ChromeState {
             peer_sync_request_results: BTreeMap::new(),
             next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
+            window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
             input_source_request: None,
             strip_viewport: None,
