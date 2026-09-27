@@ -6,8 +6,9 @@ use crate::shell::state::FreshId as _;
 
 use super::*;
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::overview::{room_access_label, room_cards, room_shares_label};
+use crate::shell::overview::room_cards;
 use crate::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb, WorkspaceTree};
+use tilo_desktop::overview::{room_access_label, room_shares_label};
 use ui::widget::Container;
 
 /// A host laid out over a desktop-sized viewport with the overview
@@ -632,7 +633,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
         let mut tree = WorkspaceTree::bootstrap_default();
         // What boot does before the session paints: a room you made is one you own.
         tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
-        let cards = room_cards(&tree);
+        let cards = room_cards(&tree, &crate::shell::state::local_user_id());
         assert_eq!(cards.len(), 1);
         assert_eq!(room_access_label(&cards[0]), "Private to you");
         assert_eq!(
@@ -652,7 +653,9 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
         tree.desktop.workspaces[0].capabilities.clear();
         tree.desktop.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
         assert!(
-            room_cards(&tree)[0].people.is_empty(),
+            room_cards(&tree, &crate::shell::state::local_user_id())[0]
+                .people
+                .is_empty(),
             "a person with no capability here is not on this room"
         );
 
@@ -664,7 +667,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
                 Scope::Room(room),
                 Verb::Write,
             ));
-        let card = &room_cards(&tree)[0];
+        let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(
             card.people
                 .iter()
@@ -689,7 +692,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
                     Verb::Read,
                 ));
         }
-        let card = &room_cards(&tree)[0];
+        let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(card.shares.len(), 12, "the model keeps every share");
         assert!(
             ShellOverlayHost::overview_share_rows(card) <= OVERVIEW_SHARES_MAX_ROWS + 1,
@@ -701,7 +704,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     /// leaves this room" is an answer the screen exists to give.
     fn a_room_that_shares_nothing_still_gets_a_row() {
         let tree = WorkspaceTree::bootstrap_default();
-        let card = &room_cards(&tree)[0];
+        let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert!(card.shares.is_empty());
         assert_eq!(ShellOverlayHost::overview_share_rows(card), 1);
     }

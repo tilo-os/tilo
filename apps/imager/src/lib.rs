@@ -120,12 +120,6 @@ pub mod release;
 pub mod setup;
 pub mod write;
 
-/// How long a test or screenshot fixture waits for a worker, a child process
-/// or a background event before calling it hung. Durable copies, journal
-/// fsyncs and downloads can take many seconds on a loaded disk, so this bound
-/// only catches work that never finishes; it is not a speed check.
-pub(crate) const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
-
 /// The imager's spacing rhythm (HIG §7b): the same relationship always gets
 /// the same step, and every step is a token of `Spacing::BASE` — the
 /// compile-time reference the wizard's immediate-mode hit layout and the

@@ -37,10 +37,17 @@ pub const BTN_STYLUS2: u32 = 0x14c;
 /// A third barrel button, on pens that have one.
 pub const BTN_STYLUS3: u32 = 0x149;
 
-/// Clients that asked for a tablet seat.
+/// Clients that asked for a tablet seat, and the pads announced to them.
 #[derive(Default)]
 pub struct TabletClients {
     clients: HashSet<ClientId>,
+    pub(crate) pads: crate::compositor::tablet_pad::TabletPads,
+}
+
+impl TabletClients {
+    pub(crate) fn client_ids(&self) -> impl Iterator<Item = &ClientId> {
+        self.clients.iter()
+    }
 }
 
 /// Records which clients ask for a tablet seat, then hands the request to
@@ -57,15 +64,20 @@ impl Dispatch<ZwpTabletManagerV2, (), State> for TabletSeatTracker {
         dh: &DisplayHandle,
         data_init: &mut DataInit<'_, State>,
     ) {
-        if matches!(
+        let new_seat = matches!(
             request,
             zwp_tablet_manager_v2::Request::GetTabletSeat { .. }
-        ) {
+        );
+        if new_seat {
             state.tablet_clients.clients.insert(client.id());
         }
         <TabletManagerState as Dispatch<ZwpTabletManagerV2, (), State>>::request(
             state, client, resource, request, data, dh, data_init,
         );
+        if new_seat {
+            // Smithay announced the pens; the pads are announced here.
+            state.announce_tablet_pads();
+        }
     }
 }
 
@@ -180,6 +192,13 @@ fn tool_descriptor(input: &TabletInput) -> TabletToolDescriptor {
 /// hover moves the pointer, the tip is the primary button and the barrel
 /// buttons are secondary and middle. Leaving proximity moves nothing.
 pub fn tablet_pointer_events(input: &TabletInput) -> Vec<WindowEvent> {
+    tool_pointer_events(input, Some(BTN_LEFT))
+}
+
+/// Like [`tablet_pointer_events`], but the tip presses the pointer button
+/// `tip` (a Linux button code), or nothing when `None`: an eraser mapped to
+/// a mouse button, or to a shortcut that runs on its own.
+pub fn tool_pointer_events(input: &TabletInput, tip: Option<u32>) -> Vec<WindowEvent> {
     let moved = WindowEvent::CursorMoved {
         // SAFETY: winit's device id is an opaque token with no invariants;
         // the input adapters use the same inert zero value.
@@ -196,32 +215,30 @@ pub fn tablet_pointer_events(input: &TabletInput) -> Vec<WindowEvent> {
         },
         button,
     };
+    let press = |code: Option<u32>, pressed: bool| match code.and_then(pointer_button) {
+        Some(mouse) => vec![moved.clone(), button(mouse, pressed)],
+        None => vec![moved.clone()],
+    };
     match input.phase {
         TabletPhase::ProximityOut => Vec::new(),
-        TabletPhase::TipDown => vec![moved, button(MouseButton::Left, true)],
-        TabletPhase::TipUp => vec![moved, button(MouseButton::Left, false)],
-        TabletPhase::Button {
-            button: BTN_STYLUS | BTN_RIGHT,
-            pressed,
-        } => vec![moved, button(MouseButton::Right, pressed)],
-        TabletPhase::Button {
-            button: BTN_STYLUS2 | BTN_MIDDLE,
-            pressed,
-        } => vec![moved, button(MouseButton::Middle, pressed)],
-        // Buttons a tablet's settings remapped to a mouse button.
-        TabletPhase::Button {
-            button: BTN_LEFT,
-            pressed,
-        } => vec![moved, button(MouseButton::Left, pressed)],
-        TabletPhase::Button {
-            button: BTN_SIDE,
-            pressed,
-        } => vec![moved, button(MouseButton::Back, pressed)],
-        TabletPhase::Button {
-            button: BTN_EXTRA,
-            pressed,
-        } => vec![moved, button(MouseButton::Forward, pressed)],
-        TabletPhase::ProximityIn | TabletPhase::Motion | TabletPhase::Button { .. } => vec![moved],
+        TabletPhase::TipDown => press(tip, true),
+        TabletPhase::TipUp => press(tip, false),
+        TabletPhase::Button { button, pressed } => press(Some(button), pressed),
+        TabletPhase::ProximityIn | TabletPhase::Motion => vec![moved],
+    }
+}
+
+/// The pointer button a pen button code clicks: the barrel buttons are
+/// secondary and middle, and the codes a tablet's settings remap them to
+/// are those mouse buttons.
+fn pointer_button(code: u32) -> Option<MouseButton> {
+    match code {
+        BTN_LEFT => Some(MouseButton::Left),
+        BTN_STYLUS | BTN_RIGHT => Some(MouseButton::Right),
+        BTN_STYLUS2 | BTN_MIDDLE => Some(MouseButton::Middle),
+        BTN_SIDE => Some(MouseButton::Back),
+        BTN_EXTRA => Some(MouseButton::Forward),
+        _ => None,
     }
 }
 
@@ -318,6 +335,37 @@ mod tests {
                 "a barrel button remapped to a mouse button clicks it"
             );
         }
+    }
+
+    #[test]
+    fn an_eraser_is_a_tool_of_its_own_and_can_press_another_button() {
+        let mut eraser = pen(TabletPhase::TipDown);
+        eraser.tool.kind = TabletToolKind::Eraser;
+        let descriptor = tool_descriptor(&eraser);
+        assert_eq!(descriptor.tool_type, TabletToolType::Eraser);
+        assert_ne!(
+            descriptor,
+            tool_descriptor(&pen(TabletPhase::TipDown)),
+            "the eraser end is announced apart from the tip"
+        );
+        assert_eq!(
+            kinds(&tool_pointer_events(&eraser, Some(BTN_RIGHT))),
+            ["move 812.5 403.25", "Right Pressed"]
+        );
+        assert_eq!(
+            kinds(&tool_pointer_events(&eraser, None)),
+            ["move 812.5 403.25"],
+            "an eraser running a shortcut clicks nothing"
+        );
+        eraser.phase = TabletPhase::Button {
+            button: BTN_STYLUS3,
+            pressed: true,
+        };
+        assert_eq!(
+            kinds(&tablet_pointer_events(&eraser)),
+            ["move 812.5 403.25"],
+            "a third barrel button left as itself clicks nothing"
+        );
     }
 
     #[test]

@@ -164,8 +164,8 @@ impl DocMut<'_> {
         after: Option<&str>,
         kind: &str,
     ) -> String {
-        let order = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let order = self.order_after_in(&container, after, &id);
         self.record_order(&container, &id, &order);
         let bulk = &mut self.ids.bulk;
         bulk.by_id.insert(id.clone(), bulk.blocks.len());
@@ -275,6 +275,17 @@ impl DocMut<'_> {
                 None
             }
             _ => Some(value),
+        }
+    }
+
+    /// Remove an attribute from a staged block of `container`; `false` if it isn't one.
+    pub(super) fn unstage_attr(&mut self, container: &ObjId, block_id: &str, key: &str) -> bool {
+        match self.staged_mut(block_id) {
+            Some(block) if &block.container == container => {
+                block.attrs.remove(key);
+                true
+            }
+            _ => false,
         }
     }
 

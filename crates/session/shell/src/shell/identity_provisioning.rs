@@ -27,7 +27,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
-    PAIRING_IO_TIMEOUT, PairingBrokerRequest, PairingBrokerResponse, PairingHandshake,
+    PairingBrokerRequest, PairingBrokerResponse, PairingHandshake, pairing_io_timeout,
 };
 
 pub struct PairingBrokerServer {
@@ -214,8 +214,8 @@ impl PairingBrokerServer {
                         tracing::warn!(%error, "cannot configure blocking pairing connection");
                         return;
                     }
-                    let _ = tcp.set_read_timeout(Some(PAIRING_IO_TIMEOUT));
-                    let _ = tcp.set_write_timeout(Some(PAIRING_IO_TIMEOUT));
+                    let _ = tcp.set_read_timeout(Some(pairing_io_timeout()));
+                    let _ = tcp.set_write_timeout(Some(pairing_io_timeout()));
                     let Ok(connection) = rustls::ServerConnection::new(tls) else {
                         return;
                     };
@@ -1417,7 +1417,7 @@ mod tests {
         });
         // The exchange crosses a real TLS broker and a DKG on each side; the
         // loop ends as soon as it completes, so this bound only catches a hang.
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let deadline = tilo_test_env::hang_deadline();
         let completed = loop {
             if host.poll_handshake(&authority).unwrap() {
                 break true;

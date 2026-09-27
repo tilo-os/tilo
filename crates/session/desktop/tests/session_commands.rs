@@ -8,8 +8,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_desktop::{intents::SessionIntent, session_commands::bind_intent};
-use tilo_desktop_model::commands::{CommandSource, DesktopCommand, TabLocation, TabPlacement};
+use tilo_desktop::intents::{DesktopIntent, LocalViewIntent, SessionIntent};
+use tilo_desktop::session_commands::{DesktopCommandSink, bind_intent, dispatch};
+use tilo_desktop_model::commands::{
+    BoundCommand, CommandSource, DesktopCommand, TabLocation, TabPlacement,
+};
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId,
@@ -149,4 +152,74 @@ fn new_tab_uses_exact_selected_app_identity_and_stable_placement() {
             },
         }
     );
+}
+
+/// A host that records what the controller hands it.
+struct Recorder {
+    tree: DesktopTree,
+    heads: Vec<[u8; 32]>,
+    local: Vec<LocalViewIntent>,
+    submitted: Vec<BoundCommand>,
+}
+impl DesktopCommandSink for Recorder {
+    fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
+        read(&self.tree)
+    }
+    fn source(&mut self, room: RoomId) -> Result<CommandSource, String> {
+        Ok(CommandSource {
+            room: room.to_string(),
+            heads: self.heads.clone(),
+        })
+    }
+    fn apply_local(&mut self, intent: LocalViewIntent) {
+        self.local.push(intent);
+    }
+    fn submit(&mut self, command: BoundCommand) -> Result<(), String> {
+        self.submitted.push(command);
+        Ok(())
+    }
+}
+
+#[test]
+fn dispatch_keeps_view_changes_local_and_binds_session_changes_to_the_group_room() {
+    let (tree, source) = source();
+    let mut sink = Recorder {
+        tree,
+        heads: source.heads.clone(),
+        local: Vec::new(),
+        submitted: Vec::new(),
+    };
+    let maximize = LocalViewIntent::Maximized {
+        group: 20,
+        maximized: true,
+    };
+    dispatch(&mut sink, DesktopIntent::Local(maximize.clone())).unwrap();
+    dispatch(
+        &mut sink,
+        DesktopIntent::Session(SessionIntent::CloseTab { group: 20, tab: 32 }),
+    )
+    .unwrap();
+    assert_eq!(sink.local, vec![maximize]);
+    assert_eq!(
+        sink.submitted,
+        vec![BoundCommand {
+            source,
+            command: DesktopCommand::CloseTab {
+                location: TabLocation {
+                    strip: 10,
+                    group: 20,
+                    tab: 32
+                }
+            },
+        }]
+    );
+    assert!(
+        dispatch(
+            &mut sink,
+            DesktopIntent::Session(SessionIntent::CloseTab { group: 99, tab: 30 }),
+        )
+        .is_err(),
+        "a group no desktop holds never reaches the owner"
+    );
+    assert_eq!(sink.submitted.len(), 1);
 }

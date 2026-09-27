@@ -27,6 +27,10 @@ use vello::kurbo::Rect;
 use ui::theme::Theme;
 use ui::widget::{Image, ImageFit};
 
+use tilo_desktop::window_switcher::{
+    PreviewRequest, PreviewSource, WindowSource, WindowThumbnails,
+};
+
 use crate::shell::state::{GroupId, TileContent};
 
 /// Shortest time between two refresh rounds: ten a second is live enough
@@ -41,86 +45,62 @@ pub const MAX_PREVIEWS: usize = 16;
 pub const MAX_PREVIEW_WIDTH: u32 = 352;
 pub const MAX_PREVIEW_HEIGHT: u32 = 220;
 
-/// Where a window's preview comes from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PreviewSource {
-    /// A client's own latest buffer, from the compositor's frame store.
-    /// Works for every tab of a client, shown or not.
-    Client { surface: u64 },
-    /// A window the shell draws itself, painted through the same live path
-    /// a screenshot of it takes. Only the tab its group shows is painted.
-    Painted { capture_id: String },
-    /// Never pictured: the app holds secrets.
-    Withheld,
-    /// Nothing worth picturing: a hidden tab of a shell-drawn app, or a
-    /// window that is still a placeholder card.
-    Unavailable,
-}
+/// The shell's windows as the switcher and the overview see them: the
+/// icon theme's artwork, and live pictures except for capture-protected
+/// windows.
+pub struct ShellWindows;
 
-impl PreviewSource {
-    /// The source for `tile`, the tab `tab` of group `group`. `shown` is
-    /// whether that tab is the one its group displays.
-    pub fn for_tab(tile: &TileContent, group: GroupId, tab: u64, shown: bool) -> Self {
+impl WindowSource for ShellWindows {
+    fn app_kind(&self, tile: &TileContent) -> ui::widget::AppKind {
+        crate::shell::tile_app_kind(tile)
+    }
+
+    fn app_icon(&self, tile: &TileContent) -> Option<ui::icons::AppImage> {
+        match tile {
+            TileContent::Foreign { .. } => crate::app_icons::for_tile(tile),
+            TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+                crate::app_icons::for_window_app_id(app_id)
+            }
+            TileContent::AppPlaceholder { .. }
+            | TileContent::Stub { .. }
+            | TileContent::WorkspaceActivity => None,
+        }
+    }
+
+    fn preview_source(
+        &self,
+        tile: &TileContent,
+        group: GroupId,
+        tab: u64,
+        shown: bool,
+    ) -> PreviewSource {
         match tile {
             TileContent::Foreign { app_id, surface_id } => {
                 if crate::shell::foreign::store().is_capture_protected(*surface_id, app_id) {
-                    Self::Withheld
+                    PreviewSource::Withheld
                 } else {
-                    Self::Client {
+                    PreviewSource::Client {
                         surface: *surface_id,
                     }
                 }
             }
             TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
                 if crate::shell::capture_protection::holds_secrets(app_id) {
-                    Self::Withheld
+                    PreviewSource::Withheld
                 } else {
-                    Self::Unavailable
+                    PreviewSource::Unavailable
                 }
             }
-            TileContent::AppPlaceholder { .. } => Self::Unavailable,
+            TileContent::AppPlaceholder { .. } => PreviewSource::Unavailable,
             TileContent::Stub { .. } | TileContent::WorkspaceActivity => {
                 if shown {
-                    Self::Painted {
+                    PreviewSource::Painted {
                         capture_id: format!("group:{group}:tab:{tab}"),
                     }
                 } else {
-                    Self::Unavailable
+                    PreviewSource::Unavailable
                 }
             }
-        }
-    }
-
-    /// Whether this source can produce pixels at all.
-    pub fn renderable(&self) -> bool {
-        matches!(self, Self::Client { .. } | Self::Painted { .. })
-    }
-}
-
-/// One window the compositor should picture.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreviewRequest {
-    pub tab: u64,
-    pub source: PreviewSource,
-}
-
-/// What a card can show for a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PreviewState {
-    /// A live picture is ready.
-    Live,
-    /// The app holds secrets; its mark stands in.
-    Withheld,
-    /// No picture (yet); its mark stands in.
-    None,
-}
-
-impl PreviewState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Withheld => "withheld",
-            Self::None => "none",
         }
     }
 }
@@ -268,10 +248,6 @@ impl WindowPreviews {
         self.turn = 0;
     }
 
-    pub fn has(&self, tab: u64) -> bool {
-        self.previews.contains_key(&tab)
-    }
-
     pub fn size(&self, tab: u64) -> Option<(u32, u32)> {
         self.previews
             .get(&tab)
@@ -309,10 +285,14 @@ impl WindowPreviews {
     pub fn mark_painted(&mut self) {
         self.changed = false;
     }
+}
 
-    /// Paint the preview of `tab` fitted inside `rect`, keeping its shape.
-    /// Returns the rect it covers, or `None` when there is no preview.
-    pub fn paint(
+impl WindowThumbnails for WindowPreviews {
+    fn has(&self, tab: u64) -> bool {
+        self.previews.contains_key(&tab)
+    }
+
+    fn paint(
         &mut self,
         tab: u64,
         scene: &mut vello::Scene,
@@ -441,7 +421,7 @@ mod tests {
             surface_id: 7,
         };
         assert_eq!(
-            PreviewSource::for_tab(&vault, 1, 2, true),
+            ShellWindows.preview_source(&vault, 1, 2, true),
             PreviewSource::Withheld
         );
         let passwords = TileContent::LocalApp {
@@ -450,7 +430,7 @@ mod tests {
             note: String::new(),
         };
         assert_eq!(
-            PreviewSource::for_tab(&passwords, 1, 2, true),
+            ShellWindows.preview_source(&passwords, 1, 2, true),
             PreviewSource::Withheld
         );
         let editor = TileContent::Foreign {
@@ -458,7 +438,7 @@ mod tests {
             surface_id: 9,
         };
         assert_eq!(
-            PreviewSource::for_tab(&editor, 1, 2, false),
+            ShellWindows.preview_source(&editor, 1, 2, false),
             PreviewSource::Client { surface: 9 }
         );
         let mut previews = WindowPreviews::default();
@@ -480,13 +460,13 @@ mod tests {
             label: String::new(),
         };
         assert_eq!(
-            PreviewSource::for_tab(&terminal, 10, 3, true),
+            ShellWindows.preview_source(&terminal, 10, 3, true),
             PreviewSource::Painted {
                 capture_id: "group:10:tab:3".into()
             }
         );
         assert_eq!(
-            PreviewSource::for_tab(&terminal, 10, 3, false),
+            ShellWindows.preview_source(&terminal, 10, 3, false),
             PreviewSource::Unavailable
         );
     }

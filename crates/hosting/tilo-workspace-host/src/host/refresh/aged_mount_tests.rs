@@ -114,7 +114,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
     }
     let disk = crate::store::test_durable_state(&path).unwrap();
     let mut fixture = ReopenedAppFixture::new(root, owner, committed);
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         fixture.pump().await.unwrap();
         let notes = fixture.action_live(records[0].0, &records[0].1, "import-markdown");
@@ -129,7 +129,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "aged startup never reached both actual action surfaces and settled exact receipts"
         );
     }

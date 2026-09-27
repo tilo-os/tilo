@@ -62,7 +62,7 @@ fn layout(chrome: &ChromeState) -> Vec<(u64, Vec<u64>)> {
 
 fn undo_toast(chrome: &ChromeState) -> Option<u64> {
     chrome
-        .notifications
+        .notifications()
         .iter()
         .find(|toast| toast.title.starts_with("Closed"))
         .map(|toast| toast.id)

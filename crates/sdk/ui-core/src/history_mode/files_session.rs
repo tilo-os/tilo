@@ -710,9 +710,6 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Upper bound for waits on background replies. Loops exit as soon as
-    /// the reply lands; the guard only turns a lost reply into a failure.
-    const HANG_GUARD: Duration = Duration::from_secs(30);
     struct Transport;
     impl FileHistoryTransport for Transport {
         fn read(&self, _: Query) -> Result<Value, Error> {
@@ -1288,28 +1285,21 @@ mod tests {
                 controller.target.transport = transport.clone();
                 controller.next_poll = crate::time::now() + Duration::from_secs(60);
                 controller.load();
-                rx.recv_timeout(HANG_GUARD).unwrap();
+                tilo_test_env::recv("the activity load to start", &rx);
                 controller.select(version.id, None);
-                let deadline = crate::time::now() + HANG_GUARD;
-                while controller.after.is_none() && crate::time::now() < deadline {
-                    controller.drain();
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                assert!(
-                    controller.after.is_some(),
-                    "selected immutable preview must be installed while older activity is delayed"
+                tilo_test_env::wait_until(
+                    "the selected immutable preview while older activity is delayed",
+                    || {
+                        controller.drain();
+                        controller.after.is_some()
+                    },
                 );
                 transport.release.wait();
                 // Wait for the delayed activity reply itself, so the assertion below
                 // sees it applied rather than racing its arrival.
-                let deadline = crate::time::now() + HANG_GUARD;
-                while !controller.has_results() && crate::time::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                assert!(
-                    controller.has_results(),
-                    "the delayed activity reply arrives"
-                );
+                tilo_test_env::wait_until("the delayed activity reply", || {
+                    controller.has_results()
+                });
                 controller.drain();
                 assert!(
                     controller.after.is_some(),
@@ -1318,11 +1308,10 @@ mod tests {
                 let calls = transport.calls.load(Ordering::SeqCst);
                 transport.revoked.store(true, Ordering::SeqCst);
                 controller.next_poll = crate::time::now();
-                let deadline = crate::time::now() + HANG_GUARD;
-                while controller.after.is_some() && crate::time::now() < deadline {
+                tilo_test_env::wait_until("the post-selection access refresh", || {
                     controller.drain();
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                    controller.after.is_none()
+                });
                 assert!(
                     transport.calls.load(Ordering::SeqCst) > calls,
                     "actual post-selection transport access refresh must run"

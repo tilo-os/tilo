@@ -1749,7 +1749,7 @@ mod tests {
 
             let (app_side, mut shell_side) = UnixStream::pair().unwrap();
             shell_side
-                .set_read_timeout(Some(crate::time::Duration::from_secs(1)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
             let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
@@ -1771,13 +1771,10 @@ mod tests {
             bytes.push(b'\n');
             shell_side.write_all(&bytes).unwrap();
             let mut received = Vec::new();
-            for _ in 0..100 {
+            tilo_test_env::wait_until("the inbound surface message", || {
                 received.extend(client.pump().unwrap());
-                if !received.is_empty() {
-                    break;
-                }
-                std::thread::yield_now();
-            }
+                !received.is_empty()
+            });
             assert_eq!(received, vec![inbound]);
         }
     }

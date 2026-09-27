@@ -403,7 +403,7 @@ mod tests {
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("read timeout");
         let packet = VideoPacket::read_from(&mut stream).expect("encoded video packet");
         assert_eq!((packet.width, packet.height), (320, 240));

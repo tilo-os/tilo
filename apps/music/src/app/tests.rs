@@ -444,13 +444,14 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
         "paused initialization needs ticks"
     );
 
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
         app.tick();
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         assert!(
             Instant::now() < deadline,
-            "paused decoder failed to preroll"
+            "paused decoder failed to preroll: {}",
+            app.audio.diagnostics()
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

@@ -29,7 +29,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_peer_relay_is_rejected() {
@@ -62,10 +62,10 @@ async fn cross_user_peer_relay_is_rejected() {
 
     // Bob's relay has seen the federation attempt and refused it.
     let bob_metrics = b_relay.relay.handle().metrics;
-    assert!(
-        wait_for(|| bob_metrics.snapshot().auth_rejected > 0, 1000).await,
-        "Bob's relay never refused Alice's peer-relay handshake"
-    );
+    wait_until("Bob's relay to refuse Alice's peer-relay handshake", || {
+        bob_metrics.snapshot().auth_rejected > 0
+    })
+    .await;
 
     // Alice's client publishes a delta on Alice's relay. If auth
     // had been bypassed, it would flow to Bob's relay and end up
@@ -82,7 +82,7 @@ async fn cross_user_peer_relay_is_rejected() {
     .await
     .unwrap();
     a.send(Envelope::Subscribe { workspace_id: 42 }).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a.recv()).await;
+    let _ = tokio::time::timeout(tilo_test_env::hang_bound(), a.recv()).await;
     a.send(Envelope::Delta {
         workspace_id: 42,
         author_device_public_key: a_client_dev.device_pubkey(),

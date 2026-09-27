@@ -21,6 +21,38 @@ pub(crate) const STORE_RECHECK: Duration = Duration::from_secs(2);
 /// Longest interval a restored committed peer is reused at one generation.
 const PEER_REUSE_NS: u64 = 30_000_000_000;
 
+/// The recheck interval in force: [`STORE_RECHECK`], or a test's longer one
+/// so reuse is observed however slow the runner's Store opens are.
+fn store_recheck() -> Duration {
+    #[cfg(test)]
+    if let Some(recheck) = TEST_STORE_RECHECK.with(std::cell::Cell::get) {
+        return recheck;
+    }
+    STORE_RECHECK
+}
+#[cfg(test)]
+std::thread_local! {
+    static TEST_STORE_RECHECK: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+/// Test only: a different recheck interval for the current thread, restored
+/// on drop.
+#[cfg(test)]
+pub(crate) struct TestStoreRecheck;
+#[cfg(test)]
+impl TestStoreRecheck {
+    pub(crate) fn set(recheck: Duration) -> Self {
+        TEST_STORE_RECHECK.with(|cell| cell.set(Some(recheck)));
+        Self
+    }
+}
+#[cfg(test)]
+impl Drop for TestStoreRecheck {
+    fn drop(&mut self) {
+        TEST_STORE_RECHECK.with(|cell| cell.set(None));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct FileStamp {
     dev: u64,
@@ -107,7 +139,7 @@ impl Verified {
     pub(crate) fn current(&self, root: &Path, now_ns: u64) -> bool {
         self.at_ns <= now_ns
             && now_ns < self.until_ns
-            && self.proved.elapsed() < STORE_RECHECK
+            && self.proved.elapsed() < store_recheck()
             && StoreStamp::of(root) == Some(self.stamp)
     }
 }
