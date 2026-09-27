@@ -161,7 +161,10 @@ fn tick(host: &mut ShellOverlayHost) {
               test's own task, never spawning it"
 )]
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         tick(host);
         if host.permission_prompt_mut_for_tests().is_some() {
             return;
@@ -184,7 +187,10 @@ async fn await_response(
     host: &mut ShellOverlayHost,
     handle: tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)>,
 ) -> (u32, HashMap<String, OwnedValue>) {
-    for _ in 0..1000 {
+    let deadline = std::time::Instant::now()
+        .checked_add(crate::support::HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         tick(host);
         if handle.is_finished() {
             return handle.await.expect("join");
@@ -324,7 +330,10 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
             let call = spawn_access(proxy);
 
             // Drop the queue's contents the way a compositor with no chrome does.
-            for _ in 0..1000 {
+            let deadline = std::time::Instant::now()
+                .checked_add(crate::support::HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if prompts.queued_len() > 0 {
                     break;
                 }
@@ -335,7 +344,10 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
                 drop(pending);
             }
 
-            for _ in 0..1000 {
+            let deadline = std::time::Instant::now()
+                .checked_add(crate::support::HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if call.is_finished() {
                     let (code, _) = call.await.expect("join");
                     assert_eq!(
@@ -351,3 +363,9 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
         Box::pin(phase()).await;
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

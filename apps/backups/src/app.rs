@@ -402,7 +402,7 @@ impl BackupsApp {
             doc,
             BACKUPS_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Backups", "Backups", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.backups", "Backups", &action),
         );
     }
 

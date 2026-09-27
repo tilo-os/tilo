@@ -1239,7 +1239,7 @@ mod tests {
 
             // Poll drain() until the worker delivers the decoded tile.
             let mut got = false;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 layer.drain();
                 if layer.get(id).is_some() {
@@ -1273,7 +1273,7 @@ mod tests {
             layer.request(id);
             assert!(t0.elapsed() < std::time::Duration::from_millis(20));
 
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline && layer.get(id).is_none() {
                 layer.drain();
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1354,7 +1354,7 @@ mod tests {
             assert!(queued > 1);
             assert!(layer.progress().is_active() || est == 0);
 
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 layer.drain();
                 if !layer.progress().is_active() && layer.progress().done >= queued {
@@ -1393,7 +1393,7 @@ mod tests {
             let queued = layer.start_download(bounds, z0, z1);
             assert_eq!(queued, ids.len() as u32);
 
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
                 layer.drain();
                 if !layer.progress().is_active() && layer.progress().done >= queued {
@@ -1438,7 +1438,7 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
             layer.request(id);
 
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline && layer.get(id).is_none() {
                 layer.drain();
                 std::thread::sleep(Duration::from_millis(5));
@@ -1518,7 +1518,7 @@ mod tests {
             assert!(layer.is_inflight(id), "first request should be in-flight");
 
             // Wait for the (fast) connection-refused failure to arrive via drain.
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline && layer.is_inflight(id) {
                 layer.drain();
                 std::thread::sleep(Duration::from_millis(5));

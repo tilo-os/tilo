@@ -20,19 +20,7 @@ impl ReleaseChannel {
 }
 
 pub fn compare(left: &str, right: &str) -> Ordering {
-    match (semver::Version::parse(left), semver::Version::parse(right)) {
-        (Ok(left), Ok(right)) => left.cmp_precedence(&right),
-        _ => numeric_key(left)
-            .cmp(&numeric_key(right))
-            .then_with(|| left.cmp(right)),
-    }
-}
-
-fn numeric_key(version: &str) -> Option<Vec<u64>> {
-    if let Ok(version) = semver::Version::parse(version) {
-        return Some(vec![version.major, version.minor, version.patch]);
-    }
-    version.split('.').map(|part| part.parse().ok()).collect()
+    registry_types::version::compare(left, right)
 }
 
 #[cfg(test)]

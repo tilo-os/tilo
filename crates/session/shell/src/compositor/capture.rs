@@ -1999,6 +1999,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
 
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
@@ -2297,9 +2301,15 @@ mod tests {
                 }
                 (strip.id, target_group, target_tab)
             };
-            tree.desktop.set_active_group(strip_id, 70_002);
+            // Keep the strip parked on the target group. The desktop eases its
+            // active group into view on a wall-clock animation, so naming the
+            // last group active here would let a slow run finish that ease
+            // before the explicit pan below and leave nothing to scroll.
+            tree.desktop.set_active_group(strip_id, target_group);
 
             let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+            let store = frame_builder.chrome().records().clone();
+            crate::shell::tab_documents::create_scratch_tab_record(&store, target_tab).unwrap();
             let _ = frame_builder.paint();
             let long_note = (1..=72)
                 .map(|line| {
@@ -2309,13 +2319,9 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let store = frame_builder.chrome().records().clone();
+            // The record was created explicitly above by its owning action; the
+            // painted host already holds it open, so bind and write through it.
             let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-            if !store.open_record(&checkout) {
-                store
-                    .create_record(&checkout)
-                    .expect("capture fixture creates its Notes record");
-            }
             frame_builder
                 .host_mut()
                 .group_at_for_tests(strip_id, 0)
@@ -2342,15 +2348,25 @@ mod tests {
                     .is_some_and(|group| group.complete_capture_rect().is_some()),
                 "long Notes document did not publish complete capture geometry"
             );
-            assert!(
-                frame_builder
-                    .host_mut()
-                    .group_row_mut_for_tests(strip_id)
-                    .expect("live strip row")
-                    .scroll_group_into_view(70_002),
-                "the last group must require scrolling"
-            );
+            // Focusing the last group already eases the strip toward it on
+            // the wall clock, so whether this jump still moves the strip
+            // depends on how long the frames above took. Jump to the end of
+            // that ease and check where the strip rests instead.
+            let _ = frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .scroll_group_into_view(70_002);
             frame_builder.relayout();
+            let onscreen = frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .onscreen_group_ids();
+            assert!(
+                onscreen.contains(&70_002) && !onscreen.contains(&target_group),
+                "the strip must rest on the last group with the target offscreen: {onscreen:?}"
+            );
             let clean_screen = frame_builder.paint();
             let target_group_ref = frame_builder
                 .host_mut()

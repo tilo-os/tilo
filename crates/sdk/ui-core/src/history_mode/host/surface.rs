@@ -2,8 +2,8 @@
 //! Live ownership/lifecycle traversal stays entirely with the runner.
 use super::{
     Affine, AutoCommit, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, ObjId, Point,
-    PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
-    WindowEvent,
+    PresenceCtx, PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer,
+    Theme, Widget, WindowEvent,
 };
 
 impl HistoryHost {
@@ -30,7 +30,7 @@ impl HistoryHost {
         self.live_node = None;
         self.unavailable_node = None;
         let mut body_children = vec![];
-        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
+        if self.show_timeline() && !self.timeline_available() {
             let message = self.unavailable.build_layout(tree, theme, nodes);
             self.unavailable_node = Some(message);
             body_children.push(message);
@@ -223,7 +223,7 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         self.toolbar.draw(scene, transform, text, theme, presence);
-        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
+        if self.show_timeline() && !self.timeline_available() {
             self.unavailable
                 .draw(scene, transform, text, theme, presence);
         } else if self.show_timeline() {
@@ -281,7 +281,7 @@ impl Widget for HistoryHost {
         }
         let mut children: Vec<&dyn Widget> = vec![&self.toolbar];
         if self.show_timeline() {
-            if self.controller.is_some() || self.files.is_some() {
+            if self.timeline_available() {
                 children.push(&self.timeline);
             } else {
                 children.push(&self.unavailable);
@@ -289,6 +289,31 @@ impl Widget for HistoryHost {
         }
         if self.show_preview() {
             children.push(self.canvas());
+        }
+        children
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let show_timeline = self.show_timeline();
+        let timeline_available = self.timeline_available();
+        let show_preview = self.show_preview();
+        let side = self.side;
+        if let Some(panel) = &mut self.review {
+            return vec![&mut panel.dialog];
+        }
+        let mut children: Vec<&mut dyn Widget> = vec![&mut self.toolbar];
+        if show_timeline {
+            if timeline_available {
+                children.push(&mut self.timeline);
+            } else {
+                children.push(&mut self.unavailable);
+            }
+        }
+        if show_preview {
+            children.push(if side == PreviewSide::Before {
+                &mut self.before
+            } else {
+                &mut self.after
+            });
         }
         children
     }

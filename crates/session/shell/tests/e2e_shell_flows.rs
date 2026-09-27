@@ -450,19 +450,19 @@ fn e2e_launch_failure_notifications_visual_review() {
         {
             let mut chrome = h.chrome.borrow_mut();
             chrome.push_notification_full(
-                shell::shell::notification::Notification::new(
+                tilo_desktop::notifications::Notification::new(
                     "Couldn't open LibreOffice Calc — profile initialization failed after a very long diagnostic suffix",
                     "The app stopped before opening. Open Applications and try again.",
                 )
-                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                 .with_app_name("Applications"),
             );
             chrome.push_notification_full(
-                shell::shell::notification::Notification::new(
+                tilo_desktop::notifications::Notification::new(
                     "Couldn't open Notes",
                     "The app launcher is unavailable. Open Applications and try again.",
                 )
-                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error)
                 .with_app_name("Applications"),
             );
         }
@@ -518,7 +518,8 @@ fn probe_topbar(
     chrome: shell::shell::chrome_state::Chrome,
     extract: impl FnOnce(&TopBarChrome) -> vello::kurbo::Rect,
 ) -> (vello::kurbo::Rect, Point) {
-    let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
+    let mut bar = TopBarChrome::from_tree(&tree.desktop)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome));
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, theme, &mut map);

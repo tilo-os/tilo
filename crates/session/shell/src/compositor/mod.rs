@@ -41,6 +41,7 @@ pub mod hosted_test_control;
 pub mod idle;
 #[cfg(target_os = "linux")]
 pub mod idle_inhibit;
+pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
@@ -59,6 +60,8 @@ pub mod output_heads;
 #[cfg(target_os = "linux")]
 pub mod output_management;
 pub mod pacing;
+#[cfg(target_os = "linux")]
+pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
 pub mod present;
@@ -80,6 +83,8 @@ pub mod switch_control;
 pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;
+#[cfg(target_os = "linux")]
+pub mod tablet_pad;
 #[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]

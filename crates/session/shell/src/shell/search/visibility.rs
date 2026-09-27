@@ -76,8 +76,9 @@ pub fn required_capability(
             )
         }),
 
-        // Unclassified: treat as an act, fail closed.
-        ResourceKind::Custom(_) => Some((
+        // Window actions and unclassified results: treat as an act, fail
+        // closed.
+        ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
@@ -130,6 +131,12 @@ impl ActionVisibility for CapabilityVisibility<'_> {
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,8 +179,6 @@ mod tests {
                 "projection.open",
                 "collaborators.open",
                 "room.activity.open",
-                "peer.invite",
-                "peer.connect",
             ] {
                 assert_eq!(
                     required_capability(&resource("actions", id), &ResourceKind::Action),
@@ -219,7 +224,12 @@ mod tests {
                 assert_eq!(verb, Verb::Write, "{id}");
             }
 
-            for id in ["peer.invite.named", "agent.invite"] {
+            for id in [
+                "peer.invite",
+                "peer.invite.named",
+                "peer.connect",
+                "agent.invite",
+            ] {
                 let (_, verb) =
                     required_capability(&resource("actions", id), &ResourceKind::Action)
                         .unwrap_or_else(|| panic!("{id} must be gated"));
@@ -339,10 +349,7 @@ mod tests {
                 "granting Write must make the act visible"
             );
             assert!(
-                !granted_view.can_see(
-                    &resource("actions", "peer.invite.named"),
-                    &ResourceKind::Action
-                ),
+                !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
                 "Write must not confer Invite"
             );
         }

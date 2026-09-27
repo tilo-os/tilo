@@ -3809,7 +3809,7 @@ mod tests {
                 app.desktop_flow.state(),
                 DesktopFlowState::Ready(_)
             ));
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if app
@@ -3838,7 +3838,7 @@ mod tests {
                 .unwrap();
 
             app.apply_command(SetupCommand::ReleaseInternalDownload);
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if app
@@ -3939,7 +3939,7 @@ mod tests {
             app.apply_command(SetupCommand::Next);
 
             app.apply_command(SetupCommand::StartInternalDownload);
-            blocked_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
             let requests = server.requests().len();
             app.apply_command(SetupCommand::StartInternalDownload);
             let duplicate_status = app.status.clone();
@@ -3953,7 +3953,7 @@ mod tests {
                 "A Full Tilo download cannot start in its current state."
             );
             assert_eq!(requests_after, requests);
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if app
@@ -4673,7 +4673,7 @@ mod tests {
                 .unwrap();
             invoke_encoded_setup(&mut app, &next).unwrap();
 
-            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let observed = loop {
                 Widget::update(&mut app, &mut state, &automerge::ROOT);
                 let resource = Widget::resources(&app, &state).pop().unwrap();
@@ -5155,11 +5155,15 @@ mod tests {
                 .clone();
             let remove_a = match &remove_a.input {
                 tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("remove must be immediate"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("remove must be immediate")
+                }
             };
             let set_b = match &set_b.input {
                 tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
-                tilo_actions::ActionInput::Immediate(_) => {
+                tilo_actions::ActionInput::Immediate(_)
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("set-mode must prompt for one mode")
                 }
             };
@@ -5535,15 +5539,10 @@ mod tests {
     }
 
     fn wait_for_app(app: &mut SetupApp, what: &str, done: impl Fn(&SetupApp) -> bool) {
-        let deadline = Instant::now() + crate::HANG_BOUND;
-        loop {
+        tilo_test_env::wait_until(what, || {
             app.poll_background();
-            if done(app) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+            done(app)
+        });
     }
 
     /// Probe gate, staging, stale digests, blockers, resume cards and shot fixtures.

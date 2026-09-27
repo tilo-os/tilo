@@ -50,6 +50,7 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
 
 [features]

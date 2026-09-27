@@ -30,7 +30,7 @@ use crate::render_chat::draw_avatar;
 /// membership (not hardcoded). The host (this peer) is listed first.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool mirrors a distinct CRDT voice-membership field (talking/muted/audio_only/sharing) read straight off the shared state — grouping them would just relocate the boolean soup, not remove it"
+    reason = "independent presentation facets; only native service inventory supplies current remote streams"
 )]
 struct Participant {
     user: String,
@@ -206,15 +206,15 @@ impl ChatApp {
         }
     }
 
-    /// The call roster, host-first, from the shared voice membership. Falls
-    /// back to "just me" if the channel has no recorded members yet.
+    /// The local listening panel followed by authenticated remote audio streams.
+    /// This is not a complete participant or listener roster.
     fn call_participants(&self) -> Vec<Participant> {
         let members: &[VoiceMember] = self.voice_in(&self.call.channel);
         let mut out: Vec<Participant> = Vec::new();
         // Host = this peer.
         out.push(Participant {
             user: self.me.id.clone(),
-            talking: !self.call.muted,
+            talking: false,
             muted: self.call.muted,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
@@ -225,7 +225,7 @@ impl ChatApp {
             }
             out.push(Participant {
                 user: m.user.clone(),
-                talking: m.talking && !m.muted,
+                talking: false,
                 muted: m.muted,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
@@ -421,7 +421,7 @@ impl ChatApp {
         let panel = self.huddle_panel();
         let v = self.huddle_video();
         // Active-speaker ring around the host tile when this peer is talking.
-        let host_talking = !self.call.muted;
+        let host_talking = false;
         if host_talking {
             stroke_round(scene, tf, v, 10.0, c.semantic.success, 2.5);
         } else {
@@ -475,7 +475,7 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(
+            Self::draw_huddle_chips(
                 PaintContext::new(scene, tf, tr, theme),
                 panel,
                 strip_y,
@@ -510,16 +510,22 @@ impl ChatApp {
         } else {
             "▸"
         };
-        // Surface the real media routing decision (P2P vs host relay), chosen
-        // from the live headcount — the call promotes as people join.
+        // Verified publication inventory is a stream list, not a person or listener roster.
         label(
             scene,
             tr,
             tf,
             &format!(
-                "{caret} {} in call · {}",
-                parts.len(),
-                self.call_session().label()
+                "{caret} {} audio streams · {}",
+                self.native_voice.snapshot.publishers.len()
+                    + usize::from(self.native_voice.snapshot.publication.is_some()),
+                match self.native_voice.snapshot.state {
+                    ui::native_media::State::Live => "Connected",
+                    ui::native_media::State::Reconnecting => "Reconnecting",
+                    ui::native_media::State::Preparing | ui::native_media::State::Joining =>
+                        "Joining",
+                    _ => "Unavailable",
+                }
             ),
             11.0,
             c.text_dim,
@@ -539,7 +545,6 @@ impl ChatApp {
     /// Adaptive participant chips beneath the strip header — one per
     /// non-host member, wrapping to the panel width.
     fn draw_huddle_chips(
-        &self,
         paint: PaintContext<'_>,
         panel: Rect,
         strip_y: f64,
@@ -557,7 +562,7 @@ impl ChatApp {
         let step = 2.0 * radius + 12.0;
         let per_row = ((panel.width() - 28.0) / step).floor().max(1.0) as usize;
         for (idx, p) in parts.iter().skip(1).enumerate() {
-            if let Some(u) = self.user(&p.user) {
+            {
                 let col = idx % per_row;
                 let row = idx / per_row;
                 let cc = Point::new(
@@ -572,8 +577,8 @@ impl ChatApp {
                     PaintContext::new(scene, tf, tr, theme),
                     cc,
                     radius,
-                    &u.initials,
-                    u.color_idx,
+                    "♫",
+                    0,
                     None,
                 );
                 if p.muted {
@@ -615,7 +620,6 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
-        let deaf = self.call.deafened;
         let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
             (
                 if muted { "Unmute" } else { "Mute" },
@@ -624,18 +628,11 @@ impl ChatApp {
                 false,
                 Hit::CallMute,
             ),
-            (
-                if deaf { "Undeafen" } else { "Deafen" },
-                if deaf { "🔕" } else { "🎧" },
-                deaf,
-                false,
-                Hit::CallDeafen,
-            ),
             ("Expand", "⤢", false, false, Hit::CallExpand),
             ("Leave", "✕", false, true, Hit::CallLeave),
         ];
         if panel.width() < 300.0 {
-            ctrls.remove(2); // trim Expand on a cramped panel
+            ctrls.remove(1); // trim Expand on a cramped panel
         }
         let n = ctrls.len() as f64;
         let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
@@ -786,9 +783,9 @@ impl ChatApp {
         let radius = 16.0;
 
         // A real decoded screen frame from the sharer takes over the tile. This
-        // slot is only ever filled by the live media pump with a genuinely
-        // decoded frame, so when present it is an honest live view of the shared
-        // screen; otherwise we fall through to the drawn placeholder.
+        // slot only ever holds a genuinely decoded frame (the native voice path
+        // carries no video today, so it stays empty); otherwise we fall
+        // through to the drawn placeholder.
         if let Some(img) = self.remote_screens.get(sharer) {
             fill_round(scene, tf, rect, radius, Color::from_rgba8(0, 0, 0, 255));
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
@@ -1055,7 +1052,7 @@ impl ChatApp {
     /// (which sizes buttons from these labels) and the pre-paint measurement
     /// (which measures exactly these labels), so a toggled label — Mute →
     /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 5] {
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 3] {
         let t = crate::i18n::t;
         [
             (
@@ -1068,24 +1065,6 @@ impl ChatApp {
                 false,
                 self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallMute,
-            ),
-            (
-                t(if self.call.deafened {
-                    "chat-call-undeafen"
-                } else {
-                    "chat-call-deafen"
-                }),
-                self.call.deafened,
-                false,
-                self.call_allows(crate::call::CallAction::Speak),
-                Hit::CallDeafen,
-            ),
-            (
-                t("chat-call-audio-only"),
-                self.call.audio_only,
-                false,
-                self.call_allows(crate::call::CallAction::Camera),
-                Hit::CallAudioOnly,
             ),
             (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
             (t("chat-call-leave"), false, true, true, Hit::CallLeave),
@@ -1194,12 +1173,36 @@ impl ChatApp {
         p: &Participant,
     ) {
         let c = &theme.tokens.colors;
+        if self
+            .native_voice
+            .snapshot
+            .publishers
+            .iter()
+            .any(|namespace| namespace == &p.user)
+        {
+            fill_round(scene, tf, rect, 14.0, c.neutral[2]);
+            let caption = "Audio stream";
+            let (width, height) = tr.measure(caption, 11.5, None);
+            label(
+                scene,
+                tr,
+                tf,
+                caption,
+                11.5,
+                c.text_dim,
+                rect.center().x - f64::from(width) / 2.0,
+                rect.center().y - f64::from(height) / 2.0,
+            );
+            Self::name_plate(scene, tf, tr, theme, rect, &self.user_name(&p.user), false);
+            stroke_round(scene, tf, rect, 14.0, c.neutral[3], 1.0);
+            return;
+        }
         let u = self.user(&p.user);
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         // A real decoded camera/screen frame from this peer takes over the tile.
-        // This is only ever populated by the live media pump with a genuinely
-        // decoded frame — never a fabricated picture — so when present it is an
-        // honest live feed; otherwise we fall through to the avatar placeholder.
+        // This only ever holds a genuinely decoded frame — never a fabricated
+        // picture (the native voice path carries no video today, so it stays
+        // empty); otherwise we fall through to the avatar placeholder.
         if let Some(img) = self.remote_frames.get(&p.user) {
             ui::image_store::paint_image_cover(scene, tf, rect, img, 14.0);
             if p.talking {
@@ -1424,7 +1427,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let catalogue = emoji::Catalogue::english();
+        let catalogue = crate::i18n::emoji_catalogue();
         // full-window dismiss scrim (lowest priority)
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 

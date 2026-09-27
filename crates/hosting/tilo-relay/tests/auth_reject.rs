@@ -19,6 +19,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use tilo_relay::RelayClient;
 use tilo_user_identity::{
@@ -42,12 +46,12 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let bob_intruder = bob.enrol("stranger-laptop", DeviceCapabilities::primary());
 
         // Alice's relay, membership Alice's laptop.
-        let relay = spawn_relay(
+        let relay = Box::pin(spawn_relay(
             &alice,
             alice_relay_dev,
             &[1],
             &[alice_ws_member.device_pubkey()],
-        )
+        ))
         .await;
         let relay_addr = relay.relay.node_addr();
 
@@ -168,9 +172,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         client
             .send(tilo_relay::Envelope::Subscribe { workspace_id: 33 })
             .unwrap();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.recv())
-            .await
-            .unwrap();
+        let _ = tilo_test_env::within("a message on client", client.recv()).await;
 
         let mut entry = RevocationEntry {
             user_public_key: user.user_pk,
@@ -182,9 +184,10 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
         tilo_relay::store::save_revocations(state.path(), &[entry]).unwrap();
 
-        assert!(matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(4), client.recv()).await,
-            Ok(None)
-        ));
+        assert!(
+            tilo_test_env::within("client to close", client.recv())
+                .await
+                .is_none()
+        );
     }
 }

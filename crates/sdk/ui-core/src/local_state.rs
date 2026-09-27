@@ -4,6 +4,7 @@
 //! handle is for presentation state that should survive between widget events
 //! without becoming part of persistence, collaboration, or undo history.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -364,6 +365,7 @@ impl<T: Send + 'static> LatestRequest<T> {
     ///
     /// Returns `false` without spawning when the owner is closed or the
     /// generation namespace is exhausted (see [`Self::try_begin`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = T> + Send + 'static,
@@ -464,6 +466,7 @@ impl<T> LatestTask<T> {
     /// discarded if it finishes anyway.
     ///
     /// Returns `false` without spawning when [`Self::try_begin`] refuses.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn<F>(&self, running: T, future: F) -> bool
     where
         T: Send + Sync + 'static,
@@ -1050,8 +1053,6 @@ mod tests {
 
         // Case `authorized_update_can_finish_after_nonblocking_close`.
         {
-            use crate::time::Duration;
-
             let (mut scope, rx) = bound_scope();
             let state = {
                 let _entry = scope.enter();
@@ -1063,12 +1064,12 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 writer.try_update(|value| {
                     entered_tx.send(()).unwrap();
-                    resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    tilo_test_env::recv("the resume signal", &resume_rx);
                     *value = 2;
                 })
             });
-            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            // If close waits for the mutation callback, its 5s timeout fails the test.
+            tilo_test_env::recv("the mutation callback to start", &entered_rx);
+            // If close waits for the mutation callback, the hang-bounded wait fails the test.
             scope.close();
             let replacement_scope = WakeScope::new();
             let replacement = {

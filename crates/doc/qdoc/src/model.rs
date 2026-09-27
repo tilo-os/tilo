@@ -33,6 +33,8 @@ mod bulk;
 #[cfg(any(test, feature = "bulk-instrumentation"))]
 #[doc(hidden)]
 pub use bulk::{change_writes, op_by_op};
+#[cfg(test)]
+thread_local! { static MARK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
@@ -687,6 +689,28 @@ fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId>
     }
 }
 
+/// A region block's `(container, block)` objects.
+fn region_block(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: Region,
+    id: &str,
+) -> Option<(ObjId, ObjId)> {
+    let container = region_obj(doc, c, region)?;
+    let obj = block_obj(doc, &container, id)?;
+    Some((container, obj))
+}
+
+/// The block object of `id` in `region`.
+pub fn region_block_obj(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: Region,
+    id: &str,
+) -> Option<ObjId> {
+    region_block(doc, c, region, id).map(|(_, obj)| obj)
+}
+
 /// The length in characters of block `id`'s text in `region`, or `None` when `id` is not a block
 /// of that region as a snapshot would show it (a map carrying a byte order key). A block without a
 /// text object has length 0. A point lookup: nothing else in the document is read, so an editor can
@@ -697,8 +721,7 @@ pub fn region_block_len(
     region: Region,
     id: &str,
 ) -> Option<usize> {
-    let container = region_obj(doc, c, region)?;
-    let block = block_obj(doc, &container, id)?;
+    let block = region_block_obj(doc, c, region, id)?;
     match doc.get(&block, BLOCK_ORDER) {
         Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
         _ => return None,
@@ -1607,14 +1630,45 @@ pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
 
 pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
-    match doc.get(&obj, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
+    block_text_on(doc, &obj)
+}
+
+// ---- paragraph text storage ------------------------------------------------
+//
+// A block's `text` is one Automerge `Text` object: a character-level sequence
+// CRDT whose inline formatting lives as marks on it, so concurrent edits in one
+// paragraph merge per character. Every block constructor below creates that
+// object in the same change as the block itself.
+
+/// The Text object of a block, when it has one.
+fn canonical_text(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
+    match doc.get(block_obj, BLOCK_TEXT) {
+        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
         _ => None,
     }
 }
 
+/// The characters a block shows. `None` when the block stores no text.
+pub fn block_text_on(doc: &AutoCommit, block_obj: &ObjId) -> Option<String> {
+    doc.text(&canonical_text(doc, block_obj)?).ok()
+}
+
+/// Resolve the block's Text object for a write, creating it when missing.
+pub fn ensure_block_text(doc: &mut AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
+    if let Some(id) = canonical_text(doc, block_obj) {
+        return Some(id);
+    }
+    doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text).ok()
+}
+
+/// Create a new block's (empty) Text object in the same change as the block,
+/// so concurrent first edits on other replicas address one shared sequence.
+fn create_block_text(doc: &mut AutoCommit, block_obj: &ObjId) {
+    let _ = doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text);
+}
+
 fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
-    let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(block_obj, BLOCK_TEXT) else {
+    let Some(tid) = canonical_text(doc, block_obj) else {
         return vec![];
     };
     text_and_marks(doc, &tid).1
@@ -1627,6 +1681,8 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
 /// replicas that merged in different orders produce byte-identical materializations (the mark *set*
 /// is order-independent); value is part of the key so concurrent valued marks sort deterministically.
 fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
+    #[cfg(test)]
+    MARK_READS.with(|count| count.set(count.get().saturating_add(1)));
     let Ok(spans) = doc.spans(tid) else {
         return (String::new(), Vec::new());
     };
@@ -2070,8 +2126,11 @@ impl DocMut<'_> {
     }
 
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
-    /// `container`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n) rescan.
-    fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
+    /// `container`, for block `id`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n)
+    /// rescan. The key is salted by `id`, so two replicas placing blocks in one gap at once give them distinct
+    /// keys, and a later block still fits between them.
+    fn order_after_in(&mut self, container: &ObjId, after: Option<&str>, id: &str) -> Vec<u8> {
+        let salt = order_salt(id);
         // An action's insert after a known block needs only that block's
         // successor. Finding it reads each block's order key once; building
         // the index sorts them all, and an action's generator lives for one
@@ -2080,7 +2139,7 @@ impl DocMut<'_> {
         if self.ids.action.is_some()
             && !self.bulk_active()
             && !self.ids.order.by_container.contains_key(container)
-            && let Some((key, hi)) = self.order_after_scanning(container, after)
+            && let Some((key, hi)) = self.order_after_scanning(container, after, salt)
         {
             self.ids.placing = Some((container.clone(), key.clone(), hi));
             return key;
@@ -2113,7 +2172,7 @@ impl DocMut<'_> {
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
             },
         };
-        tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
+        tilo_resource::order::bytes::between_salted(lo.as_deref(), hi.as_deref(), salt)
     }
 
     /// The key for a block inserted after `after` in `container`, and the
@@ -2125,15 +2184,16 @@ impl DocMut<'_> {
         &self,
         container: &ObjId,
         after: Option<&str>,
+        salt: u16,
     ) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
-        use tilo_resource::order::bytes::{between, cmp};
+        use tilo_resource::order::bytes::{between_salted, cmp};
         let after = after?;
         if let Some(run) = &self.ids.run
             && &run.container == container
             && run.last == after
         {
             let hi = run.hi.clone();
-            return Some((between(Some(&run.key), hi.as_deref()), hi));
+            return Some((between_salted(Some(&run.key), hi.as_deref(), salt), hi));
         }
         let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -2163,12 +2223,12 @@ impl DocMut<'_> {
             }
         }
         let hi = next.map(|(key, _)| key);
-        Some((between(Some(&after_key), hi.as_deref()), hi))
+        Some((between_salted(Some(&after_key), hi.as_deref(), salt), hi))
     }
 
-    fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {
+    fn order_after(&mut self, after: Option<&str>, id: &str) -> Vec<u8> {
         let container = self.c.blocks.clone();
-        self.order_after_in(&container, after)
+        self.order_after_in(&container, after, id)
     }
 
     /// Build the order index for `container` on first use (one O(n log n) scan), then keep it incrementally.
@@ -2228,8 +2288,8 @@ impl DocMut<'_> {
         if self.bulk_active() {
             return self.stage_block(container, after, kind);
         }
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2241,6 +2301,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         id
     }
@@ -2280,8 +2341,9 @@ impl DocMut<'_> {
         else {
             return self.insert_block_in(region, Some(after), kind);
         };
-        let key = tilo_resource::order::bytes::between(Some(&low), Some(&high));
         let id = self.ids.mint();
+        let key =
+            tilo_resource::order::bytes::between_salted(Some(&low), Some(&high), order_salt(&id));
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2366,13 +2428,34 @@ impl DocMut<'_> {
         let Some(value) = self.stage_attr(&container, block_id, key, value.into()) else {
             return;
         };
-        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+        let Some((_, obj)) = region_block(self.doc, self.c, region, block_id) else {
             return;
         };
         let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
             return;
         };
         let _ = self.doc.put(&attrs, key, value);
+    }
+
+    /// Remove a block attribute in `region` (a list item that stops being a
+    /// task, a code line that becomes prose). Absent is the attribute's
+    /// default, so readers need no tombstone value.
+    pub fn remove_attr_in(&mut self, region: Region, block_id: &str, key: &str) {
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        if self.unstage_attr(&container, block_id, key) {
+            return;
+        }
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
+        };
+        if matches!(self.doc.get(&attrs, key), Ok(Some(_))) {
+            let _ = self.doc.delete(&attrs, key);
+        }
     }
 
     /// Insert a page-number field at `idx` in a region block: splices the
@@ -2467,8 +2550,8 @@ impl DocMut<'_> {
         if self.bulk_active() {
             return Some(self.stage_block(container, after, kind));
         }
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2480,6 +2563,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2488,14 +2572,7 @@ impl DocMut<'_> {
     fn note_text_obj(&mut self, note_id: &str, block_id: &str) -> Option<ObjId> {
         let container = self.note_blocks_container(note_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into a note's block.
@@ -2662,8 +2739,8 @@ impl DocMut<'_> {
         kind: &str,
     ) -> Option<String> {
         let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2673,6 +2750,7 @@ impl DocMut<'_> {
             .ok()?;
         self.doc.put(&obj, BLOCK_KIND, kind).ok()?;
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).ok()?;
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2685,10 +2763,7 @@ impl DocMut<'_> {
     ) -> Option<ObjId> {
         let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
-            _ => self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok(),
-        }
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into one reply block.
@@ -2744,8 +2819,8 @@ impl DocMut<'_> {
         kind: &str,
     ) -> Option<String> {
         let container = self.comment_blocks_container(comment_id)?;
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2757,6 +2832,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2765,14 +2841,7 @@ impl DocMut<'_> {
     fn comment_text_obj(&mut self, comment_id: &str, block_id: &str) -> Option<ObjId> {
         let container = self.comment_blocks_container(comment_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into a comment's block.
@@ -3002,16 +3071,8 @@ impl DocMut<'_> {
 
     /// Resolve-or-create the Text object of a region block.
     fn region_text_obj(&mut self, region: Region, block_id: &str) -> Option<ObjId> {
-        let container = region_obj(self.doc, self.c, region)?;
-        let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        let (_, obj) = region_block(self.doc, self.c, region, block_id)?;
+        ensure_block_text(self.doc, &obj)
     }
 
     pub fn remove_block(&mut self, id: &str) {
@@ -3032,7 +3093,9 @@ impl DocMut<'_> {
             return;
         }
         self.flush_bulk();
-        let Some(container) = region_obj(self.doc, self.c, region) else {
+        // The block may live in a concurrently created candidate container
+        // (see "conflicting region containers").
+        let Some((container, _)) = region_block(self.doc, self.c, region, id) else {
             return;
         };
         let _ = self.doc.delete(&container, id);
@@ -3060,7 +3123,7 @@ impl DocMut<'_> {
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
         self.flush_bulk();
         // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
-        let key = self.order_after(after);
+        let key = self.order_after(after, id);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
             self.doc
                 .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
@@ -3072,14 +3135,7 @@ impl DocMut<'_> {
 
     fn text_obj(&mut self, block_id: &str) -> Option<ObjId> {
         let obj = block_obj(self.doc, &self.c.blocks, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     pub fn splice_text(&mut self, block_id: &str, idx: usize, del: isize, ins: &str) {
@@ -3232,9 +3288,7 @@ impl DocMut<'_> {
             return;
         }
         self.flush_bulk();
-        if let Some(container) = region_obj(self.doc, self.c, region)
-            && let Some(obj) = block_obj(self.doc, &container, block_id)
-        {
+        if let Some(obj) = region_block_obj(self.doc, self.c, region, block_id) {
             let _ = self.doc.put(&obj, BLOCK_KIND, kind);
         }
     }
@@ -3359,6 +3413,178 @@ impl DocMut<'_> {
         self.doc
             .put(&self.c.preserved, key, ScalarValue::Str(hash.into()))
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod snapshot_anchor_tests {
+    use super::*;
+    use crate::snapshot::ChangeKind;
+
+    #[test]
+    fn snapshot_reads_body_marks_once_even_without_annotations() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        let first = dm.insert_block(None, "paragraph");
+        dm.splice_text(&first, 0, 0, "Aé🦀e\u{301}");
+        let second = dm.insert_block(Some(&first), "heading");
+        dm.splice_text(&second, 0, 0, "Second block");
+        MARK_READS.with(|count| count.set(0));
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.blocks.len(), 2);
+        assert_eq!(
+            MARK_READS.with(std::cell::Cell::get),
+            2,
+            "the bookmark projection must reuse marks already read for the body"
+        );
+    }
+
+    #[test]
+    fn snapshot_anchors_match_standalone_readers_after_merge_and_pending_edits() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let first;
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            first = dm.insert_block(None, "paragraph");
+            dm.splice_text(&first, 0, 0, "Aé🦀e\u{301} first text");
+            let second = dm.insert_block(Some(&first), "heading");
+            dm.splice_text(&second, 0, 0, "Second block");
+            let comment = dm.add_comment(&second, 1, 4, "Ada", "Comment body");
+            dm.add_comment_mark(&first, 1, 4, &comment);
+            let insertion = dm.insert_change(ChangeKind::Ins, "Ada", "today");
+            dm.add_change_mark(ChangeKind::Ins, &second, 1, 3, &insertion);
+            dm.add_change_mark(ChangeKind::Ins, &first, 2, 4, &insertion);
+            let deletion = dm.insert_change(ChangeKind::Del, "Bob", "today");
+            dm.add_change_mark(ChangeKind::Del, &first, 5, 7, &deletion);
+            dm.insert_comment("Unanchored", "today");
+            dm.insert_change(ChangeKind::Ins, "Unanchored", "today");
+            dm.add_bookmark(&first, 0, 1, "same-name");
+            dm.add_bookmark(&second, 0, 2, "same-name");
+        }
+        doc.commit();
+        let mut remote = doc.fork();
+        remote.set_actor(automerge::ActorId::from(vec![97]));
+        let mut remote_ids = IdGen::new(remote.get_actor().to_hex_string());
+        DocMut {
+            doc: &mut remote,
+            c: &c,
+            ids: &mut remote_ids,
+        }
+        .add_bookmark(&first, 8, 10, "remote");
+        remote.commit();
+        doc.merge_incoming(&mut remote).unwrap();
+        DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        }
+        .splice_text(&first, 0, 0, "pending ");
+        let pending = doc.pending_ops();
+        let heads = doc.base_heads();
+        MARK_READS.with(|count| count.set(0));
+        let snap = materialize(&doc, &c);
+        assert_eq!(
+            MARK_READS.with(std::cell::Cell::get),
+            3,
+            "two body blocks and one comment body are each read once"
+        );
+        assert_eq!(snap.comments, materialize_comments(&doc, &c));
+        assert_eq!(snap.changes, materialize_changes(&doc, &c));
+        assert_eq!(snap.bookmarks, bookmarks(&doc, &c));
+        assert_eq!(doc.pending_ops(), pending);
+        assert_eq!(doc.base_heads(), heads);
+        assert!(snap.comments.iter().any(|comment| comment.range.is_none()));
+        assert!(snap.changes.iter().any(|change| change.range.is_none()));
+        assert_eq!(
+            snap.bookmarks
+                .iter()
+                .filter(|bookmark| bookmark.name == "same-name")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn snapshot_anchors_preserve_top_level_scope_and_malformed_change_kind() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (body, comment, change);
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            body = dm.insert_block(None, "paragraph");
+            dm.splice_text(&body, 0, 0, "body");
+            comment = dm.insert_comment("Ada", "today");
+            change = dm.insert_change(ChangeKind::Ins, "Ada", "today");
+            dm.add_change_mark(ChangeKind::Ins, &body, 0, 2, &change);
+            dm.add_mark(&body, 2, 4, MARK_BOOKMARK, true);
+            let header = dm.insert_block_in(Region::Header, None, "paragraph");
+            dm.splice_text_in(Region::Header, &header, 0, 0, "header");
+            dm.add_mark_in(
+                Region::Header,
+                &header,
+                0,
+                2,
+                MARK_COMMENT,
+                comment.as_str(),
+            );
+            dm.add_mark_in(Region::Header, &header, 0, 2, MARK_BOOKMARK, "header-only");
+        }
+        let parent = block_obj(&doc, &c.blocks, &body).unwrap();
+        let children = doc
+            .put_object(&parent, BLOCK_CHILDREN, ObjType::Map)
+            .unwrap();
+        let child = doc.put_object(&children, "child", ObjType::Map).unwrap();
+        doc.put(&child, BLOCK_KIND, "paragraph").unwrap();
+        doc.put(&child, BLOCK_ORDER, ScalarValue::Bytes(vec![128]))
+            .unwrap();
+        let text = doc.put_object(&child, BLOCK_TEXT, ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "child").unwrap();
+        doc.mark(
+            &text,
+            Mark::new(MARK_COMMENT.into(), comment.as_str(), 0, 2),
+            ExpandMark::After,
+        )
+        .unwrap();
+        doc.mark(
+            &text,
+            Mark::new(MARK_BOOKMARK.into(), "child-only", 0, 2),
+            ExpandMark::After,
+        )
+        .unwrap();
+        let change_obj = change_obj(&doc, &c, &change).unwrap();
+        doc.delete(&change_obj, CHANGE_KIND).unwrap();
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.comments, materialize_comments(&doc, &c));
+        assert_eq!(snap.changes, materialize_changes(&doc, &c));
+        assert_eq!(snap.bookmarks, bookmarks(&doc, &c));
+        assert!(snap.comments[0].range.is_none());
+        assert!(snap.changes[0].range.is_none());
+        assert!(snap.bookmarks.is_empty());
+        assert!(
+            !snap.blocks[0].children[0].marks.is_empty(),
+            "nested marks are still rendered"
+        );
+        assert!(
+            !snap.header[0].marks.is_empty(),
+            "header marks are still rendered"
+        );
     }
 }
 
@@ -4722,4 +4948,13 @@ mod preserved_tests {
         let _ = a.merge(&mut b);
         AutoCommit::load(&a.save()).unwrap()
     }
+}
+
+/// The salt a block's order key takes from its id: FNV-1a, folded to 16 bits.
+fn order_salt(id: &str) -> u16 {
+    let hash = id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let [a, b, c, d] = hash.to_le_bytes();
+    u16::from_le_bytes([a ^ c, b ^ d])
 }

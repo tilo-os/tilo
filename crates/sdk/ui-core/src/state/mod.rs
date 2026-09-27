@@ -398,6 +398,11 @@ impl UndoLog {
         self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
     }
 
+    /// Observe the recorded committed frontier without closing pending work.
+    pub(crate) fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
+        owned_restore::same_frontier(&self.last_heads, &doc.base_heads())
+    }
+
     /// As [`Self::record_committed_action`], naming who performed it — for a
     /// change that reached this document from *outside* the window (an agent,
     /// or a collaborator's own published operation), applied under the
@@ -2534,6 +2539,37 @@ mod tests {
                 state.can_undo_as(Some(&a)),
                 "the restore itself is undoable"
             );
+        }
+    }
+
+    #[test]
+    fn undo_of_one_mark_over_several_texts_clears_it_from_each() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut state = State::new();
+        let texts: Vec<ObjId> = ["Background", "Method", "Results"]
+            .into_iter()
+            .map(|word| {
+                let text = state.doc.put_object(ROOT, word, ObjType::Text).unwrap();
+                state.doc.splice_text(&text, 0, 0, word).unwrap();
+                text
+            })
+            .collect();
+        state.commit_action(None, None);
+        for text in &texts {
+            let end = state.doc.length(text);
+            state
+                .doc
+                .mark(
+                    text,
+                    Mark::new("bold".into(), true, 0, end),
+                    ExpandMark::After,
+                )
+                .unwrap();
+        }
+        state.commit_action(None, None);
+        state.undo(None, None).unwrap();
+        for text in &texts {
+            assert_eq!(state.doc.marks(text).unwrap(), [], "{text}");
         }
     }
 

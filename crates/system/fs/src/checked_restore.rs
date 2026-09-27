@@ -1116,7 +1116,7 @@ fn test_pause(id: uuid::Uuid, point: TestPause) {
     if let Some(gate) = gate {
         gate.entered.send(()).unwrap();
         gate.resume
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
     }
 }

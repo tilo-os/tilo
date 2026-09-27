@@ -21,6 +21,7 @@ on:
       - os/dev/complete-initramfs-rebind.py
       - os/dev/installed_material_audit.py
       - os/dev/rebind-development-rootfs.py
+      - os/usr/lib/dracut/modules.d/91tilo-rollback/**
       - os/tests/test_rebind_development_rootfs.py
       - os/tests/test_initramfs_trust.py
       - os/tests/initramfs_trust_native.py
@@ -36,6 +37,7 @@ on:
       - os/dev/audit-rootfs-layers.py
       - os/tests/test_rootfs_layer_audit.py
       - os/tests/development_layer_audit_native.py
+      - os/tests/development_rebind_native.py
       - os/tests/test_development_boot.py
       - os/tests/test_development_source.py
       - os/dev/development-trust.py
@@ -77,7 +79,7 @@ jobs:
           - arch: aarch64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -109,6 +111,9 @@ jobs:
           cp os/tests/{test_wpe_stage_artifact.py,development_wpe_artifact_native.py} "$context/"
           cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
           cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py} "$context/"
+          cp os/tests/development_rebind_native.py "$context/"
+          mkdir -p "$context/91tilo-rollback"
+          cp -a os/usr/lib/dracut/modules.d/91tilo-rollback/. "$context/91tilo-rollback/"
           cp "$(command -v cosign)" "$context/cosign"
           RUSTC_WRAPPER= cargo build --locked --release -p tilo-crypto
           cp target/release/tilo-crypto "$context/tilo-crypto"
@@ -123,10 +128,10 @@ jobs:
                 "$image" /fixture/os/tests/development_prediction_native.py ;;
             retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -uc 'status=0; for fixture in test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
+                "$image" -uc 'status=0; for fixture in test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py development_rebind_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
             prediction-retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -uc 'status=0; for fixture in development_prediction_native.py test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
+                "$image" -uc 'status=0; for fixture in development_prediction_native.py test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py development_rebind_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
             wpe-artifact)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
                 "$image" -euc 'python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_wpe_stage_artifact.py; python3 -O /fixture/os/tests/test_wpe_stage_artifact.py; python3 /fixture/os/tests/development_wpe_artifact_native.py' ;;
