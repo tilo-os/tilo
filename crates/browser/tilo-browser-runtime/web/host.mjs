@@ -6,15 +6,15 @@ import {createDesktopSpeculation} from './desktop-speculation.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
-import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {MountRegistry,reopenedRecord,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {createLiveOverlay} from './live-overlay.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
-import {SideModuleLinker,runtimeAbi} from './dylink.mjs';
+import {SideModuleLinker} from './dylink.mjs';
 import {createAppInstaller,canonicalAppId} from './app-installer.mjs';
+import {importGlue,loadCore} from './core-loader.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -28,15 +28,36 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 // first frames either.
 const APP_FONTS=['Noto-COLRv1.ttf','NotoSansSymbols[wght].ttf','NotoSansSymbols2-Regular.ttf','NotoSansMath-Regular.ttf'];
 const prewarmFonts=createIdlePrewarm(()=>fontLoader.prewarm({prefer:APP_FONTS}));
-let core,appLinker;
-const ready=retryableMemo(async()=>{core=await init();return core;});
+// The core: by default the glue and module next to this file; a page may
+// supply a verified one instead (configureRuntime) before its first mount.
+let runtime,core,appLinker,supplied;
+const ready=retryableMemo(async()=>{
+  const source=supplied??{glue:import('./pkg/tilo_browser_runtime.js'),module:new URL('./pkg/tilo_browser_runtime_bg.wasm',import.meta.url)};
+  core=await loadCore({glue:await importGlue(await source.glue),module:source.module});
+  runtime=core.runtime;
+  return core;
+});
+/**
+ * Run a core from a verified source instead of `./pkg/`: `glue` is the
+ * self-contained glue (its module namespace, or a URL such as the object URL
+ * of a verified asset), `module` the core module (WebAssembly.Module,
+ * Response or bytes). The registry client's `resolveRuntime()` supplies both.
+ * Must precede the first mount; throws once a core is loading.
+ */
+export function configureRuntime({glue,module}){
+  if(core||supplied)throw Error('the core is already configured');
+  if(!glue||!module)throw TypeError('configureRuntime needs {glue, module}');
+  supplied={glue,module};
+}
+/** The loaded core's runtime ABI id, once it has loaded. */
+export async function runtimeAbiId(){return (await ready()).abi;}
 // Apps the core does not contain arrive as side modules (WEB_RUNTIME.md).
 // A core built without `dylink` has no linker, so only its compiled apps exist.
 const apps=createAppInstaller({
   ready,
   installed:app=>{try{runtime.application(app);return true;}catch{return false;}},
   canonical:canonicalAppId,
-  linker:()=>appLinker??=new SideModuleLinker(core,runtimeAbi(init.__wbindgen_wasm_module)),
+  linker:()=>appLinker??=new SideModuleLinker(core.exports,core.abi),
 });
 /**
  * The resolver mounts use when they pass none: `(appId, {signal}) =>
@@ -388,7 +409,7 @@ export async function mountDesktop(target,options={}) {
 }
 /** Every application this build can mount standalone. */
 export async function applications(){await ready();return JSON.parse(runtime.applications());}
-export function pendingComponentCloseCount(){return runtime.component_close_count();}
+export function pendingComponentCloseCount(){return runtime?.component_close_count()??0;}
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}
-export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}
+export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));if(runtime)await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}

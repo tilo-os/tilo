@@ -138,6 +138,16 @@ export interface DesktopMount {
 export function mountDesktop(target: HTMLElement, options?: MountOptions): Promise<DesktopMount>;
 /** Every application installed now (compiled in or linked), mountable standalone. */
 export function applications(): Promise<ApplicationInfo[]>;
+/**
+ * Run a core from a verified source instead of the `pkg/` next to host.mjs:
+ * `glue` is the self-contained glue (module namespace or a URL such as a
+ * verified asset's object URL), `module` the core module. The registry
+ * client's `resolveRuntime()` returns `{module, assets}` with the glue among
+ * the assets. Call before the first mount; throws once a core is configured.
+ */
+export function configureRuntime(core: {glue: string | URL | object; module: WebAssembly.Module | Response | Uint8Array | ArrayBuffer}): void;
+/** The runtime ABI id of the loaded core (loads it if needed); undefined for a core without one. */
+export function runtimeAbiId(): Promise<string | undefined>;
 /** The resolver mounts use when they pass no `resolveApp`. */
 export function setAppResolver(resolver: AppResolver | undefined): void;
 /**
