@@ -399,6 +399,7 @@ impl State {
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
+        self.tablet_pads_follow_keyboard(target.as_ref().map(|(_, surface)| surface));
         if let Some((surface_id, _)) = target {
             record_activation_serial(self, serial, surface_id);
         }
@@ -1079,14 +1080,21 @@ pub fn route_pad_event(
     event: crate::compositor::backend::PadEvent,
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
-    let target = (!session_locked && !chrome_captures_input(fb))
-        .then(|| state.client_input.keyboard_focus())
-        .flatten()
-        .filter(|surface_id| state.surface_takes_tablet_input(*surface_id));
+    let target = pad_focus_target(state, fb, session_locked);
     if state.forward_tablet_pad(&event, target) {
         return Vec::new();
     }
     event.fallback
+}
+
+/// The surface a tablet pad's controls go to: the keyboard-focused one,
+/// when it took a tablet seat and neither the lock screen nor shell chrome
+/// is taking input.
+pub fn pad_focus_target(state: &State, fb: &FrameBuilder, session_locked: bool) -> Option<u64> {
+    (!session_locked && !chrome_captures_input(fb))
+        .then(|| state.client_input.keyboard_focus())
+        .flatten()
+        .filter(|surface_id| state.surface_takes_tablet_input(*surface_id))
 }
 
 /// Grant, adjust or withdraw a client's pointer lock/confinement for this

@@ -1551,17 +1551,13 @@ impl SettingsApp {
                 if button >= crate::panes::mouse_keyboard::MAX_PAD_BUTTONS {
                     return Err("unknown pad button".into());
                 }
-                let shortcut = crate::panes::mouse_keyboard::pad_button_for_id(&action)
+                let choice = crate::panes::mouse_keyboard::pad_button_for_id(&action)
                     .ok_or_else(|| "unsupported pad button action".to_string())?;
-                let config = tablet_entry(&mut prefs, &device)?;
-                match shortcut {
-                    Some(shortcut) => {
-                        config.pad_buttons.insert(button, shortcut);
-                    }
-                    None => {
-                        config.pad_buttons.remove(&button);
-                    }
-                }
+                crate::panes::mouse_keyboard::set_pad_button(
+                    tablet_entry(&mut prefs, &device)?,
+                    button,
+                    choice,
+                );
                 "pad button updated"
             }
         };
@@ -2651,6 +2647,17 @@ mod tests {
             crate::prefs::SystemPrefs::load().input.tablets[&pad]
                 .pad_buttons
                 .is_empty()
+        );
+        SettingsApp::apply_input_operation(InputOperation::SetPadButton {
+            device: pad.clone(),
+            button: 1,
+            action: "show-map".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            crate::prefs::SystemPrefs::load().input.tablets[&pad].pad_map_button,
+            Some(1),
+            "the compositor shows the pad map while button 2 is held"
         );
 
         for refused in [

@@ -61,6 +61,8 @@ pub mod output_heads;
 pub mod output_management;
 pub mod pacing;
 #[cfg(target_os = "linux")]
+pub mod pad_layout;
+#[cfg(target_os = "linux")]
 pub mod pointer_lock;
 pub mod present;
 pub mod projection_capture;

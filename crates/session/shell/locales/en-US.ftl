@@ -2380,6 +2380,20 @@ shortcut-trigger-failed = The shortcut didn't run
 osd-keys-captured = App receives all keys · { $chord } restores shortcuts
 osd-keys-released = Shortcuts restored
 osd-pad-mode = Tablet mode { $mode } of { $modes }
+pad-map-hint = Shown while the button is held
+pad-map-button = Button { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Strip { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Next mode (now { $mode } of { $modes })
+pad-map-shows-map = Shows this map
+pad-map-app-decides = Up to the app
+pad-map-nothing = Does nothing
+pad-map-dial-scroll = Scroll
+pad-map-dial-zoom = Zoom
+pad-map-dial-brush-size = Brush size
+pad-map-dial-volume = Volume
+pad-map-dial-brightness = Brightness
 workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
 
 # Peer views, opening documents, identity backup and invitations
