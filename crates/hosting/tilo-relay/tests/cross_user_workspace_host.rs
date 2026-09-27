@@ -10,8 +10,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
-
-use std::time::Duration;
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy, WorkspaceBinding};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -47,6 +49,8 @@ async fn provider_host_serves_only_current_cross_user_members() {
                 pin: true,
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
             }],
             ..RelayConfig::default()
         };
@@ -95,11 +99,11 @@ async fn provider_host_serves_only_current_cross_user_members() {
                 .send(Envelope::Subscribe { workspace_id: 77 })
                 .unwrap();
             assert!(matches!(
-                tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
-                Ok(Some(Envelope::Ready {
+                tilo_test_env::within("a message on client", client.recv()).await,
+                Some(Envelope::Ready {
                     workspace_id: 77,
                     ..
-                }))
+                })
             ));
         }
         alice_client
@@ -112,9 +116,9 @@ async fn provider_host_serves_only_current_cross_user_members() {
             })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), bob_client.recv()).await,
-            Ok(Some(Envelope::Delta { author_device_public_key, .. })) if author_device_public_key == alice_key
-        ));
+        tilo_test_env::within("a message on bob_client", bob_client.recv()).await,
+        Some(Envelope::Delta { author_device_public_key, .. }) if author_device_public_key == alice_key
+            ));
 
         let charlie_client = RelayClient::connect_to_pinned_host(
             client_endpoint().await,
@@ -129,11 +133,11 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 77 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), charlie_client.recv()).await,
-            Ok(Some(Envelope::NotAuthorised {
+            tilo_test_env::within("a message on charlie_client", charlie_client.recv()).await,
+            Some(Envelope::NotAuthorised {
                 workspace_id: 77,
                 ..
-            }))
+            })
         ));
     }
     // Phase `provider_membership_removal_closes_a_live_tenant_session`.
@@ -152,6 +156,8 @@ async fn provider_host_serves_only_current_cross_user_members() {
                     pin: true,
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
                 }],
                 ..RelayConfig::default()
             },
@@ -186,15 +192,16 @@ async fn provider_host_serves_only_current_cross_user_members() {
             .send(Envelope::Subscribe { workspace_id: 78 })
             .unwrap();
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
-            Ok(Some(Envelope::Ready { .. }))
+            tilo_test_env::within("a message on client", client.recv()).await,
+            Some(Envelope::Ready { .. })
         ));
 
         let store = tilo_relay::store::WorkspaceStore::open(state.path(), 78, true).unwrap();
         store.save_membership(&[]).unwrap();
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(4), client.recv()).await,
-            Ok(None)
-        ));
+        assert!(
+            tilo_test_env::within("client to close", client.recv())
+                .await
+                .is_none()
+        );
     }
 }

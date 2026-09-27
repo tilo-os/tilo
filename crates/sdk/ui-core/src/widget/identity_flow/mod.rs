@@ -142,7 +142,17 @@ impl IdentityRecord {
         created_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let serialisable = SerializableIdentity::from_identity(identity)?;
-        let ts = chrono::DateTime::<chrono::Utc>::from(created_at).to_rfc3339();
+        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(
+                created_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            )
+            .unwrap_or(i64::MAX),
+            0,
+        )
+        .unwrap_or_default()
+        .to_rfc3339();
         Ok(Self {
             display_name: display_name.into(),
             avatar_color,
@@ -573,11 +583,17 @@ pub const PAIRING_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian
 /// before it counts the peer as hung. The UI polls the broker from its
 /// frame loop, so a shipped build gives up fast on a peer that stops
 /// answering. Test builds share a loaded runner with everything else, so
-/// there the bound only catches a hang.
+/// there it is the shared test hang bound.
 #[cfg(not(any(test, feature = "test-support")))]
-pub const PAIRING_IO_TIMEOUT: Duration = Duration::from_secs(2);
+pub fn pairing_io_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+/// How long either end of a pairing-broker exchange waits on its socket
+/// before it counts the peer as hung: in test builds, the shared hang bound.
 #[cfg(any(test, feature = "test-support"))]
-pub const PAIRING_IO_TIMEOUT: Duration = Duration::from_secs(120);
+pub fn pairing_io_timeout() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PairingBrokerRequest {
@@ -684,6 +700,7 @@ impl PairingHandshake {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remote_call(
         endpoint: &str,
         certificate: &[u8],
@@ -691,10 +708,11 @@ impl PairingHandshake {
     ) -> Option<PairingBrokerResponse> {
         use std::io::Write;
         let frame = PAIRING_FRAMING.encode_value(request).ok()?;
-        let tcp = std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, PAIRING_IO_TIMEOUT)
-            .ok()?;
-        tcp.set_read_timeout(Some(PAIRING_IO_TIMEOUT)).ok()?;
-        tcp.set_write_timeout(Some(PAIRING_IO_TIMEOUT)).ok()?;
+        let tcp =
+            std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, pairing_io_timeout())
+                .ok()?;
+        tcp.set_read_timeout(Some(pairing_io_timeout())).ok()?;
+        tcp.set_write_timeout(Some(pairing_io_timeout())).ok()?;
         if certificate.is_empty() || certificate.len() > 64 * 1024 {
             return None;
         }
@@ -713,6 +731,16 @@ impl PairingHandshake {
         let mut stream = rustls::StreamOwned::new(connection, tcp);
         stream.write_all(&frame).ok()?;
         PAIRING_FRAMING.read_value(&mut stream).ok()?
+    }
+
+    /// Native TLS sockets are unavailable in a browser; a host transport must be injected.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remote_call(
+        _: &str,
+        _: &[u8],
+        _: &PairingBrokerRequest,
+    ) -> Option<PairingBrokerResponse> {
+        None
     }
 
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
@@ -1144,12 +1172,14 @@ impl PairingHandshake {
 /// certificate as a root would also trust a child certificate it signs; exact
 /// comparison keeps the pin's meaning narrow while the provider still checks
 /// the handshake signature against the pinned certificate's public key.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct ExactCertificateVerifier {
     expected: Arc<[u8]>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
     fn verify_server_cert(
         &self,

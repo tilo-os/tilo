@@ -151,6 +151,29 @@ podman_epoch_args() {
   fi
 }
 
+# Flags every local `podman build` of an OS image takes:
+#   --jobs  independent stages build in parallel (podman's default is one at a
+#           time; BuildKit in CI already runs them concurrently).
+#           TILO_PODMAN_BUILD_JOBS overrides it.
+#   label=disable  RUN steps bind-mount files straight from the build context
+#           (RUN --mount=type=bind,source=os/...). Under SELinux such a file
+#           keeps its host label (var_t on a data disk, user_home_t in a home
+#           directory), which the container may not read: "Permission denied"
+#           from a script that exists. The build's RUN containers are not what
+#           SELinux protects the host from; the image's own labels are unchanged.
+TILO_PODMAN_BUILD_FLAGS=(--jobs "${TILO_PODMAN_BUILD_JOBS:-4}" --security-opt label=disable)
+
+# Parallel cargo jobs for an in-image compile: a CPU per job, as far as memory
+# holds out at $1 GiB a job; 8 when memory cannot be read.
+cargo_build_jobs() {
+  local per_job=$1 cpus mem_jobs
+  cpus="$(nproc 2>/dev/null || echo 4)"
+  mem_jobs="$(awk -v g="$per_job" '/^MemTotal:/ { print int($2 / (g * 1048576)) }' /proc/meminfo 2>/dev/null || true)"
+  [ -n "$mem_jobs" ] && [ "$mem_jobs" -ge 1 ] || mem_jobs=8
+  [ "$cpus" -le "$mem_jobs" ] || cpus="$mem_jobs"
+  printf '%s\n' "$cpus"
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
@@ -165,7 +188,9 @@ warn_slow_podman_storage() {
 # Runs with the *current working directory preserved* (distrobox does this), so
 # relative paths and the cargo workspace resolve correctly.
 inenv() {
-  if [ -n "$TILO_DISTROBOX" ]; then
+  # Already inside a container (the distrobox itself, a build container), or no
+  # distrobox here: the tools are where this runs.
+  if [ -n "$TILO_DISTROBOX" ] && [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null; then
     distrobox enter "$TILO_DISTROBOX" -- bash -lc "$1"
   else
     bash -lc "$1"

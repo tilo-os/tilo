@@ -63,6 +63,8 @@ pub enum StoreError {
     Registry(#[from] RegistryError),
     #[error("package refused: {0}")]
     Refused(String),
+    #[error("image app-store build requires a valid SOURCE_DATE_EPOCH")]
+    InvalidImageBuildEpoch,
     #[error("package archive: {0}")]
     Tapp(String),
     #[error("{} payload blob(s) are neither in the archive, in the store, nor fetchable", .0.len())]

@@ -130,7 +130,6 @@ pub struct AccessibilityInputSettings {
     pub mouse_keys: bool,
     pub large_cursor: bool,
     pub cursor_size: u32,
-    pub on_screen_keyboard: bool,
 }
 
 impl Default for AccessibilityInputSettings {
@@ -144,7 +143,6 @@ impl Default for AccessibilityInputSettings {
             mouse_keys: false,
             large_cursor: false,
             cursor_size: 24,
-            on_screen_keyboard: false,
         }
     }
 }
@@ -189,7 +187,6 @@ impl AccessibilityInputSettings {
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(d.cursor_size)
                 .clamp(24, 64),
-            on_screen_keyboard: bool_at("on_screen_keyboard", d.on_screen_keyboard),
         }
     }
 
@@ -1486,8 +1483,8 @@ mod tests {
     #[test]
     fn input_method_sources_compile_no_group_and_select_the_primary_layout() {
         let section = serde_json::json!({
-            "keyboard_layout": "ime/pinyin",
-            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+            "keyboard_layout": "ime/rime",
+            "keyboard_layouts": ["de", "ime/rime", "fr"]
         })
         .as_object()
         .unwrap()
@@ -1502,7 +1499,7 @@ mod tests {
 
         let section = serde_json::json!({
             "keyboard_layout": "fr",
-            "keyboard_layouts": ["de", "ime/pinyin", "fr"]
+            "keyboard_layouts": ["de", "ime/rime", "fr"]
         })
         .as_object()
         .unwrap()

@@ -376,7 +376,6 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstwebrtc.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstnice.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstsrtp.so'" "$repo/os/Containerfile" \
-  && grep -Fq -- "-path '*/qt6/plugins/tls/libqopensslbackend.so'" "$repo/os/Containerfile" \
   && grep -Fq 'optional OpenSSL modules and unused network media plugins absent' \
        "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine/media modules'

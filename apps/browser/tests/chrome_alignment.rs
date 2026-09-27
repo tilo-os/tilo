@@ -191,7 +191,7 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             .perform_named("browser.find", &ui::a11y::Action::Activate)
             .expect("the Find command is on the 1200px toolbar");
         harness
-            .wait_for_named("browser.find.input", std::time::Duration::from_secs(2))
+            .wait_for_named("browser.find.input", tilo_test_env::hang_bound())
             .expect("activating Find composes the find bar");
         let targets = harness.targets();
         let field = targets["browser.find.input"];
@@ -261,7 +261,7 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             ui::theme::Theme::dark(),
         );
         harness
-            .wait_for_named("browser.download-status", std::time::Duration::from_secs(2))
+            .wait_for_named("browser.download-status", tilo_test_env::hang_bound())
             .expect("a requested download puts its status on the toolbar");
         let targets = harness.targets();
         let url = targets[URL_INPUT];

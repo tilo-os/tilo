@@ -35,6 +35,8 @@
 
 mod app;
 mod cpu;
+// A daemon runtime is multi-threaded, which tokio does not offer on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
 mod daemon;
 pub mod io;
 mod pool;
@@ -44,6 +46,7 @@ use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
 pub use cpu::{CpuTask, cpu, cpu_pool};
+#[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Daemon, daemon};
 pub use tokio::runtime::{Handle, Runtime};
 pub use tokio::task::JoinHandle;
@@ -91,6 +94,7 @@ impl Driving {
 
 /// Mark the calling thread as driving async tasks for as long as it lives:
 /// a runtime worker.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn mark_driving() {
     DRIVING.with(|driving| driving.set(true));
 }

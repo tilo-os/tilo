@@ -118,3 +118,8 @@ pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
 pub use toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
 pub use touch_model::{NextKeyDistribution, TouchKey, TouchModel};
 pub use widget::{OskWidget, input_purpose_from_name, input_purpose_name};
+
+pub mod framework_history;
+mod presentation;
+
+pub mod actions;

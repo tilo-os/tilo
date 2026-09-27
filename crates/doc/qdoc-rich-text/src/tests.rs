@@ -242,6 +242,86 @@ fn the_outline_follows_headings() {
     assert_eq!(outline, replica.state().unwrap().headings());
 }
 
+/// Rich text stored as a field of another document: edited, read and
+/// refreshed under its own map, never touching the document's root or a
+/// sibling field.
+#[test]
+fn rich_text_under_a_field_is_edited_and_refreshed_in_place() {
+    use automerge::transaction::Transactable;
+    let mut doc = automerge::AutoCommit::new();
+    let messages = doc
+        .put_object(automerge::ROOT, "messages", automerge::ObjType::Map)
+        .unwrap();
+    let first = doc
+        .put_object(&messages, "m1", automerge::ObjType::Map)
+        .unwrap();
+    let second = doc
+        .put_object(&messages, "m2", automerge::ObjType::Map)
+        .unwrap();
+    RichText::initialize_under(&mut doc, &first).unwrap();
+    RichText::initialize_under(&mut doc, &second).unwrap();
+    doc.commit();
+    assert!(
+        RichText::read(&doc).is_err(),
+        "the root holds no rich text of its own"
+    );
+
+    let mut state = RichText::read_under(&doc, &first).unwrap();
+    let everything = tilo_resource::Demand::range(0..usize::MAX);
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    let block = state.body().id_at(0).unwrap().to_owned();
+
+    let mut tracker = tilo_resource::Tracker::new();
+    tracker.start(&mut doc);
+    RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: block.clone(),
+        at: 0,
+        del: 0,
+        ins: "hello".into(),
+    }
+    .apply_under(&mut doc, &first)
+    .unwrap();
+    doc.commit();
+    let delta = tracker.delta_located(&mut doc, &|obj| RichText::locate(&state, obj));
+    RichText::refresh_under(&mut state, &doc, &delta).unwrap();
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    assert_eq!(state.block(&block).unwrap().text, "hello");
+    RichTextAction::SplitBlock {
+        region: RegionKind::Body,
+        block,
+        at: 5,
+        kind: "paragraph".into(),
+        ordered: None,
+        next: None,
+    }
+    .apply_under(&mut doc, &first)
+    .unwrap();
+    doc.commit();
+    let delta = tracker.delta_located(&mut doc, &|obj| RichText::locate(&state, obj));
+    RichText::refresh_under(&mut state, &doc, &delta).unwrap();
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    assert_eq!(
+        RichText::plain_text_under(&doc, &first).unwrap(),
+        "hello\n",
+        "a line per paragraph"
+    );
+    assert!(RichText::plain_text_under(&doc, &messages).is_err());
+
+    let mut fresh = RichText::read_under(&doc, &first).unwrap();
+    RichText::load(&mut fresh, &doc, &everything).unwrap();
+    assert_eq!(state, fresh, "the refreshed field equals a fresh read");
+
+    let mut other = RichText::read_under(&doc, &second).unwrap();
+    RichText::load(&mut other, &doc, &everything).unwrap();
+    let other_block = other.body().id_at(0).unwrap().to_owned();
+    assert_eq!(
+        other.block(&other_block).unwrap().text,
+        "",
+        "the sibling is untouched"
+    );
+}
+
 /// The cells of every table in the body, in order: `(table, row, col, id, text)`.
 fn table_cells(replica: &Replica<RichText>) -> Vec<(String, i64, i64, String, String)> {
     let c = replica.state().unwrap().containers().clone();
@@ -429,4 +509,44 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
         )
         .unwrap();
     assert_eq!(table_cells(&replica).len(), side * side);
+}
+
+#[test]
+fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
+    let mut local = document(2);
+    let ids = body_ids(&local.state().unwrap());
+    let mut peer = local.fork();
+    for (replica, text) in [(&mut local, "Local"), (&mut peer, "Peer")] {
+        replica
+            .apply_action(
+                &RichTextAction::InsertParagraph {
+                    after: ids[0].clone(),
+                    text: text.into(),
+                },
+                "Add paragraph",
+            )
+            .unwrap();
+    }
+    local.sync_with(&mut peer).unwrap();
+    let merged = body_ids(&local.state().unwrap());
+    assert_eq!(merged, body_ids(&peer.state().unwrap()));
+    assert_eq!(merged.len(), 5);
+    local
+        .apply_action(
+            &RichTextAction::InsertParagraph {
+                after: merged[1].clone(),
+                text: "Between".into(),
+            },
+            "Add paragraph",
+        )
+        .unwrap();
+    let after = body_ids(&local.state().unwrap());
+    assert_eq!(after.len(), 6);
+    assert_eq!(after[1], merged[1]);
+    assert_eq!(after[3], merged[2], "the new paragraph is between the two");
+    let containers = local.state().unwrap().containers().clone();
+    assert_eq!(
+        model::block_text(local.doc(), &containers, &after[2]).as_deref(),
+        Some("Between")
+    );
 }

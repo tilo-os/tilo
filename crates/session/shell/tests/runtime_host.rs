@@ -2,6 +2,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session and broker handles are held for the whole scenario on purpose"
+)]
 fn profile_is_exclusive_and_workspace_survives_restart() {
     // Execute in a separate process: identity discovery uses process environment.
     if std::env::var_os("TILO_RUNTIME_HOST_TEST_CHILD").is_none() {

@@ -13,18 +13,18 @@ use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
-use ui::search::{FieldWeight, RankField};
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
+use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use tilo_desktop::notifications::{Notification, NotificationSeverity};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -39,43 +39,44 @@ const STORE_PACKAGE_ID: &str = "so.tilo.store";
 /// continue to rank purely by match quality; this only prevents a fresh system
 /// from presenting forty alphabetised tools as though they were equally likely
 /// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers.
+/// tinkerers without assuming they are developers. The group is a catalogue
+/// key, resolved where the subtitle is built.
 fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
     match package_id {
-        "so.tilo.browser" => ("Start here", 90),
-        "so.tilo.file-explorer" => ("Start here", 89),
-        "so.tilo.notes" => ("Start here", 88),
-        "so.tilo.terminal" => ("Start here", 87),
-        "so.tilo.settings" => ("Start here", 86),
-        "so.tilo.store" => ("Start here", 85),
+        "so.tilo.browser" => ("search-apps-group-start-here", 90),
+        "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
+        "so.tilo.notes" => ("search-apps-group-start-here", 88),
+        "so.tilo.terminal" => ("search-apps-group-start-here", 87),
+        "so.tilo.settings" => ("search-apps-group-start-here", 86),
+        "so.tilo.store" => ("search-apps-group-start-here", 85),
 
-        "so.tilo.calendar" => ("Everyday", 74),
-        "so.tilo.mail" => ("Everyday", 73),
-        "so.tilo.contacts" => ("Everyday", 72),
-        "so.tilo.chat" => ("Everyday", 71),
-        "so.tilo.calculator" => ("Everyday", 70),
+        "so.tilo.calendar" => ("search-apps-group-everyday", 74),
+        "so.tilo.mail" => ("search-apps-group-everyday", 73),
+        "so.tilo.contacts" => ("search-apps-group-everyday", 72),
+        "so.tilo.chat" => ("search-apps-group-everyday", 71),
+        "so.tilo.calculator" => ("search-apps-group-everyday", 70),
 
-        "so.tilo.word-processor" => ("Work", 59),
-        "so.tilo.sheets" => ("Work", 58),
-        "so.tilo.slides" => ("Work", 57),
-        "so.tilo.pdf-viewer" => ("Work", 56),
-        "so.tilo.typst-editor" => ("Work", 55),
+        "so.tilo.word-processor" => ("search-apps-group-work", 59),
+        "so.tilo.sheets" => ("search-apps-group-work", 58),
+        "so.tilo.slides" => ("search-apps-group-work", 57),
+        "so.tilo.pdf-viewer" => ("search-apps-group-work", 56),
+        "so.tilo.typst-editor" => ("search-apps-group-work", 55),
 
-        "so.tilo.music" => ("Media", 49),
-        "so.tilo.tube" => ("Media", 48),
-        "so.tilo.video-player" => ("Media", 47),
-        "so.tilo.photos" => ("Media", 46),
-        "so.tilo.camera" => ("Media", 45),
-        "so.tilo.weather" => ("Everyday", 44),
-        "so.tilo.maps" => ("Everyday", 43),
-        "so.tilo.feeds" => ("Everyday", 42),
-        "so.tilo.ebook" => ("Media", 41),
-        "so.tilo.totp" => ("Everyday", 40),
+        "so.tilo.music" => ("search-apps-group-media", 49),
+        "so.tilo.tube" => ("search-apps-group-media", 48),
+        "so.tilo.video-player" => ("search-apps-group-media", 47),
+        "so.tilo.photos" => ("search-apps-group-media", 46),
+        "so.tilo.camera" => ("search-apps-group-media", 45),
+        "so.tilo.weather" => ("search-apps-group-everyday", 44),
+        "so.tilo.maps" => ("search-apps-group-everyday", 43),
+        "so.tilo.feeds" => ("search-apps-group-everyday", 42),
+        "so.tilo.ebook" => ("search-apps-group-media", 41),
+        "so.tilo.totp" => ("search-apps-group-everyday", 40),
 
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
         | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("System tools", 25),
-        _ => ("More apps", 10),
+        | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
+        _ => ("search-apps-group-more-apps", 10),
     }
 }
 
@@ -87,16 +88,25 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     }
 }
 
+/// The empty palette's second line: the app's starting-point group, then
+/// its metadata.
+fn grouped_detail(package_id: &str, metadata: String) -> String {
+    t_args(
+        "search-apps-detail-grouped",
+        &[
+            ("group", t(empty_palette_presentation(package_id).0).into()),
+            ("detail", metadata.into()),
+        ],
+    )
+}
+
 fn app_detail(needle: &str, app: &InstalledApp) -> String {
     let metadata = match app.category.as_deref() {
         Some(category) => format!("Tilo · {category} · {}", app.package_id),
         None => format!("Tilo · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
-        format!(
-            "{} · {metadata}",
-            empty_palette_presentation(&app.package_id).0
-        )
+        grouped_detail(&app.package_id, metadata)
     } else {
         metadata
     }
@@ -108,10 +118,7 @@ fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
         None => format!("Tilo · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
-        format!(
-            "{} · {metadata}",
-            empty_palette_presentation(&app.package_id).0
-        )
+        grouped_detail(&app.package_id, metadata)
     } else {
         metadata
     }
@@ -442,12 +449,21 @@ impl ApplicationsProvider {
             let detail = app_detail(needle, &app);
             // Where the window will land leads the line, since it's the
             // part of a launch row that changes with context.
-            let subtitle = format!("{} · {detail}", open_target.result_hint());
+            let subtitle = t_args(
+                "search-apps-open-subtitle",
+                &[
+                    ("target", open_target.result_hint().into()),
+                    ("detail", detail.into()),
+                ],
+            );
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
                 app.package_id.clone(),
-                format!("Open {}", app.display_name),
+                t_args(
+                    "search-apps-open",
+                    &[("app", app.display_name.as_str().into())],
+                ),
                 Some(subtitle),
                 presentation_score(needle, &app.package_id, score),
                 move |_doc, _root, chrome: &Chrome| {
@@ -492,8 +508,10 @@ impl ApplicationsProvider {
                 let id_lower = record.id.to_lowercase();
                 let score = match_score(&needle_lower, &name_lower, &id_lower, None, None)?;
                 let valid = match record.launcher_type {
-                    1 => record.target.is_none()
-                        && installed_gui.contains(&record.owner_app_id.to_ascii_lowercase()),
+                    1 => {
+                        record.target.is_none()
+                            && installed_gui.contains(&record.owner_app_id.to_ascii_lowercase())
+                    }
                     2 => record.target.as_deref().is_some_and(|target| {
                         target.starts_with("https://")
                             && crate::shell::uri_open::resource_for_uri(target).is_ok()
@@ -514,8 +532,11 @@ impl ApplicationsProvider {
                     ResourceKind::Application,
                     self.id(),
                     record.id,
-                    format!("Open {}", record.name),
-                    Some(format!("{} · Shortcut", open_target.result_hint())),
+                    t_args("search-apps-open", &[("app", record.name.as_str().into())]),
+                    Some(t_args(
+                        "search-apps-shortcut-subtitle",
+                        &[("target", open_target.result_hint().into())],
+                    )),
                     score,
                     move |_doc, _root, chrome: &Chrome| {
                         if launcher_type == 1 {
@@ -531,7 +552,10 @@ impl ApplicationsProvider {
                                 let mut state = chrome.borrow_mut();
                                 state.push_notification_full(
                                     Notification::new(
-                                        format!("Couldn't open {name}"),
+                                        t_args(
+                                            "launch-failure-title",
+                                            &[("app", name.as_str().into())],
+                                        ),
                                         // The URI resolver's Debug output may
                                         // contain package ids, paths, or
                                         // multiline backend details. Keep the
@@ -539,10 +563,10 @@ impl ApplicationsProvider {
                                         // to the caller/log and give the
                                         // fixed-height toast a bounded recovery
                                         // instruction instead.
-                                        "The shortcut could not be opened. Check its target and try again.",
+                                        t("search-apps-shortcut-failed"),
                                     )
                                     .with_severity(NotificationSeverity::Error)
-                                    .with_app_name("Applications"),
+                                    .with_app_name(t("host-source-applications")),
                                 );
                                 state.bump();
                                 ActionError::Refused(message)
@@ -634,17 +658,23 @@ impl ApplicationsProvider {
             let display_name = app.display_name.clone();
             let detail = catalogue_app_detail(needle, &app);
             let trust = if app.trust.trim().is_empty() {
-                "Registry verification pending".to_string()
+                t("search-apps-verification-pending")
             } else {
                 app.trust.clone()
             };
-            let subtitle = format!("App Store · {trust} · {detail}");
+            let subtitle = t_args(
+                "search-apps-store-subtitle",
+                &[("trust", trust.into()), ("detail", detail.into())],
+            );
             out.push(SearchResult {
                 kind: ResourceKind::Application,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().to_string(),
                 id: format!("app:{}", app.package_id),
-                title: format!("View {} in App Store", app.display_name),
+                title: t_args(
+                    "search-apps-view-in-store",
+                    &[("app", app.display_name.as_str().into())],
+                ),
                 subtitle: Some(subtitle),
                 badge: None,
                 score: presentation_score(needle, &app.package_id, score)
@@ -678,11 +708,14 @@ impl ApplicationsProvider {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open App Store for {display_name}"),
+                                t_args(
+                                    "search-apps-store-failed",
+                                    &[("app", display_name.as_str().into())],
+                                ),
                                 launcher::LaunchError::NoWorkspace.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
-                            .with_app_name("Applications")
+                            .with_app_name(t("host-source-applications"))
                             .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                         );
                         st.bump();
@@ -703,11 +736,14 @@ impl ApplicationsProvider {
                             let mut state = chrome.borrow_mut();
                             state.push_notification_full(
                                 Notification::new(
-                                    format!("Couldn't open App Store for {display_name}"),
+                                    t_args(
+                                        "search-apps-store-failed",
+                                        &[("app", display_name.as_str().into())],
+                                    ),
                                     message.clone(),
                                 )
                                 .with_severity(NotificationSeverity::Error)
-                                .with_app_name("Applications"),
+                                .with_app_name(t("host-source-applications")),
                             );
                             state.bump();
                             ActionError::Refused(format!(
@@ -889,7 +925,7 @@ fn report_refused_launch(
                 err.notification_message(),
             )
             .with_severity(NotificationSeverity::Error)
-            .with_app_name("Applications")
+            .with_app_name(t("host-source-applications"))
             .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
         );
         st.bump();
@@ -930,9 +966,12 @@ fn launch_resolved_installed_app(
     let notice = {
         let mut st = chrome.borrow_mut();
         let id = st.push_notification_full(
-            Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
-                .with_app_name("Applications")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
+            Notification::new(
+                t_args("search-apps-opening", &[("app", display_name.into())]),
+                t("search-apps-opening-body"),
+            )
+            .with_app_name(t("host-source-applications"))
+            .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         st.bump();
         id
@@ -1102,41 +1141,13 @@ impl ApplicationsProvider {
     }
 }
 
-/// The package id in full names exactly one app, so an exact id is as
-/// strong as the name; a shared id prefix names a publisher and stays below
-/// an exact name.
-pub(crate) const PACKAGE_ID_WEIGHT: FieldWeight = FieldWeight::new(88);
-
-/// The shared ranker over an app's fields. The package id in full, or its
-/// last segment, identifies exactly one app and weighs as its name —
-/// `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and must
-/// outrank an incidental substring. Category ranks below the id because it's
-/// a bucket, not an identity. Multi-word queries may span fields, so `office
-/// spreadsheet` can find an app whose category and description carry one
-/// word each. An empty needle matches everything at `0`, so an empty palette
-/// lists installed apps.
-pub(crate) fn match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-    description: Option<&str>,
-) -> Option<i32> {
-    let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
-    crate::shell::search::rank_fields(
-        needle,
-        &[
-            RankField::new(name, FieldWeight::TITLE),
-            RankField::new(last_segment, FieldWeight::TITLE),
-            RankField::new(package_id, PACKAGE_ID_WEIGHT),
-            RankField::new(category.unwrap_or_default(), FieldWeight::METADATA),
-            RankField::new(description.unwrap_or_default(), FieldWeight::BODY),
-        ],
-    )
-}
+pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_match_score as match_score};
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -1151,7 +1162,10 @@ mod tests {
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             provider.refresh_search_index(ctx);
             if provider.search_revision(ctx).starts_with("ready:") {
                 return;
@@ -1219,7 +1233,7 @@ mod tests {
 
         // Phase `activating_with_no_workspace_reports_it_the_same_way`.
         // Must say so in the same words an installed app's launch uses, not
-        // fail silently. Drives the `on_open` closure.
+        // fail silently. Drives the real `on_open` closure.
         {
             let p = ApplicationsProvider::new();
             let c = chrome_rc();
@@ -1257,7 +1271,7 @@ mod tests {
         // A launch that cannot start must reach both audiences: a notification
         // for the screen, and a refusal for the caller that invoked the row by
         // address — without it, a script is told the app opened and waits for
-        // a window that never arrives. Drives the `on_open` closure.
+        // a window that never arrives. Drives the real `on_open` closure.
         {
             use crate::shell::search::action_api::ActionError;
 
@@ -1975,7 +1989,10 @@ mod tests {
         };
         let initial_revision = provider.search_revision(&ctx);
         provider.refresh_search_index(&ctx);
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             if source
                 .materializations
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -2133,8 +2150,8 @@ impl SearchProvider for NativeApplicationsProvider {
                     ResourceKind::Application,
                     self.id(),
                     id,
-                    format!("Open {}", app.display_name),
-                    Some(ctx.chrome.open_target.result_hint().into()),
+                    t_args("search-apps-open", &[("app", app.display_name.into())]),
+                    Some(ctx.chrome.open_target.result_hint()),
                     score,
                     move |_doc, _root, chrome: &Chrome| {
                         let app = chrome
@@ -2198,7 +2215,7 @@ mod native_application_tests {
                 doc_root: &automerge::ROOT,
             });
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0].id, "org.tilo.Files");
+            assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
             (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
             assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
             assert!(
@@ -2252,7 +2269,7 @@ mod native_application_tests {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
                     HostedTileInputs::for_host_directory(directory.path()).unwrap();
-                state.set_strip_viewport(Some(crate::shell::placement::StripViewport {
+                state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
                         .iter()
@@ -2260,7 +2277,7 @@ mod native_application_tests {
                         .map(|(index, id)| {
                             let index =
                                 f64::from(u32::try_from(index).expect("fixture group index"));
-                            crate::shell::placement::GroupSpan {
+                            tilo_desktop_model::commands::GroupSpan {
                                 id: *id,
                                 x0: index * 100.0,
                                 x1: index.mul_add(100.0, 100.0),
@@ -2312,3 +2329,9 @@ mod native_application_tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

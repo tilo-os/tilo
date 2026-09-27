@@ -128,6 +128,7 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
                 DirectedInvocation {
                     wire_id: request_id + 100,
                     cancellation_requested: false,
+                    authorization: None,
                 },
             );
             app.apply_collab_event_for_test(CollabEvent::RemoteAction {
@@ -167,6 +168,7 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
             DirectedInvocation {
                 wire_id: 9,
                 cancellation_requested: false,
+                authorization: None,
             },
         );
         assert!(app.poll_directed_invocations());

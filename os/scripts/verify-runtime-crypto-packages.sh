@@ -69,7 +69,6 @@ pipewire-libs
 pkcs11-provider
 podman-sequoia
 python3-libs
-qt6-qtbase
 rpm-ostree
 rpm-sequoia
 socat
@@ -118,7 +117,6 @@ ngtcp2-crypto-ossl
 openldap
 podman-sequoia
 python3-libs
-qt6-qtbase
 rpm-ostree
 socat
 spice-glib

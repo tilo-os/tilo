@@ -191,18 +191,25 @@ pub enum SpeakerRole {
 }
 
 impl SpeakerRole {
+    /// The catalogue key of the role's short noun phrase ("right speaker"),
+    /// written to stand alone after "as" or at the start of a status row.
+    #[must_use]
+    pub const fn describe_key(self) -> &'static str {
+        match self {
+            Self::Stereo(StereoSide::Left) => "speaker-role-left",
+            Self::Stereo(StereoSide::Right) => "speaker-role-right",
+            Self::Surround(SurroundChannel::Center) => "speaker-role-centre",
+            Self::Surround(SurroundChannel::Lfe) => "speaker-role-subwoofer",
+            Self::Surround(SurroundChannel::SurroundLeft) => "speaker-role-surround-left",
+            Self::Surround(SurroundChannel::SurroundRight) => "speaker-role-surround-right",
+            Self::RoomPoint(_) => "speaker-role-room",
+        }
+    }
+
     /// Short human description, used in consent prompts and status rows.
     #[must_use]
-    pub fn describe(self) -> &'static str {
-        match self {
-            Self::Stereo(StereoSide::Left) => "left speaker",
-            Self::Stereo(StereoSide::Right) => "right speaker",
-            Self::Surround(SurroundChannel::Center) => "centre speaker",
-            Self::Surround(SurroundChannel::Lfe) => "subwoofer",
-            Self::Surround(SurroundChannel::SurroundLeft) => "left surround speaker",
-            Self::Surround(SurroundChannel::SurroundRight) => "right surround speaker",
-            Self::RoomPoint(_) => "room speaker",
-        }
+    pub fn describe(self) -> String {
+        crate::shell::i18n::t(self.describe_key())
     }
 
     #[must_use]

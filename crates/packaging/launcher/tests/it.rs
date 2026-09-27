@@ -20,3 +20,6 @@ mod room_confinement;
 mod sandbox_environment;
 #[path = "support.rs"]
 mod support;
+
+#[path = "managed.rs"]
+mod managed;

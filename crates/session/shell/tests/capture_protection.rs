@@ -3,7 +3,9 @@
 //! A window whose app asked for protection must leave the display only as
 //! the themed placeholder — in a screenshot, an App capture and a screen-share
 //! frame — while the local display keeps showing it. The lock screen is
-//! withheld from every capture whether or not anything asked.
+//! withheld from every capture whether or not anything asked, and so are the
+//! shell's own secret prompts and, while a password field has focus, the
+//! on-screen keyboard.
 //!
 //! Every capture here goes through the executor entry points the compositor
 //! calls (`render_screenshot`, `render_portal_screencast_frame`) on the scene
@@ -17,7 +19,8 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the sample counters are bounded by the screen"
 )]
 
 use shell::compositor::capture::CaptureExecutor;
@@ -130,9 +133,7 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 /// cross-fade is over, so samples measure the client and not the card.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     let mut published = false;
     while std::time::Instant::now() < deadline {
         if !published && let Some((bw, bh)) = store().viewport(surface_id) {
@@ -299,6 +300,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     assert!(count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12);
 
     store().forget(SURFACE);
@@ -321,6 +323,7 @@ fn a_protected_app_does_not_withhold_other_apps() {
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     store().release_capture_protection(CONNECTION);
     assert!(
         count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12,
@@ -386,5 +389,266 @@ fn the_lock_screen_is_never_captured() {
     // An App capture has no desktop to repaint while locked.
     let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
-    assert!(CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture).is_err());
+    let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
+    drop(fb);
+    assert!(captured.is_err());
+}
+
+/// Whether a shell prompt at `rect` is withheld: every sample of it in the
+/// capture is the placeholder, away from its rounded corners and the mark at
+/// its centre, while the local display shows the prompt's content there.
+fn assert_prompt_withheld(
+    local: &[u8],
+    capture: &[u8],
+    width: u32,
+    rect: Rect,
+    fill: (u8, u8, u8),
+    what: &str,
+) {
+    let screen = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+    let area = rect.intersect(screen).inset(-24.0);
+    assert!(
+        area.width() > 48.0 && area.height() > 48.0,
+        "{what}: the prompt must occupy real area; got {rect:?}"
+    );
+    let mark = Rect::from_center_size(area.center(), (72.0, 72.0));
+    let mut samples = 0_usize;
+    let mut shown = 0_usize;
+    let mut withheld = 0_usize;
+    for row in 0..as_u32(area.height() / 3.0) {
+        let y = area.y0 + f64::from(row) * 3.0;
+        for column in 0..as_u32(area.width() / 3.0) {
+            let x = area.x0 + f64::from(column) * 3.0;
+            if mark.contains(vello::kurbo::Point::new(x, y)) {
+                continue;
+            }
+            samples += 1;
+            let (px, py) = (as_u32(x), as_u32(y));
+            if !near(OffscreenRenderer::sample(local, W, px, py), fill) {
+                shown += 1;
+            }
+            if near(OffscreenRenderer::sample(capture, width, px, py), fill) {
+                withheld += 1;
+            }
+        }
+    }
+    assert!(
+        shown * 100 >= samples,
+        "{what}: fixture: the prompt's content must be on the local display ({shown} of {samples} samples)"
+    );
+    assert_eq!(
+        withheld, samples,
+        "{what}: a capture of the prompt must be only the placeholder"
+    );
+}
+
+/// Paint, then check every secret prompt the shell reports is withheld from
+/// a screenshot and a screen-share frame while the local display shows it.
+pub(crate) fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) {
+    let scene = frame(fb);
+    let prompts = fb.host().secret_prompt_rects();
+    assert!(!prompts.is_empty(), "{what}: the prompt is a secret prompt");
+    let fill = placeholder_rgb(fb);
+    let mut renderer = OffscreenRenderer::new(W, H);
+    let local = renderer.render(&scene, Color::BLACK);
+    let (shot, shot_width, _) =
+        CaptureExecutor::render_screenshot(fb, &scene, &whole_screen()).expect("screenshot");
+    let (cast_width, _, cast) = CaptureExecutor::default()
+        .render_portal_screencast_frame(fb, &scene)
+        .expect("screen-share frame");
+    for rect in prompts {
+        assert_prompt_withheld(&local, &shot, shot_width, rect, fill, what);
+        assert_prompt_withheld(&local, &cast, cast_width, rect, fill, what);
+    }
+}
+
+#[test]
+fn the_shells_secret_prompts_are_never_captured() {
+    use shell::shell::portal_dialog::{
+        AuthenticationRequest, NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule,
+        SecretFieldSpec,
+    };
+
+    // Phase `administrator_authentication`.
+    {
+        let mut fb = FrameBuilder::new((W, H));
+        let queue = PortalDialogQueue::default();
+        fb.host_mut().set_portal_dialog_queue(queue.clone());
+        let _reply = queue
+            .enqueue_authentication(AuthenticationRequest {
+                handle: "/capture-protection/authentication".into(),
+                message: "Authentication is required to change the system time".into(),
+                action_id: "org.example.capture-protection.set-time".into(),
+                identities: vec!["alice".into()],
+                identity: 0,
+                prompt: "Password:".into(),
+                echo: false,
+                notice: None,
+            })
+            .expect("the sheet is queued");
+        fb.host_mut().pump_portal_dialogs();
+        assert_secret_prompts_withheld(&mut fb, "administrator authentication");
+    }
+
+    // Phase `network_secrets`.
+    {
+        let mut fb = FrameBuilder::new((W, H));
+        let queue = PortalDialogQueue::default();
+        fb.host_mut().set_portal_dialog_queue(queue.clone());
+        let _reply = queue
+            .enqueue_network_secrets(NetworkSecretsRequest {
+                handle: "/capture-protection/network".into(),
+                title: "Wi-Fi network \"Cafe\"".into(),
+                detail: "A passphrase is required to connect.".into(),
+                fields: vec![SecretFieldSpec {
+                    key: "psk".into(),
+                    label: "Passphrase".into(),
+                    masked: true,
+                    required: true,
+                    initial: String::new(),
+                    rule: SecretFieldRule::WpaPassphrase,
+                }],
+                remember: Some(true),
+            })
+            .expect("the sheet is queued");
+        fb.host_mut().pump_portal_dialogs();
+        assert_secret_prompts_withheld(&mut fb, "network secrets");
+    }
+
+    // Phase `wifi_passphrase`.
+    {
+        let mut fb = FrameBuilder::new((W, H));
+        fb.with_chrome(|chrome| {
+            chrome.overlays.quick_settings = true;
+            chrome.quick_settings.wifi_password = Some(
+                shell::shell::quick_settings::WifiPasswordPrompt::new("Cafe"),
+            );
+            chrome.bump();
+        });
+        fb.host_mut().force_quick_settings_settled();
+        assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
+        drop(fb);
+    }
+
+    // Phase `identity_restore_and_backup`: the steps that take a backup's
+    // passphrase (and show a nearby device's pairing code) or set a new one.
+    // The steps around them hold no secret and are captured as they are.
+    {
+        use shell::onboarding_view::OnboardingVisualState;
+        let identity = tempfile::tempdir().expect("identity dir");
+        let mut fb = FrameBuilder::new((W, H));
+        fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+        for (state, secret) in [
+            (OnboardingVisualState::Intro, false),
+            (OnboardingVisualState::Connect, true),
+            (OnboardingVisualState::Protect, false),
+            (OnboardingVisualState::Backup, true),
+            (OnboardingVisualState::BackupVerified, true),
+            (OnboardingVisualState::Ready, false),
+        ] {
+            fb.host_mut()
+                .set_onboarding_visual_state_for_snapshot(state);
+            fb.relayout();
+            if secret {
+                assert_secret_prompts_withheld(&mut fb, &format!("setup step {state:?}"));
+            } else {
+                let _ = frame(&mut fb);
+                assert!(
+                    fb.host().secret_prompt_rects().is_empty(),
+                    "setup step {state:?} shows no secret"
+                );
+            }
+        }
+        drop(fb);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness and frame builder drive every phase of the one keyboard session"
+)]
+fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
+    use super::emoji_picker_commit::Harness;
+    use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
+        ContentHint, ContentPurpose,
+    };
+    const KEYBOARD: u64 = 0xCA97_0051;
+    store().forget(KEYBOARD);
+
+    let mut h = Harness::new();
+    let _keyboard_session = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(Some((
+        ContentHint::HiddenText | ContentHint::SensitiveData,
+        ContentPurpose::Password,
+    )));
+    assert!(h.state.text_input_active(), "the password field takes text");
+
+    // The keyboard's toplevel, promoted by the compositor, with its frame.
+    h.state.osk_surface = Some(KEYBOARD);
+    let mut fb = FrameBuilder::new((W, H));
+    store().publish_rgba(KEYBOARD, &solid(960, 360, CLIENT), 960, 360);
+    fb.set_osk_surface(Some(KEYBOARD), None, true);
+    // Paint until the keyboard's frame is presented and any opening
+    // cross-fade is over, so samples measure the keyboard itself.
+    let settled = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(400))
+        .unwrap_or_else(std::time::Instant::now);
+    while std::time::Instant::now() < settled {
+        let _ = frame(&mut fb);
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    let (_, keyboard) = fb
+        .osk_surface_rect()
+        .expect("the keyboard is shown for the focused field");
+    let fill = placeholder_rgb(&fb);
+
+    let capture = |fb: &mut FrameBuilder| {
+        let scene = frame(fb);
+        let mut renderer = OffscreenRenderer::new(W, H);
+        let local = renderer.render(&scene, Color::BLACK);
+        let (shot, width, _) =
+            CaptureExecutor::render_screenshot(fb, &scene, &whole_screen()).expect("screenshot");
+        let (cast_width, _, cast) = CaptureExecutor::default()
+            .render_portal_screencast_frame(fb, &scene)
+            .expect("screen-share frame");
+        (
+            interior_samples(&local, W, keyboard),
+            interior_samples(&shot, width, keyboard),
+            interior_samples(&cast, cast_width, keyboard),
+        )
+    };
+
+    // Phase `password_field_withholds_the_keyboard`.
+    h.state.sync_capture_protection();
+    let (local, shot, cast) = capture(&mut fb);
+    assert!(
+        count_near(&local, CLIENT) >= 12,
+        "the local display shows the keyboard; samples {local:?}"
+    );
+    assert_eq!(count_near(&shot, CLIENT), 0, "no key reaches a screenshot");
+    assert!(count_near(&shot, fill) >= 14, "samples {shot:?}");
+    assert_eq!(
+        count_near(&cast, CLIENT),
+        0,
+        "no key reaches a screen share"
+    );
+    assert!(count_near(&cast, fill) >= 14, "samples {cast:?}");
+
+    // Phase `ordinary_field_shows_the_keyboard`: the same field now declares
+    // ordinary text.
+    field
+        .text_input()
+        .set_content_type(ContentHint::None, ContentPurpose::Normal);
+    field.text_input().commit();
+    h.pump();
+    h.state.sync_capture_protection();
+    let (_, shot, cast) = capture(&mut fb);
+    assert!(
+        count_near(&shot, CLIENT) >= 12,
+        "an ordinary field's keyboard is captured as it is; samples {shot:?}"
+    );
+    assert!(count_near(&cast, CLIENT) >= 12);
+
+    store().forget(KEYBOARD);
 }

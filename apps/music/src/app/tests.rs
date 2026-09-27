@@ -444,13 +444,14 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
         "paused initialization needs ticks"
     );
 
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
         app.tick();
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         assert!(
             Instant::now() < deadline,
-            "paused decoder failed to preroll"
+            "paused decoder failed to preroll: {}",
+            app.audio.diagnostics()
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -2268,8 +2269,14 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 &mut app,
                 invocation,
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &automerge::ROOT,
             )
@@ -2305,8 +2312,14 @@ fn global_search_and_canonical_views_route_without_mutation() {
             Widget::invoke_resource_operation(
                 &mut app,
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &automerge::ROOT,
             )
@@ -2441,7 +2454,10 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("view resource exposes open");
         let operation = match &open.input {
             tilo_actions::ActionInput::Immediate(operation) => operation,
-            tilo_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("open destination is immediate")
+            }
         };
         let heads = doc.get_heads();
         assert!(

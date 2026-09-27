@@ -778,6 +778,9 @@ impl SearchProvider for FilesProvider {
     fn name(&self) -> &'static str {
         "Files"
     }
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-files")
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::File, ResourceKind::Folder]
     }
@@ -1320,7 +1323,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         DocumentTarget::NoAppForDocument { ext } => {
             notify_open_failure(
                 path,
-                &format!("no app on this desktop opens .{ext} documents"),
+                &crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]),
                 chrome,
             );
         }
@@ -1972,9 +1975,7 @@ mod tests {
     fn eventually_page(mut query: impl FnMut() -> SearchPage) -> SearchPage {
         // A hang guard, not a latency budget: the work bounds are asserted
         // on inspected entries, which a loaded machine cannot perturb.
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("deadline within the clock's range");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             let page = query();
             if !page.results.is_empty() || page.exhausted || page.stale_cursor {

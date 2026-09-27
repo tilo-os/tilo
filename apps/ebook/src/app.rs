@@ -42,7 +42,7 @@ use vello::peniko::{
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
@@ -149,6 +149,13 @@ struct SearchWorker {
 impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "only a native thread spawn can fail; both targets share the caller"
+        )
+    )]
     fn spawn(
         prior: crate::search_provider::BookSearchProvider,
         books: Arc<Vec<Arc<Book>>>,
@@ -158,24 +165,31 @@ impl SearchWorker {
         generation: u64,
     ) -> Result<Self, String> {
         let (send, results) = mpsc::sync_channel(1);
+        let build = move || {
+            let provider = crate::search_provider::BookSearchProvider::new_shared_after(
+                &prior,
+                books,
+                annotations,
+                registry,
+                generation,
+            );
+            // The receiver is intentionally allowed to disappear during
+            // shutdown; publication has no side effect outside the app.
+            let _ = send.send(SearchBuild {
+                fingerprint,
+                generation,
+                provider,
+            });
+        };
+        // The browser has no threads. Without an index the library's book,
+        // chapter and annotation resources are unresolvable, so build it on
+        // the UI thread there; the one slot means the send never blocks.
+        #[cfg(target_arch = "wasm32")]
+        build();
+        #[cfg(not(target_arch = "wasm32"))]
         thread::Builder::new()
             .name("ebook-search-builder".into())
-            .spawn(move || {
-                let provider = crate::search_provider::BookSearchProvider::new_shared_after(
-                    &prior,
-                    books,
-                    annotations,
-                    registry,
-                    generation,
-                );
-                // The receiver is intentionally allowed to disappear during
-                // shutdown; publication has no side effect outside the app.
-                let _ = send.send(SearchBuild {
-                    fingerprint,
-                    generation,
-                    provider,
-                });
-            })
+            .spawn(build)
             .map_err(|error| error.to_string())?;
         Ok(Self { results })
     }
@@ -758,7 +772,89 @@ impl BooksApp {
             selection_highlight: self
                 .sel
                 .and_then(|selection| self.resolve_highlight_plan(selection, HiColor::Yellow)),
+            selection_note: self.selection_note_draft(String::new()),
+            annotations: self.annotations.clone(),
         })
+    }
+
+    /// A note on the live selection, anchored where the toolbar's Note button
+    /// anchors it: the selected span of its first block.
+    fn selection_note_draft(&self, text: String) -> Option<crate::actions::NoteDraft> {
+        let (start, end) = self.sel.filter(|s| !s.is_empty())?.ordered();
+        let end_ch = if end.block == start.block {
+            end.ch.max(start.ch)
+        } else {
+            self.layout
+                .as_ref()
+                .and_then(|layout| layout.blocks.iter().find(|b| b.index == start.block))
+                .map_or(start.ch, |block| block.char_len)
+        };
+        Some(crate::actions::NoteDraft {
+            book_id: self.book_id(),
+            id: Uuid::new_v4(),
+            anchor: AnnotationAnchor {
+                chapter: self.chapter,
+                block: start.block,
+                start: start.ch,
+                end: end_ch,
+                excerpt: self.selection_excerpt(),
+            },
+            color: self.hi_color,
+            text,
+        })
+    }
+
+    /// Select a passage of the open book as a drag would and reveal its page.
+    fn select_passage(
+        &mut self,
+        book_id: &str,
+        chapter: usize,
+        start: (usize, usize),
+        end: (usize, Option<usize>),
+    ) -> Result<(), String> {
+        let index = self
+            .library
+            .iter()
+            .position(|book| book.id == book_id)
+            .ok_or("book is no longer in the library")?;
+        let blocks = self
+            .library
+            .get(index)
+            .and_then(|book| book.chapters.get(chapter))
+            .map(|chapter| &chapter.blocks)
+            .ok_or("chapter is not in this book")?;
+        let chars = |block: usize| blocks.get(block).map(|b| b.plain_text().chars().count());
+        let (start_block, end_block) = (start.0, end.0);
+        let (Some(start_len), Some(end_len)) = (chars(start_block), chars(end_block)) else {
+            return Err("block is not in this chapter".into());
+        };
+        let anchor = DocPos {
+            block: start_block,
+            ch: start.1.min(start_len),
+        };
+        let head = DocPos {
+            block: end_block,
+            ch: end.1.unwrap_or(end_len).min(end_len),
+        };
+        if head.key() <= anchor.key() {
+            return Err("the passage ends before it starts".into());
+        }
+        if self.book_idx != index || self.chapter != chapter {
+            self.book_idx = index;
+            self.chapter = chapter;
+            self.page = 0;
+            self.layout = None;
+            self.last_persisted = None;
+        }
+        self.view = View::Reader;
+        self.composing = None;
+        self.note_composer.close();
+        self.comment_overlay.close();
+        self.sel = Some(TextSel { anchor, head });
+        self.selected_block = Some(anchor.block);
+        self.pending_jump_block = Some(anchor.block);
+        self.dirty = true;
+        Ok(())
     }
 }
 
@@ -785,6 +881,8 @@ pub struct BooksApp {
     /// A book handed to the app by the OS (file association) to open + import
     /// on the first `sync`.
     pending_open_path: Option<PathBuf>,
+    /// A shelf book, by content id, to open on the first `sync`.
+    pending_open_book: Option<String>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
@@ -1138,6 +1236,7 @@ impl BooksApp {
             // `new()` clears this so the document load runs.
             library_loaded: true,
             pending_open_path: None,
+            pending_open_book: None,
             portal_rx: None,
             resource_invocation: None,
             resource_lifecycle: None,
@@ -1276,6 +1375,13 @@ impl BooksApp {
         app.pending_open_path = Some(path.to_path_buf());
         app.view = View::Reader;
         app
+    }
+
+    /// Open the shelf book with content id `book_id` in the reader, at its
+    /// recorded position, once the library loads. The shelf stays home when
+    /// the library does not hold it.
+    pub fn open_book_on_load(&mut self, book_id: &str) {
+        self.pending_open_book = Some(book_id.into());
     }
 
     /// Screenshot-only: force the floating page bubble hover-pinned open so
@@ -2235,10 +2341,16 @@ impl BooksApp {
             Arc::make_mut(&mut self.library).push(Arc::new(lb.book));
         }
 
+        let pending_book = self
+            .pending_open_book
+            .take()
+            .and_then(|id| self.library.iter().position(|book| book.id == id));
         if let Some(path) = pending_open {
             if let Err(error) = self.begin_import(path, ImportKind::Open) {
                 self.settle_import_failure(error, "ebook.importer_unavailable");
             }
+        } else if let Some(index) = pending_book {
+            self.open_book_at(doc, index);
         } else {
             self.view = View::Library;
         }
@@ -2824,29 +2936,9 @@ impl BooksApp {
     fn on_add_note(&mut self, doc: &mut AutoCommit) {
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
-        let anchor = self.sel.filter(|s| !s.is_empty()).map(|s| {
-            let (start, end) = s.ordered();
-            (start.block, start.ch, end.ch.max(start.ch))
-        });
-        if let Some((block, start, end)) = anchor {
-            let book_id = self.book_id();
-            let excerpt = self.selection_excerpt();
-            let id = Uuid::new_v4();
-            let action = crate::actions::NoteDraft {
-                book_id,
-                id,
-                anchor: AnnotationAnchor {
-                    chapter: self.chapter,
-                    block,
-                    start,
-                    end,
-                    excerpt,
-                },
-                color: self.hi_color,
-                text: String::new(),
-            }
-            .into_action();
-            self.perform_action(doc, &action);
+        if let Some(draft) = self.selection_note_draft(String::new()) {
+            let id = draft.id;
+            self.perform_action(doc, &draft.into_action());
             self.composing = Some(id);
             self.note_composer.open(id, "");
         }
@@ -3732,7 +3824,7 @@ impl BooksApp {
             doc,
             crate::actions::EBOOK_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Ebook", "Ebook", action),
+            tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
     }
 
@@ -4714,6 +4806,19 @@ impl Widget for BooksApp {
                 self.last_persisted = None;
                 self.dirty = true;
             }
+            EbookOperation::SelectPassage {
+                book_id,
+                chapter,
+                start_block,
+                start_char,
+                end_block,
+                end_char,
+            } => self.select_passage(
+                &book_id,
+                chapter,
+                (start_block, start_char),
+                (end_block, end_char),
+            )?,
             EbookOperation::OpenBook => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
@@ -5059,6 +5164,10 @@ impl Widget for BooksApp {
                         0_u8.hash(&mut action_hasher);
                         encoded.type_id.hash(&mut action_hasher);
                         encoded.payload.hash(&mut action_hasher);
+                    }
+                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
+                        2_u8.hash(&mut action_hasher);
+                        type_id.hash(&mut action_hasher);
                     }
                     tilo_actions::ActionInput::Prompted {
                         prompt,
@@ -5732,8 +5841,8 @@ impl Widget for BooksApp {
         // easing in, or the floating page bubble is lingering/fading.
         !self.reduce_motion
             && (self.flaps_animating()
-                || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-                || self.reader_bubble.needs_frame(Instant::now()))
+                || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
+                || self.reader_bubble.needs_frame(ui::time::now()))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -8522,7 +8631,7 @@ impl BooksApp {
             self.page_turn = None;
             return (false, t, 1.0);
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let turning = match self.page_turn {
             Some(pt) if !pt.done(now) && !mode.is_continuous() => true,
             Some(_) => {

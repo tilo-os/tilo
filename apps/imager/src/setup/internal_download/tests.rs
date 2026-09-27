@@ -2467,7 +2467,7 @@ fn returned_request_boundaries_observe_pause_cancel_and_reset() {
                 let (entered, waiting) = std::sync::mpsc::sync_channel(0);
                 let (release, released) = std::sync::mpsc::sync_channel(0);
                 let controller = thread::spawn(move || {
-                    waiting.recv_timeout(crate::HANG_BOUND).unwrap();
+                    tilo_test_env::recv("the body read to block", &waiting);
                     if mode > 0 {
                         p.store(true, Ordering::Release);
                     }
@@ -2484,7 +2484,7 @@ fn returned_request_boundaries_observe_pause_cancel_and_reset() {
                     Box::new(move |stage, n| {
                         if stage == "body-read-enter" && n == 4096 {
                             entered.send(()).unwrap();
-                            released.recv_timeout(crate::HANG_BOUND).unwrap();
+                            tilo_test_env::recv("the body read release", &released);
                         }
                     }),
                     || {

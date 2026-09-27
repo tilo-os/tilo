@@ -417,11 +417,12 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
 pub fn content() -> &'static tilo_content::ContentStore {
     static CONTENT: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
     CONTENT.get_or_init(|| {
-        if cfg!(test) {
-            tilo_content::ContentStore::memory()
-        } else {
-            tilo_content::ContentStore::for_app()
+        // The browser build has no local store; it keeps content in memory.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !cfg!(test) {
+            return tilo_content::ContentStore::for_app();
         }
+        tilo_content::ContentStore::memory()
     })
 }
 

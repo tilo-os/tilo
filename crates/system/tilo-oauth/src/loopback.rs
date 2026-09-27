@@ -305,7 +305,7 @@ mod tests {
             browser_get(port, "/oauth?code=THECODE&state=STATE123")
         });
         let code = server
-            .wait_for_code("STATE123", Duration::from_secs(10))
+            .wait_for_code("STATE123", tilo_test_env::hang_bound())
             .unwrap();
         assert_eq!(code, "THECODE");
         assert!(browser.join().unwrap().contains("close this tab"));
@@ -317,7 +317,7 @@ mod tests {
         let port = server.port();
         let browser = std::thread::spawn(move || browser_get(port, "/oauth?code=X&state=WRONG"));
         assert_eq!(
-            server.wait_for_code("EXPECTED", Duration::from_secs(10)),
+            server.wait_for_code("EXPECTED", tilo_test_env::hang_bound()),
             Err(OAuthError::StateMismatch)
         );
         browser.join().unwrap();
@@ -333,7 +333,7 @@ mod tests {
         let server = LoopbackServer::bind().unwrap();
         server.canceller().cancel();
         assert_eq!(
-            server.wait_for_code("S", Duration::from_secs(60)),
+            server.wait_for_code("S", tilo_test_env::hang_bound()),
             Err(OAuthError::Cancelled)
         );
     }

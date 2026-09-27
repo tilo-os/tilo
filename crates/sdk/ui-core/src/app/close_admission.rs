@@ -11,8 +11,14 @@ use crate::widget::Widget;
 mod native_quit_request;
 
 impl App {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "native"))]
     pub(super) fn admit_native_close_request(&mut self) -> bool {
+        // Native hosts may deliver another window-close or application Quit
+        // while a decision is already visible. Coalesce it at the native
+        // boundary so explicit API retries can still re-check repaired owners.
+        if self.close_admission.dialog.is_some() {
+            return false;
+        }
         self.request_close() && self.finish_close_if_ready()
     }
 

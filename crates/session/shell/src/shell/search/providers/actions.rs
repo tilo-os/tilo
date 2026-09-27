@@ -16,9 +16,11 @@ use tilo_clock::unix_now;
 use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod native_identity;
 mod text_insert;
 
 /// What `record.bring` must be told.
@@ -160,7 +162,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
-        | "room.activity.open" => {
+        | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay" => {
             contract = ActionContract::view();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -174,7 +178,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "peer.invite.named" | "agent.invite" => {
             contract.permission = PermissionRequirement::Invite;
         }
-        "peer.invite" | "peer.connect" => contract = ActionContract::view(),
+        "peer.invite" | "peer.connect" => {
+            contract = ActionContract::view();
+            contract.permission = PermissionRequirement::Invite;
+        }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
         "text.insert"
@@ -203,6 +210,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        BLUETOOTH_PAIRING_DECLINE_ID => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         _ => {}
     }
     contract
@@ -224,6 +235,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "capture.open"
         | "collaborators.open"
         | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
         "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
@@ -436,12 +449,12 @@ fn apply_permission_profile_action(
                 tree.doc_insert_capability(workspace_id, &capability);
             }
         }
-        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use crate::shell::workspace_settings::PermissionProfileOperation;
+        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use tilo_desktop::workspace_settings::PermissionProfileOperation;
             let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
             let operation =
-                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
@@ -460,7 +473,7 @@ fn apply_permission_profile_action(
                 .active_workspace()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
                 .actor_for_person(&actor);
-            crate::shell::workspace_settings::apply_app_action_operation(
+            crate::shell::workspace_governance::apply_app_action_operation(
                 &mut tree,
                 workspace_id,
                 &person,
@@ -752,7 +765,9 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
 #[derive(Clone)]
 struct Action {
     id: &'static str,
+    /// Catalogue key of the row's title, resolved when the row is built.
     label: &'static str,
+    /// Catalogue key of the row's subtitle.
     subtitle: &'static str,
     /// Empty for everything that only needs to be told to happen.
     params: &'static [ActionParam],
@@ -779,8 +794,8 @@ impl Action {
     const ALL: &'static [Action] = &[
         chrome(
             "shortcut-help.toggle",
-            "Show desktop help",
-            "F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide",
+            "search-action-shortcut-help-toggle",
+            "search-action-shortcut-help-toggle-subtitle",
             |st, _| {
                 st.overlays.shortcut_help = !st.overlays.shortcut_help;
                 Ok(())
@@ -788,8 +803,8 @@ impl Action {
         ),
         chrome(
             "desktop-tour.open",
-            "Take the desktop tour",
-            "Revisit the three-minute introduction to navigation, organisation and collaboration",
+            "search-action-desktop-tour-open",
+            "search-action-desktop-tour-open-subtitle",
             |st, _| {
                 st.overlays.desktop_tour = true;
                 Ok(())
@@ -797,8 +812,8 @@ impl Action {
         ),
         chrome(
             "overview.toggle",
-            "Toggle workspace overview",
-            "Show all workspaces in the wheel view",
+            "search-action-overview-toggle",
+            "search-action-overview-toggle-subtitle",
             |st, _| {
                 st.overlays.overview = !st.overlays.overview;
                 Ok(())
@@ -806,44 +821,44 @@ impl Action {
         ),
         chrome(
             "settings.open",
-            "Open workspace settings",
-            "Identity, people, privacy, apps and files for this workspace",
+            "search-action-settings-open",
+            "search-action-settings-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
             },
         ),
         chrome(
             "settings.members.open",
-            "Open workspace people",
-            "People, roles and invitations in this workspace",
+            "search-action-settings-members-open",
+            "search-action-settings-members-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
             },
         ),
         chrome(
             "settings.privacy.open",
-            "Open workspace privacy & security",
-            "App grants and enforced access for this workspace",
+            "search-action-settings-privacy-open",
+            "search-action-settings-privacy-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
             },
         ),
         chrome(
             "settings.apps.open",
-            "Open workspace apps & files",
-            "Shared app defaults and your workspace overrides",
+            "search-action-settings-apps-open",
+            "search-action-settings-apps-open-subtitle",
             |st, _| {
-                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
             },
         ),
         Action {
             id: "identity.connect",
-            label: "Add an existing identity",
-            subtitle: "Import identity credentials and use them in this workspace",
+            label: "search-action-identity-connect",
+            subtitle: "search-action-identity-connect-subtitle",
             params: IDENTITY_CONNECT_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "connect this identity")?;
@@ -866,7 +881,10 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let delegated = {
+                let enrolled = st.tree().requires_native_owner(room);
+                let delegated = if enrolled {
+                    Some(())
+                } else {
                     let mut tree = st.tree_mut();
                     tree.grant_in_workspace(
                         workspace_id,
@@ -877,6 +895,7 @@ impl Action {
                             crate::shell::state::Verb::Admin,
                         ),
                     )
+                    .map(|_| ())
                 };
                 if delegated.is_none() {
                     return Err(ActionError::Refused(
@@ -887,6 +906,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -894,8 +914,8 @@ impl Action {
         },
         Action {
             id: "identity.select",
-            label: "Use identity in this workspace",
-            subtitle: "Select one of the identities already connected to this device",
+            label: "search-action-identity-select",
+            subtitle: "search-action-identity-select-subtitle",
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "select this identity")?;
@@ -909,7 +929,7 @@ impl Action {
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())
                 })?;
-                {
+                if !st.tree().requires_native_owner(room) {
                     let mut tree = st.tree_mut();
                     if tree
                         .grant_in_workspace(
@@ -931,6 +951,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), identity_id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -938,8 +959,8 @@ impl Action {
         },
         chrome(
             "identity.devices.copy",
-            "Copy connected device list",
-            "Copy device names, fingerprints, capabilities, and revocation state",
+            "search-action-identity-devices-copy",
+            "search-action-identity-devices-copy-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let fleet = crate::device_fleet::DeviceFleetStore::from_env()
@@ -965,16 +986,19 @@ impl Action {
                     .join("\n");
                 ui::text_selection::clipboard_copy(&lines);
                 st.push_notification(
-                    "Device list copied",
-                    format!("{} device(s)", fleet.certificates.len()),
+                    t("search-action-device-list-copied"),
+                    t_args(
+                        "search-action-device-list-copied-body",
+                        &[("count", fleet.certificates.len().into())],
+                    ),
                 );
                 Ok(())
             },
         ),
         chrome(
             "identity.device.enroll",
-            "Enroll another device",
-            "Copy a device setup code that is valid for five minutes",
+            "search-action-identity-device-enroll",
+            "search-action-identity-device-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let now = now_ns_u64();
@@ -991,16 +1015,16 @@ impl Action {
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 ui::text_selection::clipboard_copy(&token);
                 st.push_notification(
-                    "Enrollment token copied",
-                    "It expires in five minutes and cannot admit further devices.",
+                    t("search-action-enrollment-copied"),
+                    t("search-action-enrollment-copied-body"),
                 );
                 Ok(())
             },
         ),
         chrome(
             "identity.home-peer.enroll",
-            "Pair a home server",
-            "Copy a five-minute setup code with always-on full-sync access",
+            "search-action-identity-home-peer-enroll",
+            "search-action-identity-home-peer-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let now = now_ns_u64();
@@ -1017,16 +1041,16 @@ impl Action {
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 ui::text_selection::clipboard_copy(&token);
                 st.push_notification(
-                    "Home-server setup code copied",
-                    "It expires in five minutes and grants full workspace replication.",
+                    t("search-action-home-server-copied"),
+                    t("search-action-home-server-copied-body"),
                 );
                 Ok(())
             },
         ),
         Action {
             id: "identity.device.revoke",
-            label: "Revoke an identity device",
-            subtitle: "Permanently stop trusting a lost, retired, or compromised device",
+            label: "search-action-identity-device-revoke",
+            subtitle: "search-action-identity-device-revoke-subtitle",
             params: DEVICE_REVOKE_PARAMS,
             apply: |st, args| {
                 if args.boolean("confirm") != Some(true) {
@@ -1061,16 +1085,16 @@ impl Action {
                 // device-key filesystem grants exported for it.
                 st.tree().export_fs_capabilities();
                 st.push_notification(
-                    "Device revoked",
-                    "The revocation was root-signed and recorded in this identity's device list.",
+                    t("search-action-device-revoked"),
+                    t("search-action-device-revoked-body"),
                 );
                 Ok(())
             },
         },
         chrome(
             "quick-settings.open",
-            "Open quick settings",
-            "Brightness, volume, Wi-Fi, Bluetooth, power profile",
+            "search-action-quick-settings-open",
+            "search-action-quick-settings-open-subtitle",
             |st, _| {
                 st.open_quick_settings();
                 Ok(())
@@ -1078,8 +1102,8 @@ impl Action {
         ),
         chrome(
             "quick-settings.clipboard",
-            "Open clipboard history",
-            "Search, pin, remove, or reuse private clipboard items",
+            "search-action-quick-settings-clipboard",
+            "search-action-quick-settings-clipboard-subtitle",
             |st, _| {
                 st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
                 Ok(())
@@ -1087,8 +1111,8 @@ impl Action {
         ),
         chrome(
             "quick-settings.devices",
-            "Open devices and media",
-            "Certified devices, media routes, remote input, and handoffs",
+            "search-action-quick-settings-devices",
+            "search-action-quick-settings-devices-subtitle",
             |st, _| {
                 st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
                 Ok(())
@@ -1096,8 +1120,8 @@ impl Action {
         ),
         chrome(
             "projection.open",
-            "Choose where the desktop appears",
-            "Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver",
+            "search-action-projection-open",
+            "search-action-projection-open-subtitle",
             |st, _| {
                 st.overlays.projection = true;
                 Ok(())
@@ -1105,44 +1129,50 @@ impl Action {
         ),
         chrome(
             DISPLAY_EXTEND_ID,
-            "Extend displays",
-            "Use every connected display as one larger desktop",
+            "search-action-display-layout-extend",
+            "search-action-display-layout-extend-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Extend),
         ),
         chrome(
             DISPLAY_MIRROR_ID,
-            "Mirror displays",
-            "Show the same picture on every connected display",
+            "search-action-display-layout-mirror",
+            "search-action-display-layout-mirror-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Mirror),
         ),
         chrome(
             DISPLAY_BUILTIN_ONLY_ID,
-            "Show only on this screen",
-            "Turn external displays off and keep the built-in screen",
+            "search-action-display-layout-builtin-only",
+            "search-action-display-layout-builtin-only-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::BuiltinOnly),
         ),
         chrome(
             DISPLAY_EXTERNAL_ONLY_ID,
-            "Show only on external displays",
-            "Turn the built-in screen off and use the external displays",
+            "search-action-display-layout-external-only",
+            "search-action-display-layout-external-only-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
         ),
         chrome(
             DISPLAY_KEEP_ID,
-            "Keep display settings",
-            "Confirm the display layout that was just applied",
+            "search-action-display-change-keep",
+            "search-action-display-change-keep-subtitle",
             |_, _| settle_display_change(true),
         ),
         chrome(
             DISPLAY_REVERT_ID,
-            "Revert display settings",
-            "Restore the display layout from before the last change",
+            "search-action-display-change-revert",
+            "search-action-display-change-revert-subtitle",
             |_, _| settle_display_change(false),
         ),
         chrome(
+            BLUETOOTH_PAIRING_DECLINE_ID,
+            "search-action-bluetooth-pairing-decline",
+            "search-action-bluetooth-pairing-decline-subtitle",
+            |_, _| decline_bluetooth_pairing(),
+        ),
+        chrome(
             "capture.open",
-            "Capture or float part of the screen",
-            "Screenshot, record, or make PiP from one or more regions",
+            "search-action-capture-open",
+            "search-action-capture-open-subtitle",
             |st, _| {
                 st.overlays.capture = true;
                 Ok(())
@@ -1150,8 +1180,8 @@ impl Action {
         ),
         Action {
             id: "capture.screenshot.send",
-            label: "Send the last screenshot",
-            subtitle: "To one of your devices, or into this workspace's files",
+            label: "search-action-capture-screenshot-send",
+            subtitle: "search-action-capture-screenshot-send-subtitle",
             params: SCREENSHOT_SEND_PARAMS,
             apply: |st, args| {
                 let target = args.text("target").unwrap_or_default().trim();
@@ -1170,8 +1200,8 @@ impl Action {
         },
         chrome(
             "collaborators.open",
-            "Show collaborators",
-            "Collaborators currently in this workspace",
+            "search-action-collaborators-open",
+            "search-action-collaborators-open-subtitle",
             |st, _| {
                 st.overlays.collaborators = true;
                 Ok(())
@@ -1179,14 +1209,17 @@ impl Action {
         ),
         Action {
             id: "presence.follow",
-            label: "Follow a collaborator",
-            subtitle: "Keep this view attached to a connected person or visible agent",
+            label: "search-action-presence-follow",
+            subtitle: "search-action-presence-follow-subtitle",
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
-                let followable = crate::shell::overlay_host::collaborator_roster_rows(&st.tree())
-                    .into_iter()
-                    .any(|row| row.id == id && row.followable);
+                let followable = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && row.followable);
                 if !followable {
                     return Err(ActionError::Refused(format!(
                         "`{id}` is not a connected, followable collaborator in this workspace"
@@ -1200,8 +1233,8 @@ impl Action {
         },
         chrome(
             "presence.follow.stop",
-            "Stop following",
-            "Return this view to local navigation",
+            "search-action-presence-follow-stop",
+            "search-action-presence-follow-stop-subtitle",
             |st, _| {
                 st.push_presence_request(
                     crate::shell::chrome_state::PresenceRequest::StopFollowing,
@@ -1211,8 +1244,8 @@ impl Action {
         ),
         Action {
             id: "presence.status.set",
-            label: "Set workspace status",
-            subtitle: "Publish an explicit status, or clear it with an empty value",
+            label: "search-action-presence-status-set",
+            subtitle: "search-action-presence-status-set-subtitle",
             params: PRESENCE_STATUS_PARAMS,
             apply: |st, args| {
                 let text = args.text("text").unwrap_or_default().trim();
@@ -1232,8 +1265,8 @@ impl Action {
         },
         Action {
             id: "presence.status-sharing.set",
-            label: "Set status privacy",
-            subtitle: "Choose whether status is off, explicit-only, or automatically inferred",
+            label: "search-action-presence-status-sharing-set",
+            subtitle: "search-action-presence-status-sharing-set-subtitle",
             params: PRESENCE_SHARING_PARAMS,
             apply: |st, args| {
                 let mode = match args
@@ -1260,8 +1293,8 @@ impl Action {
         },
         chrome(
             "room.activity.open",
-            "Show workspace activity",
-            "History of this workspace: changes, permissions, who did what and when",
+            "search-action-room-activity-open",
+            "search-action-room-activity-open-subtitle",
             |st, _| {
                 st.overlays.room_activity = true;
                 // The sheet covers the dropdown that can also open it.
@@ -1273,8 +1306,8 @@ impl Action {
         // un-ranked row would lose "invite" to a file with the word in its name.
         chrome(
             "peer.invite",
-            "Invite a collaborator…",
-            "Review an invite before creating it",
+            "search-action-peer-invite",
+            "search-action-peer-invite-subtitle",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PromptInvite);
                 Ok(())
@@ -1282,8 +1315,8 @@ impl Action {
         ),
         chrome(
             "peer.connect",
-            "Open join-workspace prompt",
-            "Enter and review an invite from a collaborator",
+            "search-action-peer-connect",
+            "search-action-peer-connect-subtitle",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
@@ -1298,8 +1331,8 @@ impl Action {
         // live; the peer id stays the identity, the name is just a label.
         Action {
             id: "peer.invite.named",
-            label: "Name collaborator and open invite",
-            subtitle: "Record the display name, then review their invite before creating it",
+            label: "search-action-peer-invite-named",
+            subtitle: "search-action-peer-invite-named-subtitle",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
                 let name = name_invited_peer(st, args)?;
@@ -1320,12 +1353,12 @@ impl Action {
         // capability naming it — no token, no prompt, just the grant.
         Action {
             id: "agent.invite",
-            label: "Invite agent to workspace",
-            subtitle: "Start a scoped agent setup; choose every surface it may use",
+            label: "search-action-agent-invite",
+            subtitle: "search-action-agent-invite-subtitle",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject};
-                use crate::shell::workspace_settings::AgentAuthorityPreset;
+                use tilo_desktop::workspace_settings::AgentAuthorityPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -1365,10 +1398,7 @@ impl Action {
                         room,
                         preset.admission_verb(),
                     )
-                    .with_id(format!(
-                        "agent-member:{agent}:{}",
-                        preset.label().to_ascii_lowercase()
-                    ));
+                    .with_id(format!("agent-member:{agent}:{}", preset.id()));
                     tree.grant_in_workspace(ws_id, &user, cap)
                 };
                 if granted.is_none() {
@@ -1384,8 +1414,8 @@ impl Action {
         },
         chrome(
             "tab.new.terminal.here",
-            "New terminal tab here",
-            "Open a terminal as a tab in the focused window group",
+            "search-action-tab-new-terminal-here",
+            "search-action-tab-new-terminal-here-subtitle",
             |st, _| {
                 crate::shell::window_actions::open_terminal(
                     st,
@@ -1396,8 +1426,8 @@ impl Action {
         ),
         chrome(
             "window.new.terminal",
-            "New terminal window",
-            "Open a terminal beside the focused window",
+            "search-action-window-new-terminal",
+            "search-action-window-new-terminal-subtitle",
             |st, _| {
                 crate::shell::window_actions::open_terminal(
                     st,
@@ -1408,13 +1438,13 @@ impl Action {
         ),
         chrome(
             "tab.duplicate",
-            "Duplicate this tab",
-            "Open a second instance of the focused app beside it",
+            "search-action-tab-duplicate",
+            "search-action-tab-duplicate-subtitle",
             |st, _| {
                 crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
                     |err| {
                         let message = err.user_message();
-                        st.push_warning_notification("Can't duplicate this tab", &message);
+                        st.push_warning_notification(t("host-tab-duplicate-failed"), &message);
                         Err(ActionError::Refused(message))
                     },
                     |_| Ok(()),
@@ -1426,20 +1456,20 @@ impl Action {
         // rows and these closures call the same `window_actions` functions.
         chrome(
             "tab.close",
-            "Close this tab",
-            "Close the focused tab; its window closes with it if it was the last",
+            "search-action-tab-close",
+            "search-action-tab-close-subtitle",
             |st, _| {
                 crate::shell::window_actions::close_active_tab(st).map_err(|err| {
                     let message = err.user_message();
-                    st.push_warning_notification("Can't close this tab", &message);
+                    st.push_warning_notification(t("search-action-tab-close-failed"), &message);
                     ActionError::Refused(message)
                 })
             },
         ),
         chrome(
             "tab.reopen",
-            "Reopen closed tab",
-            "Bring back the tab closed most recently in this workspace, where it was",
+            "search-action-tab-reopen",
+            "search-action-tab-reopen-subtitle",
             |st, _| {
                 st.reopen_closed_tab().map(|_| ()).ok_or_else(|| {
                     ActionError::Refused("no closed tab to reopen in this workspace".into())
@@ -1448,8 +1478,8 @@ impl Action {
         ),
         chrome(
             "tab.split-right",
-            "Split this tab to the right",
-            "Move the focused tab into a new window group beside its current one",
+            "search-action-tab-split-right",
+            "search-action-tab-split-right-subtitle",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -1458,15 +1488,15 @@ impl Action {
                 .map(|_| ())
                 .map_err(|err| {
                     let message = err.user_message();
-                    st.push_warning_notification("Can't split this tab", &message);
+                    st.push_warning_notification(t("search-action-tab-split-failed"), &message);
                     ActionError::Refused(message)
                 })
             },
         ),
         chrome(
             "tab.move-to-new-group",
-            "Move this tab to a new group",
-            "Move the focused tab into a new window group at the end of its strip",
+            "search-action-tab-move-to-new-group",
+            "search-action-tab-move-to-new-group-subtitle",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -1475,15 +1505,15 @@ impl Action {
                 .map(|_| ())
                 .map_err(|err| {
                     let message = err.user_message();
-                    st.push_warning_notification("Can't move this tab", &message);
+                    st.push_warning_notification(t("host-tab-move-failed"), &message);
                     ActionError::Refused(message)
                 })
             },
         ),
         chrome(
             "notifications.dnd.toggle",
-            "Toggle Do Not Disturb",
-            "Silence notification banners; held notifications go to history",
+            "search-action-notifications-dnd-toggle",
+            "search-action-notifications-dnd-toggle-subtitle",
             |st, _| {
                 st.toggle_dnd();
                 Ok(())
@@ -1493,8 +1523,8 @@ impl Action {
         // the chrome around one, and so the first told *what* to write.
         Action {
             id: text_insert::ACTION_ID,
-            label: "Insert text into the focused note",
-            subtitle: "Write into the focused Notes or Editor tab at a character offset",
+            label: "search-action-text-insert",
+            subtitle: "search-action-text-insert-subtitle",
             params: text_insert::PARAMS,
             apply: text_insert::apply,
         },
@@ -1502,8 +1532,8 @@ impl Action {
         // address for a caller that names a record itself.
         Action {
             id: "record.bring",
-            label: "Add an item to this workspace",
-            subtitle: "Make it available here without moving the original",
+            label: "search-action-record-bring",
+            subtitle: "search-action-record-bring-subtitle",
             params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
@@ -1835,6 +1865,24 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
+
+/// Decline the Bluetooth pairing question on screen, or stop the pairing
+/// whose code it displays.
+///
+/// There is deliberately no accepting counterpart. Confirming a pairing
+/// means comparing a code with the device in front of you, or typing the one
+/// it shows; only the person at this machine can do that, on the dialog
+/// itself. An agent or a script can always say no, and never yes.
+fn decline_bluetooth_pairing() -> Result<(), ActionError> {
+    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(
+            "no Bluetooth pairing is waiting".into(),
+        ))
+    }
+}
 
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
@@ -1897,7 +1945,7 @@ fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract 
     if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
-            reason: "Quick Settings service is unavailable".into(),
+            reason: t("search-action-quick-settings-unavailable"),
         };
     }
     contract
@@ -1995,29 +2043,28 @@ impl SearchProvider for ActionsProvider {
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
-                "Set display brightness",
-                "Set a monitor's brightness percentage: the panel backlight or an external \
-                 monitor over DDC/CI",
+                "search-action-quick-settings-brightness-set",
+                "search-action-quick-settings-brightness-set-subtitle",
             ),
             (
                 QS_VOLUME_ID,
-                "Set output volume",
-                "Set this device's default audio output percentage",
+                "search-action-quick-settings-volume-set",
+                "search-action-quick-settings-volume-set-subtitle",
             ),
             (
                 QS_WIFI_ID,
-                "Set Wi-Fi enabled state",
-                "Enable or disable this device's Wi-Fi radio",
+                "search-action-quick-settings-wifi-set-enabled",
+                "search-action-quick-settings-wifi-set-enabled-subtitle",
             ),
             (
                 QS_POWER_ID,
-                "Set power profile",
-                "Choose saver, balanced, or performance for this device",
+                "search-action-quick-settings-power-profile-set",
+                "search-action-quick-settings-power-profile-set-subtitle",
             ),
             (
                 QS_VPN_ID,
-                "Set VPN enabled state",
-                "Enable or disable one named VPN connection on this device",
+                "search-action-quick-settings-vpn-set-enabled",
+                "search-action-quick-settings-vpn-set-enabled-subtitle",
             ),
         ];
         if !ctx.wanted.contains(&ResourceKind::Action) {
@@ -2039,8 +2086,10 @@ impl SearchProvider for ActionsProvider {
             {
                 continue;
             }
-            let label_lower = action.label.to_lowercase();
-            let subtitle_lower = action.subtitle.to_lowercase();
+            let label = t(action.label);
+            let subtitle = t(action.subtitle);
+            let label_lower = label.to_lowercase();
+            let subtitle_lower = subtitle.to_lowercase();
             let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
             if let Some(score) = score {
                 let apply = action.apply;
@@ -2199,8 +2248,8 @@ impl SearchProvider for ActionsProvider {
                     operation_kind: shell_action_kind(action.id),
                     provider_id: self.id().to_string(),
                     id: action.id.to_string(),
-                    title: action.label.to_string(),
-                    subtitle: Some(action.subtitle.to_string()),
+                    title: label,
+                    subtitle: Some(subtitle),
                     badge: None,
                     score,
                     params: action.params.to_vec(),
@@ -2211,7 +2260,45 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        for &(id, label, subtitle) in QUICK_SETTINGS_ACTIONS {
+        let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree().desktop,
+            true,
+        );
+        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
+        for descriptor in descriptors {
+            let Some(score) = match_score(
+                &needle_lower,
+                &descriptor.label.to_lowercase(),
+                &view_keywords,
+                &descriptor.id,
+            ) else {
+                continue;
+            };
+            let request = descriptor.request;
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::View,
+                provider_id: self.id().into(),
+                id: descriptor.id,
+                title: descriptor.label,
+                subtitle: Some(t("search-action-workspace-view-subtitle")),
+                badge: None,
+                score,
+                params: vec![],
+                contract: Some(tilo_actions::ActionContract::view()),
+                on_open: Rc::new(move |_, _, chrome, _| {
+                    chrome
+                        .borrow_mut()
+                        .request_workspace_view(request.clone())
+                        .map_err(ActionError::Refused)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
+        }
+        for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
+            let label = t(label_key);
+            let subtitle = t(subtitle_key);
             let Some(score) = match_score(
                 &needle_lower,
                 &label.to_lowercase(),
@@ -2228,8 +2315,8 @@ impl SearchProvider for ActionsProvider {
                 badge: None,
                 provider_id: self.id().to_string(),
                 id: id.to_string(),
-                title: label.to_string(),
-                subtitle: Some(subtitle.to_string()),
+                title: label,
+                subtitle: Some(subtitle),
                 score,
                 params: quick_settings_params(id),
                 contract: Some(quick_settings_contract_for(available)),
@@ -2295,14 +2382,15 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
             for action in resource.actions {
-                let subtitle = action.description.clone().unwrap_or_else(|| {
-                    "Signed workspace governance action for the active workspace".into()
-                });
+                let subtitle = action
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| t("search-action-governance-subtitle"));
                 if let Some(score) = match_score(
                     &needle_lower,
                     &action.label.to_lowercase(),
@@ -2337,7 +2425,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -2350,9 +2438,10 @@ impl SearchProvider for ActionsProvider {
             );
             for (resource_id, actions) in surfaces {
                 for action in actions {
-                    let subtitle = action.description.clone().unwrap_or_else(|| {
-                        "Manage reusable least-privilege workspace roles".into()
-                    });
+                    let subtitle = action
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
                     let Some(score) = match_score(
                         &needle_lower,
                         &action.label.to_lowercase(),
@@ -2388,8 +2477,8 @@ impl SearchProvider for ActionsProvider {
         }
         if let Some(preferences) = &self.search_preferences {
             let id = "search.provider.set";
-            let label = "Enable or disable a search source";
-            let subtitle = "Customize which providers appear in search and agent results";
+            let label = t("search-action-search-provider-set");
+            let subtitle = t("search-action-search-provider-set-subtitle");
             if let Some(score) = match_score(
                 &needle_lower,
                 &label.to_lowercase(),
@@ -2402,8 +2491,8 @@ impl SearchProvider for ActionsProvider {
                     operation_kind: tilo_actions::OperationKind::Effect,
                     provider_id: self.id().to_string(),
                     id: id.to_string(),
-                    title: label.to_string(),
-                    subtitle: Some(subtitle.to_string()),
+                    title: label,
+                    subtitle: Some(subtitle),
                     badge: None,
                     score,
                     params: SEARCH_PROVIDER_SET_PARAMS.to_vec(),
@@ -2442,12 +2531,21 @@ impl SearchProvider for ActionsProvider {
                         continue;
                     }
                     let enabled = preferences.borrow().provider_enabled(provider_id);
-                    let verb = if enabled { "Disable" } else { "Enable" };
-                    let label = format!("{verb} {provider_name} search");
-                    let subtitle = format!(
-                        "{} the `{provider_id}` source in search and agent discovery",
-                        if enabled { "Hide" } else { "Show" },
-                    );
+                    let source: &[(&str, ui::i18n::ArgValue)] = &[
+                        ("source", provider_name.clone().into()),
+                        ("id", provider_id.clone().into()),
+                    ];
+                    let (label, subtitle) = if enabled {
+                        (
+                            t_args("search-action-provider-disable", source),
+                            t_args("search-action-provider-disable-subtitle", source),
+                        )
+                    } else {
+                        (
+                            t_args("search-action-provider-enable", source),
+                            t_args("search-action-provider-enable-subtitle", source),
+                        )
+                    };
                     let Some(score) = match_score(
                         &needle_lower,
                         &label.to_lowercase(),
@@ -2465,7 +2563,11 @@ impl SearchProvider for ActionsProvider {
                         id: format!("search.provider.toggle:{provider_id}"),
                         title: label,
                         subtitle: Some(subtitle),
-                        badge: Some(if enabled { "ON" } else { "OFF" }.into()),
+                        badge: Some(if enabled {
+                            t("search-action-provider-badge-on")
+                        } else {
+                            t("search-action-provider-badge-off")
+                        }),
                         score,
                         params: Vec::new(),
                         contract: None,
@@ -2491,14 +2593,15 @@ impl SearchProvider for ActionsProvider {
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
         if let Some(resource) = ownership_resource {
             for action in resource.actions {
-                let subtitle = action.description.clone().unwrap_or_else(|| {
-                    "Signed workspace governance action for the active workspace".into()
-                });
+                let subtitle = action
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| t("search-action-governance-subtitle"));
                 if let Some(score) = match_score(
                     &needle_lower,
                     &action.label.to_lowercase(),
@@ -2533,7 +2636,7 @@ impl SearchProvider for ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -2546,9 +2649,10 @@ impl SearchProvider for ActionsProvider {
             );
             for (resource_id, actions) in surfaces {
                 for action in actions {
-                    let subtitle = action.description.clone().unwrap_or_else(|| {
-                        "Manage reusable least-privilege workspace roles".into()
-                    });
+                    let subtitle = action
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
                     let Some(score) = match_score(
                         &needle_lower,
                         &action.label.to_lowercase(),
@@ -2601,6 +2705,39 @@ fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i3
             RankField::new(subtitle, FieldWeight::SUBTITLE),
         ],
     )
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+/// Called only after the existing identity registry accepted the selection.
+#[allow(
+    clippy::similar_names,
+    reason = "`room` and `root` are the protocol's own names for the room and its user root"
+)]
+fn fence_native_selection(
+    st: &ChromeState,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
+    root: &[u8; 32],
+) -> Result<(), ActionError> {
+    let owner = st.tree().installed_native_owner();
+    let Some(owner) = owner else { return Ok(()) };
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let selected =
+        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
+    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
+    if let Some(pending) = owner
+        .pending_enrollment_for_slot(local)
+        .map_err(ActionError::Refused)?
+    {
+        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+            .map_err(ActionError::Refused)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2659,6 +2796,23 @@ mod tests {
         (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
     }
 
+    fn begin_lifecycle_action(
+        results: &[crate::shell::search::SearchResult],
+        id: &str,
+        chrome: &Chrome,
+    ) -> crate::shell::search::InvocationDisposition {
+        let result = results
+            .iter()
+            .find(|result| result.id == id)
+            .unwrap_or_else(|| panic!("action provider did not return {id}"));
+        let begin = result
+            .on_begin_invoke
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
+        let mut document = AutoCommit::new();
+        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2705,39 +2859,27 @@ mod tests {
             chrome.borrow_mut().peer_sync_enabled = true;
             let results = action_results(&provider, &chrome);
 
-            let mut document = AutoCommit::new();
             for id in ["peer.invite", "peer.connect"] {
-                let result = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .unwrap_or_else(|| panic!("action provider did not return {id}"));
-                let disposition = result
-                    .on_begin_invoke
-                    .as_ref()
-                    .expect("peer actions have lifecycle admission")(
-                    &mut document,
-                    &automerge::ROOT,
-                    &chrome,
-                    &ActionArgs::none(),
-                )
-                .expect("peer action is admitted");
                 assert!(matches!(
-                    disposition,
+                    begin_lifecycle_action(&results, id, &chrome),
                     crate::shell::search::InvocationDisposition::Pending(_)
                 ));
             }
 
+            let queued = chrome.borrow_mut().take_peer_sync_requests();
+            assert_eq!(queued.len(), 2);
+            let actions = queued
+                .into_iter()
+                .map(|request| match request {
+                    crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
+                    other => panic!("lifecycle request must remain tracked, got {other:?}"),
+                })
+                .collect::<Vec<_>>();
             assert_eq!(
-                chrome.borrow_mut().take_peer_sync_requests(),
+                actions,
                 vec![
-                    crate::shell::overlay_host::PeerSyncAction::Tracked {
-                        request_id: 1,
-                        action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptInvite),
-                    },
-                    crate::shell::overlay_host::PeerSyncAction::Tracked {
-                        request_id: 2,
-                        action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptConnect),
-                    },
+                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                    crate::shell::overlay_host::PeerSyncAction::PromptConnect,
                 ]
             );
         }
@@ -2821,7 +2963,7 @@ mod tests {
                 matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
             );
             assert!(
-                !chrome.borrow().notifications.is_empty(),
+                !chrome.borrow().notifications().is_empty(),
                 "the person still receives useful visible feedback"
             );
         }
@@ -3010,6 +3152,32 @@ mod tests {
     }
 
     #[test]
+    fn workspace_activity_exact_local_actions_are_exported() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let out = provider.query(SearchContext {
+            needle: "activity",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for id in [
+            "room.activity.open",
+            "room.activity.explore",
+            "room.activity.replay",
+        ] {
+            assert!(
+                out.iter().any(|action| action.id == id
+                    && action.operation_kind == tilo_actions::OperationKind::View),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -3100,7 +3268,7 @@ mod tests {
             assert!(state.overlays.ws_settings);
             assert_eq!(
                 state.ws_settings_tab,
-                crate::shell::workspace_settings::WsTab::Permissions
+                tilo_desktop::workspace_settings::WsTab::Permissions
             );
         }
 
@@ -3174,10 +3342,24 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "shortcut-help.toggle")
                 .expect("shortcut help action");
-            assert_eq!(action.label, "Show desktop help");
-            assert!(action.subtitle.contains("Super+/"));
-            assert!(action.subtitle.contains("F1"));
-            assert!(action.subtitle.contains("same guide"));
+            assert_eq!(t(action.label), "Show desktop help");
+            let subtitle = t(action.subtitle);
+            assert!(subtitle.contains("Super+/"));
+            assert!(subtitle.contains("F1"));
+            assert!(subtitle.contains("same guide"));
+        }
+    }
+
+    /// Row titles and subtitles are catalogue keys, which the source scan
+    /// cannot see through the table; every one must resolve in every locale.
+    #[test]
+    fn every_action_row_resolves_to_real_copy() {
+        for action in Action::ALL {
+            for key in [action.label, action.subtitle] {
+                let copy = t(key);
+                assert_ne!(copy, key, "{key} has no entry in the catalogue");
+                assert!(!copy.trim().is_empty(), "{key} resolves to nothing");
+            }
         }
     }
 

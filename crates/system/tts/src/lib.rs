@@ -50,8 +50,8 @@
 //! boundary**, which is *not* linkage and imposes **no GPL constraint** on this crate or
 //! anything that links it:
 //!
-//! * **speech-dispatcher** (GPL): reached over its **SSIP socket** via the pure-Rust
-//!   [`ssip-client`](https://crates.io/crates/ssip-client) crate (MIT OR Apache-2.0).
+//! * **speech-dispatcher** (GPL): reached over its **SSIP socket**, a line protocol
+//!   this crate speaks itself.
 //! * **espeak-ng** (GPL-3.0): reached as a **spawned subprocess** (text piped to its stdin);
 //!   also typically reached *through* speech-dispatcher as an output module.
 //! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
@@ -79,6 +79,7 @@
 )]
 
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
 mod espeak;
 mod factory;
 mod null;
@@ -88,6 +89,7 @@ mod speaker;
 mod speechd;
 
 pub use error::TtsError;
+#[cfg(not(target_arch = "wasm32"))]
 pub use espeak::EspeakSpeaker;
 pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;

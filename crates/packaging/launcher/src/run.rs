@@ -98,6 +98,11 @@ pub enum RunError {
     InvalidOpenUri(String),
     #[error("refusing managed-service launch: {0}")]
     InvalidServiceLaunch(String),
+    #[error(
+        "refusing to launch `{package}` as `{app_id}`: an app has exactly one id, the package id \
+         of its signed manifest"
+    )]
+    AppIdMismatch { app_id: String, package: String },
     #[error("refusing authored launch: identity signing broker could not start ({0})")]
     IdentityBroker(String),
     #[error(
@@ -214,8 +219,8 @@ pub struct RunOptions {
     /// Host path of the compositor-written `Vec<CapOverride>` JSON. `None`,
     /// missing, unreadable or malformed all mean the manifest's sandbox as-is.
     pub capabilities_path: Option<PathBuf>,
-    /// The app id capabilities are addressed to (defaults to the manifest's
-    /// package id); re-checked per capability rather than trusted.
+    /// The app id the caller launched. An app has exactly one id, so a value
+    /// other than the manifest's package id refuses the launch.
     pub app_id: Option<String>,
     /// A document to open, forwarded as `argv[1]`. Only an argument — binds
     /// and unlocks nothing on its own. `None` launches with no arguments.
@@ -296,6 +301,16 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
             desktop_id: desktop_id.clone(),
         });
     }
+    if let Some(app_id) = opts
+        .app_id
+        .as_deref()
+        .filter(|app_id| *app_id != manifest.package_id)
+    {
+        return Err(RunError::AppIdMismatch {
+            app_id: app_id.to_owned(),
+            package: manifest.package_id.clone(),
+        });
+    }
     if !matches!(&opts.mode, LaunchMode::Service { .. }) {
         return Ok(());
     }
@@ -314,15 +329,6 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
     if opts.wayland_socket.is_some() || opts.open_document.is_some() || opts.open_uri.is_some() {
         return Err(RunError::InvalidServiceLaunch(
             "managed services cannot receive a display, document, or URI".into(),
-        ));
-    }
-    if opts
-        .app_id
-        .as_deref()
-        .is_some_and(|app_id| app_id != manifest.package_id)
-    {
-        return Err(RunError::InvalidServiceLaunch(
-            "managed service app id must match its signed manifest".into(),
         ));
     }
     Ok(())
@@ -461,16 +467,29 @@ mod managed_service_tests {
             };
             assert!(validate_launch_mode(&manifest, &document).is_err());
         }
-        // Phase `managed_service_cannot_readdress_its_authenticated_identity`.
+        // Phase `no_launch_can_readdress_its_signed_package_id`.
         {
-            let opts = RunOptions {
+            let service = RunOptions {
                 app_id: Some("so.tilo.other".into()),
                 ..service_options()
             };
             assert!(matches!(
-                validate_launch_mode(&manifest("service", "cli"), &opts),
-                Err(RunError::InvalidServiceLaunch(_))
+                validate_launch_mode(&manifest("service", "cli"), &service),
+                Err(RunError::AppIdMismatch { .. })
             ));
+            let gui = RunOptions {
+                app_id: Some("so.tilo.other".into()),
+                ..RunOptions::default()
+            };
+            assert!(matches!(
+                validate_launch_mode(&manifest("app", "gui"), &gui),
+                Err(RunError::AppIdMismatch { .. })
+            ));
+            let exact = RunOptions {
+                app_id: Some("so.tilo.worker".into()),
+                ..RunOptions::default()
+            };
+            assert!(validate_launch_mode(&manifest("app", "gui"), &exact).is_ok());
         }
     }
 }
@@ -478,10 +497,7 @@ mod managed_service_tests {
 /// Resolve the capability plan: read the compositor's file, evaluate it
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
 pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
-    let app_id = opts
-        .app_id
-        .clone()
-        .unwrap_or_else(|| manifest.package_id.clone());
+    let app_id = manifest.package_id.clone();
     let records = opts
         .capabilities_path
         .as_deref()
@@ -1588,6 +1604,10 @@ fn splice_sandbox_shim(
     clippy::too_many_arguments,
     reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
+)]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
@@ -1602,8 +1622,28 @@ fn spawn_and_wait(
         Option<UnixStream>,
         Option<std::thread::JoinHandle<()>>,
     ),
+    observer: Option<(
+        &dyn crate::managed::EnrolledProcessObserver,
+        Option<PathBuf>,
+    )>,
 ) -> Result<ExitStatus, RunError> {
     const SECCOMP_CHILD_FD: i32 = 16;
+    let (observer, debug_output) = match observer {
+        Some((observer, debug_output)) => (Some(observer), debug_output),
+        None => (None, None),
+    };
+    let debug_output = debug_output.and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|error| {
+                tracing::warn!(path = %path.display(), %error, "debug output log unavailable");
+            })
+            .ok()
+            .map(|file| (path, file))
+    });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
 
     // Insert --seccomp <child_fd> at the front so bwrap installs it
@@ -1624,6 +1664,19 @@ fn spawn_and_wait(
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
     clear_bwrap_environment(&mut cmd);
+    if observer.is_some() {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some((path, _)) = &debug_output {
+            tracing::warn!(
+                path = %path.display(),
+                "{DEBUG_STDERR_ENV}=1: capturing the managed child's output (debug only)",
+            );
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+        }
+    }
 
     // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
     // each service socket on the fd number the app was told to read.
@@ -1693,8 +1746,27 @@ fn spawn_and_wait(
         });
     }
 
+    // Last parent-side policy/custody check after preparation, immediately before spawn.
+    if let Some(observer) = observer {
+        observer.before_spawn().map_err(RunError::Spawn)?;
+    }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    if let Some((_, file)) = debug_output {
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
+        if let Some(out) = child.stdout.take() {
+            let (sink, budget) = (sink.clone(), budget.clone());
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stdout".into())
+                .spawn(move || copy_bounded_output(out, &sink, &budget));
+        }
+        if let Some(err) = child.stderr.take() {
+            let _ = std::thread::Builder::new()
+                .name("tilo-debug-stderr".into())
+                .spawn(move || copy_bounded_output(err, &sink, &budget));
+        }
+    }
     // Important: keep `seccomp_fd` alive until after `spawn` returns,
     // so its dup2'd copy in the child remains valid. Drop here.
     drop(seccomp_fd);
@@ -1702,7 +1774,12 @@ fn spawn_and_wait(
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
     drop(identity_broker_app);
-    let status = child.wait()?;
+    let status = if let Some(observer) = observer {
+        observer.child_created();
+        observer.supervise(child)?
+    } else {
+        child.wait()?
+    };
     stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(status)
 }
@@ -1880,6 +1957,32 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, None)
+}
+
+pub(crate) fn run_enrolled(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    services: &mut crate::services::EnrolledServiceContext,
+    observer: &dyn crate::managed::EnrolledProcessObserver,
+) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, Some((services, observer)))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
+)]
+fn run_with_context(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    mut enrolled: Option<(
+        &mut crate::services::EnrolledServiceContext,
+        &dyn crate::managed::EnrolledProcessObserver,
+    )>,
+) -> Result<ExitStatus, RunError> {
     validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
@@ -1893,30 +1996,34 @@ pub fn run_with(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
-    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
-    let mut resolved = resolve_service_binds_for_launch(
-        &manifest.sandbox.services,
-        opts.no_services,
-        ServiceLaunchContext {
-            app_id: launch_app_id,
-            workspace_id: opts.workspace_id.as_deref(),
-        },
-    )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
-    if let Some(identity) = resolve_identity_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
-        resolved.push(identity);
-    }
-    if let Some(blobs) = resolve_blob_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
-        resolved.push(blobs);
-    }
+    let package_id = manifest.package_id.as_str();
+    let resolved = if let Some((services, _)) = enrolled.as_mut() {
+        let binding = services.binding().clone();
+        services
+            .take_for_launch(&binding, &manifest.sandbox.services)
+            .map_err(RunError::InvalidServiceLaunch)?
+    } else {
+        let mut resolved = resolve_service_binds_for_launch(
+            &manifest.sandbox.services,
+            opts.no_services,
+            ServiceLaunchContext {
+                app_id: package_id,
+                workspace_id: opts.workspace_id.as_deref(),
+            },
+        )?;
+        crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+        if let Some(identity) =
+            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(identity);
+        }
+        if let Some(blobs) =
+            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(blobs);
+        }
+        resolved
+    };
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
@@ -1929,24 +2036,46 @@ pub fn run_with(
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
-    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let resolved_runtime = if enrolled.is_some() {
+        Some(
+            crate::managed::verify_runtime(manifest, opts)
+                .map_err(RunError::InvalidServiceLaunch)?,
+        )
+    } else {
+        resolve_runtime(manifest, opts)?
+    };
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
-    let app_dir = resolve_app_dir(manifest, opts)?;
+    let app_dir = if let Some((services, _)) = enrolled.as_ref() {
+        crate::appdir::prepare_host_app_dir(
+            services.data_home(),
+            Some(&services.binding().room),
+            &services.binding().app,
+        )?
+    } else {
+        resolve_app_dir(manifest, opts)?
+    };
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
-    let capabilities = resolve_capabilities(manifest, opts);
+    let mut capabilities = resolve_capabilities(manifest, opts);
+    if enrolled.is_some() {
+        capabilities.participation = crate::capabilities::Participation::Author;
+    }
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
     // marker for the argv builder; it is never mounted.
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
-        resolve_identity_broker(&capabilities, opts)?;
+        if enrolled.is_some() {
+            (None, None, None, None)
+        } else {
+            resolve_identity_broker(&capabilities, opts)?
+        };
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     if identity_broker_app.is_some() {
@@ -1972,10 +2101,23 @@ pub fn run_with(
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if let Some((services, _)) = enrolled.as_ref() {
+        splice_cli_setenv(
+            &mut argv,
+            Some((
+                "TILO_MANAGED_AGENT_CONTEXT".into(),
+                services
+                    .agent_context_json()
+                    .map_err(RunError::InvalidServiceLaunch)?,
+            )),
+        )?;
+    }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
-    splice_tool_context(&mut argv)?;
+    if enrolled.is_none() {
+        splice_tool_context(&mut argv)?;
+    }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -2012,7 +2154,51 @@ pub fn run_with(
             identity_broker_control,
             identity_broker_thread,
         ),
+        enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home()))),
     )
+}
+
+/// Debug-only, off by default: when the launching host sets
+/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed (enrolled) child's stdout and
+/// stderr go to a bounded log file in its data home instead of `/dev/null`.
+/// This changes no sandbox, policy or custody decision; it only keeps the
+/// diagnostic output a supervised app would otherwise lose.
+pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
+/// Upper bound of one launch's captured output.
+const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
+    (std::env::var_os(DEBUG_STDERR_ENV).as_deref() == Some(std::ffi::OsStr::new("1")))
+        .then(|| data_home.join("launcher-debug-output.log"))
+}
+
+/// Copy `source` into `sink` until EOF or until `budget` bytes were written
+/// in total across all copiers sharing it; the rest is drained and dropped so
+/// the child never blocks on a full pipe.
+fn copy_bounded_output(
+    mut source: impl std::io::Read,
+    sink: &std::sync::Mutex<std::fs::File>,
+    budget: &AtomicUsize,
+) {
+    use std::io::Write as _;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match source.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let granted = budget
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |left| {
+                Some(left.saturating_sub(n))
+            })
+            .unwrap_or(0)
+            .min(n);
+        if granted > 0
+            && let Ok(mut file) = sink.lock()
+        {
+            let _ = file.write_all(buf.get(..granted).unwrap_or_default());
+        }
+    }
 }
 
 fn validated_tool_context_from_env() -> Option<String> {
@@ -2457,28 +2643,24 @@ fn run_with_capture_spawn<T>(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
-    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
         opts.no_services,
         ServiceLaunchContext {
-            app_id: launch_app_id,
+            app_id: package_id,
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
-    if let Some(identity) = resolve_identity_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
+    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+    if let Some(identity) =
+        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
         resolved.push(identity);
     }
-    if let Some(blobs) = resolve_blob_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
+    if let Some(blobs) =
+        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
         resolved.push(blobs);
     }
     let binds = to_service_binds(&resolved);
@@ -2750,8 +2932,9 @@ fn resolve_dbus_bind(
         }
     } else {
         tracing::warn!(
-            "xdg-dbus-proxy not found on PATH; portal access stays unavailable. \
-             Install `flatpak-xdg-utils` to enable filtered portal traffic."
+            "xdg-dbus-proxy unavailable; portal access stays unavailable. \
+             Check TILO_LAUNCHER_DBUS_PROXY_BIN or install `flatpak-xdg-utils` \
+             to enable filtered portal traffic."
         );
     }
     (None, None)
@@ -3018,6 +3201,107 @@ mod app_dir_tests {
                 !victim.exists(),
                 "the launcher must not create a path a package named"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod managed_spawn_policy_tests {
+    use super::*;
+    struct CurrentPolicy {
+        allowed: bool,
+        checked: AtomicUsize,
+        spawned: AtomicUsize,
+    }
+    impl crate::managed::EnrolledProcessObserver for CurrentPolicy {
+        fn before_spawn(&self) -> std::io::Result<()> {
+            self.checked.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.allowed {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "revoked current policy",
+                ))
+            }
+        }
+        fn child_created(&self) {
+            self.spawned.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
+            child.wait()
+        }
+    }
+    #[test]
+    fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
+        // This exercises the real prepared-command spawn boundary, not a package,
+        // sandbox or live managed process proof. The permit's policy check is
+        // covered separately by the consuming-authority unit test.
+        for allowed in [false, true] {
+            let policy = CurrentPolicy {
+                allowed,
+                checked: AtomicUsize::new(0),
+                spawned: AtomicUsize::new(0),
+            };
+            let options = RunOptions {
+                bwrap_bin: Some("/usr/bin/true".into()),
+                ..Default::default()
+            };
+            let result = spawn_and_wait(
+                vec![],
+                vec![],
+                &options,
+                false,
+                tempfile::tempfile().unwrap().into(),
+                vec![],
+                &crate::netgate::EgressDecision::Blocked,
+                None,
+                (None, None, None),
+                Some((&policy, None)),
+            );
+            assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(
+                policy.spawned.load(AtomicOrdering::SeqCst),
+                usize::from(allowed)
+            );
+            if allowed {
+                assert!(
+                    result
+                        .expect("real Linux prepared-command spawn required")
+                        .success()
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod debug_output_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_copy_is_bounded_and_drains() {
+        let path = tempfile::NamedTempFile::new().unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path.path())
+            .unwrap();
+        let sink = Arc::new(std::sync::Mutex::new(file));
+        let budget = Arc::new(AtomicUsize::new(10));
+        copy_bounded_output(&b"0123456"[..], &sink, &budget);
+        copy_bounded_output(&b"789abcdef"[..], &sink, &budget);
+        assert_eq!(std::fs::read(path.path()).unwrap(), b"0123456789");
+        assert_eq!(budget.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn debug_output_is_off_by_default() {
+        if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
+            assert!(debug_output_log(Path::new("/nonexistent")).is_none());
         }
     }
 }

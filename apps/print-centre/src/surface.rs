@@ -1,8 +1,6 @@
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
@@ -358,8 +356,7 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
 fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
+    private_fs::owner_only(&mut options);
     let mut file = options
         .open(path)
         .map_err(|error| format!("could not create the scanned page: {error}"))?;
