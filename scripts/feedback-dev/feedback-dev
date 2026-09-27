@@ -83,6 +83,7 @@ feedback-dev: a local Tilo community for testing feedback
   3. Stand it up:                  feedback-dev up --headless     (automation)
                                    feedback-dev up --nested       (two windows)
   4. See what runs and where:      feedback-dev status
+     Check the report flow:        feedback-dev check   (a report reaches everyone)
   5. Drive a shell semantically:   feedback-dev ctl team -- community status
                                    feedback-dev ctl reporter -- community team-room
      (any `tilo-control` arguments after `--`; see `tilo-control --help`)
@@ -757,7 +758,7 @@ def start_relay(restart: bool = False) -> dict:
         endpoint_file.unlink(missing_ok=True)
         say("starting the relay")
         spawn("relay", [binary("tilo-relay"), "--config", str(relay_config()), "run"],
-              {**os.environ, "TILO_RELAY_LOG": "tilo_relay=info,warn"}, relay_dir() / "log")
+              {**os.environ, "TILO_RELAY_LOG": os.environ.get("FEEDBACK_DEV_RELAY_LOG", "tilo_relay=info,warn")}, relay_dir() / "log")
     for _ in range(120):
         if endpoint_file.exists():
             endpoint = json.loads(endpoint_file.read_text())
@@ -1040,6 +1041,62 @@ def reporter_sees_feedback(room: str) -> None:
                       "the reporter seeing #feedback")
 
 
+def chat_tree(name: str) -> str:
+    """The semantic tree of `name`'s Chat, as text."""
+    apps = answer(name, {"op": "inspect_apps"}).get("apps", [])
+    peers = [app["peer"] for app in apps if app.get("app_id") == "so.tilo.chat"]
+    if not peers:
+        return ""
+    result = subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).resolve()), "ctl", name, "--",
+         "inspect", "tree", str(peers[0]), "--depth", "64"],
+        capture_output=True, text=True, timeout=60,
+    )
+    return result.stdout
+
+
+def open_feedback(name: str, room: str) -> None:
+    ensure_chat(name, room)
+    invoke_chat(name, f"chat.channel:{FEEDBACK_CHANNEL}", "open", "feedback")
+
+
+def cmd_check(_: argparse.Namespace) -> None:
+    """The hand test's report, done by machine: the reporter posts in
+    #feedback, and the team (and the teammate, when there is one) see it."""
+    state = load_state()
+    room = state.get("room")
+    if not room or not running("reporter") or not running("team"):
+        raise Fix("the community is not up", "feedback-dev up --headless --ci-apps RUN")
+    people = [name for name in ("reporter", "team", "teammate") if running(name)]
+    for name in people:
+        open_feedback(name, room)
+    report = f"feedback-dev check {time.strftime('%H:%M:%S')}: Send does nothing on a trailing comma"
+    say("the reporter posts a report in #feedback")
+    row = None
+    for _ in range(60):
+        row = chat_action("reporter", f"chat.channel:{FEEDBACK_CHANNEL}", "post", "feedback")
+        if row:
+            break
+        time.sleep(1.0)
+    if not row:
+        raise Fix("the reporter's Chat offers no `post` in #feedback", "feedback-dev ctl reporter -- actions list feedback")
+    answer("reporter", {"op": "actions_invoke", "provider": row["provider"], "id": row["id"],
+                        "args": {"value": report}})
+    waiting = set(people)
+    for _ in range(90):
+        for name in list(waiting):
+            if report in chat_tree(name):
+                say(f"check: the {name} sees the report")
+                waiting.discard(name)
+        if not waiting:
+            break
+        time.sleep(1.0)
+    if waiting:
+        raise Fix(f"the report never showed for: {', '.join(sorted(waiting))}",
+                  f"grep 'not kept\\|did not complete\\|refused an' {DATA}/*/log")
+    say("check: ok — a report posted in #feedback reached everyone in the room")
+
+
 # ------------------------------------------------------------- commands ----
 
 def available_mib() -> int:
@@ -1192,6 +1249,7 @@ def main() -> int:
     up.add_argument("--rebuild-apps", action="store_true",
                     help="repackage this worktree's apps (chat) even if a package exists")
     sub.add_parser("status", help="what runs, the room, each shell's community status")
+    sub.add_parser("check", help="the reporter posts in #feedback; everyone in the room must see it")
     ctl = sub.add_parser("ctl", help="run tilo-control against one shell")
     ctl.add_argument("session", choices=SESSIONS)
     ctl.add_argument("rest", nargs=argparse.REMAINDER)
@@ -1205,6 +1263,8 @@ def main() -> int:
             return 1 if doctor() else 0
         elif args.command == "up":
             cmd_up(args)
+        elif args.command == "check":
+            cmd_check(args)
         elif args.command == "status":
             cmd_status(args)
         elif args.command == "ctl":
