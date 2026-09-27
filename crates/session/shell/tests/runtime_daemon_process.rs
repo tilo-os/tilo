@@ -187,7 +187,11 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() {
     let start = Instant::now();
     let competing = host(profile.path()).arg("--daemon").output().unwrap();
     assert!(!competing.status.success());
-    assert!(start.elapsed() < Duration::from_secs(5));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "a competing daemon took {elapsed:?} to give up on the held profile lock; it must fail at once"
+    );
     assert_eq!(status(profile.path())["pid"], before["pid"]);
 }
 #[test]

@@ -30,8 +30,6 @@ use ui::{RemoteActions, RemoteActionsGuard};
 
 const NOTES: &str = "so.tilo.notes";
 const INBOX: &str = "notes.folder:inbox";
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 #[allow(clippy::too_many_arguments, reason = "one catalogue row, spelled out")]
 fn row(
@@ -251,7 +249,7 @@ fn open_with(host: FakeHost) -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>
 
 fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
     app.harness()
-        .wait_for_named(target, HANG_BOUND)
+        .wait_for_named(target, tilo_test_env::hang_bound())
         .unwrap_or_else(|error| {
             let mut known: Vec<String> = app.harness().targets().into_keys().collect();
             known.sort();
@@ -267,7 +265,7 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
     let (host, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
-        .wait_for_named("new-shortcut", HANG_BOUND)
+        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         host.callers
@@ -356,7 +354,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect(
             &SemanticExpectation::named("step-problems-1")
                 .name_contains("title")
-                .within(HANG_BOUND),
+                .within(tilo_test_env::hang_bound()),
         )
         .expect("the missing argument is reported on the step");
 
@@ -378,14 +376,14 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect(
             &SemanticExpectation::named("draft-problems")
                 .name("Ready to save")
-                .within(HANG_BOUND),
+                .within(tilo_test_env::hang_bound()),
         )
         .expect("the draft checks");
 
     // Review what it may do, then save.
     act(&mut app, "review-save", &Action::Activate);
     app.harness()
-        .wait_for_named("grant-so.tilo.notes-create", HANG_BOUND)
+        .wait_for_named("grant-so.tilo.notes-create", tilo_test_env::hang_bound())
         .expect("the sheet lists the permissions");
     act(&mut app, "grant-save", &Action::Activate);
 
@@ -439,7 +437,7 @@ fn with_agent() -> FakeHost {
 fn drafting_is_hidden_without_the_agent() {
     let (_host, _guard, mut app) = open();
     app.harness()
-        .wait_for_named("new-shortcut", HANG_BOUND)
+        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         !app.harness().targets().contains_key("describe-shortcut"),
@@ -460,7 +458,7 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
         .expect(
             &SemanticExpectation::named("drafted-summary")
                 .name_contains("Note the inbox")
-                .within(HANG_BOUND),
+                .within(tilo_test_env::hang_bound()),
         )
         .expect("the draft is offered");
 

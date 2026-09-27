@@ -2126,8 +2126,11 @@ impl DocMut<'_> {
     }
 
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
-    /// `container`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n) rescan.
-    fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
+    /// `container`, for block `id`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n)
+    /// rescan. The key is salted by `id`, so two replicas placing blocks in one gap at once give them distinct
+    /// keys, and a later block still fits between them.
+    fn order_after_in(&mut self, container: &ObjId, after: Option<&str>, id: &str) -> Vec<u8> {
+        let salt = order_salt(id);
         // An action's insert after a known block needs only that block's
         // successor. Finding it reads each block's order key once; building
         // the index sorts them all, and an action's generator lives for one
@@ -2136,7 +2139,7 @@ impl DocMut<'_> {
         if self.ids.action.is_some()
             && !self.bulk_active()
             && !self.ids.order.by_container.contains_key(container)
-            && let Some((key, hi)) = self.order_after_scanning(container, after)
+            && let Some((key, hi)) = self.order_after_scanning(container, after, salt)
         {
             self.ids.placing = Some((container.clone(), key.clone(), hi));
             return key;
@@ -2169,7 +2172,7 @@ impl DocMut<'_> {
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
             },
         };
-        tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
+        tilo_resource::order::bytes::between_salted(lo.as_deref(), hi.as_deref(), salt)
     }
 
     /// The key for a block inserted after `after` in `container`, and the
@@ -2181,15 +2184,16 @@ impl DocMut<'_> {
         &self,
         container: &ObjId,
         after: Option<&str>,
+        salt: u16,
     ) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
-        use tilo_resource::order::bytes::{between, cmp};
+        use tilo_resource::order::bytes::{between_salted, cmp};
         let after = after?;
         if let Some(run) = &self.ids.run
             && &run.container == container
             && run.last == after
         {
             let hi = run.hi.clone();
-            return Some((between(Some(&run.key), hi.as_deref()), hi));
+            return Some((between_salted(Some(&run.key), hi.as_deref(), salt), hi));
         }
         let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -2219,12 +2223,12 @@ impl DocMut<'_> {
             }
         }
         let hi = next.map(|(key, _)| key);
-        Some((between(Some(&after_key), hi.as_deref()), hi))
+        Some((between_salted(Some(&after_key), hi.as_deref(), salt), hi))
     }
 
-    fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {
+    fn order_after(&mut self, after: Option<&str>, id: &str) -> Vec<u8> {
         let container = self.c.blocks.clone();
-        self.order_after_in(&container, after)
+        self.order_after_in(&container, after, id)
     }
 
     /// Build the order index for `container` on first use (one O(n log n) scan), then keep it incrementally.
@@ -2284,8 +2288,8 @@ impl DocMut<'_> {
         if self.bulk_active() {
             return self.stage_block(container, after, kind);
         }
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2337,8 +2341,9 @@ impl DocMut<'_> {
         else {
             return self.insert_block_in(region, Some(after), kind);
         };
-        let key = tilo_resource::order::bytes::between(Some(&low), Some(&high));
         let id = self.ids.mint();
+        let key =
+            tilo_resource::order::bytes::between_salted(Some(&low), Some(&high), order_salt(&id));
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2545,8 +2550,8 @@ impl DocMut<'_> {
         if self.bulk_active() {
             return Some(self.stage_block(container, after, kind));
         }
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2734,8 +2739,8 @@ impl DocMut<'_> {
         kind: &str,
     ) -> Option<String> {
         let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -2814,8 +2819,8 @@ impl DocMut<'_> {
         kind: &str,
     ) -> Option<String> {
         let container = self.comment_blocks_container(comment_id)?;
-        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
+        let key = self.order_after_in(&container, after, &id);
         let obj = self
             .doc
             .put_object(&container, id.as_str(), ObjType::Map)
@@ -3118,7 +3123,7 @@ impl DocMut<'_> {
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
         self.flush_bulk();
         // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
-        let key = self.order_after(after);
+        let key = self.order_after(after, id);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
             self.doc
                 .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
@@ -4943,4 +4948,13 @@ mod preserved_tests {
         let _ = a.merge(&mut b);
         AutoCommit::load(&a.save()).unwrap()
     }
+}
+
+/// The salt a block's order key takes from its id: FNV-1a, folded to 16 bits.
+fn order_salt(id: &str) -> u16 {
+    let hash = id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let [a, b, c, d] = hash.to_le_bytes();
+    u16::from_le_bytes([a ^ c, b ^ d])
 }
