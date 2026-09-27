@@ -402,6 +402,60 @@ const NAVIGATE_CARDS: &[(&str, &str)] = &[
     ("onboarding-tour-move-title", "onboarding-tour-move-body"),
 ];
 
+/// A tour card's copy. The chords it teaches are the ones currently bound,
+/// spelled the way the active keyboard layout prints them, so a rebound
+/// shortcut or a German layout never leaves the tour teaching the wrong keys.
+fn tour_copy(key: &str) -> String {
+    use crate::shell::keyboard_shortcuts::{action_chord_text, fixed_chord_text};
+    use settings_store::hardware::{ShortcutAction, ShortcutConfig};
+    let chords = || ShortcutConfig::load();
+    match key {
+        "onboarding-tour-search-title" => t_args(
+            key,
+            &[
+                (
+                    "search",
+                    action_chord_text(&chords(), ShortcutAction::Search).into(),
+                ),
+                ("alternate", fixed_chord_text("fixed-global-search").into()),
+            ],
+        ),
+        "onboarding-tour-overview-title" => t_args(
+            key,
+            &[(
+                "chord",
+                action_chord_text(&chords(), ShortcutAction::WorkspaceOverview).into(),
+            )],
+        ),
+        "onboarding-tour-move-title" => t_args(
+            key,
+            &[(
+                "modifier",
+                ui::keycaps::active()
+                    .modifier(ui::KeyboardModifier::System)
+                    .into(),
+            )],
+        ),
+        "onboarding-tour-window-group-body" => {
+            let chords = chords();
+            t_args(
+                key,
+                &[
+                    (
+                        "previous",
+                        action_chord_text(&chords, ShortcutAction::FocusPreviousWindow).into(),
+                    ),
+                    (
+                        "next",
+                        action_chord_text(&chords, ShortcutAction::FocusNextWindow).into(),
+                    ),
+                ],
+            )
+        }
+        _ => t(key),
+    }
+}
+
 const ORGANISE_CARDS: &[(&str, &str)] = &[
     (
         "onboarding-tour-workspace-title",
@@ -1893,11 +1947,11 @@ impl OnboardingView {
                         .with_intrinsic_height()
                         .with_gap(theme.tokens.spacing.s1)
                         .push(Box::new(
-                            Text::new(&t(card_title))
+                            Text::new(&tour_copy(card_title))
                                 .with_role(ui::tokens::typography::TextRole::Label)
                                 .with_color(theme.text_primary),
                         ))
-                        .push(paragraph(&t(copy), theme)),
+                        .push(paragraph(&tour_copy(copy), theme)),
                 ));
             }
             // The numbered labels already provide the grouping and order. A
@@ -1908,8 +1962,8 @@ impl OnboardingView {
         } else {
             for (card_title, copy) in cards {
                 body = body.push(Box::new(Card::titled(
-                    t(card_title),
-                    paragraph(&t(copy), theme),
+                    tour_copy(card_title),
+                    paragraph(&tour_copy(copy), theme),
                 )));
             }
         }
@@ -4360,12 +4414,25 @@ mod tests {
     }
 
     #[test]
+    fn the_tour_teaches_chords_as_the_active_layout_prints_them() {
+        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
+        let groups = tour_copy("onboarding-tour-window-group-body");
+        let search = tour_copy("onboarding-tour-search-title");
+        ui::keycaps::set_active(ui::Keycaps::US);
+        assert!(groups.contains("Super+← or Super+→"), "{groups}");
+        assert!(search.contains("Super+Leertaste"), "{search}");
+        assert!(
+            tour_copy("onboarding-tour-window-group-body").contains("Super+Left or Super+Right")
+        );
+    }
+
+    #[test]
     fn onboarding_copy_and_live_regions_speak_the_real_contract() {
         // Phase `desktop_tour_teaches_the_real_keyboard_and_gesture_contract`.
         {
             let navigation = NAVIGATE_CARDS
                 .iter()
-                .flat_map(|(title, body)| [t(title), t(body)])
+                .flat_map(|(title, body)| [tour_copy(title), tour_copy(body)])
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -4401,7 +4468,7 @@ mod tests {
         {
             let handoff = START_CARDS
                 .iter()
-                .flat_map(|(title, body)| [t(title), t(body)])
+                .flat_map(|(title, body)| [tour_copy(title), tour_copy(body)])
                 .collect::<Vec<_>>()
                 .join(" ");
 

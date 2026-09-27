@@ -123,16 +123,19 @@ impl Shortcut {
         } else {
             keycaps
         };
-        [
+        let mut held: Vec<KeyboardModifier> = [
             (self.command, KeyboardModifier::Command),
             (self.alt, KeyboardModifier::Alt),
             (self.shift, KeyboardModifier::Shift),
         ]
         .into_iter()
-        .filter(|(held, _)| *held)
-        .map(|(_, modifier)| keycaps.modifier(modifier).to_owned())
-        .chain(std::iter::once(self.key.clone()))
-        .collect()
+        .filter_map(|(held, modifier)| held.then_some(modifier))
+        .collect();
+        held.sort_by_key(|modifier| keycaps.order(*modifier));
+        held.into_iter()
+            .map(|modifier| keycaps.modifier(modifier).to_owned())
+            .chain(std::iter::once(self.key.clone()))
+            .collect()
     }
 }
 
@@ -147,7 +150,7 @@ mod tests {
             let shortcut = Shortcut::command("K").shift();
             assert_eq!(
                 shortcut.label(PlatformConventions::new(Platform::MacOs)),
-                "⌘⇧K"
+                "⇧⌘K"
             );
             assert_eq!(
                 shortcut.label(PlatformConventions::new(Platform::Windows)),
